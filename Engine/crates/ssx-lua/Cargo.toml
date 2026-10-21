@@ -1,0 +1,13 @@
+[package]
+name = "ssx-lua"
+description = "Our own Lua 5.1.3 implementation with the game's configuration (double numbers, the libraries each of the game's Lua states opens) and the catalogue of the game's Lua bindings, to run the disc's scripts unchanged. No engine dependencies."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

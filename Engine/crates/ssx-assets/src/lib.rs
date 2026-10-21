@@ -1,0 +1,20 @@
+mod actors;
+mod anim;
+mod audio;
+pub mod career;
+mod disc;
+mod effects;
+mod landscape;
+mod soundtrack;
+mod track;
+mod vaults;
+
+pub use actors::{character, ghosts, helicopter, nis};
+pub use anim::{anim_db, anim_eval, anim_graph, anim_leaf, anim_pose, anim_rigops, anim_space, rig_anim, rigamate};
+pub use audio::{sfx, sfx_aems, sfx_avalanche, sfx_bus, sfx_dsp, sfx_dsp_remix, sfx_game, sfx_mixer, sfx_tuna};
+pub use disc::{exe, setup};
+pub use effects::{light_script, particle_script, particles, postfx, postfx_overlay, track_particles};
+pub use landscape::{subdiv, terrain, terrain_material, terrain_vertex};
+pub use soundtrack::{music, music_script, musicbox, pathfinder, pathfinder_events, remix, remix_runtime};
+pub use track::{avalanche_entities, object_mesh, texture, track_lighting, track_lights, track_objects};
+pub use vaults::{vault, vault_db};

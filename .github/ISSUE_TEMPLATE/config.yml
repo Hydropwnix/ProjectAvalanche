@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and help with the setup
+    url: https://discord.com/invite/XrFGQEfwdJ
+    about: Ask on the Project Avalanche Discord server.
+  - name: Security problem
+    url: https://github.com/MnkyArts/ProjectAvalanche/blob/main/SECURITY.md
+    about: Please report security problems privately, as described in the security policy.

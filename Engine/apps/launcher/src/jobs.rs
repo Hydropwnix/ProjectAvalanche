@@ -1,0 +1,208 @@
+use std::io::{BufRead, BufReader, Write};
+use std::path::PathBuf;
+use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use eframe::egui;
+use ssx_assets::setup::{self, Cancelled, DiscCheck, Progress, Summary};
+
+use crate::command::Invocation;
+
+pub struct Background<T> {
+    slot: Arc<Mutex<Option<T>>>,
+}
+
+impl<T: Send + 'static> Background<T> {
+    pub fn spawn(ctx: &egui::Context, f: impl FnOnce() -> T + Send + 'static) -> Self {
+        let slot = Arc::new(Mutex::new(None));
+        let (out, ctx) = (slot.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let v = f();
+            if let Ok(mut s) = out.lock() {
+                *s = Some(v);
+            }
+            ctx.request_repaint();
+        });
+        Self { slot }
+    }
+
+    pub fn take(&self) -> Option<T> {
+        self.slot.lock().ok()?.take()
+    }
+}
+
+pub fn inspect(ctx: &egui::Context, iso: PathBuf) -> Background<Result<DiscCheck, String>> {
+    Background::spawn(ctx, move || setup::inspect(&iso).map_err(|e| format!("{e:#}")))
+}
+
+pub enum SetupEnd {
+    Done(Summary),
+    Cancelled,
+    Failed(String),
+}
+
+pub struct SetupJob {
+    progress: Arc<Mutex<Progress>>,
+    cancel: Arc<AtomicBool>,
+    end: Background<SetupEnd>,
+    pub started: Instant,
+}
+
+impl SetupJob {
+    pub fn start(ctx: &egui::Context, iso: PathBuf, out: PathBuf) -> Self {
+        let progress = Arc::new(Mutex::new(Progress::default()));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (p, c, repaint) = (progress.clone(), cancel.clone(), ctx.clone());
+        let end = Background::spawn(ctx, move || {
+            let mut last = Instant::now();
+            let result = setup::run(&iso, &out, &c, &mut |now| {
+                if let Ok(mut p) = p.lock() {
+                    *p = now.clone();
+                }
+                if last.elapsed().as_millis() >= 100 {
+                    last = Instant::now();
+                    repaint.request_repaint();
+                }
+            });
+            match result {
+                Ok(summary) => SetupEnd::Done(summary),
+                Err(e) if e.is::<Cancelled>() => SetupEnd::Cancelled,
+                Err(e) => SetupEnd::Failed(format!("{e:#}")),
+            }
+        });
+        Self { progress, cancel, end, started: Instant::now() }
+    }
+
+    pub fn progress(&self) -> Progress {
+        self.progress.lock().map(|p| p.clone()).unwrap_or_default()
+    }
+
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    pub fn cancelling(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+    }
+
+    pub fn end(&self) -> Option<SetupEnd> {
+        self.end.take()
+    }
+}
+
+const LOG_LINES: usize = 2000;
+
+pub struct Viewer {
+    pub log: Arc<Mutex<Vec<String>>>,
+    pub status: Arc<Mutex<Option<String>>>,
+    pub pid: u32,
+}
+
+impl Viewer {
+    pub fn spawn(ctx: &egui::Context, inv: &Invocation) -> std::io::Result<Self> {
+        let dir = crate::settings::app_dir();
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("viewer.log");
+        let mut file = std::fs::File::create(&path)?;
+        writeln!(file, "$ {}", inv.display())?;
+        let mut cmd = inv.command();
+        cmd.stdin(Stdio::null()).stdout(Stdio::from(file.try_clone()?)).stderr(Stdio::from(file));
+        cmd.env("NO_COLOR", "1");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let mut child = cmd.spawn()?;
+        let pid = child.id();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let status = Arc::new(Mutex::new(None));
+        let exited = Arc::new(AtomicBool::new(false));
+        let (done, flag, repaint) = (status.clone(), exited.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let text = match child.wait() {
+                Ok(s) if s.success() => "exited normally".to_string(),
+                Ok(s) => match s.code() {
+                    Some(code) => format!("exited with code {code}"),
+                    None => format!("ended: {s}"),
+                },
+                Err(e) => format!("could not be waited for: {e}"),
+            };
+            flag.store(true, Ordering::Release);
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            if let Ok(mut d) = done.lock() {
+                *d = Some(text);
+            }
+            repaint.request_repaint();
+        });
+        let (lines, ctx) = (log.clone(), ctx.clone());
+        std::thread::spawn(move || tail(&path, &lines, &exited, &ctx));
+        Ok(Self { log, status, pid })
+    }
+
+    pub fn status(&self) -> Option<String> {
+        self.status.lock().ok()?.clone()
+    }
+}
+
+fn tail(path: &std::path::Path, lines: &Mutex<Vec<String>>, exited: &AtomicBool, ctx: &egui::Context) {
+    let Ok(file) = std::fs::File::open(path) else { return };
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    loop {
+        let finished = exited.load(Ordering::Acquire);
+        match reader.read_line(&mut line) {
+            Ok(n) if n > 0 && line.ends_with('\n') => {
+                if let Ok(mut l) = lines.lock() {
+                    if l.len() >= LOG_LINES {
+                        l.remove(0);
+                    }
+                    l.push(strip_ansi(line.trim_end()));
+                }
+                line.clear();
+                ctx.request_repaint();
+            }
+            Ok(_) if !finished => std::thread::sleep(std::time::Duration::from_millis(100)),
+            Ok(_) | Err(_) => {
+                if !line.is_empty()
+                    && let Ok(mut l) = lines.lock()
+                {
+                    l.push(strip_ansi(line.trim_end()));
+                }
+                return;
+            }
+        }
+    }
+}
+
+fn strip_ansi(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        if chars.clone().next() == Some('[') {
+            chars.next();
+            for f in chars.by_ref() {
+                if ('@'..='~').contains(&f) {
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn strips_colours() {
+        let line = "\u{1b}[2m2026-10-07\u{1b}[0m \u{1b}[32m INFO\u{1b}[0m viewer";
+        assert_eq!(super::strip_ansi(line), "2026-10-07  INFO viewer");
+    }
+}

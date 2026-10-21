@@ -1,0 +1,173 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+
+defaults:
+  run:
+    working-directory: Engine
+
+jobs:
+  check:
+    name: fmt, clippy, tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: System libraries for Bevy
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev libudev-dev \
+            libwayland-dev libxkbcommon-dev libgtk-3-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: Engine
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  windows:
+    name: Windows build (launcher + game)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: Engine
+      - name: Build
+        run: cargo build --release -p avalanche-game -p avalanche-launcher
+      - name: Package
+        shell: pwsh
+        run: |
+          $dist = "../dist/ProjectAvalanche"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          Copy-Item target/release/project-avalanche.exe "$dist/Project Avalanche.exe"
+          Copy-Item target/release/avalanche-game.exe "$dist/avalanche-game.exe"
+          @"
+          Project Avalanche — native PC port of SSX (2012), test build $env:GITHUB_SHA
+
+          1. Start "Project Avalanche.exe" (keep "avalanche-game.exe" in the same folder: it is the
+             game, the launcher starts it).
+          2. Click the large SET UP GAME DATA tile, select your own SSX (2012) Xbox 360 ISO once
+             and click Extract game data; the launcher unpacks the game data
+             (about 4.7 GB) into %LOCALAPPDATA%\Project Avalanche\GameData. A folder made by an
+             earlier build has no movies: the launcher says so and adds them (select the ISO again).
+          3. Click the large PLAY SSX (2012) tile. The game starts in its own window: the boot
+             movies, the main menu, World Tour and Explore, the drops, the results. Progress is
+             saved to %LOCALAPPDATA%\Project Avalanche\Saves\ssxvprofile.
+
+          Controls: an Xbox-style gamepad with the game's own layout (recommended), or the keyboard.
+            In the menus:    Enter = START, Space = A, Backspace = B, X, Y, arrow keys = D-pad,
+                             Q / E = LB / RB, W A S D = left stick (the globe), F1 skips a movie.
+            On the mountain: arrow keys or W A S D = left stick (steer, tuck, brake), Space = A (jump),
+                             I / J / L / K = Y / X / B / A, Shift = RT, Ctrl = LT, E = RB,
+                             Backspace = LB (rewind), Esc = START (pause).
+
+          Extras, Tools starts the asset viewer or a test ride on a single track: development tools,
+          not the game and not in this download (asset-viewer.exe, built from the source, next to
+          the launcher). If a start fails, its output is shown under Extras, Output and kept in
+          %LOCALAPPDATA%\Project Avalanche\viewer.log.
+
+          No game data is included in this download.
+          "@ | Set-Content -Encoding utf8 "$dist/README.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ProjectAvalanche-windows-x64
+          path: dist/ProjectAvalanche
+          if-no-files-found: error
+
+  linux:
+    name: Linux build (launcher + game)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: System libraries for Bevy
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev libudev-dev \
+            libwayland-dev libxkbcommon-dev libgtk-3-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: Engine
+      - name: Build
+        run: cargo build --release -p avalanche-game -p avalanche-launcher
+      - name: Package
+        run: |
+          dist=../dist/ProjectAvalanche
+          mkdir -p "$dist"
+          cp target/release/project-avalanche target/release/avalanche-game "$dist/"
+          cat > "$dist/README.txt" <<EOF
+          Project Avalanche — native PC port of SSX (2012), test build $GITHUB_SHA
+
+          1. Start ./project-avalanche (keep avalanche-game in the same folder: it is the game,
+             the launcher starts it).
+          2. Click the large SET UP GAME DATA tile, select your own SSX (2012) Xbox 360 ISO once
+             and click Extract game data; the launcher unpacks the game data (about 4.7 GB) into
+             ~/.local/share/project-avalanche/GameData (\$XDG_DATA_HOME/project-avalanche;
+             PROJECT_AVALANCHE_HOME overrides it).
+          3. Click the large PLAY SSX (2012) tile. The game starts in its own window. Progress is
+             saved to ~/.local/share/project-avalanche/Saves/ssxvprofile.
+
+          Needs: a GPU with a Vulkan driver, ALSA for sound (PipeWire and PulseAudio provide it),
+          Wayland or X11, and the XDG desktop portal for the ISO file picker. Built on Ubuntu 24.04
+          (x86-64): it runs on distributions with that glibc or newer.
+
+          Controls: an Xbox-style gamepad with the game's own layout (recommended), or the keyboard.
+            In the menus:    Enter = START, Space = A, Backspace = B, X, Y, arrow keys = D-pad,
+                             Q / E = LB / RB, W A S D = left stick (the globe), F1 skips a movie.
+            On the mountain: arrow keys or W A S D = left stick (steer, tuck, brake), Space = A (jump),
+                             I / J / L / K = Y / X / B / A, Shift = RT, Ctrl = LT, E = RB,
+                             Backspace = LB (rewind), Esc = START (pause).
+
+          If a start fails, its output is shown under Extras, Output and kept in
+          ~/.local/share/project-avalanche/viewer.log.
+
+          No game data is included in this download.
+          EOF
+          tar -C ../dist -czf ../dist/ProjectAvalanche-linux-x64.tar.gz ProjectAvalanche
+      # The tarball keeps the executable bits, which an artifact's zip would drop.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ProjectAvalanche-linux-x64
+          path: dist/ProjectAvalanche-linux-x64.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Release (tags only)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Release
+        working-directory: dist
+        run: |
+          (cd ProjectAvalanche-windows-x64 && zip -r ../ProjectAvalanche-windows-x64.zip .)
+          gh release create "$GITHUB_REF_NAME" ProjectAvalanche-windows-x64.zip \
+            ProjectAvalanche-linux-x64/ProjectAvalanche-linux-x64.tar.gz \
+            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

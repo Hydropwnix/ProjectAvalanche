@@ -1,0 +1,8 @@
+target/
+/dist/
+/Game-Data/
+*.iso
+*.xex
+*.big
+.DS_Store
+Thumbs.db

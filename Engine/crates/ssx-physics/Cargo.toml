@@ -1,0 +1,18 @@
+[package]
+name = "ssx-physics"
+description = "Rider/board physics and collision of SSX (2012), reconstructed from the executable and the disc data."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+ssx-formats.workspace = true
+ssx-assets.workspace = true
+ssx-lua.workspace = true
+anyhow.workspace = true
+glam.workspace = true
+
+[lints]
+workspace = true

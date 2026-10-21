@@ -1,0 +1,49 @@
+name: Differs from the original game
+description: Something that looks, sounds or plays differently from SSX (2012) on the console.
+title: "[Accuracy]: "
+labels: ["accuracy"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The port aims to do exactly what the original does. A reference makes the difference easy to check: a video
+        of the Xbox 360 or PS3 version with a timestamp, or your own capture. Please never attach game files.
+  - type: input
+    id: where
+    attributes:
+      label: Where
+      description: The event, drop, menu or screen.
+      placeholder: "World Tour, the Rockies, the first drop"
+    validations:
+      required: true
+  - type: textarea
+    id: original
+    attributes:
+      label: What the original game does
+      description: Include the reference (a link with a timestamp, or an attached capture).
+    validations:
+      required: true
+  - type: textarea
+    id: port
+    attributes:
+      label: What the port does
+      description: A screenshot or a short video helps.
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: build
+    attributes:
+      label: Build
+      description: The release or the CI run / commit.
+      placeholder: v0.1.0
+    validations:
+      required: true

@@ -1,0 +1,18 @@
+[package]
+name = "asset-viewer"
+description = "Project Avalanche's asset viewer: a track's terrain and objects with a fly camera, test rides, unattended screenshots — a development tool and the base for modding tools later (the game is `avalanche-game`)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+ssx-bevy.workspace = true
+ssx-assets.workspace = true
+bevy.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+
+[lints]
+workspace = true

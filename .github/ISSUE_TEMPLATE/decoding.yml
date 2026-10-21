@@ -1,0 +1,31 @@
+name: Decoding a TODO(guess)
+description: A finding that settles (or narrows) one of the guesses marked in the code.
+title: "[Decoding]: "
+labels: ["decoding"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every place where the port approximates the original carries a `TODO(guess):` marker that says what is
+        guessed, what is known and what would settle it. Share what you found; a pull request is welcome too.
+        Addresses and descriptions are fine, but please never attach game files, the executable or dumps of it.
+  - type: input
+    id: marker
+    attributes:
+      label: Marker
+      description: The file and line, or the marker's text.
+      placeholder: "Engine/crates/ssx-physics/src/...: TODO(guess): ..."
+    validations:
+      required: true
+  - type: textarea
+    id: finding
+    attributes:
+      label: What you found
+      description: The functions or data (addresses in the Xbox 360 executable, files on the disc), and how you checked it.
+    validations:
+      required: true
+  - type: textarea
+    id: change
+    attributes:
+      label: What the port should do instead
+      description: The behaviour or the code change that follows from the finding.

@@ -1,0 +1,27 @@
+name: Port improvement
+description: A PC-side improvement, such as the launcher, options, controls, display or performance.
+title: "[Improvement]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For things the PC port adds or could do better. Behaviour that differs from the original game is an
+        accuracy report instead.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is missing or could be better
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: Your system, screenshots, how other ports handle it.

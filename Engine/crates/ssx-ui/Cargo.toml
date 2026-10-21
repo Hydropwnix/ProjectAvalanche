@@ -1,0 +1,19 @@
+[package]
+name = "ssx-ui"
+description = "The Scaleform GFx player of the port: movie library, display list and timelines, tessellation, text layout, a per-frame render list, the ActionScript 2 VM and the game side of the UI bridge (HUD, localisation, navigation). No engine dependencies."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+ssx-formats.workspace = true
+ssx-assets.workspace = true
+ssx-physics.workspace = true
+ssx-lua.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

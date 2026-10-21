@@ -1,0 +1,22 @@
+changelog:
+  exclude:
+    labels:
+      - duplicate
+      - invalid
+      - wontfix
+  categories:
+    - title: Accuracy (closer to the original game)
+      labels:
+        - accuracy
+        - decoding
+    - title: Bug fixes
+      labels:
+        - bug
+        - crash
+    - title: Improvements
+      labels:
+        - enhancement
+        - performance
+    - title: Other changes
+      labels:
+        - "*"

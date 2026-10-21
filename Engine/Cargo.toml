@@ -1,0 +1,55 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/ssx-formats",
+    "crates/ssx-assets",
+    "crates/ssx-physics",
+    "crates/ssx-ui",
+    "crates/ssx-lua",
+    "crates/ssx-bevy",
+    "apps/game",
+    "apps/asset-viewer",
+    "apps/launcher",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+ssx-formats = { path = "crates/ssx-formats" }
+ssx-assets = { path = "crates/ssx-assets" }
+ssx-physics = { path = "crates/ssx-physics" }
+ssx-ui = { path = "crates/ssx-ui" }
+ssx-lua = { path = "crates/ssx-lua" }
+ssx-bevy = { path = "crates/ssx-bevy" }
+
+bevy = { version = "0.19.1" }
+thiserror = "2"
+flate2 = "1"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+memmap2 = "0.9"
+aes = "0.8"
+sha1 = "0.10"
+png = "0.18"
+glam = "0.32"
+cpal = "0.17"
+eframe = { version = "0.35.0", default-features = false, features = ["default_fonts", "wgpu", "wayland", "x11"] }
+rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
+
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[workspace.lints.clippy]
+collapsible_else_if = "allow"
+collapsible_if = "allow"

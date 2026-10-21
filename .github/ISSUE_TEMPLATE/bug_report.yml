@@ -1,0 +1,80 @@
+name: Bug report
+description: A crash, an error, or something in the launcher or the game that does not work.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please search the existing issues first, and never attach game files (the ISO,
+        extracted files): screenshots and short videos are fine.
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: build
+    attributes:
+      label: Build
+      description: The release (for example v0.1.0) or the CI run / commit you downloaded or built.
+      placeholder: v0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where does it happen?
+      options:
+        - Launcher or game data setup
+        - Boot movies or menus
+        - World Tour
+        - Explore
+        - On the mountain (a drop)
+        - Sound or music
+        - Somewhere else
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The event or drop, the menu path, the buttons, so someone else can get there.
+      placeholder: |
+        1. World Tour, Rockies, ...
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: |
+        The launcher shows the game's output under Extras, Output; it is also kept in viewer.log
+        (Windows: %LOCALAPPDATA%\Project Avalanche\, Linux: ~/.local/share/project-avalanche/).
+      render: text
+  - type: textarea
+    id: system
+    attributes:
+      label: System
+      description: GPU and driver, CPU, RAM, the controller (or keyboard), the display resolution.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched the existing issues.
+          required: true
+        - label: My game data comes from my own retail disc, and I attached no game files.
+          required: true
