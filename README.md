@@ -3,7 +3,7 @@
 [![build](https://github.com/MnkyArts/ProjectAvalanche/actions/workflows/build.yml/badge.svg)](https://github.com/MnkyArts/ProjectAvalanche/actions/workflows/build.yml)
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/XrFGQEfwdJ)
 
-A ground-up native PC port of **SSX (2012)**, rebuilt in Rust on the [Bevy](https://bevy.org) engine — no
+A ground-up native PC port of **SSX (2012)**, rebuilt in Rust on the [Bevy](https://bevy.org) engine with help from Claude — no
 emulation, no recompilation. The original formats are reverse-engineered from the retail Xbox 360 disc and
 re-implemented as independent Rust code, and so is the game's behaviour, read from the game's own code.
 
