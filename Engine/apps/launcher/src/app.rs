@@ -9,6 +9,7 @@ use crate::command::{self, Invocation};
 use crate::jobs::{self, Background, SetupJob, Viewer};
 use crate::settings::Settings;
 use crate::ui::{ExtrasTab, MenuItem, Page, SettingsTab};
+use crate::update::Update;
 
 pub struct ScreenshotPlan {
     pub path: PathBuf,
@@ -23,6 +24,7 @@ pub struct Launcher {
     pub cursor: MenuItem,
     pub settings_tab: SettingsTab,
     pub extras_tab: ExtrasTab,
+    pub update: Update,
     pub gallery: Gallery,
     pub check: Option<Result<DiscCheck, String>>,
     pub checking: Option<Background<Result<DiscCheck, String>>>,
@@ -53,7 +55,13 @@ pub fn art_request(settings: &Settings) -> art::Request {
 }
 
 impl Launcher {
-    pub fn new(ctx: &egui::Context, settings: Settings, screenshot: Option<PathBuf>, gallery: Gallery) -> Self {
+    pub fn new(
+        ctx: &egui::Context,
+        settings: Settings,
+        screenshot: Option<PathBuf>,
+        gallery: Gallery,
+        auto_update: bool,
+    ) -> Self {
         gallery.attach(ctx);
         let mut app = Self {
             saved: settings.clone(),
@@ -63,6 +71,7 @@ impl Launcher {
             cursor: MenuItem::Page(Page::Play),
             settings_tab: SettingsTab::default(),
             extras_tab: ExtrasTab::default(),
+            update: Update::Idle,
             gallery,
             check: None,
             checking: None,
@@ -91,6 +100,9 @@ impl Launcher {
             app.refresh_catalog();
         } else if let Some(iso) = app.settings.iso.clone().filter(|p| p.is_file()) {
             app.checking = Some(jobs::inspect(ctx, iso));
+        }
+        if auto_update {
+            app.update = Update::start_check(ctx);
         }
         app
     }

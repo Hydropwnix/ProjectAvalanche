@@ -12,6 +12,7 @@ pub struct Args {
     pub launch: bool,
     pub play: bool,
     pub print: bool,
+    pub no_update_check: bool,
     pub page: Option<Page>,
     pub tab: Option<String>,
     pub window: Option<[f32; 2]>,
@@ -40,6 +41,7 @@ impl Args {
                 "--launch" => out.launch = true,
                 "--play" => out.play = true,
                 "--print" => out.print = true,
+                "--no-update-check" => out.no_update_check = true,
                 "--page" => {
                     let v = value()?;
                     out.page = Some(Page::parse(v).ok_or(format!("--page {v}: one of play, mods, settings, extras"))?);
@@ -74,7 +76,7 @@ impl Args {
             };
             if !known {
                 return Err(format!(
-                    "--tab {tab}: settings has data, graphics, audio, controls; extras has tools, output, about, files"
+                    "--tab {tab}: settings has data, graphics, audio, controls; extras has tools, output, about, files, updates"
                 ));
             }
         }
@@ -99,6 +101,8 @@ mod tests {
         let a = parse("--screenshot out.png --setup --extract --launch --play --print").unwrap();
         assert_eq!(a.screenshot, Some(PathBuf::from("out.png")));
         assert!(a.setup && a.extract && a.launch && a.play && a.print);
+        assert!(!a.no_update_check);
+        assert!(parse("--no-update-check").unwrap().no_update_check);
         assert_eq!(parse("").unwrap(), Args::default());
         assert_eq!(parse("--unknown x").unwrap(), Args::default());
     }

@@ -16,6 +16,7 @@ pub struct SetupProgress {
 
 impl Launcher {
     pub fn poll(&mut self, ctx: &egui::Context) {
+        self.update.poll(ctx);
         if let Some(result) = self.checking.as_ref().and_then(Background::take) {
             self.checking = None;
             if result.is_ok()

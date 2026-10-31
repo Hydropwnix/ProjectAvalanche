@@ -16,7 +16,7 @@ fn labels(page: Page, data_ready: bool) -> (&'static str, &'static str) {
         Page::Play => ("PLAY", "SET UP THE GAME DATA FIRST"),
         Page::Mods => ("MODS", "NOT AVAILABLE YET"),
         Page::Settings => ("SETTINGS", "GRAPHICS, CONTROLS, AUDIO"),
-        Page::Extras => ("EXTRAS", "TOOLS, CREDITS, FILES"),
+        Page::Extras => ("EXTRAS", "TOOLS, CREDITS, UPDATES"),
     }
 }
 

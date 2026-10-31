@@ -10,6 +10,7 @@ mod main_screen;
 mod settings;
 mod setup_flow;
 mod ui;
+mod update;
 
 use std::path::Path;
 
@@ -20,6 +21,10 @@ use crate::ui::{ExtrasTab, MenuItem, SettingsTab, layout};
 fn main() -> eframe::Result {
     let started = std::time::Instant::now();
     let words: Vec<String> = std::env::args().skip(1).collect();
+    if words.first().is_some_and(|w| w == "--apply-update") {
+        std::process::exit(update::install::helper(&words[1..]));
+    }
+    update::install::cleanup_leftovers();
     let args = match args::Args::parse(&words) {
         Ok(args) => args,
         Err(e) => {
@@ -48,7 +53,13 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             ui::theme::install(&cc.egui_ctx);
-            let mut app = app::Launcher::new(&cc.egui_ctx, settings, args.screenshot.clone(), gallery);
+            let mut app = app::Launcher::new(
+                &cc.egui_ctx,
+                settings,
+                args.screenshot.clone(),
+                gallery,
+                !args.no_update_check && update::auto_check_enabled(),
+            );
             if let Some(page) = args.start_page() {
                 app.go(page);
             }

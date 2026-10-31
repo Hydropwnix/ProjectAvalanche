@@ -1,6 +1,8 @@
 # Project Avalanche
 
 [![build](https://github.com/MnkyArts/ProjectAvalanche/actions/workflows/build.yml/badge.svg)](https://github.com/MnkyArts/ProjectAvalanche/actions/workflows/build.yml)
+[![Download for Windows](https://img.shields.io/badge/download-Windows-0078D4?logo=windows&logoColor=white)](https://github.com/MnkyArts/ProjectAvalanche/releases/latest/download/ProjectAvalanche-windows-x64.zip)
+[![Download for Linux](https://img.shields.io/badge/download-Linux-FCC624?logo=linux&logoColor=black)](https://github.com/MnkyArts/ProjectAvalanche/releases/latest/download/ProjectAvalanche-linux-x64.tar.gz)
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/XrFGQEfwdJ)
 
 A ground-up native PC port of **SSX (2012)**, rebuilt in Rust on the [Bevy](https://bevy.org) engine with help from Claude — no
@@ -49,6 +51,18 @@ replace them.
 It needs a GPU with a Vulkan driver, ALSA for sound (PipeWire and PulseAudio provide it), Wayland or X11, and the
 XDG desktop portal for the ISO file picker. The build is made on Ubuntu 24.04 (x86-64) and runs on distributions
 with that glibc or newer.
+
+## Updates
+
+The launcher checks the project's [latest release](https://github.com/MnkyArts/ProjectAvalanche/releases/latest) when
+it starts; a newer version is shown under **Extras, Updates** (the running version is in the footer and on
+**Extras, About**). It downloads the release's archive, checks it against the SHA-256 GitHub publishes, unpacks it
+beside the launcher and restarts. Your settings, saves and game data stay where they are; only the launcher and the
+game are replaced. `--no-update-check` (or `SSX_NO_UPDATE_CHECK=1`) turns the check off.
+
+The downloads above always take the latest release: the Windows `.zip` for a manual install, the Linux
+`.tar.gz`; the launcher uses its own `ProjectAvalanche-windows-x64.tar.gz` /
+`ProjectAvalanche-linux-x64.tar.gz` assets.
 
 ## Controls
 

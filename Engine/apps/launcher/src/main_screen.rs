@@ -14,6 +14,17 @@ impl Launcher {
                 colour: theme::CYAN, label: format!("Setting up game data… {:.0} %", p.fraction * 100.0)
             };
         }
+        if !self.running() {
+            if let Some(p) = self.update.progress() {
+                return Status { colour: theme::CYAN, label: format!("Updating… {:.0} %", p.fraction * 100.0) };
+            }
+            if let Some(release) = self.update.ready() {
+                return status(theme::CYAN, &format!("Update v{} ready: restart", release.version));
+            }
+            if let Some(release) = self.update.available() {
+                return status(theme::CYAN, &format!("Update v{} available", release.version));
+            }
+        }
         match (self.running(), self.started_game, self.data_ready) {
             (true, true, _) => status(theme::CYAN, "Game running"),
             (true, false, _) => status(theme::CYAN, "Viewer running"),

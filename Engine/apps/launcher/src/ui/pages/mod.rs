@@ -5,6 +5,7 @@ mod options;
 mod output;
 mod play;
 mod tools;
+mod updates;
 
 use eframe::egui::Ui;
 
@@ -34,6 +35,7 @@ impl Launcher {
             ExtrasTab::Output => self.output_section(ui),
             ExtrasTab::About => self.about_section(ui),
             ExtrasTab::Files => self.files_section(ui),
+            ExtrasTab::Updates => self.update_section(ui),
         });
     }
 }

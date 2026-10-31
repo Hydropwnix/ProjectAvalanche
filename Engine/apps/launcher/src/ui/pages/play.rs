@@ -100,6 +100,33 @@ impl Launcher {
                 HeroText { title, line, tab: ("READY", theme::GOOD), enabled: true }
             }
             None => {
+                if let Some(p) = self.update.progress() {
+                    let line = format!("Downloading the update… {:.0} %", p.fraction * 100.0);
+                    return HeroText {
+                        title,
+                        line: (line, theme::CYAN_SOFT),
+                        tab: ("UPDATING", theme::CYAN),
+                        enabled: true,
+                    };
+                }
+                if let Some(release) = self.update.ready() {
+                    let line = format!("Update v{} ready: restart in Extras, Updates.", release.version);
+                    return HeroText {
+                        title,
+                        line: (line, theme::CYAN_SOFT),
+                        tab: ("UPDATE READY", theme::CYAN),
+                        enabled: true,
+                    };
+                }
+                if let Some(release) = self.update.available() {
+                    let line = format!("A new version, v{}, is available: Extras, Updates.", release.version);
+                    return HeroText {
+                        title,
+                        line: (line, theme::CYAN_SOFT),
+                        tab: ("UPDATE", theme::CYAN),
+                        enabled: true,
+                    };
+                }
                 let line = match &self.setup_message {
                     Some((true, message)) => (message.clone(), theme::GOOD),
                     _ => ("Experience the original game, now on PC.".to_owned(), soft),

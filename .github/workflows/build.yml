@@ -166,7 +166,10 @@ jobs:
         working-directory: dist
         run: |
           (cd ProjectAvalanche-windows-x64 && zip -r ../ProjectAvalanche-windows-x64.zip .)
+          # The launcher's updater downloads the tar.gz (the zip is for a manual install).
+          tar -C ProjectAvalanche-windows-x64 -czf ProjectAvalanche-windows-x64.tar.gz .
           gh release create "$GITHUB_REF_NAME" ProjectAvalanche-windows-x64.zip \
+            ProjectAvalanche-windows-x64.tar.gz \
             ProjectAvalanche-linux-x64/ProjectAvalanche-linux-x64.tar.gz \
             --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
         env:

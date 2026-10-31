@@ -13,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
@@ -42,6 +42,13 @@ glam = "0.32"
 cpal = "0.17"
 eframe = { version = "0.35.0", default-features = false, features = ["default_fonts", "wgpu", "wayland", "x11"] }
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
+
+ureq = { version = "3.5.0", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+sha2 = "0.10"
+semver = "1"
+tar = "0.4"
 
 [profile.dev]
 opt-level = 1

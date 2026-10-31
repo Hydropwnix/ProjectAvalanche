@@ -83,6 +83,7 @@ pub enum ExtrasTab {
     Output,
     About,
     Files,
+    Updates,
 }
 
 impl SettingsTab {
@@ -100,12 +101,17 @@ impl SettingsTab {
 }
 
 impl ExtrasTab {
-    pub const ALL: [(Self, &str); 4] =
-        [(Self::Tools, "TOOLS"), (Self::Output, "OUTPUT"), (Self::About, "ABOUT"), (Self::Files, "FILES")];
+    pub const ALL: [(Self, &str); 5] = [
+        (Self::Tools, "TOOLS"),
+        (Self::Output, "OUTPUT"),
+        (Self::About, "ABOUT"),
+        (Self::Files, "FILES"),
+        (Self::Updates, "UPDATES"),
+    ];
 
     pub fn parse(name: &str) -> Option<Self> {
         let name = name.to_ascii_lowercase();
-        ["tools", "output", "about", "files"].iter().position(|n| *n == name).map(|i| Self::ALL[i].0)
+        ["tools", "output", "about", "files", "updates"].iter().position(|n| *n == name).map(|i| Self::ALL[i].0)
     }
 }
 
@@ -121,6 +127,7 @@ mod tests {
         assert_eq!(SettingsTab::parse("data"), Some(SettingsTab::GameData));
         assert_eq!(SettingsTab::parse("controls"), Some(SettingsTab::Controls));
         assert_eq!(ExtrasTab::parse("output"), Some(ExtrasTab::Output));
+        assert_eq!(ExtrasTab::parse("updates"), Some(ExtrasTab::Updates));
         assert_eq!(ExtrasTab::parse("graphics"), None);
     }
 
