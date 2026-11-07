@@ -30,7 +30,7 @@ pub struct Layout {
     pub ppp: f32,
     pub header: Rect,
     pub menu: Rect,
-    pub entries: [Rect; 4],
+    pub entries: [Rect; 5],
     pub exit: Rect,
     pub content: Rect,
     pub hero: Rect,
@@ -70,7 +70,7 @@ impl Layout {
             ppp,
             header: rect(MARGIN, HEADER_TOP, content_r, HEADER_TOP + HEADER_H),
             menu: rect(menu_l, CONTENT_TOP, menu_r, content_b),
-            entries: [entry(0), entry(1), entry(2), entry(3)],
+            entries: [entry(0), entry(1), entry(2), entry(3), entry(4)],
             exit: rect(menu_l, content_b - EXIT_H, menu_r, content_b),
             content: rect(content_l, CONTENT_TOP, content_r, content_b),
             hero: rect(content_l, CONTENT_TOP, content_r, hero_b),
@@ -147,7 +147,7 @@ mod tests {
             for pair in l.entries.windows(2) {
                 assert_eq!(pair[0].bottom(), pair[1].top(), "{w} x {h}");
             }
-            assert!(l.entries[3].bottom() < l.exit.top(), "{w} x {h}");
+            assert!(l.entries[4].bottom() < l.exit.top(), "{w} x {h}");
             assert!(l.entries.iter().chain([&l.exit]).all(|r| l.menu.contains_rect(*r)), "{w} x {h}");
             assert!(
                 l.content.contains_rect(l.hero) && l.tiles.iter().all(|t| l.content.contains_rect(*t)),

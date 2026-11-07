@@ -77,16 +77,14 @@ pub fn displaced_position(p: [f32; 3], n: [f32; 3], a: &[f32; 8], snow_depth: &[
 }
 
 pub fn snow_depths(big_root: &Path) -> Result<[f32; 6]> {
-    let path = big_root.join("cache0/data/common/anim/anim_all.cba");
-    let data = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-    let stream = ssx_formats::ant::Stream::parse(&data).with_context(|| format!("parsing {}", path.display()))?;
+    let stream = crate::content::data::tuning::anim_all(big_root)?;
     let mut out = [0.0f32; 6];
     for (k, layer) in LAYER_NAMES.iter().enumerate() {
         let name = format!("SP_{layer}");
         let asset = stream
             .assets_of_class("SurfacePropertiesAsset")
             .find(|a| a.object.name(&stream.schema) == Some(name.as_str()))
-            .with_context(|| format!("no SurfacePropertiesAsset {name} in {}", path.display()))?;
+            .with_context(|| format!("no SurfacePropertiesAsset {name} in anim_all.cba"))?;
         match asset.object.get(&stream.schema, "SnowDepth") {
             Some(ssx_formats::ant::Value::Float(d)) => out[k] = *d,
             other => bail!("{name}.SnowDepth is {other:?}"),

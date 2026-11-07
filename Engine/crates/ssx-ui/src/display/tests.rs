@@ -104,6 +104,12 @@ pub(crate) fn empty_lib() -> Library {
         fn exists(&self, _: &str) -> bool {
             false
         }
+        fn list(&self, _: &str, _: &str) -> Vec<String> {
+            Vec::new()
+        }
+        fn image(&self, path: &str) -> anyhow::Result<crate::image::ImageData> {
+            anyhow::bail!("{path}: no files")
+        }
     }
     Library::new(Box::new(NoFiles))
 }

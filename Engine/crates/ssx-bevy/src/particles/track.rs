@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
-use bevy::prelude::*;
+use bevy::prelude::{Mat4, Quat, Vec3, Vec4};
 use ssx_assets::particle_script;
 use ssx_assets::particles::{self, ParticleNode};
 use ssx_assets::track_objects::Placement;
@@ -29,9 +29,7 @@ impl DefCache {
                 let sys = match self.files.get(&vfx.path) {
                     Some(s) => s.clone(),
                     None => {
-                        let path = particles::fx_file(root, &vfx.path);
-                        let data = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-                        let sys = Arc::new(ParticleSystem::parse(&data).with_context(|| path.display().to_string())?);
+                        let sys = ssx_assets::content::GameContent::of(root).particle_system(&vfx.path)?;
                         self.files.insert(vfx.path.clone(), sys.clone());
                         sys
                     }

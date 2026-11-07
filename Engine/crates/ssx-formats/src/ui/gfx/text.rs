@@ -1,4 +1,5 @@
 use super::bits::SwfReader;
+use super::limits::Budget;
 use super::shape::Shape;
 use super::types::{Matrix, Rect, Rgba};
 use crate::{Error, Result};
@@ -96,6 +97,10 @@ pub struct StaticText {
 
 impl StaticText {
     pub fn read(data: &[u8], rgba: bool) -> Result<Self> {
+        Self::read_in(data, rgba, &Budget::unlimited())
+    }
+
+    pub fn read_in(data: &[u8], rgba: bool, budget: &Budget) -> Result<Self> {
         let mut r = SwfReader::new(data);
         let id = r.u16()?;
         let bounds = Rect::read(&mut r)?;
@@ -117,6 +122,7 @@ impl StaticText {
             let y_offset = if flags & 0x02 != 0 { Some(r.i16()?) } else { None };
             let height = if flags & 0x08 != 0 { Some(r.u16()?) } else { None };
             let n = r.u8()?;
+            budget.text_glyphs(u64::from(n))?;
             let mut glyphs = Vec::with_capacity(usize::from(n));
             for _ in 0..n {
                 glyphs.push((r.ub(glyph_bits)?, r.sb(advance_bits)?));
@@ -158,6 +164,10 @@ impl Font {
     pub const WIDE_CODES: u8 = 0x04;
 
     pub fn read(data: &[u8], version: u8) -> Result<Self> {
+        Self::read_in(data, version, &Budget::unlimited())
+    }
+
+    pub fn read_in(data: &[u8], version: u8, budget: &Budget) -> Result<Self> {
         let mut r = SwfReader::new(data);
         let id = r.u16()?;
         let flags = r.u8()?;
@@ -168,18 +178,18 @@ impl Font {
         let n = usize::from(r.u16()?);
         let wide = flags & Self::WIDE_OFFSETS != 0;
         let table_at = r.pos();
-        let mut offsets = Vec::with_capacity(n + 1);
+        let mut offsets = Vec::with_capacity((n + 1).min(r.remaining() / 2));
         if n > 0 || !r.at_end() {
             for _ in 0..=n {
                 offsets.push(if wide { r.u32()? as usize } else { usize::from(r.u16()?) });
             }
         }
-        let mut glyphs = Vec::with_capacity(n);
+        let mut glyphs = Vec::with_capacity(n.min(offsets.len()));
         for (i, &off) in offsets.iter().take(n).enumerate() {
             if table_at + off != r.pos() {
                 return Err(Error::invalid(format!("font {id} glyph {i} at {:#x}, table says {off:#x}", r.pos())));
             }
-            glyphs.push(Shape::read_glyph(&mut r)?);
+            glyphs.push(Shape::read_glyph_in(&mut r, budget)?);
         }
         if let Some(&off) = offsets.get(n)
             && table_at + off != r.pos()
@@ -208,7 +218,7 @@ impl FontLayout {
         let advances = (0..n).map(|_| r.i16()).collect::<Result<Vec<_>>>()?;
         let bounds = (0..n).map(|_| Rect::read(r)).collect::<Result<Vec<_>>>()?;
         let nk = r.u16()?;
-        let mut kerning = Vec::with_capacity(usize::from(nk));
+        let mut kerning = Vec::with_capacity(usize::from(nk).min(r.remaining() / 4));
         for _ in 0..nk {
             let (a, b) = if flags & Font::WIDE_CODES != 0 {
                 (r.u16()?, r.u16()?)
@@ -217,6 +227,7 @@ impl FontLayout {
             };
             kerning.push((a, b, r.i16()?));
         }
+        kerning.sort_by_key(|k| (k.0, k.1));
         Ok(FontLayout { ascent, descent, leading, advances, bounds, kerning })
     }
 }

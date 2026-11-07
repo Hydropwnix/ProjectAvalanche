@@ -106,8 +106,9 @@ impl Ctx<'_> {
             0x21 => {
                 let b = self.pop();
                 let a = self.pop();
-                let s = format!("{}{}", self.to_string(&a)?, self.to_string(&b)?);
-                self.push(s.into());
+                let (x, y) = (self.to_string(&a)?, self.to_string(&b)?);
+                self.made_string(x.len() + y.len())?;
+                self.push(format!("{x}{y}").into());
             }
             0x22 => {
                 let i = self.pop();

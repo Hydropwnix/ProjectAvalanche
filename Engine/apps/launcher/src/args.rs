@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use eframe::egui::Key;
 
-use crate::ui::{ExtrasTab, Page, SettingsTab};
+use crate::ui::{ExtrasTab, ModsTab, Page, SettingsTab};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Args {
@@ -19,7 +19,10 @@ pub struct Args {
     pub hover: Option<String>,
     pub dump_art: Option<PathBuf>,
     pub after_setup: bool,
-    pub keys: Vec<Key>,
+    pub install: Option<PathBuf>,
+    pub keys: Vec<(Key, bool)>,
+    pub link: Option<String>,
+    pub host: Vec<crate::host::Action>,
 }
 
 fn window_size(text: &str) -> Option<[f32; 2]> {
@@ -44,7 +47,8 @@ impl Args {
                 "--no-update-check" => out.no_update_check = true,
                 "--page" => {
                     let v = value()?;
-                    out.page = Some(Page::parse(v).ok_or(format!("--page {v}: one of play, mods, settings, extras"))?);
+                    out.page =
+                        Some(Page::parse(v).ok_or(format!("--page {v}: one of play, host, mods, settings, extras"))?);
                 }
                 "--tab" => out.tab = Some(value()?.clone()),
                 "--window" => {
@@ -53,7 +57,19 @@ impl Args {
                 }
                 "--hover" => out.hover = Some(value()?.clone()),
                 "--dump-art" => out.dump_art = Some(PathBuf::from(value()?)),
+                "--install" => out.install = Some(PathBuf::from(value()?)),
                 "--after-setup" => out.after_setup = true,
+                "--host" => {
+                    let names = value()?;
+                    out.host = names
+                        .split(',')
+                        .map(|n| {
+                            crate::host::Action::parse(n)
+                                .ok_or(format!("--host {names}: a list of prepare, start, status, stop"))
+                        })
+                        .collect::<Result<_, _>>()?;
+                    out.page.get_or_insert(Page::Host);
+                }
                 "--keys" => {
                     let names = value()?;
                     let key = |name: &str| match name {
@@ -61,9 +77,15 @@ impl Args {
                         "down" => Ok(Key::ArrowDown),
                         "enter" => Ok(Key::Enter),
                         "esc" => Ok(Key::Escape),
-                        _ => Err(format!("--keys {names}: a list of up, down, enter, esc")),
+                        "tab" => Ok(Key::Tab),
+                        "space" => Ok(Key::Space),
+                        _ => Err(format!("--keys {names}: a list of up, down, enter, esc, tab, backtab, space")),
                     };
-                    out.keys = names.split(',').map(key).collect::<Result<_, _>>()?;
+                    let one = |name: &str| match name {
+                        "backtab" => Ok((Key::Tab, true)),
+                        _ => key(name).map(|k| (k, false)),
+                    };
+                    out.keys = names.split(',').map(one).collect::<Result<_, _>>()?;
                 }
                 _ => {}
             }
@@ -72,11 +94,13 @@ impl Args {
             let known = match page {
                 Page::Settings => SettingsTab::parse(tab).is_some(),
                 Page::Extras => ExtrasTab::parse(tab).is_some(),
-                _ => false,
+                Page::Mods => ModsTab::parse(tab).is_some(),
+                Page::Play | Page::Host => false,
             };
             if !known {
                 return Err(format!(
-                    "--tab {tab}: settings has data, graphics, audio, controls; extras has tools, output, about, files, updates"
+                    "--tab {tab}: settings has data, graphics, audio, controls, multiplayer; extras has tools, output, about, files, \
+                     updates; mods has installed, report"
                 ));
             }
         }
@@ -115,7 +139,10 @@ mod tests {
         assert_eq!(parse("--setup").unwrap().start_page(), Some(Page::Settings));
         assert_eq!(parse("--setup --page mods").unwrap().start_page(), Some(Page::Mods));
         assert_eq!(parse("").unwrap().start_page(), None);
-        assert_eq!(parse("--keys down,down,esc").unwrap().keys, [Key::ArrowDown, Key::ArrowDown, Key::Escape]);
+        assert_eq!(
+            parse("--keys down,backtab,esc").unwrap().keys,
+            [(Key::ArrowDown, false), (Key::Tab, true), (Key::Escape, false)]
+        );
         assert!(parse("--keys down,left").is_err());
         for bad in
             ["--page nowhere", "--page", "--window 12", "--window 0x0", "--window axb", "--page settings --tab about"]

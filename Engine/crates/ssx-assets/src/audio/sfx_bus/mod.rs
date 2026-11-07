@@ -118,6 +118,22 @@ pub struct PatchSet {
 
 type Names = Arc<HashMap<String, (usize, u8)>>;
 
+impl PatchSet {
+    pub fn bus_names(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .buses
+            .modules
+            .iter()
+            .filter_map(|m| match &m.kind {
+                ModuleV1Kind::Voice(v) if v.plugins.iter().any(|p| &p.fourcc == b"Sub0") => Some(v.name.clone()),
+                _ => None,
+            })
+            .collect();
+        v.sort();
+        v
+    }
+}
+
 fn names_of(p: &PatchV1) -> Names {
     Arc::new(p.variables.iter().map(|v| (v.name.clone(), (usize::from(v.offset), v.kind))).collect())
 }

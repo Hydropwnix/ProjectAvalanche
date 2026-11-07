@@ -232,7 +232,7 @@ pub fn step_with_trigger(
     s.stick_y_filtered = stick.y + (s.stick_y_filtered - stick.y) * (-0.11 * dt).exp();
     let ctx = trick_context(s, in_air);
     if is_scoring_wipeout(s, in_air) {
-        s.tricks.scene_op_reset(tricks, &ctx, dt);
+        s.tricks.scene_op_reset(&t.tricks, tricks, &ctx, dt);
     } else {
         s.tricks.scene_op(&t.tricks, tricks, &ctx, dt);
     }
@@ -323,7 +323,7 @@ pub fn step_with_trigger(
         if !g.is_grind_trick() && g.starting && !s.stopped && !s.landing.bail_on_landing && !s.landing.uber_crash {
             g.enter();
         }
-        let double = s.tricks.trick_type as u8 > 22;
+        let double = s.tricks.trick_type.value() > 22;
         let pad_end = s.tricks.pad_grab_end();
         let ev = s.tricks.grind.flow(s.grind.is_grinding(), double, pad_end, dt);
         if ev.grab_reset {

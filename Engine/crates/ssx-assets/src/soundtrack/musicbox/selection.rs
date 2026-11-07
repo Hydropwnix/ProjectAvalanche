@@ -138,6 +138,9 @@ impl MusicBox {
                 max = rules.iter().map(|r| r.priority).max().unwrap_or(0);
             }
         }
+        if !self.package.is_empty() {
+            return self.with_packages(ev, out);
+        }
         out
     }
 

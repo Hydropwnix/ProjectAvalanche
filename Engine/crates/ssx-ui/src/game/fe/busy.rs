@@ -8,6 +8,7 @@ pub struct BusyIcon {
     pub counts: [u32; 2],
     pub saving: bool,
     pub music: u8,
+    pub connecting: bool,
 }
 
 impl BusyIcon {
@@ -35,11 +36,19 @@ impl BusyIcon {
         self.apply(env);
     }
 
+    pub fn set_connecting(&mut self, env: &mut FeEnv, on: bool) {
+        self.connecting = on;
+        self.apply(env);
+    }
+
     pub fn choice(&self) -> (i32, Option<&'static str>) {
         if self.saving {
             (2, Some("TXT_SAVING"))
         } else if self.music == 1 {
             (1, None)
+        } else if self.connecting {
+            // TODO(guess): a port choice — the port's join shows form 1 with "Connecting" where the game's online waits show theirs (+0xAC `TXT_LOADING_ACCT_STATUS`, +0xA8 `TXT_LE_RESULTS_UPLOAD_MSG_2`, after the music menu's and before the loading count); settle: none (the console game joins no server of the port's).
+            (1, Some("TXT_AVA_CONNECTING_BUSY"))
         } else if self.music != 0 || self.counts.iter().sum::<u32>() == 0 {
             (0, None)
         } else {

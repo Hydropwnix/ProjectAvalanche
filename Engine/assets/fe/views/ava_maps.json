@@ -1,0 +1,111 @@
+{
+  "format": 1,
+  "view": "ava_maps",
+  "layer": "screen",
+  "stage": [1280, 720],
+  "frame_rate": 30,
+  "imports": [
+    {"name": "Panel", "url": "components/Panel.swf", "symbol": "components.Panel"},
+    {"name": "ListMenu", "url": "components/ListMenu.swf", "symbol": "components.ListMenu"},
+    {"name": "Highlight", "url": "components/Highlight.swf", "symbol": "components.Highlight"},
+    {"name": "Callouts", "url": "components/ButtonCalloutBar.swf", "symbol": "components.ButtonCalloutBar"}
+  ],
+  "symbols": [
+    {"name": "AvaMapsRow", "export": true,
+      "cell": {"texts": [
+          {"text": "txtTitle", "field": "strTitle", "fit": "shrink"},
+          {"text": "txtModes", "field": "strModes", "fit": "shrink"},
+          {"text": "txtBase", "field": "strBase", "fit": "shrink"}],
+        "highlight": "mcHighlight", "width": 730, "height": 36},
+      "children": [
+        {"instance": "mcHighlight", "symbol": "Highlight"},
+        {"instance": "txtTitle", "x": 12, "y": 6, "text": {"font": "DIN Mittelschrift Std", "size": 18,
+          "color": "#ffffff", "width": 290, "height": 26}},
+        {"instance": "txtModes", "x": 306, "y": 6, "text": {"font": "DIN Mittelschrift Std", "size": 18,
+          "color": "#c3fdf9", "width": 150, "height": 26}},
+        {"instance": "txtBase", "x": 460, "y": 6, "text": {"font": "DIN Mittelschrift Std", "size": 18,
+          "color": "#c3fdf9", "width": 262, "height": 26}}
+      ]},
+    {"name": "AvaMapsDetails", "children": [
+      {"instance": "txtTitle", "text": {"font": "DIN Engschrift Std", "size": 26, "color": "#b8f3ff",
+        "width": 344, "height": 34}},
+      {"instance": "txtPackage", "y": 34, "text": {"font": "DIN Mittelschrift Std", "size": 15,
+        "color": "#6eb7c6", "width": 344, "height": 22}},
+      {"instance": "txtModes", "y": 64, "text": {"font": "DIN Mittelschrift Std", "size": 15, "color": "#ffffff",
+        "width": 344, "height": 44, "multiline": true, "wrap": true, "html": true}},
+      {"instance": "txtBase", "y": 112, "text": {"font": "DIN Mittelschrift Std", "size": 15, "color": "#c3fdf9",
+        "width": 344, "height": 44, "multiline": true, "wrap": true}},
+      {"instance": "txtAbout", "y": 160, "text": {"font": "DIN Mittelschrift Std", "size": 15, "color": "#ffffff",
+        "width": 344, "height": 140, "multiline": true, "wrap": true}}
+    ]},
+    {"name": "AvaMaps", "export": true, "children": [
+      {"instance": "mcTablePanel", "symbol": "Panel", "x": 93, "y": 222},
+      {"instance": "txtColTitle", "x": 113, "y": 228, "text": {"font": "DIN Mittelschrift Std", "size": 15,
+        "color": "#6eb7c6", "width": 290, "height": 22}},
+      {"instance": "txtColModes", "x": 407, "y": 228, "text": {"font": "DIN Mittelschrift Std", "size": 15,
+        "color": "#6eb7c6", "width": 150, "height": 22}},
+      {"instance": "txtColBase", "x": 561, "y": 228, "text": {"font": "DIN Mittelschrift Std", "size": 15,
+        "color": "#6eb7c6", "width": 262, "height": 22}},
+      {"instance": "mcRows", "symbol": "ListMenu", "x": 101, "y": 252},
+      {"instance": "txtEmpty", "x": 128, "y": 330, "text": {"font": "DIN Mittelschrift Std", "size": 20,
+        "color": "#c3fdf9", "align": "center", "width": 676, "height": 120, "multiline": true, "wrap": true}},
+      {"instance": "txtStatus", "x": 101, "y": 604, "text": {"font": "DIN Mittelschrift Std", "size": 15,
+        "color": "#c3fdf9", "width": 730, "height": 22}},
+      {"instance": "mcDetailsPanel", "symbol": "Panel", "x": 849, "y": 222},
+      {"instance": "mcDetails", "symbol": "AvaMapsDetails", "x": 859, "y": 236},
+      {"instance": "mcCallouts", "symbol": "Callouts", "x": 93, "y": 640}
+    ]}
+  ],
+  "view_symbol": {"symbol": "AvaMaps"},
+  "logic": {
+    "base": "fe_view",
+    "data": ["ava_maps", "ava_maps_rows", "ava_maps_rows_index", "ava_maps_details"],
+    "texts": [
+      {"target": "txtColTitle", "data": "ava_maps", "field": "colTitle"},
+      {"target": "txtColModes", "data": "ava_maps", "field": "colModes"},
+      {"target": "txtColBase", "data": "ava_maps", "field": "colBase"},
+      {"target": "txtEmpty", "data": "ava_maps", "field": "empty"},
+      {"target": "txtStatus", "data": "ava_maps", "field": "status", "fit": "shrink"},
+      {"target": "mcDetails.txtTitle", "data": "ava_maps_details", "field": "title", "fit": "shrink"},
+      {"target": "mcDetails.txtPackage", "data": "ava_maps_details", "field": "package", "fit": "shrink"},
+      {"target": "mcDetails.txtModes", "data": "ava_maps_details", "field": "modes", "html": true, "fit": "shrink"},
+      {"target": "mcDetails.txtBase", "data": "ava_maps_details", "field": "base", "fit": "shrink"},
+      {"target": "mcDetails.txtAbout", "data": "ava_maps_details", "field": "about", "fit": "shrink"}
+    ],
+    "visibles": [{"target": "mcDetails", "data": "ava_maps_details", "field": "bShown"}],
+    "menus": [
+      {"target": "mcRows", "rows": 9, "cell_width": 730, "cell_height": 36, "spacing": 2, "wrap": false,
+        "data": "ava_maps_rows", "index": "ava_maps_rows_index", "cell": "AvaMapsRow"}
+    ],
+    "paging": {"menu": "mcRows", "setup": "A_AvaMapsSetup"},
+    "panels": [
+      {"target": "mcTablePanel", "width": 746, "height": 378, "dimmer": 60},
+      {"target": "mcDetailsPanel", "width": 364, "height": 378, "dimmer": 60}
+    ],
+    "on_enter": {"clear_inputs": true},
+    "callouts": {"target": "mcCallouts", "buttons": [
+      {"icon": "CALLOUT_ADVANCE", "label": "TXT_AVA_MAPS_RIDE"},
+      {"icon": "CALLOUT_BACK", "label": "TXT_AVA_MAPS_BACK"},
+      {"icon": "CALLOUT_SELECT", "label": "TXT_AVA_MAPS_REFRESH"},
+      {"icon": "CALLOUT_DPAD_LR", "label": "TXT_AVA_MAPS_CHANGE_MODE"},
+      {"icon": "CALLOUT_L2", "label": "TXT_AVA_MAPS_PAGE"}
+    ]},
+    "inputs": [
+      {"key": "DPAD_UP", "action": "A_AvaMapsRequestData", "param": -1},
+      {"key": "LAS_UP", "action": "A_AvaMapsRequestData", "param": -1},
+      {"key": "DPAD_DOWN", "action": "A_AvaMapsRequestData", "param": 1},
+      {"key": "LAS_DOWN", "action": "A_AvaMapsRequestData", "param": 1},
+      {"key": "LEFT_TRIGGER", "action": "A_AvaMapsPage", "param": -1, "sound": "menu_highlight"},
+      {"key": "RIGHT_TRIGGER", "action": "A_AvaMapsPage", "param": 1, "sound": "menu_highlight"},
+      {"key": "ADVANCE", "action": "A_AvaMapsRide", "sound": "menu_select"},
+      {"key": "BACK", "action": "A_AvaMapsBack", "sound": "menu_back"},
+      {"key": "SELECT", "action": "A_AvaMapsRefresh", "sound": "button_press_select"},
+      {"key": "DPAD_LEFT", "action": "A_AvaMapsMode", "param": -1, "sound": "menu_highlight"},
+      {"key": "DPAD_RIGHT", "action": "A_AvaMapsMode", "param": 1, "sound": "menu_highlight"},
+      {"key": "LAS_LEFT", "action": "A_AvaMapsMode", "param": -1, "sound": "menu_highlight"},
+      {"key": "LAS_RIGHT", "action": "A_AvaMapsMode", "param": 1, "sound": "menu_highlight"},
+      {"key": "DIGITAL_THREE", "take": true},
+      {"key": "DIGITAL_FOUR", "take": true}
+    ]
+  }
+}

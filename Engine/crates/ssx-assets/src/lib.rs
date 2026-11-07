@@ -1,20 +1,47 @@
+#[cfg(feature = "pipeline")]
 mod actors;
+#[cfg(feature = "pipeline")]
 mod anim;
+#[cfg(feature = "pipeline")]
 mod audio;
+#[cfg(feature = "pipeline")]
 pub mod career;
+#[cfg(feature = "pipeline")]
+pub mod content;
 mod disc;
+#[cfg(feature = "pipeline")]
 mod effects;
+#[cfg(feature = "pipeline")]
 mod landscape;
+#[cfg(feature = "pipeline")]
 mod soundtrack;
+#[cfg(feature = "pipeline")]
 mod track;
+#[cfg(feature = "pipeline")]
 mod vaults;
 
+#[cfg(feature = "pipeline")]
 pub use actors::{character, ghosts, helicopter, nis};
-pub use anim::{anim_db, anim_eval, anim_graph, anim_leaf, anim_pose, anim_rigops, anim_space, rig_anim, rigamate};
-pub use audio::{sfx, sfx_aems, sfx_avalanche, sfx_bus, sfx_dsp, sfx_dsp_remix, sfx_game, sfx_mixer, sfx_tuna};
-pub use disc::{exe, setup};
+#[cfg(feature = "pipeline")]
+pub use anim::{
+    anim_clip, anim_db, anim_eval, anim_graph, anim_leaf, anim_pose, anim_rigops, anim_space, rig_anim, rigamate,
+};
+#[cfg(feature = "pipeline")]
+pub use audio::{
+    sfx, sfx_aems, sfx_avalanche, sfx_bus, sfx_dsp, sfx_dsp_remix, sfx_game, sfx_mixer, sfx_override, sfx_tuna,
+};
+pub use disc::{exe, setup, subset};
+#[cfg(feature = "pipeline")]
 pub use effects::{light_script, particle_script, particles, postfx, postfx_overlay, track_particles};
+#[cfg(feature = "pipeline")]
 pub use landscape::{subdiv, terrain, terrain_material, terrain_vertex};
-pub use soundtrack::{music, music_script, musicbox, pathfinder, pathfinder_events, remix, remix_runtime};
-pub use track::{avalanche_entities, object_mesh, texture, track_lighting, track_lights, track_objects};
+#[cfg(feature = "pipeline")]
+pub use soundtrack::{
+    music, music_script, musicbox, pathfinder, pathfinder_events, remix, remix_runtime, score, track_override,
+};
+#[cfg(feature = "pipeline")]
+pub use track::{
+    avalanche_entities, object_collision, object_mesh, texture, track_lighting, track_lights, track_objects,
+};
+#[cfg(feature = "pipeline")]
 pub use vaults::{vault, vault_db};

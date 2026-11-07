@@ -105,8 +105,9 @@ impl Ctx<'_> {
         let pa = self.add_operand(a)?;
         let pb = self.add_operand(b)?;
         if matches!(pa, Value::String(_)) || matches!(pb, Value::String(_)) {
-            let s = format!("{}{}", self.to_string(&pa)?, self.to_string(&pb)?);
-            return Ok(s.into());
+            let (x, y) = (self.to_string(&pa)?, self.to_string(&pb)?);
+            self.made_string(x.len() + y.len())?;
+            return Ok(format!("{x}{y}").into());
         }
         Ok(Value::Number(self.to_number(&pa) + self.to_number(&pb)))
     }

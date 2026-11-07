@@ -79,8 +79,14 @@ pub struct AttribDb {
 
 impl AttribDb {
     pub fn load(big_root: &Path) -> Result<Self> {
-        let dir = big_root.join("bootcache/data/xenon/attribdb");
-        let read = |n: &str| std::fs::read(dir.join(n)).with_context(|| format!("reading {n}"));
+        Self::from_files(&crate::fs::Disc::new(big_root)?)
+    }
+
+    pub fn from_files(files: &dyn crate::fs::FileSource) -> Result<Self> {
+        let read = |n: &str| {
+            let path = format!("data/xenon/attribdb/{n}");
+            files.read(&path).with_context(|| format!("reading {path}"))
+        };
         let (svlt, sbin) = (read("attribdb_schema.vlt")?, read("attribdb_schema.bin")?);
         let schema = Schema::from_vault(&Vault::parse(&svlt, &sbin)?).context("the schema")?;
         let (vlt, bin) = (read("attribdb.vlt")?, read("attribdb.bin")?);

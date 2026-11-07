@@ -1,0 +1,78 @@
+{
+  "format": 1,
+  "view": "ava_keyboard",
+  "layer": "popup",
+  "stage": [1280, 720],
+  "frame_rate": 30,
+  "imports": [
+    {"name": "Panel", "url": "components/Panel.swf", "symbol": "components.Panel"},
+    {"name": "GridMenu", "url": "components/GridMenu.swf", "symbol": "components.GridMenu"},
+    {"name": "Highlight", "url": "components/Highlight.swf", "symbol": "components.Highlight"},
+    {"name": "Callouts", "url": "components/ButtonCalloutBar.swf", "symbol": "components.ButtonCalloutBar"}
+  ],
+  "symbols": [
+    {"name": "AvaKeyboardKey", "export": true,
+      "cell": {"text": "txtKey", "highlight": "mcHighlight", "width": 72, "height": 46},
+      "children": [
+        {"instance": "mcHighlight", "symbol": "Highlight"},
+        {"instance": "txtKey", "x": 0, "y": 8, "text": {"font": "DIN Mittelschrift Std", "size": 24,
+          "color": "#c3fdf9", "align": "center", "width": 72, "height": 32}}
+      ]},
+    {"name": "AvaKeyboard", "export": true, "children": [
+      {"instance": "mcBackdrop", "rect": {"width": 1280, "height": 720, "color": "#00000099"}},
+      {"instance": "mcPanel", "symbol": "Panel", "x": 230, "y": 140},
+      {"instance": "txtTitle", "x": 260, "y": 156, "text": {"font": "DIN Engschrift Std", "size": 30,
+        "color": "#b8f3ff", "width": 760, "height": 40}},
+      {"instance": "mcEntryBack", "x": 260, "y": 204, "rect": {"width": 760, "height": 54, "color": "#061722c8"}},
+      {"instance": "txtEntry", "x": 272, "y": 211, "text": {"font": "DIN Mittelschrift Std", "size": 30,
+        "color": "#ffffff", "width": 620, "height": 42}},
+      {"instance": "txtCount", "x": 896, "y": 219, "text": {"font": "DIN Mittelschrift Std", "size": 20,
+        "color": "#6eb7c6", "align": "right", "width": 112, "height": 30}},
+      {"instance": "mcKeys", "symbol": "GridMenu", "x": 260, "y": 276},
+      {"instance": "mcCallouts", "symbol": "Callouts", "x": 250, "y": 548}
+    ]}
+  ],
+  "view_symbol": {"symbol": "AvaKeyboard"},
+  "logic": {
+    "input_priority": "popup",
+    "consume_unmapped": true,
+    "data": ["ava_keyboard", "ava_keyboard_keys", "ava_keyboard_keys_index"],
+    "texts": [
+      {"target": "txtTitle", "data": "ava_keyboard", "field": "title"},
+      {"target": "txtEntry", "data": "ava_keyboard", "field": "text"},
+      {"target": "txtCount", "data": "ava_keyboard", "field": "count"}
+    ],
+    "menus": [
+      {"target": "mcKeys", "columns": 10, "rows": 4, "cell_width": 76, "cell_height": 50, "spacing_x": 0,
+        "spacing_y": 6, "wrap": true, "data": "ava_keyboard_keys", "index": "ava_keyboard_keys_index",
+        "cell": "AvaKeyboardKey"}
+    ],
+    "panels": [{"target": "mcPanel", "width": 820, "height": 460, "dimmer": 70}],
+    "callouts": {"target": "mcCallouts", "buttons": [
+      {"icon": "CALLOUT_ADVANCE", "label": "TXT_AVA_KEYBOARD_TYPE"},
+      {"icon": "CALLOUT_FACE_BUTTON_TERTIARY", "label": "TXT_AVA_KEYBOARD_DELETE"},
+      {"icon": "CALLOUT_FACE_BUTTON_QUATERNARY", "label": "TXT_AVA_KEYBOARD_CAPS"},
+      {"icon": "CALLOUT_L2", "label": "TXT_AVA_KEYBOARD_SYMBOLS"},
+      {"icon": "CALLOUT_START", "label": "TXT_AVA_KEYBOARD_DONE"},
+      {"icon": "CALLOUT_BACK", "label": "TXT_AVA_KEYBOARD_CANCEL"}
+    ]},
+    "inputs": [
+      {"key": "DPAD_UP", "menu": "mcKeys", "do": "up"},
+      {"key": "DPAD_DOWN", "menu": "mcKeys", "do": "down"},
+      {"key": "DPAD_LEFT", "menu": "mcKeys", "do": "left"},
+      {"key": "DPAD_RIGHT", "menu": "mcKeys", "do": "right"},
+      {"key": "LAS_UP", "menu": "mcKeys", "do": "up"},
+      {"key": "LAS_DOWN", "menu": "mcKeys", "do": "down"},
+      {"key": "LAS_LEFT", "menu": "mcKeys", "do": "left"},
+      {"key": "LAS_RIGHT", "menu": "mcKeys", "do": "right"},
+      {"key": "ADVANCE", "menu": "mcKeys", "do": "advance"},
+      {"key": "BACK", "action": "A_AvaKeyboardCancel", "sound": "menu_back"},
+      {"key": "DIGITAL_FOUR", "action": "A_AvaKeyboardDelete", "sound": "button_press_back"},
+      {"key": "DIGITAL_THREE", "action": "A_AvaKeyboardCaps", "sound": "button_press_select"},
+      {"key": "LEFT_TRIGGER", "action": "A_AvaKeyboardSymbols", "sound": "button_press_select"},
+      {"key": "LEFT_BUMPER", "action": "A_AvaKeyboardCaretLeft", "sound": "menu_highlight"},
+      {"key": "RIGHT_BUMPER", "action": "A_AvaKeyboardCaretRight", "sound": "menu_highlight"},
+      {"key": "START", "action": "A_AvaKeyboardDone", "sound": "menu_select"}
+    ]
+  }
+}

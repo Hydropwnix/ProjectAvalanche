@@ -97,9 +97,6 @@ fn paint(d: Draw, q: vec2<f32>) -> vec4<f32> {
 fn fs(in: VOut) -> @location(0) vec4<f32> {
     let d = draws[in.draw];
     let c = paint(d, in.paint);
-    if u32(d.paint1.z + 0.5) == 6u {
-        return c;
-    }
     var s = clamp(c * d.mult + d.add, vec4(0.0), vec4(1.0));
     if u32(d.paint1.z + 0.5) == 7u {
         s = vec4(clamp(d.mult + d.add, vec4(0.0), vec4(1.0)).rgb, clamp(d.mult.a + d.add.a, 0.0, 1.0) * c.a);

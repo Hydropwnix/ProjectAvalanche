@@ -2,42 +2,22 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use ssx_formats::attrib::collection::{self, FieldData};
-use ssx_formats::attrib::{Schema, Value, Vault, fnv1};
+use ssx_formats::attrib::collection;
+use ssx_formats::attrib::{Schema, Value, Vault};
 
 use crate::gear::GearDb;
 
 mod defs;
+mod finish_message;
+mod results;
 mod update;
 
 pub use defs::*;
+pub use finish_message::FinishMessage;
+pub use results::Ranking;
+pub use ssx_rules::results::{GhostEntry, PADDING_CHARACTER, ResultsFlow, RunEnd, WorldTourRule};
 
-pub const SPLITS: usize = 9;
-pub const SPLIT_TOP_OFFSET: f32 = 5.0;
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Course {
-    pub start_y: f32,
-    pub end_y: f32,
-}
-
-impl Course {
-    pub fn splits(&self) -> [f32; SPLITS] {
-        let top = self.start_y - SPLIT_TOP_OFFSET;
-        let step = (top - self.end_y) * 0.111_111_1;
-        std::array::from_fn(|k| top - step * k as f32)
-    }
-
-    pub fn split_index(&self, y: f32) -> i32 {
-        self.splits().iter().rposition(|h| y < *h).map_or(-1, |k| k as i32)
-    }
-
-    pub fn progress(&self, y: f32) -> f32 {
-        let d = self.start_y - y;
-        let p = if d > 0.0 { d / (self.start_y - self.end_y) } else { 0.0 };
-        p.clamp(0.0, 1.0)
-    }
-}
+pub use ssx_rules::course::{Course, SPLIT_TOP_OFFSET, SPLITS};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct EventClock {
@@ -112,6 +92,7 @@ pub struct EventResult {
     pub rivals: Vec<u32>,
     pub rank: Option<usize>,
     pub medal: Option<Medal>,
+    pub place: u32,
     pub geotag_credits: i64,
     pub geotag_count: u32,
 }
@@ -175,10 +156,15 @@ pub struct EventSetup {
     pub event_type: Option<EventType>,
     pub delayed_finish: bool,
     pub rivals: Vec<u32>,
+    pub results: Option<ResultsFlow>,
+    pub places: Option<i64>,
+    pub goal: Option<i64>,
     pub course: Option<Course>,
     pub force_descent_in_air: bool,
     pub objectives: Option<std::sync::Arc<crate::objectives::EventObjectives>>,
     pub message: crate::objectives::DropMessage,
+    pub time_up_result: bool,
+    pub loop_without_outro: bool,
 }
 
 impl EventSetup {
@@ -193,10 +179,15 @@ impl EventSetup {
             event_type: def.and_then(|d| d.event_type),
             delayed_finish: def.is_some_and(EventDef::delayed_finish),
             rivals: def.map_or_else(Vec::new, EventDef::ranked_rivals),
+            results: Self::flow_of(def),
+            places: def.and_then(|d| d.places),
+            goal: def.and_then(|d| d.goal),
             course,
             force_descent_in_air: def.is_some_and(EventDef::forces_wingsuit),
             objectives: def.and_then(|d| d.objectives.clone()),
             message: def.map(|d| d.message.clone()).unwrap_or_default(),
+            time_up_result: false,
+            loop_without_outro: false,
         }
     }
 }
@@ -212,7 +203,7 @@ pub struct EventManager {
     pub progress: f32,
     pub finish_ms: Option<u32>,
     pub crossed_finish_line: bool,
-    pub finish_message: Option<f32>,
+    pub finish_message: Option<FinishMessage>,
     pub track_finished: bool,
     pub allow_outro: bool,
     pub rewind_disabled: bool,
@@ -223,6 +214,8 @@ pub struct EventManager {
     pub nis_short: bool,
     pub result: Option<EventResult>,
     pub end_position: [f32; 3],
+    pub time_up: bool,
+    pub round_over: Option<bool>,
 }
 
 impl EventManager {
@@ -234,7 +227,20 @@ impl EventManager {
         *self = Self::new(std::mem::take(&mut self.setup));
     }
 
+    pub fn end_round(&mut self, map: bool) {
+        use ssx_rules::gamemode::TimeUp;
+        let result = if map {
+            self.setup.time_up_result
+        } else {
+            self.setup.event_type.is_some_and(|t| TimeUp::of(t) == TimeUp::Result)
+        };
+        self.round_over = Some(result);
+    }
+
     pub fn on_trigger_race_start(&mut self, timer: &mut crate::death::DeathTimer) {
+        if self.round_over.is_some() {
+            return;
+        }
         match self.state {
             EventState::LoopRestart => self.loop_restart(timer),
             EventState::Running => {}

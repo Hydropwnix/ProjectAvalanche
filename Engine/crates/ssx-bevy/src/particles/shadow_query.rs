@@ -13,7 +13,7 @@ use bevy::shader::ShaderRef;
 use crate::render::post::GamePostCamera;
 use crate::ride::Ride;
 
-const SHADER_PATH: &str = "embedded://ssx_bevy/particles/shadow_query.wgsl";
+const SHADER_PATH: &str = "embedded://ssx_bevy/particles/shadow_query.wesl";
 const QUAD_DISTANCE: f32 = 0.6;
 const QUAD_HALF: f32 = 0.01;
 
@@ -72,7 +72,7 @@ impl Material for ShadowQueryMaterial {
 }
 
 pub fn plugin(app: &mut App) {
-    embedded_asset!(app, "shadow_query.wgsl");
+    embedded_asset!(app, "shadow_query.wesl");
     app.add_plugins(MaterialPlugin::<ShadowQueryMaterial>::default())
         .init_resource::<PlayerShadowQuery>()
         .add_systems(Update, (spawn_query, set_point));
@@ -95,7 +95,7 @@ fn spawn_query(
     }
     let Some(camera) = cameras.iter().next() else { return };
     let mut buffer = ShaderBuffer::from(vec![Vec4::new(1.0, 0.0, 0.0, 0.0)]);
-    buffer.buffer_description.usage |= BufferUsages::COPY_SRC;
+    buffer.buffer_usage |= BufferUsages::COPY_SRC;
     let result = buffers.add(buffer);
     let material = materials.add(ShadowQueryMaterial { point: Vec4::ZERO, result: result.clone() });
     let quad = meshes.add(Rectangle::new(2.0 * QUAD_HALF, 2.0 * QUAD_HALF));

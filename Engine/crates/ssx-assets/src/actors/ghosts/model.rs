@@ -155,7 +155,7 @@ pub fn load_model(big_root: &Path, track: &str) -> Result<GhostModel> {
             let crsf = asset_file(big_root, crsf_rel).with_context(|| format!("{crsf_rel} not found"))?;
             let file = CrsfFile::parse(&std::fs::read(&crsf).with_context(|| format!("reading {}", crsf.display()))?)
                 .with_context(|| format!("parsing {}", crsf.display()))?;
-            Ok((geom.clone(), object_mesh::load(&geom)?, file))
+            Ok((geom.clone(), crate::content::models::rider_mesh(big_root, &p.geom)?, file))
         };
         match read() {
             Ok(x) => loaded.push((p, x)),
@@ -198,7 +198,7 @@ pub struct BotModel {
     pub problems: Vec<String>,
 }
 
-pub fn load_bot_model(big_root: &Path, track: &str, character: &str) -> Result<BotModel> {
+pub fn load_bot_model(big_root: &Path, track: Option<&str>, character: &str) -> Result<BotModel> {
     let vaults = crate::helicopter::Vaults::load(big_root)?;
     let key = vaults
         .reference(CLASS_CHARACTER, fnv1(character), FIELD_CHARACTER_GAMEOBJECT)
@@ -206,7 +206,7 @@ pub fn load_bot_model(big_root: &Path, track: &str, character: &str) -> Result<B
     if key == 0 {
         bail!("character {character} has no game object (field 0x030BB788)");
     }
-    let (lod_thresholds, models, light_nodes) = with_track_db(big_root, track, |db| {
+    let (lod_thresholds, models, light_nodes) = crate::vault_db::with_level_db(big_root, track, |db| {
         let mut thresholds = Vec::new();
         let (mut models, mut lights) = (Vec::new(), Vec::new());
         for f in db.fields(CLASS_GAMEOBJECT, key)? {
@@ -262,7 +262,7 @@ pub fn load_bot_model(big_root: &Path, track: &str, character: &str) -> Result<B
                 let file =
                     CrsfFile::parse(&std::fs::read(&crsf).with_context(|| format!("reading {}", crsf.display()))?)
                         .with_context(|| format!("parsing {}", crsf.display()))?;
-                Ok((geom.clone(), object_mesh::load(&geom)?, file))
+                Ok((geom.clone(), crate::content::models::rider_mesh(big_root, &p.geom)?, file))
             };
             match read() {
                 Ok(x) => loaded.push((p, x)),

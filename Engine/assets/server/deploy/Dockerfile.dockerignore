@@ -1,0 +1,54 @@
+# The dedicated server image's build context (round net4c): an allow-list. BuildKit, Docker's builder since 23.0, reads
+# this file for the Dockerfile beside it in place of a .dockerignore at the context's root; the legacy builder
+# (DOCKER_BUILDKIT=0) does not, and would send the whole working copy (Game-Data/, .build/, targets: hundreds of GB).
+# Only what `cargo build --locked -p avalanche-server` reads goes in: cargo loads every workspace member to build one,
+# then compiles the server and the crates it depends on, whole, with the files they embed. A new workspace crate or embedded file under the
+# server needs its line below: the build names the file it misses.
+*
+!Engine/Cargo.toml
+!Engine/Cargo.lock
+!Engine/.cargo/config.toml
+# every member's and patched crate's manifest and the files its targets are found by (cargo loads them all to build
+# one, and a declared target's file must exist even when it is not built): crate roots, binaries, examples, tests,
+# benches and build scripts, as cargo looks for them
+!Engine/*/*/Cargo.toml
+!Engine/*/*/build.rs
+!Engine/*/*/src/lib.rs
+!Engine/*/*/src/main.rs
+!Engine/*/*/src/bin/*.rs
+!Engine/*/*/src/bin/*/main.rs
+!Engine/*/*/examples/*.rs
+!Engine/*/*/examples/*/main.rs
+!Engine/*/*/tests/*.rs
+!Engine/*/*/tests/*/main.rs
+!Engine/*/*/benches/*.rs
+!Engine/*/*/benches/*/main.rs
+# the server and its workspace crates (`cargo tree -e normal,build -p avalanche-server`), the patched netcode
+!Engine/apps/avalanche-server/src
+!Engine/crates/ssx-assets/src
+!Engine/crates/ssx-content/src
+!Engine/crates/ssx-core/src
+!Engine/crates/ssx-files/src
+!Engine/crates/ssx-formats/src
+!Engine/crates/ssx-gameplay/src
+!Engine/crates/ssx-lua/src
+!Engine/crates/ssx-net/src
+!Engine/crates/ssx-net-lan/src
+!Engine/crates/ssx-net-ops/src
+!Engine/crates/ssx-net-portmap/src
+!Engine/crates/ssx-net-proto/src
+!Engine/crates/ssx-physics/src
+!Engine/crates/ssx-rules/src
+!Engine/crates/ssx-script/src
+!Engine/vendor/bevy_replicon-*
+!Engine/vendor/lightyear*
+# the files they embed (include_str!, include_bytes!): the server's tables, ssx-assets' markers, templates, the
+# front end's English strings and the script API's definitions
+!Engine/assets/server/disc-hashes.tsv
+!Engine/assets/server/server-files.tsv
+!Engine/assets/markers
+!Engine/assets/templates
+!Engine/assets/fe/strings/eng_us.json
+!Engine/crates/ssx-script/defs
+# the image's notices
+!Engine/assets/server/THIRD_PARTY_NOTICES.txt

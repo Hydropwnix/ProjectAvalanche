@@ -9,10 +9,12 @@ publish.workspace = true
 
 [dependencies]
 ssx-formats.workspace = true
-ssx-assets.workspace = true
+ssx-assets = { path = "../ssx-assets", default-features = false, features = ["pipeline"] }
+ssx-content.workspace = true
 ssx-lua.workspace = true
 anyhow.workspace = true
 glam.workspace = true
+ssx-rules.workspace = true
 
 [lints]
 workspace = true

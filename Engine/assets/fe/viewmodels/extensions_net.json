@@ -1,0 +1,6 @@
+{
+  "format": 1,
+  "extend": [
+    {"view_model": "pausemenu", "providers": ["avapausemenu"]}
+  ]
+}

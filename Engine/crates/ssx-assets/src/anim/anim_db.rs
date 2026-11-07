@@ -7,6 +7,7 @@ use ssx_formats::ant::{Guid, Object, Schema, Stream, Value};
 pub struct AssetDb {
     pub streams: Vec<(String, Stream)>,
     index: HashMap<Guid, (usize, usize)>,
+    root: Option<std::path::PathBuf>,
 }
 
 #[derive(Clone, Copy)]
@@ -18,9 +19,15 @@ pub struct Asset<'a> {
 
 impl AssetDb {
     pub fn load(anim_dir: &Path, bundles: &[&str]) -> Result<Self> {
+        let root = crate::content::data::tuning::routed_bundle(&anim_dir.join(crate::rig_anim::RIG_BUNDLE))
+            .map(Path::to_path_buf);
         let mut streams = Vec::new();
         for b in bundles {
             let p = anim_dir.join(b);
+            if let Some(root) = crate::content::data::tuning::routed_bundle(&p) {
+                streams.push((b.to_string(), crate::content::data::tuning::anim_all(root)?));
+                continue;
+            }
             let data = std::fs::read(&p).with_context(|| format!("reading {}", p.display()))?;
             streams.push((b.to_string(), Stream::parse(&data).with_context(|| format!("parsing {}", p.display()))?));
         }
@@ -32,7 +39,11 @@ impl AssetDb {
                 }
             }
         }
-        Ok(Self { streams, index })
+        Ok(Self { streams, index, root })
+    }
+
+    pub fn data_root(&self) -> Option<&Path> {
+        self.root.as_deref()
     }
 
     pub fn get(&self, g: Guid) -> Option<Asset<'_>> {

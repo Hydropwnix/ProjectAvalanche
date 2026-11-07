@@ -46,7 +46,11 @@ pub fn profile_job_done(fe: &mut FrontEnd, env: &mut FeEnv, _device: i32) {
     if earnings == 0 {
         fe.note("FEGlobeUiTransRequestMessage {0, 0}");
         env.values.set_int(0x11, 1);
-        fe.go_to_screen(env, screens::id::MAIN_MENU);
+        if fe.ava.hub.on {
+            fe.go_to_screen_by(env, screens::id::MAIN_MENU, super::ava::hub::OPEN);
+        } else {
+            fe.go_to_screen(env, screens::id::MAIN_MENU);
+        }
     } else {
         let t = env.loc.text("TXT_WYWA_TITLE");
         env.values.set_str(0x32, t);
@@ -59,6 +63,27 @@ pub fn launch(fe: &mut FrontEnd, env: &mut FeEnv, drop: u32, direct: bool) {
     env.values.set_int(0xB4, drop as i32);
     let mut l: Launch = super::globe::launch_info(fe, drop);
     l.direct = direct;
+    launch_with(fe, env, l);
+}
+
+pub const MAP_GAME_MODE: i64 = 2;
+
+pub fn launch_map(fe: &mut FrontEnd, env: &mut FeEnv, map: super::MapLaunch, event_type: i64) {
+    env.values.set_int(0xB4, 0);
+    let l = Launch {
+        event: map.title.clone(),
+        track: map.track.clone(),
+        event_type,
+        game_mode: MAP_GAME_MODE,
+        map: Some(map),
+        ..Launch::default()
+    };
+    fe.ava.maps.riding = l.map.as_ref().map(|m| m.id.clone());
+    launch_with(fe, env, l);
+}
+
+fn launch_with(fe: &mut FrontEnd, env: &mut FeEnv, mut l: Launch) {
+    let (drop, direct) = (l.drop, l.direct);
     let rider = commit_setup(fe, env, &mut l);
     fe.game_mode = l.game_mode;
     fe.current_drop = drop;

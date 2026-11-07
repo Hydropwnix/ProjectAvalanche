@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use bevy::prelude::*;
+use bevy::prelude::{Assets, Handle, Image, Mat4, Quat, Vec3, Vec4};
 use bevy::render::render_resource::{CompareFunction, Face, ShaderType};
 
 use crate::render::lighting::GameLighting;
@@ -56,7 +56,7 @@ pub struct MidgroundViewUniform {
 
 pub struct PartLoad {
     pub mesh: Arc<MeshData>,
-    pub images: Vec<Image>,
+    pub images: Vec<(Image, Option<crate::render::reload::Recipe>)>,
     pub uniform: MidgroundPartUniform,
 }
 
@@ -88,7 +88,7 @@ impl MidgroundLoad {
             .into_iter()
             .map(|p| PartSettings {
                 mesh: p.mesh,
-                textures: p.images.into_iter().map(|i| images.add(i)).collect(),
+                textures: p.images.into_iter().map(|(i, r)| crate::render::reload::add(images, i, r)).collect(),
                 uniform: p.uniform,
             })
             .collect();
@@ -97,7 +97,8 @@ impl MidgroundLoad {
 }
 
 pub fn load(l: &GameLighting, root: &Path) -> Result<Option<MidgroundLoad>> {
-    let Some(mg) = ssx_assets::track_objects::load_track_midground(root, &l.track)? else { return Ok(None) };
+    let Some(track) = l.midground.as_deref() else { return Ok(None) };
+    let Some(mg) = ssx_assets::track_objects::load_track_midground(root, track)? else { return Ok(None) };
     let world = Mat4::from_scale_rotation_translation(
         Vec3::from_array(mg.scale),
         Quat::from_array(mg.rotation),
@@ -112,9 +113,7 @@ pub fn load(l: &GameLighting, root: &Path) -> Result<Option<MidgroundLoad>> {
             skipped.push(format!("{} ({effect})", m.material.name));
             continue;
         }
-        let rel = m.geometry.replace('\\', "/");
-        let path = ssx_assets::track_objects::asset_file(root, &rel).with_context(|| format!("{rel} not found"))?;
-        let o = ssx_assets::object_mesh::load(&path)?;
+        let o = static_mesh(root, &m.geometry)?;
         let n = o.positions.len();
         let mesh = MeshData {
             normals: o.normals.clone().unwrap_or_else(|| vec![[0.0, 1.0, 0.0]; n]),
@@ -127,7 +126,7 @@ pub fn load(l: &GameLighting, root: &Path) -> Result<Option<MidgroundLoad>> {
             .iter()
             .map(|p| {
                 let rel = m.material.textures.get(*p).with_context(|| format!("{}: no {p}", m.material.name))?;
-                super::load_texture(root, rel)
+                super::load_texture(root, rel, l)
             })
             .collect::<Result<Vec<_>>>()?;
         let mv = |name: &str, i: usize| m.material.vectors.get(name).and_then(|v| v.get(i).copied()).unwrap_or(0.0);
@@ -201,7 +200,7 @@ pub(super) mod gpu {
     use bevy::render::render_resource::*;
     use bevy::render::renderer::{RenderContext, RenderDevice, RenderQueue, ViewQuery};
     use bevy::render::texture::{CachedTexture, GpuImage, TextureCache};
-    use bevy::render::view::{ExtractedView, Msaa, ViewDepthTexture, ViewTarget};
+    use bevy::render::view::{ExtractedView, Msaa, ViewDepthStencilTexture, ViewTarget};
     use bevy::shader::Shader;
 
     use super::super::SkySettings;
@@ -338,7 +337,7 @@ pub(super) mod gpu {
         images: Res<RenderAssets<GpuImage>>,
         device: Res<RenderDevice>,
         queue: Res<RenderQueue>,
-        views: Query<(Entity, &ExtractedView, &ViewTarget, &ViewDepthTexture, &Msaa)>,
+        views: Query<(Entity, &ExtractedView, &ViewTarget, &ViewDepthStencilTexture, &Msaa)>,
     ) {
         let mg = settings.as_ref().and_then(|s| s.midground.as_ref());
         let (Some(mg), Some(pipeline)) = (mg, pipeline) else {
@@ -376,10 +375,13 @@ pub(super) mod gpu {
         }
         let layout = cache.get_bind_group_layout(&pipeline.layout);
         for (entity, view, target, scene_depth, msaa) in &views {
-            if msaa.samples() != 1 || !scene_depth.texture.usage().contains(TextureUsages::TEXTURE_BINDING) {
+            let sampled = scene_depth.attachment.depth_stencil_views().depth_only_view();
+            let Some(scene_depth_view) = sampled.filter(|_| {
+                msaa.samples() == 1 && scene_depth.texture().usage().contains(TextureUsages::TEXTURE_BINDING)
+            }) else {
                 commands.entity(entity).remove::<ViewMidground>();
                 continue;
-            }
+            };
             let key = MidgroundKey {
                 format: view.target_format,
                 depth_only: false,
@@ -429,7 +431,7 @@ pub(super) mod gpu {
                         &tex[4].texture_view,
                         &tex[5].texture_view,
                         &pipeline.sampler,
-                        scene_depth.view(),
+                        scene_depth_view,
                     )),
                 );
                 draws.push((bind_group, Arc::as_ptr(&p.mesh) as usize));
@@ -511,4 +513,18 @@ pub(super) mod gpu {
             pass.draw_indexed(0..b.count, 0, 0..1);
         }
     }
+}
+
+pub(crate) fn static_mesh(root: &Path, geometry: &str) -> Result<ssx_assets::object_mesh::ObjectMesh> {
+    let content = ssx_assets::content::GameContent::of(root);
+    let rel = geometry.replace('\\', "/");
+    let id = ssx_assets::content::models::model_id(&rel)
+        .filter(|id| content.has(id))
+        .with_context(|| format!("{rel} not found"))?;
+    let found = content.model(&id, ssx_assets::content::resolve::ModelUse::Static)?;
+    let (mesh, notes) = found.value.lod0_mesh().map_err(|e| anyhow::anyhow!("{id}: {e}"))?;
+    for n in notes {
+        bevy::log::warn!("{id} from {}: {n}", found.source);
+    }
+    Ok(mesh)
 }

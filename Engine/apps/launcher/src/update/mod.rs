@@ -2,6 +2,7 @@ mod archive;
 mod download;
 pub mod github;
 pub mod install;
+mod journal;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -178,15 +179,8 @@ fn stage(
 fn fresh_dir(base: &Path, version: &str) -> Result<PathBuf, String> {
     for n in 0..1000u32 {
         let dir = base.join(format!(".update-{version}-{n}"));
-        match std::fs::create_dir(&dir) {
-            Ok(()) => {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-                }
-                return Ok(dir);
-            }
+        match private_dir(&dir) {
+            Ok(()) => return Ok(dir),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => {
                 return Err(format!(
@@ -199,9 +193,69 @@ fn fresh_dir(base: &Path, version: &str) -> Result<PathBuf, String> {
     Err(format!("cannot make an update folder in {}: too many leftovers", base.display()))
 }
 
+pub(crate) fn is_staging_name(name: &str) -> bool {
+    let Some((version, n)) = name.strip_prefix(".update-").and_then(|rest| rest.rsplit_once('-')) else {
+        return false;
+    };
+    let number = !n.is_empty() && n.len() <= 3 && n.bytes().all(|c| c.is_ascii_digit());
+    number && Version::parse(version).is_ok()
+}
+
+pub(crate) fn private_dir(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().mode(0o700).create(path)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::DirBuilder::new().create(path)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_staging_folder_is_private_from_its_creation() {
+        let base = std::env::temp_dir().join(format!("ssx-update-fresh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let first = fresh_dir(&base, "0.3.0").unwrap();
+        let second = fresh_dir(&base, "0.3.0").unwrap();
+        assert_eq!(first, base.join(".update-0.3.0-0"));
+        assert_eq!(second, base.join(".update-0.3.0-1"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&first).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode & 0o077, 0, "{mode:o}");
+            assert_eq!(mode & 0o700, 0o700, "{mode:o}");
+        }
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn only_the_launchers_staging_names_are_staging_folders() {
+        for good in [".update-0.3.0-0", ".update-0.3.0-999", ".update-1.0.0-rc.1-2", ".update-0.3.0+build.5-1"] {
+            assert!(is_staging_name(good), "{good}");
+        }
+        let bad = [
+            ".update-backup",
+            ".update-backup-1234",
+            ".update-0.3.0",
+            ".update-0.3.0-",
+            ".update-0.3.0-1000",
+            ".update-0.3-0",
+            ".update-0.3.0-x",
+            "update-0.3.0-0",
+            ".update-../0.3.0-0",
+        ];
+        for name in bad {
+            assert!(!is_staging_name(name), "{name}");
+        }
+    }
 
     #[test]
     fn the_asset_is_the_one_for_this_system() {

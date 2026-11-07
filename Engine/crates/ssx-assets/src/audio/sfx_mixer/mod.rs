@@ -11,6 +11,7 @@ use ssx_formats::eaac::{Block, Codec, SoundHeader, Storage, read_v0_blocks};
 use crate::sfx_aems::{Bank, MIXER_RATE, VoiceHost};
 use crate::sfx_bus::{self, Graph, SourceHost};
 use crate::sfx_dsp::{self, BLOCK, Resampler};
+use crate::sfx_override::{Choice, Looping, Route};
 
 pub use direct::*;
 pub use sources::*;
@@ -56,6 +57,8 @@ struct AemsVoice {
     aux: f32,
     pan_fresh: bool,
     ava_faders: bool,
+    gain: f32,
+    pitch: f32,
 }
 
 const AVA_FADERS: [&str; 3] = ["Ava_Gain_Port3", "Ava_Gain_Port4", "Ava_Gain_Port5"];
@@ -85,6 +88,7 @@ pub struct Mixer {
     music_slot: Option<usize>,
     movie_slot: Option<usize>,
     pcm: Vec<Option<(usize, u32)>>,
+    released: Vec<u32>,
     pub events: Vec<String>,
     pub verbose: bool,
 }
@@ -101,6 +105,7 @@ impl Mixer {
             music_slot: None,
             movie_slot: None,
             pcm: Vec::new(),
+            released: Vec::new(),
             events: Vec::new(),
             verbose: false,
         }
@@ -109,6 +114,10 @@ impl Mixer {
     pub fn add_bank(&mut self, bank: &Bank) {
         let sounds = bank.abk.s10a.sounds.iter().map(|s| s.as_ref().map(|s| (s.offset, s.header.clone()))).collect();
         self.banks.push(BankAudio { name: bank.name.clone(), data: bank.data.clone(), ast: bank.ast.clone(), sounds });
+    }
+
+    pub fn voice_table(&self) -> &HashMap<i32, (String, String)> {
+        &self.table
     }
 
     pub fn active_voices(&self) -> usize {
@@ -286,10 +295,10 @@ impl Mixer {
         let g = &mut self.graph;
         let level = |x: i32| x.clamp(0, 0x7FFF) as f32 * 3.051_851e-5;
         match param {
-            0 => g.set_attr(v.slot, b"Rsp0", 0, f64::from(value.clamp(0, 0xFFFF) as f32 * 0.000_244_140_62)),
+            0 => g.set_attr(v.slot, b"Rsp0", 0, f64::from(value.clamp(0, 0xFFFF) as f32 * 0.000_244_140_62 * v.pitch)),
             2 => {
                 v.volume = level(value);
-                g.set_attr(v.slot, b"Gai0", 0, f64::from(v.dry * v.volume));
+                g.set_attr(v.slot, b"Gai0", 0, f64::from(v.dry * v.volume * v.gain));
             }
             3 => {
                 if g.has_plugin(v.slot, b"Pn21") {
@@ -307,7 +316,7 @@ impl Mixer {
             7 => g.set_attr(v.slot, b"HI20", 0, f64::from(value.clamp(0, 0xFFFF))),
             8 => {
                 v.dry = level(value);
-                g.set_attr(v.slot, b"Gai0", 0, f64::from(v.dry * v.volume));
+                g.set_attr(v.slot, b"Gai0", 0, f64::from(v.dry * v.volume * v.gain));
             }
             11..=13 if v.ava_faders => g.fade_by_name(AVA_FADERS[usize::from(param - 11)], level(value), 0.1),
             _ => {}
@@ -343,12 +352,44 @@ impl Mixer {
 }
 
 impl VoiceHost for Mixer {
-    fn start(&mut self, bank: usize, entry: &SampleEntry, params: &[(u8, i32)]) -> Option<u32> {
-        let src = match self.open(bank, entry) {
+    fn start(
+        &mut self,
+        bank: usize,
+        entry: &SampleEntry,
+        params: &[(u8, i32)],
+        choice: Option<&Choice>,
+    ) -> Option<u32> {
+        let disc = match self.open(bank, entry) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("sfx: {} sound {}: {e:#}", self.banks[bank].name, entry.sound_index);
+                ssx_core::eprintln!("sfx: {} sound {}: {e:#}", self.banks[bank].name, entry.sound_index);
                 return None;
+            }
+        };
+        let (src, gain, pitch, route) = match choice {
+            None => (disc, 1.0, 1.0, None),
+            Some(Choice::Mute) => (disc, 0.0, 1.0, None),
+            Some(Choice::Route(bus)) => (disc, 1.0, 1.0, Some(Route::Bus(bus.clone()))),
+            Some(Choice::Play { sound, draw }) => {
+                let looped = match sound.looping {
+                    Looping::Disc => disc.looped,
+                    Looping::On => true,
+                    Looping::Off => false,
+                };
+                let channels = draw.sample.channels;
+                let src = Source {
+                    num_samples: u32::try_from(draw.sample.frames()).unwrap_or(u32::MAX),
+                    label: format!("{} {}", sound.id, draw.sample.file),
+                    frames: Frames::Package { sample: draw.sample.clone(), looped },
+                    channels,
+                    rate: MIXER_RATE,
+                    looped,
+                    resampler: Resampler::default(),
+                    paused: false,
+                    finished: false,
+                    fade: None,
+                };
+                (src, sound.volume, draw.pitch, Some(sound.route.clone()))
             }
         };
         let id9 = params.iter().find(|p| p.0 == 9).map(|p| p.1);
@@ -361,13 +402,14 @@ impl VoiceHost for Mixer {
         }
         self.sources.voices[sid] = Some(src);
         let Some(slot) = self.graph.add_aems_voice(&patch, &voice, channels, sid as u32) else {
-            eprintln!("sfx: voice patch {patch} / {voice} not found");
+            ssx_core::eprintln!("sfx: voice patch {patch} / {voice} not found");
             self.sources.voices[sid] = None;
             return None;
         };
         let ava_faders = voice == "Ava_Level_4_Voice";
         let pan_fresh = channels > 1;
-        let v = AemsVoice { slot, source: sid as u32, volume: 1.0, dry: 1.0, aux: 0.0, pan_fresh, ava_faders };
+        let v =
+            AemsVoice { slot, source: sid as u32, volume: 1.0, dry: 1.0, aux: 0.0, pan_fresh, ava_faders, gain, pitch };
         let id = self.voices.iter().position(Option::is_none).unwrap_or(self.voices.len());
         if id == self.voices.len() {
             self.voices.push(None);
@@ -395,6 +437,23 @@ impl VoiceHost for Mixer {
         }
         for &(p, value) in params {
             self.apply_param(vid, p, value);
+        }
+        if !params.iter().any(|p| p.0 == 0) && pitch != 1.0 {
+            self.graph.set_attr(slot, b"Rsp0", 0, f64::from(pitch));
+        }
+        if !params.iter().any(|p| matches!(p.0, 2 | 8)) && gain != 1.0 {
+            self.graph.set_attr(slot, b"Gai0", 0, f64::from(gain));
+        }
+        let routed = match &route {
+            Some(Route::Bus(bus)) => Some(bus.as_str()),
+            Some(Route::Emitter(e)) => crate::sfx_override::emitter_bus(e),
+            _ => None,
+        };
+        if let Some(bus) = routed {
+            let target = self.graph.submix_input(bus);
+            if target.is_none() || !self.graph.redirect_voice_send(slot, target) {
+                self.events.push(format!("voice {vid}: bus {bus} not found, the voice patch's kept"));
+            }
         }
         let pan = if self.graph.has_plugin(slot, b"Pn21") {
             format!(" Pan2D1 az {:?}", entry.azimuths)

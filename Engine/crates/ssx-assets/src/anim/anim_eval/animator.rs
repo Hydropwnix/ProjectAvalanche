@@ -64,6 +64,10 @@ impl Animator {
         self.clips.len()
     }
 
+    pub fn package_clips(&self) -> Vec<(&str, &str)> {
+        self.clips.iter().filter_map(|c| c.package().map(|m| (c.name.as_str(), m.source.as_str()))).collect()
+    }
+
     pub fn reset(&mut self) {
         self.reset_with_random(RandomState(std::sync::atomic::AtomicU32::new(self.graph.random_seed.unwrap_or(0))));
     }
@@ -74,6 +78,18 @@ impl Animator {
         let env = self.env();
         let root = instantiate(&env, &self.gs, self.root_id);
         self.root = root;
+    }
+
+    pub fn set_time(&mut self, t: f32) {
+        let env = Env {
+            g: &self.graph,
+            clips: &self.clips,
+            clip_index: &self.clip_index,
+            bind: &self.bind,
+            rig: &self.rig,
+            physics: self.physics.as_ref(),
+        };
+        self.root.set_time(&env, &self.gs, t);
     }
 
     pub fn update(&mut self, dt: f32) {

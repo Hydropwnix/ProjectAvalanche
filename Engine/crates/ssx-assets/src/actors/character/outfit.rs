@@ -17,7 +17,7 @@ pub(super) struct Outfit {
     pub(super) light_nodes: Vec<GearLightNode>,
 }
 
-pub(super) const SLOT_ORDER: [&str; 15] = [
+pub(super) const SLOT_ORDER: [&str; 16] = [
     "head",
     "hair",
     "eyes",
@@ -33,6 +33,7 @@ pub(super) const SLOT_ORDER: [&str; 15] = [
     "oxygentank",
     "iceaxe",
     "wingsuit",
+    "snowboard",
 ];
 
 pub(super) const BOARDER_FIELDS: [&str; 16] = [
@@ -123,7 +124,7 @@ fn field_text(db: &Db, class: u32, coll: u32, key: u32) -> Result<Option<String>
     Ok(db.field(class, coll, key)?.and_then(|f| single_text(&f.data)))
 }
 
-fn mesh_ref(db: &Db, slot: &str, key: u32) -> Result<MeshRef> {
+pub(super) fn mesh_ref(db: &Db, slot: &str, key: u32) -> Result<MeshRef> {
     let mesh_name = db.collection_name(key);
     let what = |f: &str| format!("ge_mesh/{mesh_name} has no {f}");
     let (gc, gk) = field_ref(db, CLASS_MESH, key, fnv1("Geometry"))?.with_context(|| what("Geometry"))?;
@@ -159,6 +160,7 @@ pub(super) fn collect(db: &Db, slot: &str, class: u32, key: u32, out: &mut Outfi
     for m in reach.meshes {
         if class == CLASS_SNOWBOARD {
             out.snowboard = Some(db.collection_name(m));
+            out.meshes.push(mesh_ref(db, "snowboard", m)?);
         } else {
             out.meshes.push(mesh_ref(db, slot, m)?);
         }
@@ -181,8 +183,10 @@ pub(super) fn outfit(db: &Db, name: &str, equipped: &EquippedRefs) -> Result<Out
     } else if db.find(CLASS_BOARDER, key).is_some() {
         (key, format!("vault: ge_characterboarder/{name} (character/{name} is in attribdb.vlt)"))
     } else {
-        let mut boarders: Vec<String> =
-            db.collections_of(1, CLASS_BOARDER).map(|(k, _)| db.collection_name(k)).collect();
+        let mut boarders: Vec<String> = db
+            .collections_of(db.vaults.len().saturating_sub(2), CLASS_BOARDER)
+            .map(|(k, _)| db.collection_name(k))
+            .collect();
         boarders.sort();
         bail!("no character/{name} or ge_characterboarder/{name} in the vaults (boarders: {})", boarders.join(", "));
     };

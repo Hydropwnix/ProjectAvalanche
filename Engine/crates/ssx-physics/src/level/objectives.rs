@@ -137,6 +137,18 @@ impl EventObjectives {
     }
 }
 
+pub const EVENT_TYPE_SCRIPT: &str = "common/track_environment/drop_event_type.lua";
+
+impl EventObjectives {
+    pub fn for_event_type(big_root: &Path, drop: Option<&DropScripts>, event_type: crate::event::EventType) -> Self {
+        let scripts = DropScripts::of(big_root, &[EVENT_TYPE_SCRIPT.to_string()]);
+        let slots = crate::character::GearStats::default_gear().slots;
+        let batch = drop.map_or_else(|| scripts.batch(), |d| d.level_batch(Some(&scripts)));
+        let probe = Probe::run(&batch, Some(event_type as i32), slots);
+        EventObjectives { scripts, probe }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct LoadWorld {
     pub slots: [bool; 15],
@@ -376,7 +388,7 @@ fn player_value(x: &SessionWorld, name: &str) -> Option<GsValue> {
         "FLT_NumTicksToLanding" => Float(s.ballistic.ticks),
         "BLN_NisOutroActive" => Bool(intro.is_some_and(|i| i.outro_active())),
         "BLN_NisAllowOutro" => Bool(x.event.allow_outro),
-        "INT_ScoringTrickId" => Int(i32::from(s.score.trick_id as u8)),
+        "INT_ScoringTrickId" => Int(i32::from(s.score.trick_id.value())),
         "FLT_VignetteOxygen" => Float(s.survival.vignette_oxygen),
         "FLT_SurfaceWeightRock" => Float(s.weights[crate::surface::ROCK]),
         "FLT_SurfaceWeightIce" => Float(s.weights[crate::surface::ICE]),

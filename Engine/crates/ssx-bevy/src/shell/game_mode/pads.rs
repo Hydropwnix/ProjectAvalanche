@@ -4,12 +4,13 @@ use ssx_ui::game::input::{Button, PADS};
 
 use super::GameUiRes;
 
-// TODO(guess): a PC keyboard map (Enter START, Space A, Backspace B, X, Y, arrows D-pad, Q / E bumpers, Z / C triggers, V Back), read as a pad device of its own (`KEYBOARD_DEVICE`); a gamepad's buttons are the pad's; settle: none (a port choice: the console reads pads only).
+// TODO(guess): a PC keyboard map (Enter START, Space A, Backspace B, X, Y, arrows D-pad, Q / E bumpers, Z / C and Page Up / Page Down triggers — the lists' paging —, V Back), read as a pad device of its own (`KEYBOARD_DEVICE`); a gamepad's buttons are the pad's; settle: none (a port choice: the console reads pads only).
 pub fn pad_presses(
     keys: &ButtonInput<KeyCode>,
     pads: &Query<(Entity, &Gamepad)>,
     slots: &PadSlots,
     sticks: &mut StickDpad,
+    search: bool,
 ) -> Vec<(Button, u8)> {
     let map = [
         (KeyCode::Enter, Button::Start),
@@ -25,6 +26,8 @@ pub fn pad_presses(
         (KeyCode::KeyE, Button::RightBumper),
         (KeyCode::KeyZ, Button::LeftTrigger),
         (KeyCode::KeyC, Button::RightTrigger),
+        (KeyCode::PageUp, Button::LeftTrigger),
+        (KeyCode::PageDown, Button::RightTrigger),
         (KeyCode::KeyV, Button::Select),
     ];
     let pad_map = [
@@ -44,10 +47,17 @@ pub fn pad_presses(
     let keyboard = ssx_ui::game::input::KEYBOARD_DEVICE;
     let mut out: Vec<(Button, u8)> =
         map.iter().filter(|(k, _)| keys.just_pressed(*k)).map(|&(_, b)| (b, keyboard)).collect();
+    // TODO(guess): a port choice — F and the right stick's click are the server browser's search (`RAS`), the one key the browser needs beyond the game's controller map (which maps no stick click); settle: none (the port's screen).
+    if search && keys.just_pressed(KeyCode::KeyF) {
+        out.push((Button::Ras, keyboard));
+    }
     for (entity, pad) in pads {
         let Some(device) = slots.device(entity) else { continue };
         let state = &mut sticks.pads[usize::from(device)];
         out.extend(pad_map.iter().filter(|(g, _)| pad.just_pressed(*g)).map(|&(_, b)| (b, device)));
+        if search && pad.just_pressed(GamepadButton::RightThumb) {
+            out.push((Button::Ras, device));
+        }
         let value = |b: GamepadButton| pad.get(b).unwrap_or(0.0);
         let stick = Vec2::new(value_axis(pad, GamepadAxis::LeftStickX), value_axis(pad, GamepadAxis::LeftStickY));
         let presses = state.step(stick, [value(GamepadButton::LeftTrigger2), value(GamepadButton::RightTrigger2)]);

@@ -48,6 +48,14 @@ pub(crate) struct Rec<'a> {
 
 impl Vaults {
     pub fn load(big_root: &Path) -> Result<Self> {
+        Self::read(big_root, true)
+    }
+
+    pub fn load_disc(big_root: &Path) -> Result<Self> {
+        Self::read(big_root, false)
+    }
+
+    fn read(big_root: &Path, routed: bool) -> Result<Self> {
         let dir = big_root.join("bootcache/data/xenon/attribdb");
         let (svlt, sbin) = read_pair(&dir.join("attribdb_schema.vlt"))?;
         let schema = Schema::from_vault(&Vault::parse(&svlt, &sbin)?).context("reading the schema")?;
@@ -60,7 +68,11 @@ impl Vaults {
             let (cols, decoded) = {
                 let v = Vault::parse(&vlt, &bin).with_context(|| format!("parsing {name}"))?;
                 let cols = collection::collections(&v)?;
-                let decoded = cols.iter().map(|c| c.decode(&v, &schema)).collect::<ssx_formats::Result<Vec<_>>>()?;
+                let mut decoded =
+                    cols.iter().map(|c| c.decode(&v, &schema)).collect::<ssx_formats::Result<Vec<_>>>()?;
+                if routed && name == "attribdb.vlt" {
+                    crate::content::data::events::route_ui_drops(big_root, &cols, &mut decoded);
+                }
                 (cols, decoded)
             };
             let local = collection::index(&cols);

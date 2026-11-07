@@ -19,7 +19,8 @@ use ssx_formats::csvdb::{Geotag, GhostRow};
 use ssx_formats::rnf::{CampaignGraph, DropPositions};
 
 pub use data::{
-    Description, DropType, Event, ExploreRewards, Item, Peak, Progression, Range, Rider, StoreTables, StoreTemplate,
+    Description, DropType, Event, ExploreRewards, Item, ItemContent, Peak, Progression, Range, Rider, RiderContent,
+    StoreTables, StoreTemplate,
 };
 pub use profile::{EventOutcome, EventRule, Medal, Notice, Profile, ResultReport, Rules};
 
@@ -67,16 +68,29 @@ pub fn badge_definitions(src: &[u8]) -> BadgeDefinitions {
 
 impl CareerDb {
     pub fn load(big_root: &Path) -> Result<Self> {
-        let mut v = data::Vaults::load(big_root)?;
+        let mut db = Self::read(big_root, true)?;
+        crate::content::characters::career::apply(big_root, &mut db);
+        Ok(db)
+    }
+
+    pub fn load_disc(big_root: &Path) -> Result<Self> {
+        Self::read(big_root, false)
+    }
+
+    fn read(big_root: &Path, routed: bool) -> Result<Self> {
+        let mut v = if routed { data::Vaults::load(big_root)? } else { data::Vaults::load_disc(big_root)? };
         let read = |rel: &str| std::fs::read(big_root.join(rel)).with_context(|| format!("reading {rel}"));
         let graph = CampaignGraph::parse(&read("bootcache/data/common/fe/campaign.rnf")?)?;
         for a in graph.nodes.iter().flat_map(|n| &n.attribs) {
             v.dict.insert(a);
         }
         let drop_positions = DropPositions::parse(&read("fecache/data/common/fe/droppos.rnf")?)?;
-        let ghosts = ssx_formats::csvdb::parse_ghosts(&String::from_utf8_lossy(&read(
-            "bootcache/data/common/ghosts/ghostdb.csv",
-        )?))?;
+        let ghost_text = if routed {
+            crate::content::data::events::ghost_db_text(big_root)
+        } else {
+            std::fs::read_to_string(big_root.join(crate::content::data::events::GHOST_DB))
+        };
+        let ghosts = ssx_formats::csvdb::parse_ghosts(&ghost_text.context("reading ghostdb.csv")?)?;
         let mut geotags = BTreeMap::new();
         let dir = big_root.join("cache1/data/common/geocaches");
         for e in std::fs::read_dir(&dir).with_context(|| format!("listing {}", dir.display()))?.flatten() {
@@ -139,14 +153,13 @@ impl CareerDb {
         self.ghosts.iter().filter(move |g| g.ui_drop == event)
     }
 
+    pub fn ghost_board(&self, e: &Event) -> Vec<ssx_rules::results::GhostEntry> {
+        let t = u32::try_from(e.event_type).ok().and_then(ssx_rules::events::EventType::from_raw);
+        ssx_rules::results::ghost_board(self.rivals(e.key).map(|g| (g.value(), g.character)), t)
+    }
+
     pub fn medal_targets(&self, e: &Event) -> Vec<u32> {
-        let mut v: Vec<u32> = self.rivals(e.key).filter(|g| g.starting_idx == 0).map(GhostRow::value).collect();
-        if matches!(e.event_type, 5..=7) {
-            v.sort()
-        } else {
-            v.sort_by(|a, b| b.cmp(a))
-        }
-        v
+        self.ghost_board(e).iter().map(|g| g.value).collect()
     }
 
     pub fn rules(&self) -> Rules {

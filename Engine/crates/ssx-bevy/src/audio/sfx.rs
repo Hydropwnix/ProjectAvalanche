@@ -35,6 +35,7 @@ pub struct Sfx {
     held: Option<ssx_assets::sfx_game::RideAudio>,
     paused_frames: u32,
     objects: ssx_assets::sfx_game::audio_objects::AudioObjects,
+    character: String,
 }
 
 struct SpeechPending {
@@ -95,15 +96,15 @@ pub fn load_level_event(
         return None;
     }
     let Some(big_root) = big_root else {
-        eprintln!("warning: sfx unavailable: no extracted archive root");
+        ssx_core::eprintln!("warning: sfx unavailable: no extracted archive root");
         return None;
     };
     let info = track_audio_info(big_root, track).unwrap_or_else(|e| {
-        eprintln!("warning: sfx: no audio game info for {track} ({e:#}); the generic one");
+        ssx_core::eprintln!("warning: sfx: no audio game info for {track} ({e:#}); the generic one");
         TrackAudioInfo::generic()
     });
     let rider = rider_audio_info(big_root, character).unwrap_or_else(|e| {
-        eprintln!("warning: sfx: no audio game info for {character} ({e:#}); the generic one");
+        ssx_core::eprintln!("warning: sfx: no audio game info for {character} ({e:#}); the generic one");
         RiderAudioInfo::generic()
     });
     let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(5489, |d| d.subsec_nanos());
@@ -111,7 +112,7 @@ pub fn load_level_event(
     let mut banks = match riding_banks(big_root, &info, &rider, &mut |_, n| mt.below(n)) {
         Ok(b) => b,
         Err(e) => {
-            eprintln!("warning: sfx unavailable: {e:#}");
+            ssx_core::eprintln!("warning: sfx unavailable: {e:#}");
             return None;
         }
     };
@@ -120,19 +121,19 @@ pub fn load_level_event(
     let mut engine = match SfxEngine::load(big_root, &names) {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("warning: sfx unavailable: {e:#}");
+            ssx_core::eprintln!("warning: sfx unavailable: {e:#}");
             return None;
         }
     };
     let start = std::time::Instant::now();
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
     match engine.decode_ram_sounds(threads) {
-        Ok((n, bytes)) => eprintln!(
+        Ok((n, bytes)) => ssx_core::eprintln!(
             "sfx: {n} RAM sounds decoded ahead ({:.1} MiB, {:.2} s)",
             bytes as f64 / (1024.0 * 1024.0),
             start.elapsed().as_secs_f32()
         ),
-        Err(e) => eprintln!("warning: sfx: RAM sounds not decoded ahead ({e:#}); at their voices' start"),
+        Err(e) => ssx_core::eprintln!("warning: sfx: RAM sounds not decoded ahead ({e:#}); at their voices' start"),
     }
     if engine.mixer.graph.profiling() {
         let sizes = engine.mixer.decoded_ram_sizes();
@@ -141,7 +142,7 @@ pub fn load_level_event(
         for (k, (bank, idx, frames, ch)) in sizes.iter().enumerate() {
             run += frames * ch;
             if k < 30 || k % 50 == 0 {
-                eprintln!(
+                ssx_core::eprintln!(
                     "sfx ram {k:>4}: {bank} {idx} {frames} frames × {ch} ({:.1}% cumulative)",
                     run as f64 * 100.0 / total as f64
                 );
@@ -150,13 +151,20 @@ pub fn load_level_event(
     }
     let verbose = std::env::var("SSX_SFX_LOG").is_ok_and(|v| v == "1");
     engine.set_verbose(verbose);
+    let lang = crate::audio::sfx_input::speech_lang();
+    let decision = ssx_assets::content::GameContent::of(big_root).sound_overrides_for(Some(&lang), Some(character));
+    if !decision.sounds.is_empty() {
+        for id in engine.set_overrides(&decision.sounds) {
+            ssx_core::eprintln!("warning: sfx: {id}: no interface of the level's engine defines it");
+        }
+    }
     if let Err(e) = engine.start_reverb(big_root, &info) {
-        eprintln!("warning: sfx reverb unavailable: {e:#}");
+        ssx_core::eprintln!("warning: sfx reverb unavailable: {e:#}");
     }
     let volume = std::env::var("SSX_SFX_VOLUME").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0f32).clamp(0.0, 1.0);
-    eprintln!("sfx: {} banks ({})", banks.len(), banks.join(", "));
+    ssx_core::eprintln!("sfx: {} banks ({})", banks.len(), banks.join(", "));
     let objects = ssx_assets::sfx_game::audio_objects::AudioObjects::load(big_root).unwrap_or_else(|e| {
-        eprintln!("warning: audio_objects unavailable: {e:#}");
+        ssx_core::eprintln!("warning: audio_objects unavailable: {e:#}");
         Default::default()
     });
     Some(SfxLevel {
@@ -188,6 +196,7 @@ pub fn start_level(world: &mut World, level: Option<SfxLevel>) {
         m.sfx = Some(l.engine);
         (m.sfx_volume, m.swapped) = (l.volume, true);
     }
+    let character = l.character.clone();
     let pending = Some(SpeechPending {
         big_root: l.big_root.clone(),
         character: l.character,
@@ -218,7 +227,14 @@ pub fn start_level(world: &mut World, level: Option<SfxLevel>) {
         held: None,
         paused_frames: 0,
         objects: l.objects,
+        character,
     });
+}
+
+impl Sfx {
+    pub fn character(&self) -> &str {
+        &self.character
+    }
 }
 
 #[allow(dead_code)]

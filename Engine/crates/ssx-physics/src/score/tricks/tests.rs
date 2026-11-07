@@ -1,7 +1,7 @@
 use super::*;
 
 fn tuning() -> TrickTuning {
-    TrickTuning { tweak_switch_threshold: FRAC_PI_4, virtual_stick_persist_time: 15.0 }
+    TrickTuning { tweak_switch_threshold: FRAC_PI_4, virtual_stick_persist_time: 15.0, added: Default::default() }
 }
 
 fn air() -> TrickContext {
@@ -37,7 +37,7 @@ fn ticks_where(inputs: &[TrickInput], gates: Gates, signal: impl Fn(&GrabGesture
     let mut g = GrabGestures::default();
     let mut on = Vec::new();
     for (t, i) in inputs.iter().enumerate() {
-        g.tick(PadSample::new(i), &gates);
+        g.tick(PadSample::new(i), &gates, &AddedAirTricks::default());
         if signal(&g) {
             on.push(t);
         }
@@ -297,7 +297,7 @@ fn reset_trick_state_keeps_inputs_and_freezes_the_sig_counter() {
         (s.ticks_since_sig_held, s.is_tricking, s.is_tweaking),
         (before.ticks_since_sig_held, true, before.is_tweaking)
     );
-    (0..3).for_each(|_| s.update_reset(&sig, &ctx, 2.0));
+    (0..3).for_each(|_| s.update_reset(&tuning(), &sig, &ctx, 2.0));
     assert_eq!(s.ticks_since_sig_held, before.ticks_since_sig_held);
     assert!(s.gestures.button[UP] && s.gestures.signature);
     assert_eq!(s.phase_ticks, before.phase_ticks + 6.0);

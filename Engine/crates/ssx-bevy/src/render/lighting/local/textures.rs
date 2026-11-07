@@ -1,26 +1,30 @@
 use anyhow::{Context, Result};
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
-use bevy::prelude::*;
+use bevy::prelude::{Image, warn};
 use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension,
 };
 use ssx_assets::track_lights::text as text_texture;
+use ssx_content::texture::Want;
 
 use super::Projected;
 
 pub(super) fn texture_array(big_root: &std::path::Path, sources: &[Projected]) -> Result<Image> {
-    let files: Vec<std::path::PathBuf> = sources
+    let content = ssx_assets::content::GameContent::of(big_root);
+    let files: Vec<(ssx_content::ContentId, Want)> = sources
         .iter()
         .filter_map(|s| match s {
             Projected::File(rel) => Some(
-                ssx_assets::track_objects::asset_file(big_root, &format!("{rel}.xpr"))
+                ssx_assets::content::textures::texture_id(rel)
+                    .filter(|id| content.has(id))
+                    .map(|id| (id, Want::PLANE))
                     .with_context(|| format!("projected texture {rel} not found")),
             ),
             Projected::Text { .. } => None,
         })
         .collect::<Result<_>>()?;
-    let chains = crate::render::terrain::textures::decode_all(files.iter().map(|p| p.as_path()))?;
+    let chains = crate::render::terrain::textures::decode_all(big_root, files.iter().cloned())?;
     let font = if sources.iter().any(|s| matches!(s, Projected::Text { .. })) {
         Some(text_texture::load_font(big_root)?)
     } else {
@@ -44,6 +48,8 @@ pub(super) fn texture_array(big_root: &std::path::Path, sources: &[Projected]) -
         })
         .collect::<Option<_>>()
         .context("projected texture layers out of step")?;
+    let fitted = crate::render::terrain::textures::fit_layers(big_root, &layers, &Want::PLANE);
+    let layers: Vec<_> = layers.iter().zip(&fitted).map(|(c, f)| f.as_ref().unwrap_or(c)).collect();
     let sampler = crate::render::fx_states::sampler(
         "prelighting",
         "render_textureprojectionlight_spec_farz",

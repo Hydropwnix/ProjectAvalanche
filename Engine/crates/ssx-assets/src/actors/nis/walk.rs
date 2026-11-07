@@ -66,6 +66,18 @@ impl<'a> Walk<'a> {
         a.guid(f).and_then(|g| self.db.get(g)).map(|x| x.name().to_string())
     }
 
+    pub(super) fn transition_blend(&self, t: &Asset, left: Option<&NisScene>) -> Result<Blend> {
+        if let Some(b) = t.guid("OverrideBlend").and_then(|g| self.db.get(g)) {
+            return Blend::of_asset(&b).with_context(|| format!("{}: {} is no blend", t.name(), b.name()));
+        }
+        if let (Some(kind), Some(sc)) = (self.name(t, "BranchWindowTypeAsset"), left)
+            && sc.actors.iter().any(|a| a.tags.window_blends.contains(&kind))
+        {
+            bail!("{}: a {kind} window with its own blend (not ported)", t.name());
+        }
+        Ok(Blend::default_transition())
+    }
+
     fn proxy_subject(&self, a: &Asset, role: i64) -> Result<Guid> {
         let ptr = a.guid("BankPointerAsset").and_then(|p| self.db.get(p)).map(|p| p.name().to_string());
         let mut next = match ptr.as_deref() {
@@ -129,7 +141,7 @@ impl<'a> Walk<'a> {
     fn descend(&self, name: &str, role: i64, ctrl: &Asset<'a>) -> Result<NisActor> {
         let rig = self.rig(role);
         let mut ctrl = *ctrl;
-        let (mut offset, mut choices, mut seed) = (None, Vec::new(), None);
+        let (mut offset, mut choices, mut seed, mut chooser) = (None, Vec::new(), None, None);
         let (mut toc_root, mut loop_end) = (None, None);
         for _ in 0..24 {
             match ctrl.class() {
@@ -199,6 +211,7 @@ impl<'a> Walk<'a> {
                             choices.push((item.clip, e.f32("Weight").unwrap_or(1.0)));
                         }
                         anyhow::ensure!(!choices.is_empty(), "{name}: empty chooser");
+                        chooser = Some(self.chooser_of(&ctrl));
                         ctrl = target(&entries[0]).context("chooser item")?;
                     } else if policy.is("SignalChooserPolicyAsset") {
                         let holds = |e: &Asset, f: &str, want: bool| {
@@ -238,6 +251,7 @@ impl<'a> Walk<'a> {
                         offset,
                         choices,
                         seed,
+                        chooser,
                         sequences: Vec::new(),
                         root: toc_root.map(|r| (r, loop_end)),
                         tags: Tags::default(),
@@ -331,6 +345,7 @@ impl<'a> Walk<'a> {
                     let mut first = item.clone();
                     first.name = chooser.name().to_string();
                     first.seed = seed;
+                    first.chooser = Some(self.chooser_of(chooser));
                     first.choices = vec![(item.clip, weight)];
                     first.sequences = vec![(seq.name().to_string(), item.length)];
                     out = Some(first);
@@ -342,6 +357,14 @@ impl<'a> Walk<'a> {
             }
         }
         out.with_context(|| format!("{}: empty chooser", chooser.name()))
+    }
+
+    fn chooser_of(&self, c: &Asset) -> NisChooser {
+        NisChooser {
+            looping: c.bool("Looping").unwrap_or(false),
+            choose_on_loop: c.bool("ChooseOnLoop").unwrap_or(false),
+            blend: c.guid("BlendTag").and_then(|g| self.db.get(g)).and_then(|b| Blend::of_asset(&b)),
+        }
     }
 
     pub(super) fn tags(&self, a: &Asset<'a>, rig: &Rig, actor: &mut Tags) {
@@ -386,11 +409,16 @@ impl<'a> Walk<'a> {
                             actor.attachments.push(att);
                         }
                     }
-                    "BranchOutPointTag" if self.name(&t, "BranchTypeAsset").as_deref() == Some("NIS_Out") => {
-                        actor.branch_out = Some(num(&t, "Time"));
-                    }
-                    "BranchOutPointTag" if self.name(&t, "BranchTypeAsset").as_deref() == Some("NIS_EarlyOut") => {
-                        actor.early_out = Some(num(&t, "Time"));
+                    "BranchOutPointTag" => {
+                        let kind = self.name(&t, "BranchTypeAsset").unwrap_or_default();
+                        match kind.as_str() {
+                            "NIS_Out" => actor.branch_out = Some(num(&t, "Time")),
+                            "NIS_EarlyOut" => actor.early_out = Some(num(&t, "Time")),
+                            _ => {}
+                        }
+                        if t.guid("BlendAsset").is_some_and(|g| self.db.get(g).is_some()) {
+                            actor.window_blends.push(kind);
+                        }
                     }
                     "BranchInWindowTag" if self.name(&t, "BranchTypeAsset").as_deref() == Some("NIS_In") => {
                         actor.branch_in = Some(num(&t, "Time"));

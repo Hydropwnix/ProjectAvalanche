@@ -54,6 +54,33 @@ impl Ride {
         }
     }
 
+    pub fn hold_pads(&mut self, on: bool) {
+        self.pads_held = on;
+        if on {
+            self.a_lock.pause();
+        } else {
+            self.a_lock.resume();
+            if !self.a_lock.seen {
+                (self.input.jump, self.tricks.a) = (false, false);
+            }
+        }
+    }
+
+    pub fn hold_for_chat(&mut self, on: bool) {
+        if self.chat_held == on {
+            return;
+        }
+        self.chat_held = on;
+        if on {
+            self.a_lock.pause();
+        } else {
+            self.a_lock.resume();
+            if !self.a_lock.seen {
+                (self.input.jump, self.tricks.a) = (false, false);
+            }
+        }
+    }
+
     fn take_live_controls(&mut self, mut input: Input, mut tricks: TrickInput) {
         if !self.a_lock.update(input.jump || tricks.a) {
             (input.jump, tricks.a) = (false, false);
@@ -90,7 +117,9 @@ pub(super) fn read_controls(
 
 pub fn read_live_controls(ride: &mut Ride, keys: &ButtonInput<KeyCode>, gamepads: &Query<&Gamepad>, chase: bool) {
     let held = keys.pressed(KeyCode::Backspace) || gamepads.iter().any(|p| p.pressed(GamepadButton::LeftTrigger));
-    ride.back_held = keys.pressed(KeyCode::KeyC) || gamepads.iter().any(|p| p.pressed(GamepadButton::Select));
+    let released = ride.pads_held || ride.chat_held;
+    ride.back_held =
+        !released && (keys.pressed(KeyCode::KeyC) || gamepads.iter().any(|p| p.pressed(GamepadButton::Select)));
     ride.rewind_pad = RewindPad { rewind_held: held, takeover: rewind_takeover(gamepads), flip_accel: 0.0 };
     let mut input = live_input(keys, gamepads, chase);
     input.jump |= ride.state.start.is_some() && keys.pressed(KeyCode::Enter);

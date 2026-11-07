@@ -6,8 +6,6 @@ impl EventManager {
     }
 
     pub fn update_paused(&mut self, timer: &mut crate::death::DeathTimer, i: &EventInputs) -> EventUpdate {
-        // TODO(guess): the finish message widget's clock runs in a pause (provider slot 0x825F4EA8 → 0x825F4C40, vtable entry 0x820983A0: the front end's, not gated as traced); settle: the FE data-provider manager's update loop in a pause.
-        crate::guess_hit!();
         self.update_with(timer, i, crate::session::LOOP_STEP_S)
     }
 
@@ -19,6 +17,13 @@ impl EventManager {
     ) -> EventUpdate {
         use crate::death::DeathTimerEvent;
         let mut out = EventUpdate::default();
+        if let Some(result) = self.round_over
+            && self.result.is_none()
+            && self.on_at_round_end()
+        {
+            self.end_at_limit(i, &mut out, !result);
+            (self.request_loop_to_top, self.waiting) = (false, false);
+        }
         match self.state {
             EventState::Running if !self.waiting => {
                 self.clock.advance(i.dt_s);
@@ -29,6 +34,9 @@ impl EventManager {
                 out.timer = Some(ev);
                 if ev == DeathTimerEvent::EventEnds {
                     self.end_on_death(i, &mut out);
+                }
+                if std::mem::take(&mut self.time_up) && self.result.is_none() {
+                    self.end_by_time(i, &mut out);
                 }
                 if !i.rewinding {
                     self.progress_and_finish(i, &mut out);
@@ -45,13 +53,8 @@ impl EventManager {
             EventState::Finished | EventState::LoopOutro => self.after_finish(i, &mut out),
             _ => {}
         }
-        if let Some(t) = self.finish_message.as_mut() {
-            *t += widget_dt_s;
-            // TODO(guess): the exit animation takes no time (the widget clears UI 0xF3 when its Flash exit ends, flag +0xE8); settle: the HUD movie's `finishmessage_disable` callback and the writers of +0xE7 / +0xE8.
-            if *t >= FINISH_MESSAGE_HOLD_S {
-                crate::guess_hit!();
-                self.finish_message = None;
-            }
+        if self.finish_message.as_mut().is_some_and(|m| m.update(widget_dt_s)) {
+            self.finish_message = None;
         }
         out
     }
@@ -103,7 +106,7 @@ impl EventManager {
     }
 
     pub(super) fn finish_track(&mut self) {
-        self.finish_message = Some(0.0);
+        self.finish_message = Some(FinishMessage::default());
         self.track_finished = true;
         self.state = EventState::Finished;
         self.clock.stop();
@@ -132,20 +135,51 @@ impl EventManager {
         match self.state {
             EventState::Finished => {
                 self.allow_outro = true;
-                if i.nis_outro_active {
+                // TODO(guess): a port choice — a map's survive-to-death run loops at its finish with no outro (the disc's 27 `exp_*` events play `nis_binding_outro_survive_til_die` at `nis_outro_locator`; a map has no locator and no helicopter until M8d) and restarts at its spawn under the loop's fade; settle: M8d's helicopter along the map's `heli_path`.
+                if self.setup.loop_without_outro {
+                    crate::guess_hit!();
+                    self.allow_outro = false;
+                    self.state = EventState::LoopOutro;
+                    self.count_loop(out);
+                } else if i.nis_outro_active {
                     self.allow_outro = false;
                     self.state = EventState::LoopOutro;
                 }
             }
-            EventState::LoopOutro if !i.nis_outro_active => {
-                self.loops += 1;
-                self.waiting = true;
-                self.state = EventState::LoopRestart;
-                self.request_loop_to_top = true;
-                self.nis_short = true;
-                out.looped = true;
-            }
+            EventState::LoopOutro if !i.nis_outro_active => self.count_loop(out),
             _ => {}
+        }
+    }
+
+    fn count_loop(&mut self, out: &mut EventUpdate) {
+        self.loops += 1;
+        self.waiting = true;
+        self.state = EventState::LoopRestart;
+        self.request_loop_to_top = true;
+        self.nis_short = true;
+        out.looped = true;
+    }
+
+    pub(super) fn end_by_time(&mut self, i: &EventInputs, out: &mut EventUpdate) {
+        self.end_at_limit(i, out, !self.setup.time_up_result);
+    }
+
+    fn end_at_limit(&mut self, i: &EventInputs, out: &mut EventUpdate, failed: bool) {
+        self.state = if failed { EventState::Idle } else { EventState::Results };
+        if failed {
+            self.clock.stop();
+        }
+        self.result = Some(self.build_result(i, failed));
+        out.results = true;
+    }
+
+    fn on_at_round_end(&self) -> bool {
+        match self.state {
+            EventState::Running => true,
+            EventState::Finished | EventState::LoopOutro | EventState::LoopRestart => {
+                self.setup.event_type == Some(EventType::SurviveToDeath)
+            }
+            EventState::Idle | EventState::DelayedFinish | EventState::Results => false,
         }
     }
 
@@ -183,8 +217,8 @@ impl EventManager {
             _ => descent_mm,
         };
         let ascending = self.setup.event_type.is_some_and(EventType::ranks_ascending);
-        let mut rivals = if self.racers.is_empty() {
-            self.setup.rivals.clone()
+        let mut racers = if self.racers.is_empty() {
+            Vec::new()
         } else {
             let trick = self.setup.event_type.is_some_and(EventType::is_trick);
             let projected = |v: u32, progress: f32| v.wrapping_add(((1.0 - progress) * v as f32) as u32);
@@ -199,15 +233,11 @@ impl EventManager {
                 .collect()
         };
         if ascending {
-            rivals.sort_unstable();
+            racers.sort_unstable();
         } else {
-            rivals.sort_unstable_by(|a, b| b.cmp(a));
+            racers.sort_unstable_by(|a, b| b.cmp(a));
         }
-        // TODO(guess): the medal is the player's place among the rivals (tools and the speech's `RUN_END`); the results record's medal is `Results_ExploreReward` 0x8251D008's leaderboard walk (Explore; −1 for the World Tour, 0x8251E118); settle: hand the speech the results record's medal (posted at 0x8251D858).
-        let rank = (!failed && !rivals.is_empty()).then(|| {
-            crate::guess_hit!();
-            rivals.iter().filter(|&&r| if ascending { r < value } else { r > value }).count()
-        });
+        let Ranking { rivals, rank, medal, place } = self.setup.rank(value, failed, racers);
         EventResult {
             event_type: self.setup.event_type,
             points,
@@ -219,7 +249,8 @@ impl EventManager {
             value,
             rivals,
             rank,
-            medal: rank.and_then(Medal::from_rank),
+            medal,
+            place,
             geotag_credits: i.geotag_credits,
             geotag_count: i.geotag_count,
         }

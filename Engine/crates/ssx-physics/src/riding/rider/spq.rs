@@ -139,7 +139,7 @@ pub(super) fn spq(s: &mut RiderState, w: &World, dt: f32, correct: Option<()>) {
         && let Some(c) = s.contact
         && (s.traj_orientation * Vec3::Y).dot(c.normal) < t.queries.cos_angle_from_upright_for_impact_on_landing
     {
-        let li = w.impact_surface_weights(s.traj_orientation, s.traj_velocity, c.normal, prev_colliding);
+        let li = w.impact_surface_weights(s.traj_orientation, s.traj_velocity, c.normal, prev_colliding, c.entity);
         if li.trigger_impact {
             impact = ImpactState { in_soft_collision: impact.in_soft_collision, ..li };
         }
@@ -155,6 +155,9 @@ pub(super) fn spq(s: &mut RiderState, w: &World, dt: f32, correct: Option<()>) {
         impact = w.ghost_impact_state(impact, s.traj_orientation, v, prev_colliding);
     }
     s.impact = impact;
+    if let Some(e) = impact.collision_entity {
+        s.collision_entity = e;
+    }
 }
 
 pub fn update_player_speed(s: &mut RiderState, in_air: bool) {

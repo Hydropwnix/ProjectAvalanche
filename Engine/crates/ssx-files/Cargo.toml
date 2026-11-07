@@ -1,0 +1,33 @@
+[package]
+name = "ssx-files"
+description = "The files the programs write (port feature): replaced whole or not at all across a crash or a power cut — a partial file synced, renamed over the old one, the folder synced; created without replacing; folders installed whole. No Bevy, no network."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+cap-std = ["dep:cap-std", "dep:cap-fs-ext"]
+
+[dependencies]
+ssx-core.workspace = true
+cap-std = { workspace = true, optional = true }
+cap-fs-ext = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_WindowsProgramming"] }
+
+[[test]]
+name = "two_processes"
+harness = false
+
+[dev-dependencies]
+cap-std.workspace = true
+libtest-mimic.workspace = true
+
+[lints]
+workspace = true

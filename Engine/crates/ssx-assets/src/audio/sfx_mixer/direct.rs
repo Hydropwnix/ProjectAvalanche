@@ -48,6 +48,36 @@ impl Mixer {
         self.start_source(patch, voice, src, label)
     }
 
+    pub fn start_package(
+        &mut self,
+        patch: &str,
+        voice: &str,
+        sample: Arc<crate::sfx_override::Samples48>,
+        pitch: f32,
+        gain: f32,
+        label: String,
+    ) -> Option<u32> {
+        let src = Source {
+            channels: sample.channels,
+            rate: MIXER_RATE,
+            num_samples: u32::try_from(sample.frames()).unwrap_or(u32::MAX),
+            looped: false,
+            frames: Frames::Package { sample, looped: false },
+            resampler: Resampler::default(),
+            paused: false,
+            finished: false,
+            label: label.clone(),
+            fade: None,
+        };
+        let h = self.start_source(patch, voice, src, label)?;
+        if let Some(Some((slot, _))) = self.pcm.get(h as usize - 1).copied() {
+            self.graph.set_attr(slot, b"Rsp0", 0, f64::from(pitch));
+            let g = self.graph.attr(slot, b"Gai0", 0).unwrap_or(1.0);
+            self.graph.set_attr(slot, b"Gai0", 0, g * f64::from(gain));
+        }
+        Some(h)
+    }
+
     fn start_source(&mut self, patch: &str, voice: &str, src: Source, label: String) -> Option<u32> {
         let channels = src.channels;
         let sid = self.sources.voices.iter().position(Option::is_none).unwrap_or(self.sources.voices.len());
@@ -57,7 +87,7 @@ impl Mixer {
         self.sources.voices[sid] = Some(src);
         let Some(slot) = self.graph.add_aems_voice(patch, voice, channels, sid as u32) else {
             self.sources.voices[sid] = None;
-            eprintln!("sfx: speech patch {patch} / {voice} not found");
+            ssx_core::eprintln!("sfx: speech patch {patch} / {voice} not found");
             return None;
         };
         self.graph.set_attr(slot, b"Rsp0", 0, 1.0);
@@ -68,6 +98,34 @@ impl Mixer {
         self.pcm[h] = Some((slot, sid as u32));
         self.events.push(format!("speech voice {} start {label} → {patch}/{voice}", h + 1));
         Some(h as u32 + 1)
+    }
+
+    pub fn route_pcm(&mut self, handle: u32, bus: &str) -> bool {
+        let Some(Some((slot, _))) = handle.checked_sub(1).and_then(|h| self.pcm.get(h as usize)).copied() else {
+            return false;
+        };
+        let target = self.graph.submix_input(bus);
+        target.is_some() && self.graph.redirect_voice_send(slot, target)
+    }
+
+    pub fn release_when_ended(&mut self, handle: u32) {
+        let live = handle.checked_sub(1).and_then(|h| self.pcm.get(h as usize)).is_some_and(Option::is_some);
+        if live && !self.released.contains(&handle) {
+            self.released.push(handle);
+        }
+    }
+
+    pub fn released_voices(&self) -> usize {
+        self.released.len()
+    }
+
+    pub(crate) fn release_ended(&mut self) {
+        if self.released.is_empty() {
+            return;
+        }
+        let mut released = std::mem::take(&mut self.released);
+        released.retain(|&h| self.pcm_remaining(h).is_some());
+        self.released = released;
     }
 
     pub fn pcm_remaining(&mut self, handle: u32) -> Option<f32> {

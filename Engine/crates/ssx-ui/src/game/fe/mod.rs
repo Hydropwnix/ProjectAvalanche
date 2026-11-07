@@ -1,3 +1,4 @@
+pub mod ava;
 pub mod busy;
 pub mod data;
 pub mod explore;
@@ -105,6 +106,15 @@ pub struct Launch {
     pub rider: String,
     pub setup: setup::GameSetup,
     pub direct: bool,
+    pub map: Option<MapLaunch>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MapLaunch {
+    pub id: String,
+    pub title: String,
+    pub track: String,
+    pub mode: String,
 }
 
 pub struct FrontEnd {
@@ -153,6 +163,9 @@ pub struct FrontEnd {
     pub level_start: flow::LevelStart,
     pub fader: fade::Fader,
     pub fader_by_ride: bool,
+    pub network_session: bool,
+    pub withheld_popups: Vec<String>,
+    pub pending_strings: Vec<(String, String)>,
     pub loop_fade_in: bool,
     pub busy: busy::BusyIcon,
     pub post_race: postrace::PostRaceMenu,
@@ -175,17 +188,32 @@ pub struct FrontEnd {
     pub scripts: Option<scripts::FeScripts>,
     pub credits_text: Option<Vec<u8>>,
     pub music: music::Music,
+    pub ava: ava::Ava,
     pub input_lock: i32,
     pub time: f64,
     pub log: Vec<String>,
 }
 
 impl FrontEnd {
-    pub fn new(big_root: &Path, mut profile: Profile) -> Result<Self> {
+    pub fn reload_riders(&mut self, big_root: &Path) -> Result<()> {
         let career = CareerDb::load(big_root)?;
         let mut rules = career.rules();
         rules.load_badge_texts(big_root)?;
-        let attribdb = loading::AttribDb::load(big_root)?;
+        self.pending_strings.extend(ssx_assets::content::characters::career::port_strings(&career));
+        (self.career, self.rules) = (career, rules);
+        Ok(())
+    }
+
+    pub fn new(big_root: &Path, profile: Profile) -> Result<Self> {
+        Self::with_files(&crate::fs::Disc::new(big_root)?, big_root, profile)
+    }
+
+    pub fn with_files(files: &dyn crate::fs::FileSource, big_root: &Path, mut profile: Profile) -> Result<Self> {
+        let career = CareerDb::load(big_root)?;
+        let pending_strings = ssx_assets::content::characters::career::port_strings(&career).into_iter().collect();
+        let mut rules = career.rules();
+        rules.load_badge_texts(big_root)?;
+        let attribdb = loading::AttribDb::from_files(files)?;
         let tips = loading::Tips::from_db(&attribdb)?;
         let hint_records = hint::Records::from_db(&attribdb)?;
         let globe_data = ssx_assets::career::globe::GlobeData::load(big_root).ok();
@@ -232,7 +260,7 @@ impl FrontEnd {
             current_drop: 0,
             last_result_drop: 0,
             hints: hint::Hints { records: hint_records },
-            popups: popup::Popups::load(big_root),
+            popups: popup::Popups::load(files),
             saveload: saveload::SaveLoad::default(),
             pause: pause::Pause::default(),
             game_pause: pause::PauseManager::default(),
@@ -245,6 +273,9 @@ impl FrontEnd {
             level_start: flow::LevelStart::default(),
             fader: fade::Fader::default(),
             fader_by_ride: false,
+            network_session: false,
+            pending_strings,
+            withheld_popups: Vec::new(),
             loop_fade_in: false,
             busy: busy::BusyIcon::default(),
             post_race: postrace::PostRaceMenu::default(),
@@ -265,10 +296,9 @@ impl FrontEnd {
             badges: Default::default(),
             badge_progress: Default::default(),
             scripts: Some(scripts::FeScripts::load(big_root, &[])),
-            credits_text: credits::load(big_root),
-            music: music::Music::with_songs(
-                ssx_assets::musicbox::MusicBox::load(big_root).map(|mb| music::licensed_songs(&mb)).unwrap_or_default(),
-            ),
+            credits_text: credits::read(files),
+            music: music::Music::with_songs(music::menu_songs(big_root)),
+            ava: ava::Ava::default(),
             input_lock: 0,
             time: 0.0,
             log: Vec::new(),
@@ -276,7 +306,7 @@ impl FrontEnd {
     }
 
     pub fn note(&mut self, what: impl AsRef<str>) {
-        self.log.push(format!("[{:7.2}] {}", self.time, what.as_ref()));
+        self.log.push(format!("[{:7.2}] {}", self.time, ssx_core::text::Text::new(what.as_ref())));
     }
 
     pub fn pause_step(&mut self) -> Option<bool> {
@@ -311,6 +341,10 @@ impl FrontEnd {
             self.note(format!("GoToScreen({screen:#x}): no nav event"));
             return;
         };
+        self.go_to_screen_by(env, screen, event);
+    }
+
+    pub fn go_to_screen_by(&mut self, env: &mut FeEnv, screen: u32, event: &str) {
         if screens::writes_breadcrumb(screen) {
             let key = screens::SCREENS[screen as usize].2;
             let text = env.loc.text(key);
@@ -354,6 +388,14 @@ impl FrontEnd {
             music::update(self, env);
         }
         progression::update(self, env, dt as f32);
+        #[cfg(feature = "net")]
+        if self.ava.hub.on {
+            ava::browser::update(self, env);
+            ava::options::update(self, env);
+            ava::session::chat::update(self, env);
+            ava::session::players::update(self);
+        }
+        ava::maps::update(self, env);
         flow::level_start_update(self, env);
         if !self.fader_by_ride {
             self.fader.step(dt as f32);

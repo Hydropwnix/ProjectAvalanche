@@ -219,6 +219,7 @@ pub(super) fn init(
                 shader_defs: Vec::new(),
                 entry_point: Some(vs.into()),
                 buffers,
+                constants: Vec::new(),
             },
             fragment: Some(FragmentState {
                 shader: shaders.globe.clone(),
@@ -262,6 +263,7 @@ pub(super) fn init(
                 attr(2, VertexFormat::Float32x3, 12),
                 attr(3, VertexFormat::Float32x2, 8),
             ],
+            constants: Vec::new(),
         },
         fragment: Some(FragmentState {
             shader: shaders.midground.clone(),
@@ -298,6 +300,7 @@ pub(super) fn init(
                 shader_defs: Vec::new(),
                 entry_point: Some("vs_full".into()),
                 buffers: Vec::new(),
+                constants: Vec::new(),
             },
             fragment: Some(FragmentState {
                 shader: shader.clone(),
@@ -324,6 +327,7 @@ pub(super) fn init(
             shader_defs: Vec::new(),
             entry_point: Some("vs_cloud".into()),
             buffers: Vec::new(),
+            constants: Vec::new(),
         },
         fragment: Some(FragmentState {
             shader: shaders.clouds.clone(),
@@ -363,6 +367,7 @@ pub(super) fn init(
                 attr(3, VertexFormat::Float32x2, 8),
                 attr(4, VertexFormat::Unorm8x4, 4),
             ],
+            constants: Vec::new(),
         },
         fragment: Some(FragmentState {
             shader: shaders.waves.clone(),
@@ -406,6 +411,7 @@ pub(super) fn init(
             shader_defs: Vec::new(),
             entry_point: Some("vs_full".into()),
             buffers: Vec::new(),
+            constants: Vec::new(),
         },
         fragment: Some(FragmentState {
             shader: shaders.clouds.clone(),

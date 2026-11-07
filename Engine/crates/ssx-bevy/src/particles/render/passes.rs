@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy::render::render_resource::*;
 use bevy::render::renderer::{RenderContext, RenderDevice};
-use bevy::render::view::ViewDepthTexture;
+use bevy::render::view::ViewDepthStencilTexture;
 
 use super::pipelines::{ParticlePipelines, TECHS};
 use super::{Bin, ParticleGpu};
@@ -74,7 +74,7 @@ fn fullscreen(
 pub fn draw(
     world: &World,
     ctx: &mut RenderContext,
-    depth: &ViewDepthTexture,
+    depth: &ViewDepthStencilTexture,
     frame: &TextureView,
     bloom: Option<&TextureView>,
     post: BindingResource,
@@ -88,9 +88,11 @@ pub fn draw(
         return;
     };
     let (Some(t), Some((_, textures)), Some(records)) = (&gpu.targets, &gpu.textures, &gpu.records) else { return };
-    if gpu.cmds.is_empty() || !depth.texture.usage().contains(TextureUsages::TEXTURE_BINDING) {
+    if gpu.cmds.is_empty() || !depth.texture().usage().contains(TextureUsages::TEXTURE_BINDING) {
         return;
     }
+    let depth_views = depth.attachment.depth_stencil_views();
+    let Some(depth_sampled) = depth_views.depth_only_view() else { return };
     let get = |id| cache.get_render_pipeline(id);
     let (Some(filter), Some(copy), Some(tonemap), Some(bloom_p), Some(composite)) =
         (get(p.depth_filter), get(p.depth_copy), get(p.tonemap), get(p.bloom), get(p.composite))
@@ -115,7 +117,7 @@ pub fn draw(
             src,
             &p.smooth,
             exposure,
-            depth.view(),
+            depth_sampled,
             half,
         )
     };
@@ -194,6 +196,6 @@ pub fn draw(
     fullscreen(ctx, "ssx_particles_composite", frame, None, composite, &bind(&t.colour_b, &t.depth_copy), None);
     if gpu.cmds.iter().any(|c| c.bin == Bin::FullRes) {
         fullscreen(ctx, "ssx_particles_depth_copy", &t.depth_full, None, copy, &bind(&t.colour_a, &t.dummy), None);
-        bin(ctx, "ssx_particles_fullres", frame, depth.view(), None, Bin::FullRes);
+        bin(ctx, "ssx_particles_fullres", frame, depth_views.attachment_view(), None, Bin::FullRes);
     }
 }

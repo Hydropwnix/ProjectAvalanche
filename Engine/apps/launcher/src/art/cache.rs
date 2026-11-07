@@ -56,12 +56,11 @@ impl Cache {
     }
 
     pub fn store(&mut self, slot: Slot, picture: &Picture, note: &str) -> Result<()> {
-        std::fs::create_dir_all(&self.dir)?;
+        ssx_files::create_dir_all(&self.dir)?;
         picture.write_png(&self.file(slot))?;
         self.index.slots.insert(slot.name().to_owned(), note.to_owned());
-        let partial = self.dir.join("art.json.partial");
-        std::fs::write(&partial, serde_json::to_string_pretty(&self.index)?)?;
-        Ok(std::fs::rename(partial, self.dir.join("art.json"))?)
+        let index = serde_json::to_string_pretty(&self.index)?;
+        Ok(ssx_files::replace(&self.dir.join("art.json"), index.as_bytes(), &ssx_files::Options::new())?)
     }
 }
 

@@ -1,0 +1,42 @@
+[package]
+name = "ssx-content"
+description = "Content ids, the layered content registry, package manifests (`resource.toml`), patches and content hashes (port feature: modding)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+bcdec_rs.workspace = true
+blake3.workspace = true
+cap-fs-ext.workspace = true
+cap-std.workspace = true
+flate2.workspace = true
+gltf-json.workspace = true
+bevy_mikktspace.workspace = true
+serde_json.workspace = true
+png.workspace = true
+ruzstd.workspace = true
+serde.workspace = true
+texpresso.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+zune-jpeg.workspace = true
+exr.workspace = true
+half.workspace = true
+image.workspace = true
+naga.workspace = true
+ssx-formats.workspace = true
+symphonia.workspace = true
+skrifa.workspace = true
+ssx-rules.workspace = true
+ssx-files.workspace = true
+ssx-core.workspace = true
+sha2.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[lints]
+workspace = true

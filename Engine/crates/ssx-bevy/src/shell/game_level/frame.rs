@@ -5,7 +5,7 @@ use ssx_ui::game::fe::pause::GameRequest;
 use ssx_ui::game::input::{Button, Input};
 
 use super::LevelGame;
-use super::results::{post_results, stats_from_ride, sync_named_flags};
+use super::results::{RideOutcome, post_results, stats_from_ride, sync_named_flags};
 use crate::audio::music::frontend::FrontEndAudio;
 use crate::ride::Ride;
 use crate::shell::game_mode::{self, GameUiRes, UiPipelinesReady};
@@ -64,7 +64,13 @@ pub fn level_frame(
     let badges = ride.session.stats.awarded[2].len();
     if badges != l.badges_seen {
         l.badges_seen = badges;
-        stats_from_ride(ui, &ride, &l.stat_names);
+        if l.live {
+            info!("level: a network session's ride awarded a badge: not into the profile, no notification");
+        } else if l.launch.map.is_some() {
+            info!("level: a map's ride awarded a badge: not into the profile, no notification");
+        } else {
+            stats_from_ride(ui, &ride, &l.stat_names);
+        }
     }
     sync_named_flags(l, &mut ride, ui);
     for id in [ssx_ui::game::values::id::READY, ssx_ui::game::values::id::RACE_STARTED] {
@@ -105,6 +111,8 @@ pub fn level_frame(
     }
     if l.takes_input() {
         pause_input(&mut commands, l, ui, keys.bypass_change_detection(), &pads, &slots);
+    } else if l.live && l.results_posted {
+        results_script(&mut commands, l, ui);
     }
     for r in std::mem::take(&mut l.requests) {
         match r {
@@ -149,23 +157,89 @@ pub fn level_frame(
         info!("level: the ride's time limit ({secs:.1} s): go_to_quit_stage");
         ui.nav.raise("go_to_quit_stage");
     }
-    if !l.results_posted
+    if l.live
+        && !l.live_rounds
+        && l.restart_at.is_none()
+        && let Some(r) = l.result.as_ref()
+    {
+        info!(
+            "level: a network session's run ended (time {} ms, points {}, failed {}): no results; the run starts over",
+            r.time_ms, r.points, r.failed
+        );
+        ride.hold = true;
+        ui.fe_call(ssx_ui::game::fe::pause::do_restart);
+    }
+    if !l.live
+        && !l.results_posted
         && let Some(r) = l.result.clone()
     {
         l.results_posted = true;
-        stats_from_ride(ui, &ride, &l.stat_names);
-        let bonuses = ride.session.stats.track_bonuses();
-        if !bonuses.is_empty() {
-            info!("level: track bonuses awarded: {bonuses:?}");
+        let posted = if l.launch.map.is_some() {
+            let event_type = l.launch.event_type as i32;
+            let mode = ride.map.as_ref().and_then(|m| Some((m.id.to_string(), m.mode.as_ref()?)));
+            let run = mode.as_ref().map(|(map, mode)| ssx_ui::game::ride::MapRun {
+                map,
+                mode: &mode.name,
+                rules: &mode.rules,
+                gamemode: mode.gamemode.is_some(),
+                sim_content_id: ride.sim_content_id(),
+            });
+            let posted = ssx_ui::game::ride::post_map_results(ui, event_type, &l.launch.rider, &r, run.as_ref());
+            if r.failed {
+                ssx_ui::game::ride::post_death_body(ui, ride.session.event.setup.course, &r);
+            }
+            posted
+        } else {
+            stats_from_ride(ui, &ride, &l.stat_names);
+            let bonuses = ride.session.stats.track_bonuses();
+            if !bonuses.is_empty() {
+                info!("level: track bonuses awarded: {bonuses:?}");
+            }
+            let splits = ride.session.event.explore_splits().unwrap_or_default();
+            post_results(
+                ui,
+                &l.launch,
+                &r,
+                ride.session.event.setup.course,
+                RideOutcome {
+                    track_bonuses: bonuses,
+                    bot_scores: l.bot_scores.clone(),
+                    splits,
+                    sim_content_id: ride.sim_content_id().map(str::to_string),
+                },
+            )
+        };
+        if let Some(why) = posted.best_not_kept {
+            ssx_assets::content::data::simid::best_not_kept(ride.big_root(), &l.launch.event, why);
         }
-        let splits = ride.session.event.explore_splits().unwrap_or_default();
-        let won =
-            post_results(ui, &l.launch, &r, ride.session.event.setup.course, bonuses, l.bot_scores.clone(), splits);
+        let won = posted.won;
         l.save_due = true;
         let summary = ui.fe.as_ref().map_or_else(String::new, |f| game_mode::summary(&f.profile));
-        info!("level: results posted ({}): {summary}", if won { "won" } else { "not won" });
+        info!(
+            "level: results posted ({}, medal {:?} against the rows {:?}): {summary}",
+            if won { "won" } else { "not won" },
+            posted.medal,
+            r.rivals
+        );
         let death = r.failed;
         ui.fe_call(|fe, env| ssx_ui::game::fe::flow::results_posted(fe, env, death));
+    }
+}
+
+fn results_script(commands: &mut Commands, l: &mut LevelGame, ui: &mut GameUi) {
+    for (b, device) in std::mem::take(&mut l.release) {
+        ui.input.push_from(Input::Button { button: b, down: false }, device);
+    }
+    while l.script.first().is_some_and(|(t, _)| *t <= l.clock) {
+        match l.script.remove(0).1 {
+            Step::Press(b) => {
+                info!("level: press {b:?} (script, under the round's results), UI frame {}", l.ui_frames);
+                ui.input.push_from(Input::Button { button: b, down: true }, ssx_ui::game::input::SCRIPT_DEVICE);
+                l.release.push((b, ssx_ui::game::input::SCRIPT_DEVICE));
+            }
+            Step::Shot(name) => game_mode::screenshot(commands, l.shot_dir.join(format!("{name}.png")), false),
+            step => info!("level: {step:?} (script) is not taken under the round's results"),
+        }
     }
 }
 
@@ -188,15 +262,24 @@ fn pause_input(
         keys.release(KeyCode::KeyC);
         l.script_back_until = None;
     }
+    if let Some((key, _)) = l.script_bumper_until.filter(|(_, t)| l.clock >= *t) {
+        keys.release(key);
+        l.script_bumper_until = None;
+    }
+    let typing = ui.text_focused();
     let pad_start = pads
         .iter()
         .find(|(_, p)| p.just_pressed(GamepadButton::Start))
         .and_then(|(e, _)| slots.device(e))
-        .or(keys.just_pressed(KeyCode::Escape).then_some(ssx_ui::game::input::KEYBOARD_DEVICE));
+        .or((!typing && keys.just_pressed(KeyCode::Escape)).then_some(ssx_ui::game::input::KEYBOARD_DEVICE));
     let mut start = pad_start.is_some();
     let mut script_presses = Vec::new();
     while l.script.first().is_some_and(|(t, _)| *t <= l.clock) {
         match l.script.remove(0).1 {
+            Step::Press(b @ (Button::DigitalOne | Button::Select)) if typing => {
+                info!("level: press {b:?} (script, the on-screen keyboard's), UI frame {}", l.ui_frames);
+                script_presses.push(b);
+            }
             Step::Press(Button::DigitalOne) => {
                 info!("level: press DigitalOne (script: Space, the UI's and the ride's A), UI frame {}", l.ui_frames);
                 keys.press(KeyCode::Space);
@@ -206,6 +289,13 @@ fn pause_input(
                 info!("level: press Back (script: C, the ride's Back), UI frame {}", l.ui_frames);
                 keys.press(KeyCode::KeyC);
                 l.script_back_until = Some(l.clock + SCRIPT_A_HOLD);
+            }
+            Step::Press(b @ (Button::LeftBumper | Button::RightBumper)) => {
+                let key = if b == Button::LeftBumper { KeyCode::KeyQ } else { KeyCode::KeyE };
+                info!("level: press {b:?} (script: the UI's and the keyboard's {key:?}), UI frame {}", l.ui_frames);
+                keys.press(key);
+                l.script_bumper_until = Some((key, l.clock + SCRIPT_A_HOLD));
+                script_presses.push(b);
             }
             Step::Press(b) => {
                 info!("level: press {b:?} (script), UI frame {}", l.ui_frames);
@@ -221,6 +311,20 @@ fn pause_input(
                 info!("level: DO_TutorialPopup({text}) (script)");
                 ui.tutorial_popup(&text);
             }
+            Step::Chat(quick) => {
+                let opened = ui.chat_open(quick);
+                info!("level: the chat key (quick {quick}, script): {}", if opened { "opened" } else { "not opened" });
+            }
+            Step::Text(t) => {
+                info!("level: type {t:?} (script)");
+                for c in t.chars() {
+                    ui.text_input(ssx_ui::game::fe::ava::keyboard::TextInput::Char(c));
+                }
+            }
+            Step::TextKey(k) => {
+                info!("level: key {k:?} (script)");
+                ui.text_input(k);
+            }
             step @ (Step::Pad(_) | Step::Focus(_)) => {
                 info!("level: {step:?} (script) at ride UI frame {}", l.ui_frames);
                 ssx_ui::game::fe::host::script_interrupt(ui, &step);
@@ -228,9 +332,9 @@ fn pause_input(
             _ => {}
         }
     }
-    let mut presses: Vec<(Button, u8)> = game_mode::pad_presses(keys, pads, slots, &mut l.stick_dpad)
+    let mut presses: Vec<(Button, u8)> = game_mode::pad_presses(keys, pads, slots, &mut l.stick_dpad, false)
         .into_iter()
-        .filter(|(b, _)| *b != Button::Start)
+        .filter(|&(b, device)| b != Button::Start && !(typing && device == ssx_ui::game::input::KEYBOARD_DEVICE))
         .collect();
     if let Some(device) = pad_start {
         presses.push((Button::Start, device));
@@ -257,5 +361,5 @@ fn pause_input(
         ui.input.push_from(Input::Button { button: b, down: true }, device);
         l.release.push((b, device));
     }
-    ui.game_input(start);
+    ui.game_input(start && !ui.chat_held());
 }

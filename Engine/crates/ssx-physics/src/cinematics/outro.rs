@@ -175,6 +175,7 @@ pub fn prepare(big_root: &Path, event: &str, character: &str, reaction: i64) -> 
         choice,
         nis,
         jump_clip: usize::MAX,
+        jump_clips: Vec::new(),
         event: event.to_string(),
         heli: Err("the standard outro binds no helicopter".into()),
     }))
@@ -195,7 +196,14 @@ pub fn prepare_heli_pickup(big_root: &Path, event: &str, character: &str) -> Res
         variant: IntroVariant::Outro,
     };
     let heli = ssx_assets::helicopter::drop_helicopter(big_root, event).map_err(|e| format!("{e:#}"));
-    Ok(Arc::new(IntroAssets { choice, nis, jump_clip: usize::MAX, event: event.to_string(), heli }))
+    Ok(Arc::new(IntroAssets {
+        choice,
+        nis,
+        jump_clip: usize::MAX,
+        jump_clips: Vec::new(),
+        event: event.to_string(),
+        heli,
+    }))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -269,7 +277,14 @@ pub fn prepare_heli_grab(
         variant: IntroVariant::Outro,
     };
     let heli = ssx_assets::helicopter::drop_helicopter(big_root, event).map_err(|e| format!("{e:#}"));
-    Ok(Arc::new(IntroAssets { choice, nis, jump_clip: usize::MAX, event: event.to_string(), heli }))
+    Ok(Arc::new(IntroAssets {
+        choice,
+        nis,
+        jump_clip: usize::MAX,
+        jump_clips: Vec::new(),
+        event: event.to_string(),
+        heli,
+    }))
 }
 
 pub fn prepare_sequence(
@@ -291,6 +306,7 @@ pub fn prepare_sequence(
         choice,
         nis,
         jump_clip: usize::MAX,
+        jump_clips: Vec::new(),
         event: event.to_string(),
         heli: Err(format!("{binding} binds no helicopter")),
     }))

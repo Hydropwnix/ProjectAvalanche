@@ -1,0 +1,9 @@
+shape = "beam"
+size = 4.0
+color = "#80FFB0A0"
+glow = 2.0
+facing = "world"
+draw_distance = 600.0
+
+[animation]
+spin = 0.0

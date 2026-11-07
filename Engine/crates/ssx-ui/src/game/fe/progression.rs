@@ -223,6 +223,13 @@ pub fn load_to_final_track(fe: &mut FrontEnd, env: &mut FeEnv) {
 }
 
 pub fn quit_return(fe: &mut FrontEnd, env: &mut FeEnv) {
+    if fe.ava.maps.riding.take().is_some() {
+        fe.change_gear = false;
+        fe.ava.maps.return_due = true;
+        env.values.set_int(PENDING_NAVIGATION, NO_SCREEN as i32);
+        fe.note("the quit's return: a map's ride → the Maps page");
+        return;
+    }
     let drop = fe.current_drop;
     fe.profile.globe_last_drop = drop;
     if std::mem::take(&mut fe.change_gear) {
@@ -249,6 +256,10 @@ pub fn quit_return(fe: &mut FrontEnd, env: &mut FeEnv) {
 }
 
 pub fn pending_navigation(fe: &mut FrontEnd, env: &mut FeEnv) {
+    if std::mem::take(&mut fe.ava.maps.return_due) {
+        fe.go_to_screen_by(env, super::screens::id::MAIN_MENU, super::ava::maps::OPEN);
+        return;
+    }
     let s = env.values.int(PENDING_NAVIGATION);
     if s != 0 && s as u32 != NO_SCREEN {
         env.values.set_int(PENDING_NAVIGATION, NO_SCREEN as i32);

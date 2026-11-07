@@ -175,7 +175,7 @@ impl ScoreState {
         } else if self.flow_level < 0 && self.flow_state != FlowState::Negative {
             self.flow_level = 0;
         }
-        self.flow_level = self.flow_level.clamp(-1, 19);
+        self.flow_level = self.flow_level.clamp(FLOW_LEVEL_MIN, FLOW_LEVEL_MAX);
     }
 
     pub(super) fn add_points(&mut self, pts: f32, combo_end: bool) {

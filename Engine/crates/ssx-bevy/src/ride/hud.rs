@@ -260,12 +260,11 @@ fn trick_hud(ride: &Ride) -> String {
             TrickLevel::Signature => " signature",
         };
         let name = if t.trick_type != TrickType::None { t.trick_type } else { t.trick_type_locked };
-        format!(
-            "{name:?}{level} {:?}{} ({:.0} ticks)",
-            t.phase,
-            if t.tweak_node { " tweak" } else { "" },
-            t.phase_ticks
-        )
+        let name = match name {
+            TrickType::Added(_) => format!("Added{} ({:?}'s places)", name.value(), name.flow_base()),
+            _ => format!("{name:?}"),
+        };
+        format!("{name}{level} {:?}{} ({:.0} ticks)", t.phase, if t.tweak_node { " tweak" } else { "" }, t.phase_ticks)
     };
     let quality = match l.quality {
         LandingQuality::None => "-",

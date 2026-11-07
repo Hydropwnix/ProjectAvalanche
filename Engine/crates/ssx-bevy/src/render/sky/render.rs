@@ -8,15 +8,16 @@ use bevy::render::render_resource::*;
 use bevy::render::renderer::{RenderContext, RenderDevice, RenderQueue, ViewQuery};
 use bevy::render::texture::GpuImage;
 use bevy::render::view::{
-    ExtractedView, Msaa, ViewDepthTexture, ViewTarget, ViewUniform, ViewUniformOffset, ViewUniforms,
+    ExtractedView, Msaa, ViewDepthStencilTexture, ViewTarget, ViewUniform, ViewUniformOffset, ViewUniforms,
 };
 use bevy::render::{GpuResourceAppExt, Render, RenderApp, RenderStartup, RenderSystems};
 use bevy::shader::Shader;
 
 use super::midground::gpu as midground;
+use super::package_gpu;
 use super::{SkySettings, SkyUniform};
 
-const SHADER: &str = "embedded://ssx_bevy/render/sky/sky.wgsl";
+const SHADER: &str = "embedded://ssx_bevy/render/sky/sky.wesl";
 
 pub(super) fn build(app: &mut App) {
     app.add_plugins(ExtractResourcePlugin::<SkySettings>::default());
@@ -28,13 +29,16 @@ pub(super) fn build(app: &mut App) {
         .init_resource::<SkyBuffer>()
         .init_gpu_resource::<SpecializedRenderPipelines<midground::MidgroundPipeline>>()
         .init_resource::<midground::MidgroundBuffers>()
-        .add_systems(RenderStartup, (init_pipeline, midground::init_pipeline))
+        .init_gpu_resource::<SpecializedRenderPipelines<package_gpu::PackagePipelines>>()
+        .init_resource::<package_gpu::DomeBuffers>()
+        .add_systems(RenderStartup, (init_pipeline, midground::init_pipeline, package_gpu::init))
         .add_systems(
             Render,
             (
                 prepare_pipelines.in_set(RenderSystems::Prepare),
                 prepare_bind_group.in_set(RenderSystems::PrepareBindGroups),
                 midground::prepare.in_set(RenderSystems::PrepareBindGroups),
+                package_gpu::prepare.in_set(RenderSystems::PrepareBindGroups),
             ),
         )
         .add_systems(
@@ -59,6 +63,7 @@ struct SkyPipeline {
 struct SkyKey {
     format: TextureFormat,
     samples: u32,
+    overlay: Option<super::package::Overlay>,
 }
 
 impl SpecializedRenderPipeline for SkyPipeline {
@@ -77,11 +82,49 @@ impl SpecializedRenderPipeline for SkyPipeline {
                 bias: DepthBiasState::default(),
             }),
             multisample: MultisampleState { count: key.samples, mask: !0, alpha_to_coverage_enabled: false },
-            fragment: Some(FragmentState {
-                shader: self.shader.clone(),
-                entry_point: Some("fragment".into()),
-                targets: vec![Some(ColorTargetState { format: key.format, blend: None, write_mask: ColorWrites::ALL })],
-                ..default()
+            fragment: Some(match key.overlay {
+                None => FragmentState {
+                    shader: self.shader.clone(),
+                    entry_point: Some("fragment".into()),
+                    targets: vec![Some(ColorTargetState {
+                        format: key.format,
+                        blend: None,
+                        write_mask: ColorWrites::ALL,
+                    })],
+                    ..default()
+                },
+                Some(o) => {
+                    let mut shader_defs: Vec<bevy::shader::ShaderDefVal> = vec!["SSX_SKY_OVERLAY".into()];
+                    if o.clouds {
+                        shader_defs.push("SSX_SKY_CLOUDS".into());
+                    }
+                    if o.sun {
+                        shader_defs.push("SSX_SKY_SUN".into());
+                    }
+                    let blend = BlendState {
+                        color: BlendComponent {
+                            src_factor: BlendFactor::One,
+                            dst_factor: BlendFactor::OneMinusSrcAlpha,
+                            operation: BlendOperation::Add,
+                        },
+                        alpha: BlendComponent {
+                            src_factor: BlendFactor::One,
+                            dst_factor: BlendFactor::OneMinusSrcAlpha,
+                            operation: BlendOperation::Add,
+                        },
+                    };
+                    FragmentState {
+                        shader: self.shader.clone(),
+                        shader_defs,
+                        entry_point: Some("fragment".into()),
+                        targets: vec![Some(ColorTargetState {
+                            format: key.format,
+                            blend: Some(blend),
+                            write_mask: ColorWrites::ALL,
+                        })],
+                        ..default()
+                    }
+                }
             }),
             ..default()
         }
@@ -131,22 +174,25 @@ fn init_pipeline(mut commands: Commands, device: Res<RenderDevice>, assets: Res<
 }
 
 #[derive(Component)]
-struct SkyPipelineId(CachedRenderPipelineId);
+struct SkyPipelineId(CachedRenderPipelineId, Option<CachedRenderPipelineId>);
 
 fn prepare_pipelines(
     mut commands: Commands,
     cache: Res<PipelineCache>,
     mut pipelines: ResMut<SpecializedRenderPipelines<SkyPipeline>>,
     pipeline: Option<Res<SkyPipeline>>,
+    settings: Option<Res<SkySettings>>,
     views: Query<(Entity, &ExtractedView, &Msaa), With<ViewTarget>>,
 ) {
     let Some(pipeline) = pipeline else {
         return;
     };
+    let overlay = settings.as_ref().and_then(|s| s.package.as_ref()).and_then(|p| p.overlay);
     for (entity, view, msaa) in &views {
-        let key = SkyKey { format: view.target_format, samples: msaa.samples() };
+        let key = SkyKey { format: view.target_format, samples: msaa.samples(), overlay: None };
         let id = pipelines.specialize(&cache, &pipeline, key);
-        commands.entity(entity).insert(SkyPipelineId(id));
+        let over = overlay.map(|o| pipelines.specialize(&cache, &pipeline, SkyKey { overlay: Some(o), ..key }));
+        commands.entity(entity).insert(SkyPipelineId(id, over));
     }
 }
 
@@ -195,12 +241,41 @@ fn prepare_bind_group(
 }
 
 fn draw_sky(
-    view: ViewQuery<(&ViewTarget, &ViewDepthTexture, &ViewUniformOffset, &SkyPipelineId)>,
+    view: ViewQuery<(
+        &ViewTarget,
+        &ViewDepthStencilTexture,
+        &ViewUniformOffset,
+        &SkyPipelineId,
+        Option<&package_gpu::ViewPackageSky>,
+    )>,
     buffer: Res<SkyBuffer>,
+    dome: Res<package_gpu::DomeBuffers>,
     cache: Res<PipelineCache>,
     mut ctx: RenderContext,
 ) {
-    let (target, depth, offset, pipeline_id) = view.into_inner();
+    let (target, depth, offset, pipeline_id, package) = view.into_inner();
+    if let Some(package) = package {
+        let color = [Some(target.get_color_attachment())];
+        let mut pass = ctx.begin_tracked_render_pass(RenderPassDescriptor {
+            label: Some("ssx_sky_package"),
+            color_attachments: &color,
+            depth_stencil_attachment: Some(depth.get_attachment(StoreOp::Store)),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        if !package_gpu::draw(&mut pass, package, &dome, &cache, offset.offset) {
+            return;
+        }
+        if let (Some(bind_group), Some(over)) =
+            (&buffer.bind_group, pipeline_id.1.and_then(|id| cache.get_render_pipeline(id)))
+        {
+            pass.set_render_pipeline(over);
+            pass.set_bind_group(0, bind_group, &[offset.offset]);
+            pass.draw(0..3, 0..1);
+        }
+        return;
+    }
     let (Some(bind_group), Some(pipeline)) = (&buffer.bind_group, cache.get_render_pipeline(pipeline_id.0)) else {
         return;
     };

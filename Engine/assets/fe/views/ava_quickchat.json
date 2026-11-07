@@ -1,0 +1,183 @@
+{
+  "format": 1,
+  "view": "ava_quickchat",
+  "layer": "popup",
+  "stage": [
+    1280,
+    720
+  ],
+  "frame_rate": 30,
+  "imports": [
+    {
+      "name": "Panel",
+      "url": "components/Panel.swf",
+      "symbol": "components.Panel"
+    },
+    {
+      "name": "ListMenu",
+      "url": "components/ListMenu.swf",
+      "symbol": "components.ListMenu"
+    },
+    {
+      "name": "Highlight",
+      "url": "components/Highlight.swf",
+      "symbol": "components.Highlight"
+    },
+    {
+      "name": "Callouts",
+      "url": "components/ButtonCalloutBar.swf",
+      "symbol": "components.ButtonCalloutBar"
+    }
+  ],
+  "symbols": [
+    {
+      "name": "AvaQuickChatLine",
+      "export": true,
+      "cell": {
+        "text": "txtItem",
+        "highlight": "mcHighlight",
+        "width": 380,
+        "height": 32
+      },
+      "children": [
+        {
+          "instance": "mcHighlight",
+          "symbol": "Highlight"
+        },
+        {
+          "instance": "txtItem",
+          "x": 14,
+          "y": 4,
+          "text": {
+            "font": "DIN Mittelschrift Std",
+            "size": 18,
+            "color": "#ffffff",
+            "width": 356,
+            "height": 26
+          }
+        }
+      ]
+    },
+    {
+      "name": "AvaQuickChat",
+      "export": true,
+      "children": [
+        {
+          "instance": "mcPanel",
+          "symbol": "Panel",
+          "x": 36,
+          "y": 104
+        },
+        {
+          "instance": "txtTitle",
+          "x": 52,
+          "y": 114,
+          "text": {
+            "font": "DIN Engschrift Std",
+            "size": 26,
+            "color": "#b8f3ff",
+            "width": 380,
+            "height": 34
+          }
+        },
+        {
+          "instance": "mcLines",
+          "symbol": "ListMenu",
+          "x": 44,
+          "y": 154
+        },
+        {
+          "instance": "mcCallouts",
+          "symbol": "Callouts",
+          "x": 36,
+          "y": 476
+        }
+      ]
+    }
+  ],
+  "view_symbol": {
+    "symbol": "AvaQuickChat"
+  },
+  "logic": {
+    "input_priority": "popup",
+    "consume_unmapped": true,
+    "data": [
+      "ava_quickchat",
+      "ava_quickchat_items",
+      "ava_quickchat_items_index"
+    ],
+    "texts": [
+      {
+        "target": "txtTitle",
+        "data": "ava_quickchat",
+        "field": "title"
+      }
+    ],
+    "menus": [
+      {
+        "target": "mcLines",
+        "rows": 9,
+        "cell_width": 380,
+        "cell_height": 32,
+        "spacing": 2,
+        "wrap": true,
+        "data": "ava_quickchat_items",
+        "index": "ava_quickchat_items_index",
+        "cell": "AvaQuickChatLine"
+      }
+    ],
+    "panels": [
+      {
+        "target": "mcPanel",
+        "width": 396,
+        "height": 362,
+        "dimmer": 70
+      }
+    ],
+    "callouts": {
+      "target": "mcCallouts",
+      "buttons": [
+        {
+          "icon": "CALLOUT_ADVANCE",
+          "label": "TXT_AVA_QUICK_SEND"
+        },
+        {
+          "icon": "CALLOUT_BACK",
+          "label": "TXT_AVA_QUICK_CLOSE"
+        }
+      ]
+    },
+    "inputs": [
+      {
+        "key": "DPAD_UP",
+        "menu": "mcLines",
+        "do": "up"
+      },
+      {
+        "key": "DPAD_DOWN",
+        "menu": "mcLines",
+        "do": "down"
+      },
+      {
+        "key": "LAS_UP",
+        "menu": "mcLines",
+        "do": "up"
+      },
+      {
+        "key": "LAS_DOWN",
+        "menu": "mcLines",
+        "do": "down"
+      },
+      {
+        "key": "ADVANCE",
+        "menu": "mcLines",
+        "do": "advance"
+      },
+      {
+        "key": "BACK",
+        "action": "A_AvaQuickChatClose",
+        "sound": "menu_back"
+      }
+    ]
+  }
+}

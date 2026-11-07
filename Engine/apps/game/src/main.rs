@@ -1,14 +1,14 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use bevy::prelude::*;
+use bevy::prelude::AppExit;
 use clap::Parser;
 use ssx_bevy::{RenderArgs, WINDOW_SIZE, game_mode, terrain_look};
 
 /// The game: the front end from the boot movie to a drop and back in one window, the profile loaded and saved
 /// (`Docs/architecture/game-shell.md`). The data come from --big-root (or the default search). Keys: Enter START,
-/// Space A, Backspace B, X, Y, arrows the D-pad, Q / E the bumpers, W / A / S / D the globe's stick (or a gamepad);
-/// riding: the ride's controls, Esc the pause menu.
+/// Space A, Backspace B, X, Y, arrows the D-pad, Q / E the bumpers, Z / C or Page Up / Page Down the triggers, W / A /
+/// S / D the globe's stick (or a gamepad); riding: the ride's controls, Esc the pause menu.
 #[derive(Parser, Debug)]
 #[command(name = "avalanche-game", version)]
 struct Cli {
@@ -71,6 +71,16 @@ struct Cli {
     #[arg(long, value_name = "UI_DROP@S")]
     launch: Option<String>,
 
+    /// A test option: ride this installed map (`<namespace>:map/<name>`) from the Project Avalanche menu at this
+    /// front-end second (default 0: once the menu is idle).
+    #[arg(long, value_name = "MAP_ID[@S]", conflicts_with_all = ["launch", "classic_front_end"])]
+    launch_map: Option<String>,
+
+    /// A test option: the mode `--launch-map` rides — a built-in mode (`race`, `trick`, `survive`, `death`,
+    /// `freeride`) or an installed gamemode's id (`<namespace>:gamemode/<name>`); default the map's first mode.
+    #[arg(long, value_name = "MODE", requires = "launch_map")]
+    launch_mode: Option<String>,
+
     /// A test option: the drops are ridden by the HUD tools' scripted player.
     #[arg(long)]
     autoplay: bool,
@@ -90,17 +100,66 @@ struct Cli {
     #[arg(long)]
     debug_hud: bool,
 
+    /// Start without the client mods the enabled list (`<app dir>/mods.toml`) names.
+    #[arg(long)]
+    no_mods: bool,
+
+    /// Mod development: mount this package folder (in place of an installed package of its name) and reload it while
+    /// the game runs — a changed texture is decoded and uploaded again; an overlay lists the mods, overrides and
+    /// conflicts.
+    #[arg(long, value_name = "DIR")]
+    mod_dev: Option<PathBuf>,
+
     /// A test option: screenshots across the screen fades — every third frame while the fade is up (its alpha above
     /// 0) and the frame it ends, at most N (`fade_<FE seconds>_<alpha>.png` in the shot folder).
     #[arg(long, value_name = "N")]
     fade_shots: Option<u32>,
+
+    /// The disc's front end alone, without the Project Avalanche menu (also `SSX_FE_HUB=off`).
+    #[arg(long)]
+    classic_front_end: bool,
+
+    /// A test option: a screen of the Project Avalanche menu (keyboard, credits, options) opened once the menu is up
+    /// (`Docs/architecture/multiplayer.md` §10).
+    #[arg(long, value_name = "VIEW", conflicts_with = "classic_front_end")]
+    open_view: Option<String>,
+
+    /// A test option: a movie played by its id at the start, before the boot movie (`ssx:movie/<name>`, or a package's
+    /// added movie `<package>:movie/<path>`; `Docs/architecture/content.md` §20.1).
+    #[arg(long, value_name = "ID")]
+    play_movie: Option<String>,
+
+    /// Join this multiplayer server (`host:port`, an address, or a name; the port 27450 when none is given) and ride
+    /// its drop with the others (`Docs/architecture/multiplayer.md` §6.2); a refusal or the session's end shows its
+    /// reason on the Project Avalanche menu.
+    #[arg(long, value_name = "ADDR", conflicts_with = "classic_front_end")]
+    connect: Option<String>,
+
+    /// The file holding the server's password (one line).
+    #[arg(long, value_name = "FILE", requires = "connect")]
+    password_file: Option<PathBuf>,
+
+    /// The name the server shows over your rider (the game's fonts' characters, at most 20; default: the Options'
+    /// Player Name, else "Player").
+    #[arg(long, value_name = "NAME", requires = "connect")]
+    name: Option<String>,
+
+    /// An `avalanche://connect/host:port` link (the launcher passes one the system handed it): the server browser opens
+    /// with the server and asks before anything is sent to it.
+    #[arg(long, value_name = "URL", conflicts_with_all = ["classic_front_end", "connect"])]
+    link: Option<String>,
+
+    /// A test option: the server browser's tabs show N generated servers (also `SSX_FAKE_SERVERS=N`).
+    #[arg(long, value_name = "N")]
+    fake_servers: Option<usize>,
 }
 
 fn main() -> AppExit {
+    ssx_movie::isolate::serve_if_child();
     match game_args(Cli::parse()).and_then(game_mode::run) {
         Ok(exit) => exit,
         Err(e) => {
-            eprintln!("error: {e:#}");
+            ssx_core::eprintln!("error: {e:#}");
             AppExit::error()
         }
     }
@@ -129,6 +188,10 @@ fn game_args(cli: Cli) -> Result<game_mode::GameArgs> {
             position: None,
         },
     };
+    let classic_front_end = cli.classic_front_end || std::env::var("SSX_FE_HUB").is_ok_and(|v| v == "off");
+    if classic_front_end && cli.open_view.is_some() {
+        anyhow::bail!("--open-view opens a screen of the Project Avalanche menu: not with SSX_FE_HUB=off");
+    }
     let shot_dir = cli.shot_dir.unwrap_or_else(|| {
         let cwd = std::env::current_dir().unwrap_or_default();
         let found = cwd.ancestors().map(|d| d.join("Game-Data/Converted/screenshots")).find(|p| p.is_dir());
@@ -159,6 +222,27 @@ fn game_args(cli: Cli) -> Result<game_mode::GameArgs> {
         shading: cli.render.shading,
         no_objects: cli.render.no_objects,
         wireframe: cli.render.wireframe,
+        mods: !cli.no_mods,
+        classic_front_end,
+        open_view: cli.open_view,
+        play_movie: cli.play_movie,
+        mod_dev: cli.mod_dev,
+        link: match &cli.link {
+            Some(l) => Some(ssx_ui_link(l).with_context(|| format!("--link {l:?}"))?),
+            None => None,
+        },
+        fake_servers: match cli.fake_servers {
+            Some(n) => Some(n),
+            None => match std::env::var("SSX_FAKE_SERVERS") {
+                Ok(v) => Some(v.parse().with_context(|| format!("SSX_FAKE_SERVERS={v}"))?),
+                Err(_) => None,
+            },
+        },
+        connect: cli.connect.map(|server| game_mode::NetConnect {
+            server,
+            password_file: cli.password_file,
+            name: cli.name,
+        }),
         launch: match &cli.launch {
             Some(s) => {
                 let (name, at) = s.rsplit_once('@').with_context(|| format!("--launch {s}: UI_DROP@SECONDS"))?;
@@ -166,5 +250,17 @@ fn game_args(cli: Cli) -> Result<game_mode::GameArgs> {
             }
             None => None,
         },
+        launch_map: match &cli.launch_map {
+            Some(s) => Some(match s.rsplit_once('@') {
+                Some((id, at)) => (id.to_string(), at.parse().with_context(|| format!("--launch-map {s}"))?),
+                None => (s.clone(), 0.0),
+            }),
+            None => None,
+        },
+        launch_mode: cli.launch_mode.clone(),
     })
+}
+
+fn ssx_ui_link(link: &str) -> Result<ssx_bevy::browser::ServerAddress> {
+    ssx_bevy::browser::parse_link(link).map_err(anyhow::Error::msg)
 }

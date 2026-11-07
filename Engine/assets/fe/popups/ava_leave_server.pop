@@ -1,0 +1,10 @@
+{
+	"title": "TXT_AVA_LEAVE_TITLE",
+	"body": "",
+	"useoverride": true,
+	"defaultButton": 1,
+	"buttons":	[
+					{"label": "TXT_YES", "event": "ava_leave_server_yes"},
+					{"label": "TXT_NO", "event": "ava_leave_server_no"}
+				]
+}

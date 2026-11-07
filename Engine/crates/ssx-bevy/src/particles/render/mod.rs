@@ -19,8 +19,8 @@ const DEPTH_FORMAT: TextureFormat = TextureFormat::Depth32Float;
 const DEPTH_COPY_FORMAT: TextureFormat = TextureFormat::R32Float;
 
 pub fn build(app: &mut App) {
-    embedded_asset!(app, "particles.wgsl");
-    embedded_asset!(app, "particles_pass.wgsl");
+    embedded_asset!(app, "particles.wesl");
+    embedded_asset!(app, "particles_pass.wesl");
     let Some(render_app) = app.get_sub_app_mut(RenderApp) else { return };
     render_app
         .init_resource::<ParticleGpu>()

@@ -3,10 +3,16 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use bevy::camera::visibility::DynamicSkinnedMeshBounds;
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
-use bevy::prelude::*;
+use bevy::prelude::{
+    App, Assets, Camera, Camera3d, ChildOf, Commands, Entity, GlobalTransform, Handle, Image, IntoScheduleConfigs,
+    Mat4, Mesh, Mesh3d, MeshMaterial3d, Name, PostUpdate, Quat, Query, Res, ResMut, Resource, Time, Transform, Vec3,
+    Vec4, Visibility, With, World, info, resource_exists, warn,
+};
 use ssx_assets::anim_db::AssetDb;
-use ssx_assets::character::model_matrix;
+use ssx_assets::content::characters::budget::RiderLooks;
+use ssx_assets::content::characters::dress::LookChoice;
 use ssx_assets::ghosts::{GhostAnimation, GhostRig, load_bot_model};
+use ssx_content::{ContentId, Kind};
 
 use crate::render::lighting::GameLighting;
 use crate::render::lighting::game::GameLightAssets;
@@ -23,7 +29,7 @@ struct BotPart {
     inverse_binds: Vec<Mat4>,
 }
 
-struct LoadedBot {
+pub(super) struct LoadedBot {
     name: &'static str,
     rig: GhostRig,
     anim: GhostAnimation,
@@ -41,6 +47,9 @@ struct LoadedBot {
 pub struct PendingBots {
     bots: Vec<LoadedBot>,
     board: Option<LoadedPart>,
+    floats: Vec<String>,
+    riders: RiderLooks,
+    vault_track: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -50,7 +59,7 @@ struct BotLamp {
     light: ssx_assets::track_lights::SceneLight,
 }
 
-struct BotVisual {
+pub(super) struct BotVisual {
     name: &'static str,
     lamps: Vec<Vec<BotLamp>>,
     gear_flags: u16,
@@ -105,8 +114,13 @@ pub struct Bots {
     list: Vec<BotVisual>,
     pub boards: Vec<Option<JointRecord>>,
     pub trajectories: Vec<Option<JointRecord>>,
+    nis_db: Option<(String, AssetDb)>,
+    floats: Vec<String>,
     // TODO(guess): the game draws from its global generator (seeded from the CPU time base), the port from its own seeded with 1; settle: none (not reproducible).
     rng: ssx_physics::session::bots::Mt19937,
+    board_mesh: Option<(Handle<Mesh>, Handle<CharacterMaterial>)>,
+    pub live: live::LiveVisuals,
+    vault_track: Option<String>,
 }
 
 #[derive(Resource)]
@@ -131,11 +145,21 @@ fn follow_bot(
 
 pub type Loaded = PendingBots;
 
+#[derive(bevy::ecs::schedule::SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RacersDrawSet;
+
+mod draw;
+pub mod live;
+
+use draw::{FrameFacts, RacerDraw};
+
 pub fn register(app: &mut App) {
     app.add_systems(crate::shell::level::LevelStartup, spawn.run_if(resource_exists::<PendingBots>))
         .add_systems(
             PostUpdate,
-            update
+            (live::spawn_live.run_if(resource_exists::<Bots>).run_if(resource_exists::<GameLightAssets>), update)
+                .chain()
+                .in_set(RacersDrawSet)
                 .before(bevy::transform::TransformSystems::Propagate)
                 .before(crate::render::lighting::local::DynamicLightsUpload),
         )
@@ -171,11 +195,12 @@ pub fn load_level(
     track: &str,
     drop_key: Option<u32>,
     ride: &crate::ride::Ride,
+    riders: Option<&RiderLooks>,
 ) -> Option<Loaded> {
     let root = big_root?;
     let race = ride.session.bots.as_ref()?;
     let requests: Vec<_> = race.bots.iter().map(|b| (b.request, b.replay.header.gear_flags)).collect();
-    let loaded = match load(root, track, drop_key, &requests) {
+    let loaded = match load(root, track, drop_key, &requests, riders) {
         Ok(l) => l,
         Err(e) => {
             warn!("bots unavailable: {e:#}");
@@ -203,133 +228,263 @@ fn load(
     track: &str,
     drop_key: Option<u32>,
     requests: &[(ssx_physics::session::bots::BotRequest, u16)],
+    riders: Option<&RiderLooks>,
 ) -> Result<PendingBots> {
     let floats = ssx_assets::rig_anim::float_dofs(root)?;
     let db = AssetDb::load(&root.join(ssx_assets::rig_anim::ANIM_DIR), &[ssx_assets::rig_anim::RIG_BUNDLE])?;
     let slots = drop_key
         .and_then(|k| ssx_physics::spawn::load_drop_starts(root, track).ok()?.into_iter().find(|d| d.drop_key == k))
         .context("the drop's start locator")?;
+    let names: Vec<&'static str> =
+        requests.iter().map(|(r, _)| ssx_physics::session::bots::character_name(r.character)).collect();
+    let ids: Vec<ContentId> =
+        names.iter().filter_map(|n| ContentId::new(ssx_content::BASE_NAMESPACE, Kind::Character, n).ok()).collect();
+    let content = ssx_assets::content::GameContent::of(root);
+    let before = riders.cloned().unwrap_or_default();
+    let (riders, looks) = if ids.len() == names.len() {
+        content.more_rider_looks(&before, &ids)
+    } else {
+        (before, vec![LookChoice::Disc; names.len()])
+    };
     let mut bots = Vec::new();
-    for (r, gear_flags) in requests {
-        let name = ssx_physics::session::bots::character_name(r.character);
-        let model = load_bot_model(root, track, name)?;
-        for p in &model.problems {
-            info!("bot {name} model: {p}");
+    for (((r, gear_flags), name), look) in requests.iter().zip(&names).zip(&looks) {
+        let slot = slots.slot(usize::try_from(r.start_slot).unwrap_or(0));
+        let src = RacerSources { root, track: Some(track), db: &db, floats: &floats };
+        bots.push(load_racer_as(&src, name, *gear_flags, slot, r.racer_type, look, None)?);
+    }
+    let board =
+        crate::rider::visual::load_board(root, Some(track)).ok().map(crate::rider::visual::LoadedBoard::into_part);
+    Ok(PendingBots { bots, board, floats, riders, vault_track: Some(track.to_string()) })
+}
+
+pub fn load_live_only(big_root: &Path, vault_track: Option<&str>, riders: Option<&RiderLooks>) -> Option<Loaded> {
+    let floats = match ssx_assets::rig_anim::float_dofs(big_root) {
+        Ok(f) => f,
+        Err(e) => {
+            warn!("live racers unavailable: {e:#}");
+            return None;
         }
-        let rig = GhostRig::from_rig(root, &model.rig, &model.bind)?;
-        let (anim, problems) = GhostAnimation::bot(root, &db, &rig, &floats, name)?;
-        for p in problems {
-            info!("bot {name} animation: {p}");
+    };
+    let board = match crate::rider::visual::load_board(big_root, vault_track) {
+        Ok(b) => Some(b.into_part()),
+        Err(e) => {
+            warn!("live racers: the board is not drawn: {e:#}");
+            None
         }
-        let bounds = model.lods[0]
-            .iter()
-            .flat_map(|p| p.mesh.positions.iter())
-            .fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(lo, hi), p| {
-                (lo.min(Vec3::from_array(*p)), hi.max(Vec3::from_array(*p)))
-            });
-        let mut lods = Vec::new();
-        for parts in model.lods {
-            let mut loaded = Vec::new();
-            for p in parts {
-                let label = p.mesh_name.clone();
-                match part_from_mesh(root, p.mesh, &label, &p.material)
-                    .and_then(|part| part.with_skin(p.skin.joints, p.skin.weights))
-                {
-                    Ok(part) => loaded.push(BotPart {
-                        label,
-                        part,
-                        palette: p.skin.palette.iter().map(|j| j.node).collect(),
-                        inverse_binds: p
-                            .skin
-                            .palette
-                            .iter()
-                            .map(|j| Mat4::from_cols_array_2d(&j.inverse_bind))
-                            .collect(),
-                    }),
-                    Err(e) => warn!("bot {name} part {label}: {e:#}"),
+    };
+    info!("live racers: none loaded yet, their models from {}", vault_track.unwrap_or("ge_attribdb"));
+    let riders = riders.cloned().unwrap_or_default();
+    Some(PendingBots { bots: Vec::new(), board, floats, riders, vault_track: vault_track.map(str::to_string) })
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct RacerSources<'a> {
+    pub root: &'a Path,
+    pub track: Option<&'a str>,
+    pub db: &'a AssetDb,
+    pub floats: &'a [String],
+}
+
+struct RacerPart {
+    label: String,
+    mesh: ssx_content::model::Mesh,
+    joints: Vec<[u16; 4]>,
+    weights: Vec<[f32; 4]>,
+    palette: Vec<usize>,
+    inverse_binds: Vec<Mat4>,
+    material: ssx_content::material::MaterialDef,
+}
+
+pub(super) fn load_racer_as(
+    src: &RacerSources,
+    name: &'static str,
+    gear_flags: u16,
+    slot: Option<(Vec3, Quat)>,
+    racer_type: u32,
+    look: &LookChoice,
+    added: Option<&ContentId>,
+) -> Result<LoadedBot> {
+    let RacerSources { root, track, db, floats } = *src;
+    let model = load_bot_model(root, track, name)?;
+    for p in &model.problems {
+        info!("bot {name} model: {p}");
+    }
+    let content = ssx_assets::content::GameContent::of(root);
+    let package = match look {
+        LookChoice::Disc => None,
+        LookChoice::Package(at) => {
+            let id = match added {
+                Some(id) => id.clone(),
+                None => ContentId::new(ssx_content::BASE_NAMESPACE, Kind::Character, name)?,
+            };
+            match ssx_assets::content::characters::bots::bot_look(root, &id, at, model.lods.len()) {
+                Ok(l) => {
+                    for n in &l.notes {
+                        info!("bot {name} look: {n}");
+                    }
+                    info!("bot {name}: {id}'s look from {} ({})", at.source, at.layer);
+                    Some(l)
+                }
+                Err(e) => {
+                    warn!("bot {name}: the package's look is not drawn (the game object's is): {e:#}");
+                    None
                 }
             }
-            lods.push(loaded);
         }
-        let (thresholds, game_object) = (model.lod_thresholds, model.game_object);
-        let lamps: Vec<Vec<BotLamp>> = model
-            .light_nodes
-            .iter()
-            .map(|nodes| {
-                nodes
-                    .iter()
-                    .filter(|n| n.group_name == "character_headlamp_group")
-                    .filter_map(|n| {
-                        let joint = rig.rig.find(&n.joint_name)?;
-                        let [x, y, z, w] = n.orientation;
-                        Some(BotLamp {
-                            joint,
-                            local: JointRecord {
-                                s: Vec3::new(n.scale[0], n.scale[1], n.scale[2]),
-                                q: Quat::from_xyzw(x, y, z, w),
-                                p: Vec3::new(n.position[0], n.position[1], n.position[2]),
-                            },
-                            light: n.light.clone()?,
-                        })
+    };
+    let (rig_graph, rig_bind) = package.as_ref().map_or((&model.rig, &model.bind), |l| (&l.rig, &l.bind));
+    let rig = GhostRig::from_rig(root, rig_graph, rig_bind)?;
+    let (anim, problems) = GhostAnimation::bot(root, db, &rig, floats, name)?;
+    for p in problems {
+        info!("bot {name} animation: {p}");
+    }
+    let riders = ssx_assets::content::resolve::MaterialUse::Riders;
+    let skin_of = |s: &ssx_assets::character::Skin| -> (Vec<usize>, Vec<Mat4>) {
+        (
+            s.palette.iter().map(|j| j.node).collect(),
+            s.palette.iter().map(|j| Mat4::from_cols_array_2d(&j.inverse_bind)).collect(),
+        )
+    };
+    let racer_lods: Vec<Vec<RacerPart>> = match package {
+        None => model
+            .lods
+            .into_iter()
+            .map(|parts| {
+                parts
+                    .into_iter()
+                    .map(|p| {
+                        let (palette, inverse_binds) = skin_of(&p.skin);
+                        RacerPart {
+                            material: content.material_for(&p.material, riders),
+                            label: p.mesh_name,
+                            mesh: p.mesh,
+                            joints: p.skin.joints,
+                            weights: p.skin.weights,
+                            palette,
+                            inverse_binds,
+                        }
                     })
                     .collect()
             })
-            .collect();
-        info!(
-            "bot {name}: game object {game_object:08x}, LODs {:?} at {thresholds:?}",
-            lods.iter().map(|l| l.iter().map(|p| p.label.as_str()).collect::<Vec<_>>()).collect::<Vec<_>>()
-        );
-        let axes = [("LeftAxeAux", "LeftIceAxe"), ("RightAxeAux", "RightIceAxe")]
-            .iter()
-            .filter_map(|&(s, t)| {
-                let (s, t) = (rig.rig.find(s)?, rig.rig.find(t)?);
-                Some((s, t, rig.rig.nodes[t].parent?))
+            .collect(),
+        Some(l) => l
+            .lods
+            .into_iter()
+            .map(|parts| {
+                parts
+                    .into_iter()
+                    .map(|p| {
+                        let (palette, inverse_binds) = skin_of(&p.skin);
+                        RacerPart {
+                            material: match &p.material {
+                                ssx_assets::character::PartMaterial::Disc(m) => content.material_for(m, riders),
+                                ssx_assets::character::PartMaterial::Def(d) => (**d).clone(),
+                            },
+                            label: p.mesh_name,
+                            mesh: p.mesh,
+                            joints: p.skin.joints,
+                            weights: p.skin.weights,
+                            palette,
+                            inverse_binds,
+                        }
+                    })
+                    .collect()
             })
-            .collect();
-        let slot = slots.slot(usize::try_from(r.start_slot).unwrap_or(0));
-        bots.push(LoadedBot {
-            name,
-            rig,
-            anim,
-            lods,
-            thresholds,
-            bounds,
-            lamps,
-            gear_flags: *gear_flags,
-            slot,
-            axes,
-            racer_type: r.racer_type,
+            .collect(),
+    };
+    let bounds = racer_lods
+        .first()
+        .into_iter()
+        .flatten()
+        .flat_map(|p| p.mesh.positions.iter())
+        .fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(lo, hi), p| {
+            (lo.min(Vec3::from_array(*p)), hi.max(Vec3::from_array(*p)))
         });
+    let mut lods = Vec::new();
+    for parts in racer_lods {
+        let mut loaded = Vec::new();
+        for p in parts {
+            let label = p.label;
+            match part_from_mesh(root, p.mesh, &label, &p.material).and_then(|part| part.with_skin(p.joints, p.weights))
+            {
+                Ok(part) => loaded.push(BotPart { label, part, palette: p.palette, inverse_binds: p.inverse_binds }),
+                Err(e) => warn!("bot {name} part {label}: {e:#}"),
+            }
+        }
+        lods.push(loaded);
     }
-    let board = crate::rider::visual::load_board(root, track).ok().map(crate::rider::visual::LoadedBoard::into_part);
-    Ok(PendingBots { bots, board })
+    let (thresholds, game_object) = (model.lod_thresholds, model.game_object);
+    let lamps: Vec<Vec<BotLamp>> = model
+        .light_nodes
+        .iter()
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter(|n| n.group_name == "character_headlamp_group")
+                .filter_map(|n| {
+                    let joint = rig.rig.find(&n.joint_name)?;
+                    let [x, y, z, w] = n.orientation;
+                    Some(BotLamp {
+                        joint,
+                        local: JointRecord {
+                            s: Vec3::new(n.scale[0], n.scale[1], n.scale[2]),
+                            q: Quat::from_xyzw(x, y, z, w),
+                            p: Vec3::new(n.position[0], n.position[1], n.position[2]),
+                        },
+                        light: n.light.clone()?,
+                    })
+                })
+                .collect()
+        })
+        .collect();
+    info!(
+        "bot {name}: game object {game_object:08x}, LODs {:?} at {thresholds:?}",
+        lods.iter().map(|l| l.iter().map(|p| p.label.as_str()).collect::<Vec<_>>()).collect::<Vec<_>>()
+    );
+    let axes = [("LeftAxeAux", "LeftIceAxe"), ("RightAxeAux", "RightIceAxe")]
+        .iter()
+        .filter_map(|&(s, t)| {
+            let (s, t) = (rig.rig.find(s)?, rig.rig.find(t)?);
+            Some((s, t, rig.rig.nodes[t].parent?))
+        })
+        .collect();
+    Ok(LoadedBot { name, rig, anim, lods, thresholds, bounds, lamps, gear_flags, slot, axes, racer_type })
 }
 
 fn record_transform(r: &JointRecord) -> Transform {
     Transform { translation: r.p, rotation: r.q, scale: r.s }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn spawn(
-    mut commands: Commands,
-    mut pending: ResMut<PendingBots>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut images: ResMut<Assets<Image>>,
-    mut objects: ResMut<Assets<ObjectMaterial>>,
-    mut foreground: ResMut<Assets<ForegroundMaterial>>,
-    mut characters: ResMut<Assets<CharacterMaterial>>,
-    mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
-    light: Res<GameLightAssets>,
-    lighting: Option<Res<GameLighting>>,
-) {
-    let rider_light =
-        lighting.as_deref().map_or_else(CharacterLightUniform::viewer_default, CharacterLightUniform::from_preset);
-    // TODO(guess): `dynamicAOMult` stays 1 (the racer's `AoGroundContactTrack` needs interface 0x57EF8508, creator 0x82928AB0); settle: the `ghost_<character>` animatable's QueryInterface (0x82AC0440 / 0x82ACA240).
-    let mut list = Vec::new();
-    let board_part = pending.board.take();
-    let board_mesh =
-        board_part.map(|p| p.add_character(&mut meshes, &mut images, &light, &rider_light, &mut characters));
-    for b in std::mem::take(&mut pending.bots) {
+#[derive(bevy::ecs::system::SystemParam)]
+pub(super) struct RacerSpawner<'w, 's> {
+    commands: Commands<'w, 's>,
+    meshes: ResMut<'w, Assets<Mesh>>,
+    images: ResMut<'w, Assets<Image>>,
+    objects: ResMut<'w, Assets<ObjectMaterial>>,
+    foreground: ResMut<'w, Assets<ForegroundMaterial>>,
+    characters: ResMut<'w, Assets<CharacterMaterial>>,
+    bindposes: ResMut<'w, Assets<SkinnedMeshInverseBindposes>>,
+    light: Res<'w, GameLightAssets>,
+    lighting: Option<Res<'w, GameLighting>>,
+}
+
+impl RacerSpawner<'_, '_> {
+    fn rider_light(&self) -> CharacterLightUniform {
+        self.lighting.as_deref().map_or_else(CharacterLightUniform::viewer_default, CharacterLightUniform::from_preset)
+    }
+
+    fn board(&mut self, part: LoadedPart) -> (Handle<Mesh>, Handle<CharacterMaterial>) {
+        let rider_light = self.rider_light();
+        part.add_character(&mut self.meshes, &mut self.images, &self.light, &rider_light, &mut self.characters)
+    }
+
+    pub(super) fn spawn_racer(
+        &mut self,
+        board_mesh: Option<&(Handle<Mesh>, Handle<CharacterMaterial>)>,
+        b: LoadedBot,
+    ) -> BotVisual {
+        let rider_light = self.rider_light();
+        let commands = &mut self.commands;
         let root =
             commands.spawn((Name::new(format!("bot {}", b.name)), Transform::default(), Visibility::Hidden)).id();
         let rig_root = commands.spawn((Name::new("bot rig"), Transform::default(), ChildOf(root))).id();
@@ -358,7 +513,7 @@ fn spawn(
                 .id();
             lods.push(lod);
             for p in parts {
-                let inverse_bindposes = bindposes.add(SkinnedMeshInverseBindposes::from(p.inverse_binds));
+                let inverse_bindposes = self.bindposes.add(SkinnedMeshInverseBindposes::from(p.inverse_binds));
                 let joints = p.palette.iter().map(|&n| nodes[n]).collect();
                 let bundle = (
                     Name::new(format!("bot {} {}", b.name, p.label)),
@@ -368,13 +523,24 @@ fn spawn(
                     ChildOf(lod),
                 );
                 if p.part.is_character() {
-                    let (mesh, material) =
-                        p.part.add_character(&mut meshes, &mut images, &light, &rider_light, &mut characters);
+                    let (mesh, material) = p.part.add_character(
+                        &mut self.meshes,
+                        &mut self.images,
+                        &self.light,
+                        &rider_light,
+                        &mut self.characters,
+                    );
                     materials.push(material.clone());
                     commands.spawn((bundle, Mesh3d(mesh), MeshMaterial3d(material)));
                     continue;
                 }
-                let (mesh, material) = p.part.add(&mut meshes, &mut images, &light, &mut objects, &mut foreground);
+                let (mesh, material) = p.part.add(
+                    &mut self.meshes,
+                    &mut self.images,
+                    &self.light,
+                    &mut self.objects,
+                    &mut self.foreground,
+                );
                 let mut e = commands.spawn((bundle, Mesh3d(mesh)));
                 match material {
                     MaterialHandle::Object(m) => e.insert(MeshMaterial3d(m)),
@@ -382,8 +548,9 @@ fn spawn(
                 };
             }
         }
-        let board = board_mesh.as_ref().map(|(mesh, material)| {
-            let material = characters.get(material).cloned().map_or_else(|| material.clone(), |m| characters.add(m));
+        let board = board_mesh.map(|(mesh, material)| {
+            let material =
+                self.characters.get(material).cloned().map_or_else(|| material.clone(), |m| self.characters.add(m));
             materials.push(material.clone());
             commands
                 .spawn((
@@ -395,7 +562,7 @@ fn spawn(
                 ))
                 .id()
         });
-        list.push(BotVisual {
+        BotVisual {
             name: b.name,
             lods,
             thresholds: b.thresholds,
@@ -417,30 +584,40 @@ fn spawn(
             materials,
             racer_type: b.racer_type,
             fade: HoloFade::default(),
-        });
+        }
     }
+}
+
+fn spawn(mut pending: ResMut<PendingBots>, mut spawner: RacerSpawner) {
+    // TODO(guess): `dynamicAOMult` stays 1 (the racer's `AoGroundContactTrack` needs interface 0x57EF8508, creator 0x82928AB0); settle: the `ghost_<character>` animatable's QueryInterface (0x82AC0440 / 0x82ACA240).
+    let board_mesh = pending.board.take().map(|p| spawner.board(p));
+    let list: Vec<BotVisual> =
+        std::mem::take(&mut pending.bots).into_iter().map(|b| spawner.spawn_racer(board_mesh.as_ref(), b)).collect();
     let n = list.len();
     let rng = ssx_physics::session::bots::Mt19937::seeded(1);
-    commands.insert_resource(Bots { list, boards: vec![None; n], trajectories: vec![None; n], rng });
+    let floats = std::mem::take(&mut pending.floats);
+    let riders = std::mem::take(&mut pending.riders);
+    let vault_track = pending.vault_track.take();
+    spawner.commands.insert_resource(Bots {
+        list,
+        boards: vec![None; n],
+        trajectories: vec![None; n],
+        nis_db: None,
+        floats,
+        rng,
+        board_mesh,
+        live: live::LiveVisuals::with_riders(riders),
+        vault_track,
+    });
 }
 
-fn board_transform(rig: &GhostRig, board: usize, w: &JointRecord) -> Transform {
-    let m = Mat4::from_scale_rotation_translation(w.s, w.q, w.p);
-    let b0 = Mat4::from_cols_array_2d(&model_matrix(&rig.rig, &rig.bind, board));
-    Transform::from_matrix(m * b0.inverse())
-}
-
-#[allow(clippy::too_many_arguments)]
 fn update(
     time: Res<Time>,
     ride: Option<Res<crate::ride::Ride>>,
     bots: Option<ResMut<Bots>>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     lighting: Option<Res<GameLighting>>,
-    mut lights: ResMut<crate::render::lighting::local::DynamicLocalLights>,
-    mut transforms: Query<&mut Transform>,
-    mut visibility: Query<&mut Visibility>,
-    mut characters: ResMut<Assets<CharacterMaterial>>,
+    mut draw: RacerDraw,
 ) {
     let (Some(ride), Some(mut bots)) = (ride, bots) else { return };
     let Some(race) = ride.session.bots.as_ref() else { return };
@@ -449,38 +626,45 @@ fn update(
         (t.translation(), 1.0 / clip.x_axis.x.abs().max(clip.y_axis.y.abs()))
     });
     let night = lighting.as_ref().is_some_and(|l| l.f("isNightCondition") > 0.0);
+    let facts = FrameFacts { view, night, steps: ride.steps };
     let dt_ticks = if ride.hold { 0.0 } else { (time.delta_secs() * 60.0).min(4.0) };
     let lag = (ride.steps as f32 / ssx_physics::SIM_HZ - ride.render_time).max(0.0);
-    let Bots { list, boards, trajectories, rng } = &mut *bots;
+    let Bots { list, boards, trajectories, nis_db, floats, rng, live, .. } = &mut *bots;
+    let intro = ride.state.start.as_ref().and_then(|l| l.intro.as_ref());
+    let ghost = intro.and_then(|i| i.ghost().map(|g| (i, g)));
+    if let Some((i, _)) = ghost
+        && nis_db.as_ref().is_none_or(|(b, _)| *b != i.assets.nis.binding)
+    {
+        let dir = ride.big_root.join(ssx_assets::rig_anim::ANIM_DIR);
+        let bundles: Vec<&str> = i.assets.nis.bundles.iter().map(String::as_str).collect();
+        match AssetDb::load(&dir, &bundles) {
+            Ok(db) => *nis_db = Some((i.assets.nis.binding.clone(), db)),
+            Err(e) => warn!("bots: the NIS {} for its Ghost1: {e:#}", i.assets.nis.binding),
+        }
+    }
+    let racers = race.bots.len() + live.drawn();
     for (k, v) in list.iter_mut().enumerate() {
         let Some(b) = race.bots.get(k) else { continue };
         if matches!(v.racer_type, 0 | 2) && !b.removed {
             let d2 = b.position.distance_squared(ride.state.traj);
-            let holo = v.fade.update(dt_ticks / 60.0, d2, race.bots.len(), |max| {
-                let u = (rng.next_u32() as i32) as f64 * 2f64.powi(-32) + 0.5;
-                (u * f64::from(max)) as f32
-            });
-            for m in &v.materials {
-                if let Some(mut m) = characters.get_mut(m)
-                    && m.extension.params.holo != holo
-                {
-                    m.extension.params.holo = holo;
-                }
-            }
+            draw.holo(v, dt_ticks / 60.0, d2, racers, rng);
         }
         if v.idle_at.is_none()
             && let Some((p, q)) = v.slot
         {
             v.idle_at = ssx_physics::levelstart::offset_level_start(ride.world(), p).map(|o| (o, q));
         }
-        let records = if !race.running {
+        let nis = ghost.filter(|_| k == 0).zip(nis_db.as_ref()).and_then(|((_, (root, t, (q, p))), (_, db))| {
+            v.anim.nis_pose(db, &v.rig, floats, root, t, p.to_array(), q.to_array())
+        });
+        let records = if let Some((pose, p)) = nis {
+            world_records(&v.rig.rig, &pose.nodes, Vec3::from_array(p))
+        } else if !race.running {
             let Some((at, q)) = v.idle_at else { continue };
             let Some((pose, p)) = v.anim.idle_pose(&v.rig, dt_ticks, at.to_array(), q.to_array()) else { continue };
             world_records(&v.rig.rig, &pose.nodes, Vec3::from_array(p))
         } else if b.removed {
-            if let Ok(mut vis) = visibility.get_mut(v.root) {
-                *vis = Visibility::Hidden;
-            }
+            draw.hide(v);
             boards[k] = None;
             trajectories[k] = None;
             continue;
@@ -518,67 +702,10 @@ fn update(
             }
             records
         };
-        if let Ok(mut vis) = visibility.get_mut(v.root) {
-            *vis = Visibility::Inherited;
-        }
-        // TODO(guess): the bounds are the LOD-0 bind-pose box placed by the drawn `AITrajectory`; settle: the skinned racer's render entity's visibility registration (cf. 0x829C1438).
-        let traj = v.rig.rig.find("AITrajectory").and_then(|i| records.get(i)).copied();
-        trajectories[k] = traj;
-        let metric = view.zip(traj).map(|((eye, tan_min), t)| {
-            let (lo, hi) = v.bounds;
-            let (c, h) = ((lo + hi) * 0.5, (hi - lo) * 0.5);
-            let m = Mat3::from_quat(t.q);
-            let h_world = Vec3::new(m.row(0).abs().dot(h), m.row(1).abs().dot(h), m.row(2).abs().dot(h));
-            let centre = t.p + t.q * c;
-            let d = centre.distance(eye);
-            if d > 0.0 { h_world.length() / (d * tan_min) } else { f32::INFINITY }
-        });
-        let lod = match metric {
-            Some(m) => (m > 0.002).then(|| v.thresholds.iter().position(|&th| th <= m.max(0.0))).flatten(),
-            None => Some(0),
-        };
-        let lod = lod.filter(|&k| k < v.lods.len());
-        if lod != v.lod {
-            info!("bot {k} ({}): LOD {lod:?} (size metric {metric:.3?}) at {:.1?}", v.name, traj.map(|t| t.p));
-            v.lod = lod;
-        }
-        for (i, &e) in v.lods.iter().enumerate() {
-            if let Ok(mut vis) = visibility.get_mut(e) {
-                *vis = if Some(i) == lod { Visibility::Inherited } else { Visibility::Hidden };
-            }
-        }
-        for (&entity, r) in v.nodes.iter().zip(&records) {
-            if let Ok(mut tr) = transforms.get_mut(entity) {
-                *tr = record_transform(r);
-            }
-        }
-        if let (Some(e), Some(board)) = (v.board, v.rig.board)
-            && let Some(w) = records.get(board)
-            && let Ok(mut tr) = transforms.get_mut(e)
-        {
-            *tr = board_transform(&v.rig, board, w);
-        }
-        boards[k] = v.rig.board.and_then(|i| records.get(i)).copied();
         let lamp_on = night && v.gear_flags & 1 != 0 && race.running;
-        if lamp_on != v.lamp_on {
-            info!("bot {k} ({}): head lamp {}", v.name, if lamp_on { "on (BotHeadlampOn)" } else { "off" });
-            v.lamp_on = lamp_on;
-        }
-        if lamp_on && !crate::render::post::env_is("SSX_BOT_LAMP", "off") {
-            for lamp in lod.and_then(|i| v.lamps.get(i)).into_iter().flatten() {
-                let Some(joint) = records.get(lamp.joint).filter(|_| lamp.light.enable) else { continue };
-                let r = crate::rider::skin::compose(joint, &lamp.local);
-                if ride.steps % 30 == 0 {
-                    debug!("bot {k} ({}): lamp at {:.1} towards {:.2}", v.name, r.p, r.q * Vec3::NEG_Z);
-                }
-                lights.lights.push(crate::render::lighting::local::DynamicLight {
-                    world: bevy::math::Affine3A::from_scale_rotation_translation(r.s, r.q, r.p),
-                    light: lamp.light.clone(),
-                    factor: 1.0,
-                });
-            }
-        }
+        (boards[k], trajectories[k]) = draw.place(&format!("bot {k}"), v, &records, facts, lamp_on);
     }
+    live.update(race, &ride, live::LiveFrame { facts, dt_ticks, racers }, rng, &mut draw);
 }
 
 pub fn hud_line(ride: &crate::ride::Ride) -> String {

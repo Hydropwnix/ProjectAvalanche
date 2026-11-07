@@ -1,0 +1,9 @@
+{
+	"title": "TXT_AVA_DOWNLOADING_TITLE",
+	"body": "",
+	"useoverride": true,
+	"defaultButton": 0,
+	"buttons":	[
+					{"label": "TXT_AVA_KEYBOARD_CANCEL", "event": "ava_downloading_cancel"}
+				]
+}

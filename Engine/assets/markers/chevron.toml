@@ -1,0 +1,10 @@
+shape = "chevron"
+size = 3.0
+color = "#FFE040E0"
+glow = 1.2
+facing = "world"
+draw_distance = 600.0
+
+[animation]
+pulse = 0.1
+pulse_period = 0.8

@@ -10,6 +10,7 @@ use ssx_formats::ant::{Guid, Stream, Value};
 use ssx_formats::ant_anim::{Animation, ChannelToDof, Pose, Skeleton, dof_list};
 
 use crate::anim_db::{Asset, AssetDb, field};
+pub use crate::anim_graph::Blend;
 use crate::rig_anim::{ANIM_DIR, RIG_BUNDLE};
 use crate::rigamate::{Sqt, rig_defaults};
 
@@ -24,6 +25,7 @@ pub const CAMERA_RIG: &str = "camera_rig";
 pub const ROLE_CHARACTER1: i64 = 0;
 pub const ROLE_CAMERA1: i64 = 10;
 pub const ROLE_HELICOPTER1: i64 = 20;
+pub const ROLE_GHOST1: i64 = 30;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Channel {
@@ -38,7 +40,7 @@ pub struct NisClip {
     pub num_ticks: f32,
     pub fps_scale: f32,
     pub delta_trajectory: bool,
-    pub anim: Animation,
+    pub anim: crate::anim_clip::ClipData,
     pub channels: HashMap<String, Channel>,
 }
 
@@ -50,11 +52,15 @@ impl NisClip {
         let anim = Animation::from_object(a.schema, a.obj)?.with_context(|| format!("{name}: Anim is no animation"))?;
         let t = db.get(anim.info().channel_to_dof).with_context(|| format!("{name}: no ChannelToDof"))?;
         let table = ChannelToDof::parse(t.schema, t.obj)?;
-        let dofs = dof_list(all, rig, "AnimRig")?;
+        let (anim, indices) = crate::content::anims::clip_for(db.data_root(), anim_g, anim, table.indices);
+        let target = ctrl.guid("Target").and_then(|g| db.get(g)).map_or("AnimRig", |t| t.name());
+        let dofs = dof_list(all, rig, target)?;
         let c = anim.counts();
         let mut channels = HashMap::new();
-        for (ch, &d) in table.indices.iter().enumerate() {
-            let Some(dof) = dofs.get(usize::from(d)) else { bail!("{name}: channel {ch} → DOF {d} outside {rig}") };
+        for (ch, &d) in indices.iter().enumerate() {
+            let Some(dof) = dofs.get(usize::from(d)) else {
+                bail!("{name}: channel {ch} → DOF {d} outside {rig} {target}")
+            };
             let kind = if ch < c.quats {
                 Channel::Quat(ch)
             } else if ch < c.quats + c.vec3s {
@@ -199,9 +205,17 @@ pub struct NisActor {
     pub offset: Option<(String, String)>,
     pub choices: Vec<(NisClip, f32)>,
     pub seed: Option<u32>,
+    pub chooser: Option<NisChooser>,
     pub sequences: Vec<(String, f32)>,
     pub root: Option<(String, Option<f32>)>,
     pub tags: Tags,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct NisChooser {
+    pub looping: bool,
+    pub choose_on_loop: bool,
+    pub blend: Option<Blend>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -214,6 +228,7 @@ pub struct Tags {
     pub branch_out: Option<f32>,
     pub early_out: Option<f32>,
     pub branch_in: Option<f32>,
+    pub window_blends: Vec<String>,
     pub tuning_offset: Option<[f32; 3]>,
     pub game_state: Vec<GameStateTag>,
 }
@@ -261,7 +276,7 @@ pub struct IntroNis {
     pub controller: String,
     pub ready: NisScene,
     pub jump: NisScene,
-    pub transition_blend: f32,
+    pub transition_blend: Blend,
     pub branch_out: Option<f32>,
     pub bundles: Vec<String>,
     pub rider: Rig,
@@ -305,9 +320,9 @@ pub struct CabinScene {
     pub start: f32,
     pub end: f32,
     pub window: String,
-    pub blend: f32,
+    pub blend: Blend,
     pub tuning_offset: Option<[f32; 3]>,
-    pub skip: Option<(SkipTo, f32)>,
+    pub skip: Option<(SkipTo, Blend)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -169,9 +169,14 @@ impl Session {
         }
     }
 
-    // TODO(guess): the controller reads the query one frame late (the caller queries after the execution, whose end already ran the next frame's controllers, 0x82D3DB98 / 0x823D312C); settle: the helicopter's step and queries inside the execution's simulation phase (scene op 26's place in `SOM_Game`).
+    pub fn heli_physics_queries(&mut self, h: &crate::helicopter::Helicopter, w: &World) {
+        if let Some(d) = h.physics_queries(&w.collision) {
+            self.downwash = Some(d);
+            self.set_downwash(&d);
+        }
+    }
+
     pub fn set_downwash(&mut self, d: &crate::helicopter::downwash::Downwash) {
-        crate::guess_hit!();
         use crate::helicopter::downwash::{ID_DOWNWASH_GROUND_AO, ID_DOWNWASH_VISUAL_STRENGTH};
         use ssx_lua::game::objectives::GsValue;
         let Some(o) = self.objectives.as_mut() else { return };

@@ -1,0 +1,10 @@
+{
+	"actions":
+		[
+			{ "viewname": "A_AvaPausePlayers", "actionname": "A_AvaPausePlayers" },
+			{ "viewname": "A_AvaPauseLeave", "actionname": "A_AvaPauseLeave" }
+		],
+	"data":
+		[
+		]
+}

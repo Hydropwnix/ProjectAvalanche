@@ -1,9 +1,11 @@
+use crate::render::reload::Recipe;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use bevy::asset::RenderAssetUsages;
 use bevy::image::ImageSampler;
-use bevy::prelude::*;
+use bevy::prelude::{App, Assets, Handle, Image, Resource, Vec3, Vec4, World, default};
+use bevy::render::RenderApp;
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use bevy::render::render_resource::{Extent3d, ShaderType, TextureDimension, TextureFormat};
 use ssx_assets::postfx_overlay::{OverlayDrop, OverlayParams, SurvivalOverlay, UV_SCALE_16_9, texture_path};
@@ -30,6 +32,7 @@ impl OverlayUniform {
 }
 
 #[derive(Resource, Clone, ExtractResource)]
+#[extract_app(RenderApp)]
 pub struct PostOverlay {
     pub uniform: OverlayUniform,
     pub maps: [Handle<Image>; 2],
@@ -60,21 +63,20 @@ pub(super) fn reset(world: &mut World) {
     world.insert_resource(PostOverlay { uniform, maps });
 }
 
-fn overlay_image(big_root: &Path, name: &str) -> Result<Image> {
+fn overlay_image(big_root: &Path, name: &str) -> Result<(Image, Recipe)> {
+    use crate::render::terrain::textures::{Texels, load_chain, plane_recipe, texture_2d};
     let rel = texture_path(name);
-    let path = ssx_assets::track_objects::asset_file(big_root, &rel).with_context(|| format!("{rel} not found"))?;
-    let chain = crate::render::terrain::textures::decode_xpr(&path)?;
-    Ok(crate::render::terrain::textures::texture_2d(
-        &chain,
-        crate::render::terrain::textures::Texels::Linear,
-        ImageSampler::Default,
-    ))
+    let id = ssx_assets::content::textures::texture_id(&rel).with_context(|| format!("{rel:?}: not a texture id"))?;
+    let want = ssx_content::texture::Want::PLANE;
+    let chain = load_chain(big_root, &id, &want)?;
+    let recipe = plane_recipe(big_root, &id, want, Texels::Linear, ImageSampler::Default);
+    Ok((texture_2d(&chain, Texels::Linear, ImageSampler::Default), recipe))
 }
 
 pub struct OverlayLoad {
     drop: OverlayDrop,
     overlay: SurvivalOverlay,
-    maps: [Image; 2],
+    maps: [(Image, Recipe); 2],
     failed: Vec<String>,
 }
 
@@ -88,7 +90,7 @@ pub fn insert(world: &mut World, load: OverlayLoad) -> Result<String> {
     let OverlayLoad { drop, overlay, maps: [a, b], failed } = load;
     let maps = {
         let mut images = world.get_resource_mut::<Assets<Image>>().context("no image assets")?;
-        [images.add(a), images.add(b)]
+        [a, b].map(|(image, recipe)| crate::render::reload::add(&mut images, image, Some(recipe)))
     };
     let mut post = world.get_resource_mut::<PostOverlay>().context("the post chain is off")?;
     post.maps = maps;

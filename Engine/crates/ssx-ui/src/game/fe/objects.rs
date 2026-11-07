@@ -52,6 +52,25 @@ impl FrontEnd {
                 badges::build(self, cx, loc, dp)
             }
             credits::DP => self.credits_text.as_deref().map(|t| credits::build(t, cx, loc)),
+            ava::keyboard::DP | ava::keyboard::DP_KEYS | ava::keyboard::DP_KEYS_INDEX if self.ava.keyboard.active => {
+                ava::keyboard::build(self, cx, loc, dp)
+            }
+            ava::hub::DP_MENU | ava::hub::DP_INDEX if self.ava.hub.active => ava::hub::build(self, cx, dp),
+            ava::credits::DP => Some(ava::credits::build(self, cx, loc)),
+            d if d.starts_with("dp_ava_maps") && self.ava.maps.active => ava::maps::build(self, cx, loc, d),
+            d if d.starts_with("dp_ava_opt") => ava::options::build(self, cx, loc, d),
+            #[cfg(feature = "net")]
+            d if d.starts_with("dp_ava_browser") && self.ava.browser.active => ava::browser::build(self, cx, loc, d),
+            #[cfg(feature = "net")]
+            d if d.starts_with("dp_ava_bf_") => ava::browser::filters::build(self, cx, loc, d),
+            #[cfg(feature = "net")]
+            d if d.starts_with("dp_ava_players") && self.ava.session.list.active => {
+                ava::session::players::build(self, cx, loc, d)
+            }
+            #[cfg(feature = "net")]
+            d if d.starts_with("dp_ava_chat") || d.starts_with("dp_ava_quickchat") => {
+                ava::session::chat::build(self, cx, loc, d)
+            }
             music::DP_MENU
             | music::DP_MENU_INDEX
             | music::DP_CATEGORIES

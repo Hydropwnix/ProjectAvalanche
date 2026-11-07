@@ -2,9 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
-use bevy::prelude::*;
+use bevy::prelude::{UVec2, info, warn};
 use ssx_assets::particles::{self, BASE_SNOW_SPRAY, LOD_SNOW_SPRAY};
-use ssx_formats::xpr::XprFile;
 
 use super::{ParticleTexture, ParticleWorld, SlotEffect, Spray, SunSlot, TrailSlot, rider, tombstone};
 use crate::particles::sim::{EffectInstance, Rng, SetArena};
@@ -24,6 +23,7 @@ pub(super) fn build(
     let mut world = ParticleWorld {
         spray: None,
         bot_sprays: Vec::new(),
+        live_sprays: Default::default(),
         sun: None,
         rider: None,
         rider_tried: false,
@@ -48,6 +48,7 @@ pub(super) fn build(
         registry: Default::default(),
         registry_snapshot: None,
         light: None,
+        level: lighting.map(|l| l.level.clone()),
     };
     let (mut defs, mut names) = (DefCache::default(), Vec::new());
     match build_spray(root, &mut world.arena, &mut defs, &mut names, BASE_SNOW_SPRAY, false) {
@@ -70,13 +71,34 @@ pub(super) fn build(
         let n = world.bot_sprays[0].effects.len();
         info!("particles: {} bots' lod_snowspray ({n} effects each)", world.bot_sprays.len());
     }
+    // TODO(guess): a live racer has the bots' `lod_snowspray` (every `BotSnowboarderRef`'s component) because it is
+    // drawn as a bot (racer kind 1 or 2); the original has no live racers; settle: none (a port feature).
+    if ride.is_some_and(|r| r.live.is_some()) && !crate::render::post::env_is("SSX_SNOW_SPRAY", "off") {
+        let built = particles::load_snow_spray_files(root, LOD_SNOW_SPRAY).and_then(|loaded| {
+            let spray = spray_of(&loaded.set, root, &mut world.arena, &mut defs, &mut names, true)?;
+            Ok((loaded.set, spray))
+        });
+        match built {
+            Ok((set, spray)) => {
+                info!("particles: the live racers' lod_snowspray ({} effects each)", spray.effects.len());
+                world.live_sprays.set = Some(set);
+                world.live_sprays.add(spray);
+            }
+            Err(e) => warn!("particles: the live racers' lod snow spray unavailable: {e:#}"),
+        }
+    }
     if let Some(l) = &lighting {
         let drop = (l.drop_count > 0).then_some(l.drop_key);
-        match TrackEffects::load(root, &l.track, drop, &mut world.arena, &mut defs, &mut names) {
-            _ if crate::render::post::env_is("SSX_TRACK_FX", "off") => {
+        let track = l.disc_track();
+        if track.is_none() {
+            info!("particles: a map's new track: no track effects, tombstones or track lights");
+        }
+        match track.map(|t| TrackEffects::load(root, t, drop, &mut world.arena, &mut defs, &mut names)) {
+            None => {}
+            Some(_) if crate::render::post::env_is("SSX_TRACK_FX", "off") => {
                 info!("particles: no track effects (SSX_TRACK_FX=off)")
             }
-            Ok(t) => {
+            Some(Ok(t)) => {
                 let entities = t.offline.as_ref().map_or(0, |(c, _)| c.entities.len());
                 let controlled = t.controlled();
                 info!(
@@ -85,10 +107,10 @@ pub(super) fn build(
                 );
                 world.track = t;
             }
-            Err(e) => warn!("particles: track effects unavailable: {e:#}"),
+            Some(Err(e)) => warn!("particles: track effects unavailable: {e:#}"),
         }
-        if ride.as_ref().is_some_and(|r| r.session.tombstones.is_some()) {
-            match tombstone::TombstoneSlots::load(root, &l.track, &mut defs, &mut names, &mut world.arena) {
+        if let Some(track) = track.filter(|_| ride.as_ref().is_some_and(|r| r.session.tombstones.is_some())) {
+            match tombstone::TombstoneSlots::load(root, track, &mut defs, &mut names, &mut world.arena) {
                 Ok((t, line)) => {
                     info!("particles: {line}");
                     world.tombstones = t;
@@ -96,11 +118,13 @@ pub(super) fn build(
                 Err(e) => warn!("particles: tombstones unavailable: {e:#}"),
             }
         }
-        match crate::particles::light::NearestLight::load(root, &l.track) {
-            Ok(light) => world.light = Some(light),
-            Err(e) => warn!("particles: track lights unavailable: {e:#}"),
+        match track.map(|t| crate::particles::light::NearestLight::load(root, t)) {
+            None => {}
+            Some(Ok(light)) => world.light = Some(light),
+            Some(Err(e)) => warn!("particles: track lights unavailable: {e:#}"),
         }
-        if let Some(node) = l.preset.sun_node.as_ref().filter(|_| !crate::render::post::env_is("SSX_SUN", "off")) {
+        let sun = l.sun_drawn() && !crate::render::post::env_is("SSX_SUN", "off");
+        if let Some(node) = l.preset.sun_node.as_ref().filter(|_| sun) {
             match defs.node(root, node) {
                 Ok((def, _)) => {
                     crate::particles::track::textures_of(&def, &mut names);
@@ -141,7 +165,7 @@ pub(super) fn build(
     }
     let mut textures = Vec::new();
     for n in &names {
-        match load_texture(root, n) {
+        match load_texture(root, n, world.level.as_deref()) {
             Ok(t) => textures.push(t),
             Err(e) => warn!("particles: texture {n}: {e:#}"),
         }
@@ -166,8 +190,19 @@ fn build_spray(
     lod: bool,
 ) -> Result<Spray> {
     let loaded = particles::load_snow_spray_files(root, collection)?;
+    spray_of(&loaded.set, root, arena, defs, names, lod)
+}
+
+pub(super) fn spray_of(
+    set: &particles::SnowSpraySet,
+    root: &std::path::Path,
+    arena: &mut SetArena,
+    defs: &mut DefCache,
+    names: &mut Vec<String>,
+    lod: bool,
+) -> Result<Spray> {
     let (mut effects, mut by_key, mut table) = (Vec::new(), HashMap::new(), [[None; 6]; 3]);
-    for (s, row) in loaded.set.slots.iter().enumerate() {
+    for (s, row) in set.slots.iter().enumerate() {
         for (k, node) in row.iter().enumerate() {
             let Some(node) = node else { continue };
             let index = match by_key.get(&node.key) {
@@ -193,22 +228,26 @@ fn build_spray(
     Ok(Spray { effects, table, driver: SnowSprayDriver::new(lod), inputs: Default::default() })
 }
 
-fn load_texture(root: &std::path::Path, name: &str) -> Result<ParticleTexture> {
-    use ssx_assets::texture::{self, DxnExport};
-    let path = particles::texture_file(root, name);
-    let data = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-    let xpr = XprFile::parse(&data).with_context(|| format!("parsing {}", path.display()))?;
-    let res = xpr.resources.first().with_context(|| format!("{}: no resource", path.display()))?;
-    let mut levels = texture::decode_resource(&data, &xpr, res, true, DxnExport::Raw)?;
-    levels.retain(|l| l.face == 0);
-    levels.sort_by_key(|l| l.level);
-    let first = &levels.first().context("no levels")?.image;
+fn load_texture(
+    root: &std::path::Path,
+    name: &str,
+    level: Option<&ssx_assets::content::level::LevelPackages>,
+) -> Result<ParticleTexture> {
+    let id = particles::texture_id(name).with_context(|| format!("{name:?}: not a texture id"))?;
+    let content = ssx_assets::content::GameContent::of(root);
+    let want = ssx_content::texture::Want::PLANE;
+    let found = match level.filter(|l| l.textures.contains_key(&id)) {
+        Some(l) => l.texture(&content, &id, &want)?,
+        None => content.texture(&id, &want)?,
+    };
+    let levels = found.texture.levels;
+    let first = levels.first().context("no levels")?;
     let (w, h) = (first.width, first.height);
     let chain = levels
-        .iter()
+        .into_iter()
         .enumerate()
-        .take_while(|(i, l)| l.image.width == (w >> i).max(1) && l.image.height == (h >> i).max(1))
-        .map(|(_, l)| l.image.rgba.clone())
+        .take_while(|(i, l)| l.width == (w >> i).max(1) && l.height == (h >> i).max(1))
+        .filter_map(|(_, l)| l.images.into_iter().next())
         .collect();
     Ok(ParticleTexture { name: name.to_owned(), size: UVec2::new(w, h), levels: chain })
 }
@@ -216,7 +255,7 @@ fn load_texture(root: &std::path::Path, name: &str) -> Result<ParticleTexture> {
 pub(super) fn load_rider_effects(
     w: &mut ParticleWorld,
     root: &std::path::Path,
-    track: &str,
+    track: Option<&str>,
     rig: &RiderRig,
     ride: &Ride,
 ) {
@@ -274,13 +313,43 @@ pub(super) fn load_heli_effects(
     load_new_textures(w, root, before);
 }
 
+pub(crate) fn reload_textures(
+    w: &mut ParticleWorld,
+    root: &std::path::Path,
+    touched: impl Fn(&ssx_content::ContentId) -> bool,
+) -> usize {
+    let mut n = 0;
+    let all: Vec<ParticleTexture> = w
+        .textures
+        .iter()
+        .map(|t| {
+            let changed = particles::texture_id(&t.name).is_some_and(|id| touched(&id));
+            match changed.then(|| load_texture(root, &t.name, w.level.as_deref())) {
+                Some(Ok(new)) => {
+                    n += 1;
+                    new
+                }
+                Some(Err(e)) => {
+                    warn!("particles: texture {} not reloaded: {e:#}", t.name);
+                    ParticleTexture { name: t.name.clone(), size: t.size, levels: t.levels.clone() }
+                }
+                None => ParticleTexture { name: t.name.clone(), size: t.size, levels: t.levels.clone() },
+            }
+        })
+        .collect();
+    if n > 0 {
+        w.textures = Arc::new(all);
+    }
+    n
+}
+
 pub(super) fn load_new_textures(w: &mut ParticleWorld, root: &std::path::Path, before: usize) {
     if w.texture_names.len() <= before {
         return;
     }
     let mut textures: Vec<ParticleTexture> = Vec::new();
     for n in &w.texture_names[before..] {
-        match load_texture(root, n) {
+        match load_texture(root, n, w.level.as_deref()) {
             Ok(t) => textures.push(t),
             Err(e) => warn!("particles: texture {n}: {e:#}"),
         }

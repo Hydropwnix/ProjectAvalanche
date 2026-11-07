@@ -1,0 +1,19 @@
+{
+	"actions":
+		[
+			{ "viewname": "A_AvaKeyboardKey", "actionname": "A_AvaKeyboardKey" },
+			{ "viewname": "A_AvaKeyboardDelete", "actionname": "A_AvaKeyboardDelete" },
+			{ "viewname": "A_AvaKeyboardCaps", "actionname": "A_AvaKeyboardCaps" },
+			{ "viewname": "A_AvaKeyboardSymbols", "actionname": "A_AvaKeyboardSymbols" },
+			{ "viewname": "A_AvaKeyboardCaretLeft", "actionname": "A_AvaKeyboardCaretLeft" },
+			{ "viewname": "A_AvaKeyboardCaretRight", "actionname": "A_AvaKeyboardCaretRight" },
+			{ "viewname": "A_AvaKeyboardDone", "actionname": "A_AvaKeyboardDone" },
+			{ "viewname": "A_AvaKeyboardCancel", "actionname": "A_AvaKeyboardCancel" }
+		],
+	"data":
+		[
+			{ "viewname": "ava_keyboard", "type": "object", "dpname": "dp_ava_keyboard" },
+			{ "viewname": "ava_keyboard_keys", "type": "array", "dpname": "dp_ava_keyboard_keys" },
+			{ "viewname": "ava_keyboard_keys_index", "type": "int", "dpname": "dp_ava_keyboard_keys_index" }
+		]
+}

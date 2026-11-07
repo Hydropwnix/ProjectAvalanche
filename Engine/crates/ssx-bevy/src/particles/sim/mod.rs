@@ -222,6 +222,12 @@ impl EffectInstance {
         (v.f("fRadius"), v.i("iCullBehavior"))
     }
 
+    pub fn make_dormant(&mut self, arena: &mut SetArena) {
+        self.state = 4;
+        self.kill(arena);
+        (self.last_start, self.start_ms) = (-1.0, 0);
+    }
+
     fn kill(&self, arena: &mut SetArena) {
         for &s in &self.sets {
             arena.sets[s].particles.clear();

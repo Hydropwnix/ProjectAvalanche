@@ -3,6 +3,7 @@ pub mod interaction;
 
 mod flight;
 mod movement;
+mod pose;
 mod tuning;
 
 pub use movement::*;
@@ -40,6 +41,7 @@ pub struct HeliFlightData {
     pub interaction: Option<interaction::InteractionTuning>,
     pub tricks: Vec<ssx_assets::helicopter::HeliTrickSeq>,
     pub hover: Option<ssx_assets::helicopter::HoverNoise>,
+    pub wash: Option<(String, String)>,
 }
 
 const DEFAULT_BLEND_TICKS: f32 = 8.0;
@@ -51,7 +53,7 @@ impl HeliFlightData {
         _scripts: &[String],
         _outro_locator: Option<(Vec3, Quat)>,
     ) -> Result<Self> {
-        let b = Bundle::load(big_root)?;
+        let b = crate::tuning::load(big_root)?;
         let bezier = b.view("Transition node_heli_movetoposition to node_heli_idle_end", "StateFlowTransitionAsset")?;
         let blend = bezier.asset("OverrideBlend")?;
         let samples = match blend.value("Samples")? {
@@ -70,6 +72,7 @@ impl HeliFlightData {
             interaction: interaction::InteractionTuning::load(&b).ok(),
             tricks: ssx_assets::helicopter::heli_trick_sequences(big_root).unwrap_or_default(),
             hover: ssx_assets::helicopter::HoverNoise::load_disc(big_root).ok(),
+            wash: downwash::wash_joints(big_root).ok(),
         })
     }
 }
@@ -118,6 +121,8 @@ pub struct Helicopter {
     pub reverse_cam: bool,
     ctrl: Option<MoveController>,
     blend: Option<(Option<MoveController>, HeliNode, f32)>,
+    nis_last: Option<pose::NisLast>,
+    nis_chain: Vec<(crate::nis::SceneRef, f32, f32, bool)>,
 }
 
 impl Helicopter {
@@ -149,13 +154,16 @@ impl Helicopter {
             reverse_cam: false,
             ctrl: None,
             blend: None,
+            nis_last: None,
+            nis_chain: intro.chain(),
         }
     }
 
     pub fn warp(&mut self, p: Vec3, q: Quat) {
-        // TODO(guess): the warp moves the trajectory and keeps the movement controller and the velocity (0x82CFEF60 writes `VEC_Position` / `QUAT_Orientation` / `BLN_WarpedThisFrame`); settle: how the helicopter's trajectory and `HeliMovementController` read the warp.
+        // TODO(guess): the movement controller's own state (the PID's integral and last error, the facing spring) is kept — the warp writes the pose and game state, not the controller (0x82CFEF60 reaches no controller instance); settle: a read of `BLN_WarpedThisFrame` in `HeliMovementController` 0x82CC20F8 or its subject.
         crate::guess_hit!();
         self.traj = (q, p);
+        (self.velocity, self.angular_velocity) = (Vec3::ZERO, Quat::IDENTITY);
     }
 
     pub fn nis_active(&self) -> bool {

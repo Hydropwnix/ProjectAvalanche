@@ -105,7 +105,7 @@ pub fn player_state(s: &RiderState, name: &str) -> Option<GsValue> {
     Some(match name {
         "FLT_ScoringAccumSpinTotal" => GsValue::Float(s.score.spin_fs.abs() + s.score.spin_bs.abs()),
         "FLT_ScoringAccumFlipTotal" => GsValue::Float(s.score.flip_fwd.abs() + s.score.flip_bwd.abs()),
-        "INT_ScoringTrickId" => GsValue::Int(i32::from(s.score.trick_id as u8)),
+        "INT_ScoringTrickId" => GsValue::Int(i32::from(s.score.trick_id.value())),
         "BLN_Goofy" => GsValue::Bool(s.goofy),
         "BLN_IsAwesome" => GsValue::Bool(s.score.is_awesome),
         "BLN_IsSuperAwesome" => GsValue::Bool(s.score.is_super_awesome),
@@ -471,6 +471,12 @@ impl GameUi {
     }
 
     pub fn tutorial_popup(&mut self, key: &str) -> bool {
+        // TODO(guess): a port choice (the original has no real-time multiplayer; its popups pause the simulation);
+        // settle: none (a port feature).
+        if let Some(fe) = self.fe.as_mut().filter(|fe| fe.network_session) {
+            fe.withheld_popups.push(key.to_string());
+            return false;
+        }
         if key.eq_ignore_ascii_case("InputChoice") {
             self.fe_call(super::fe::tutorial_pause::show_input_choice);
         } else {

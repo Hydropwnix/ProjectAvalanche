@@ -10,6 +10,7 @@ mod collision;
 mod follow;
 mod meta;
 mod noise;
+mod spectate;
 mod update;
 
 use collision::{Queries, TICKS_SINCE_COLLISION};
@@ -18,9 +19,13 @@ pub use follow::{follow, toggle};
 use meta::TYPE_TRANSITION_SPEED_SET_DEFAULT;
 use noise::CarvingNoise;
 pub use noise::{CameraNoise, load_noise};
+pub use spectate::SpectateTarget;
+#[cfg(feature = "scripts")]
+pub use spectate::spectate_inputs_at;
 
 pub fn register(app: &mut App) {
     app.init_resource::<ChaseCamera>().add_systems(FixedPostUpdate, step.run_if(resource_exists::<crate::ride::Ride>));
+    crate::shell::level::scoped::<SpectateTarget>(app);
     crate::shell::level::scoped::<CameraNoise>(app);
 }
 
@@ -204,6 +209,7 @@ pub struct Chase {
     carving: CarvingNoise,
     wipeout_time: Option<f32>,
     nis: bool,
+    spectating: Option<u16>,
 }
 
 #[derive(Resource, Default)]
@@ -299,6 +305,7 @@ impl Chase {
             carving,
             wipeout_time: None,
             nis: false,
+            spectating: None,
         }
     }
 

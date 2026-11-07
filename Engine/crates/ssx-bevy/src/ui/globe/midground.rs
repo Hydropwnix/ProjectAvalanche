@@ -35,27 +35,46 @@ pub struct MipTexture {
 
 #[derive(Clone, Debug)]
 pub struct Blocks {
-    pub format: ssx_formats::xenos::TextureFormat,
+    pub format: ssx_content::texture::BlockFormat,
     pub levels: Vec<Vec<u8>>,
 }
 
 pub(super) fn blocks_of(
-    data: &[u8],
-    xpr: &ssx_formats::xpr::XprFile,
-    res: &ssx_formats::xpr::XprResource,
+    chain: Option<ssx_content::texture::BlockChain>,
     (width, height): (u32, u32),
     levels: usize,
 ) -> Option<Blocks> {
-    let (format, found) = ssx_assets::texture::resource_blocks(data, xpr, res).ok()??;
-    if width % 4 != 0 || height % 4 != 0 || found.len() < levels {
+    let chain = chain?;
+    if width % 4 != 0 || height % 4 != 0 || chain.levels.len() < levels {
         return None;
     }
-    let shapes_match = found
+    let shapes_match = chain
+        .levels
         .iter()
         .take(levels)
         .enumerate()
         .all(|(i, l)| (l.width, l.height) == ((width >> i).max(1), (height >> i).max(1)));
-    shapes_match.then(|| Blocks { format, levels: found.into_iter().take(levels).map(|l| l.blocks).collect() })
+    let format = chain.format;
+    shapes_match.then(|| Blocks { format, levels: chain.levels.into_iter().take(levels).map(|l| l.data).collect() })
+}
+
+pub(super) fn texture_by_id(big_root: &Path, id: &ssx_content::ContentId, level0_only: bool) -> Result<MipTexture> {
+    let bc = crate::render::terrain::textures::block_textures();
+    let found =
+        ssx_assets::content::GameContent::of(big_root).texture_for_gpu(id, &ssx_content::texture::Want::PLANE, bc)?;
+    let t = found.texture;
+    let first = t.levels.first().context("no texture level")?;
+    let (width, height) = (first.width, first.height);
+    let mut out = MipTexture { width, height, levels: Vec::new(), blocks: None };
+    for (i, l) in t.levels.into_iter().enumerate() {
+        let (w, h) = ((width >> i).max(1), (height >> i).max(1));
+        if l.width != w || l.height != h || (level0_only && i > 0) {
+            break;
+        }
+        out.levels.extend(l.images.into_iter().next());
+    }
+    out.blocks = blocks_of(t.blocks, (width, height), out.levels.len());
+    Ok(out)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -83,31 +102,8 @@ pub struct MidgroundAssets {
 }
 
 pub(super) fn mip_texture(big_root: &Path, rel: &str) -> Result<MipTexture> {
-    let rel = rel.replace('\\', "/");
-    let path = ssx_assets::track_objects::asset_file(big_root, &format!("{rel}.xpr"))
-        .with_context(|| format!("{rel}.xpr not found"))?;
-    mip_texture_at(&path)
-}
-
-pub(super) fn mip_texture_at(path: &Path) -> Result<MipTexture> {
-    let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    let xpr = ssx_formats::xpr::XprFile::parse(&data)?;
-    let res = xpr.resources.first().context("no texture resource")?;
-    let levels = ssx_assets::texture::decode_resource(&data, &xpr, res, true, ssx_assets::texture::DxnExport::Raw)?;
-    let mut levels: Vec<_> = levels.into_iter().filter(|l| l.face == 0).collect();
-    levels.sort_by_key(|l| l.level);
-    let first = levels.first().context("no texture level")?;
-    let (width, height) = (first.image.width, first.image.height);
-    let mut out = MipTexture { width, height, levels: Vec::new(), blocks: None };
-    for (i, l) in levels.iter().enumerate() {
-        let (w, h) = ((width >> i).max(1), (height >> i).max(1));
-        if l.image.width != w || l.image.height != h {
-            break;
-        }
-        out.levels.push(l.image.rgba.clone());
-    }
-    out.blocks = blocks_of(&data, &xpr, res, (width, height), out.levels.len());
-    Ok(out)
+    let id = ssx_assets::content::textures::texture_id(rel).with_context(|| format!("{rel:?}: not a texture id"))?;
+    texture_by_id(big_root, &id, false)
 }
 
 pub fn texture_bytes<'a>(textures: impl IntoIterator<Item = (&'a [Vec<u8>], Option<&'a Blocks>)>) -> [usize; 4] {
@@ -141,10 +137,7 @@ impl MidgroundAssets {
         let meshes = data.midground_meshes.get(&range).with_context(|| format!("range {range:#x}: no mid-ground"))?;
         let mut parts = Vec::new();
         for m in meshes.iter().filter(|m| m.material.effect.as_deref() == Some("terrain_midground_fe.fx")) {
-            let rel = m.geometry.replace('\\', "/");
-            let path =
-                ssx_assets::track_objects::asset_file(big_root, &rel).with_context(|| format!("{rel} not found"))?;
-            let o = ssx_assets::object_mesh::load(&path)?;
+            let o = crate::render::sky::midground::static_mesh(big_root, &m.geometry)?;
             let n = o.positions.len();
             let mesh = MidgroundMesh {
                 normals: o.normals.clone().unwrap_or_else(|| vec![[0.0, 1.0, 0.0]; n]),
@@ -164,10 +157,7 @@ impl MidgroundAssets {
         }
         let mut waves = Vec::new();
         for m in meshes.iter().filter(|m| m.material.effect.as_deref() == Some("terrain_oceanwave_fe.fx")) {
-            let rel = m.geometry.replace('\\', "/");
-            let path =
-                ssx_assets::track_objects::asset_file(big_root, &rel).with_context(|| format!("{rel} not found"))?;
-            let o = ssx_assets::object_mesh::load(&path)?;
+            let o = crate::render::sky::midground::static_mesh(big_root, &m.geometry)?;
             let n = o.positions.len();
             let colours = o.colours.clone().unwrap_or_else(|| vec![[255; 4]; n]);
             let mesh = MidgroundMesh {

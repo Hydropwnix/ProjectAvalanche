@@ -1,3 +1,4 @@
+pub mod added;
 mod build;
 
 use std::collections::HashMap;
@@ -47,6 +48,41 @@ pub struct Blend {
     pub weight: Option<SigId>,
     pub samples: Vec<f32>,
     pub dof_curves: Option<DofCurves>,
+}
+
+impl Blend {
+    pub fn default_transition() -> Self {
+        Blend {
+            class: "BlendCurveAsset".into(),
+            blend_time: 8.0,
+            launch_angle: 0.0,
+            curve: 0,
+            sync_phase: false,
+            weight: None,
+            samples: Vec::new(),
+            dof_curves: None,
+        }
+    }
+
+    pub fn of_asset(a: &Asset) -> Option<Self> {
+        if !a.is("IBlendAsset") {
+            return None;
+        }
+        Some(Blend {
+            class: a.class().to_string(),
+            blend_time: a.f32("BlendTime").unwrap_or(0.0),
+            launch_angle: a.f32("LaunchAngle").unwrap_or(0.0),
+            curve: a.int("CurveType").or_else(|| a.int("Curve")).unwrap_or(-1),
+            sync_phase: a.bool("ShouldSyncPhase").unwrap_or(false),
+            weight: None,
+            samples: a.array("Samples").iter().filter_map(Value::as_f32).collect(),
+            dof_curves: None,
+        })
+    }
+
+    pub fn cut() -> Self {
+        Blend { class: "AccelBlendAsset".into(), blend_time: 0.0, curve: -1, ..Self::default_transition() }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -381,6 +417,12 @@ impl Graph {
         let overrides = db.character_config().map(|c| db.config_overrides(c)).unwrap_or_default();
         let mut b = Builder { db, g: Graph::default(), overrides };
         let id = b.ctrl(Some(a.guid)).ok_or_else(|| anyhow::anyhow!("{root} is not a controller"))?;
-        Ok((b.g, id))
+        let mut g = b.g;
+        if let Some(tricks) = crate::content::tricks::tricks_for(db.data_root()) {
+            for p in added::add_tricks(&mut g, &tricks, db) {
+                crate::content::tricks::notice(db.data_root(), p);
+            }
+        }
+        Ok((g, id))
     }
 }

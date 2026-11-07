@@ -1,0 +1,33 @@
+[package]
+name = "ssx-net"
+description = "The multiplayer network layer (port feature): the only crate that names lightyear. Protocol, server and client plugins, the shared tick, test harness."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+ssx-net-proto.workspace = true
+ssx-formats.workspace = true
+ssx-gameplay.workspace = true
+lightyear.workspace = true
+lightyear_replication.workspace = true
+lightyear_serde.workspace = true
+lightyear_sync.workspace = true
+bevy_replicon.workspace = true
+bevy_app.workspace = true
+bevy_ecs.workspace = true
+bevy_time.workspace = true
+bevy_state.workspace = true
+bytes.workspace = true
+serde.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+ssx-physics.workspace = true
+ssx-rules.workspace = true
+glam.workspace = true
+
+[lints]
+workspace = true

@@ -18,6 +18,7 @@ pub enum Button {
     DpadLeft,
     DpadRight,
     Disconnect,
+    Ras,
 }
 
 impl Button {
@@ -38,6 +39,7 @@ impl Button {
             Button::DpadLeft => "DPAD_LEFT",
             Button::DpadRight => "DPAD_RIGHT",
             Button::Disconnect => "DISCONNECT",
+            Button::Ras => "RAS",
         }
     }
 }

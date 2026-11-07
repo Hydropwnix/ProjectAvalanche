@@ -3,11 +3,15 @@ pub mod fe;
 pub mod feed;
 pub mod hud;
 pub mod input;
+pub mod kept;
 pub mod leaderboard;
 pub mod loc;
 pub mod nav;
+pub mod pointer;
+pub mod port;
 pub mod prompts;
 pub mod ride;
+pub mod session_board;
 pub mod stats;
 pub mod store;
 pub mod tricks;
@@ -20,15 +24,13 @@ mod calls;
 mod frame;
 mod navigation;
 
-use std::collections::BTreeMap;
-
 use anyhow::Result;
 
 use crate::avm1::runtime::nav as navev;
 use crate::avm1::value::Value;
 use crate::avm1::{Ctx, Vm};
 use crate::display::Player;
-use crate::fs::Disc;
+use crate::fs::FileSource;
 use crate::library::Library;
 use clip::Clip;
 use hud::{HUD_DATA, HudEnv, HudProvider};
@@ -59,15 +61,16 @@ pub enum NavWait {
 
 #[derive(Clone, Debug, Default)]
 pub struct BridgeStats {
-    pub binds: BTreeMap<String, String>,
-    pub taken: BTreeMap<String, String>,
-    pub subscribes: BTreeMap<String, bool>,
-    pub resources: BTreeMap<String, String>,
+    pub binds: kept::KeptMap<String, String>,
+    pub taken: kept::KeptMap<String, String>,
+    pub subscribes: kept::KeptMap<String, bool>,
+    pub resources: kept::KeptMap<String, String>,
     pub publishes: u64,
-    pub published: Vec<String>,
+    pub published: kept::Kept<String>,
     pub inputs: u64,
-    pub dispatched: Vec<String>,
-    pub actions: Vec<String>,
+    pub dispatched: kept::Kept<String>,
+    pub actions: kept::Kept<String>,
+    pub content_notices: kept::Kept<String>,
 }
 
 pub struct GameUi {
@@ -77,6 +80,7 @@ pub struct GameUi {
     pub hud: HudProvider,
     pub nav: nav::Nav,
     pub input: input::InputProvider,
+    pub pointer: pointer::PointerRouter,
     pub event_type: i32,
     pub gear: [bool; 15],
     pub sounds: Vec<u32>,
@@ -90,16 +94,25 @@ pub struct GameUi {
     due_views: Vec<String>,
     loading_views: Vec<String>,
     pub nav_wait: Option<NavWait>,
+    pub port: Option<port::PortFe>,
     fe_clock: f64,
 }
 
 impl GameUi {
-    pub fn new(disc: &Disc, language: Language) -> Result<Self> {
-        let loc = Localization::load(disc, language)?;
-        let store = DataStore::load_disc(disc)?;
-        let nav = nav::Nav::load(disc)?;
+    pub fn new(files: &dyn FileSource, language: Language) -> Result<Self> {
+        let mut loc = Localization::load(files, language)?;
+        for (key, text) in port::builtin_strings()? {
+            loc.add_port_string(&key, &text)?;
+        }
+        let refused = apply_package_strings(files, &mut loc);
+        let store = DataStore::load_files(files)?;
+        let nav = nav::Nav::load(files)?;
         let mut values = UiValues::new();
         set_display(&mut values, 1280, 720);
+        let mut stats = BridgeStats::default();
+        for line in refused {
+            stats.content_notices.push(line);
+        }
         Ok(GameUi {
             values,
             loc,
@@ -107,11 +120,12 @@ impl GameUi {
             hud: HudProvider::default(),
             nav,
             input: input::InputProvider::default(),
+            pointer: pointer::PointerRouter::default(),
             event_type: -1,
             gear: [false; 15],
             sounds: Vec::new(),
             tutorial: Default::default(),
-            stats: BridgeStats::default(),
+            stats,
             resources: Vec::new(),
             handler: None,
             fe: None,
@@ -120,6 +134,7 @@ impl GameUi {
             due_views: Vec::new(),
             loading_views: Vec::new(),
             nav_wait: None,
+            port: None,
             fe_clock: 0.0,
         })
     }
@@ -142,6 +157,10 @@ impl GameUi {
 
     pub fn take_requests(&mut self) -> Vec<fe::pause::GameRequest> {
         self.fe.as_mut().map(|f| std::mem::take(&mut f.requests)).unwrap_or_default()
+    }
+
+    pub fn take_map_requests(&mut self) -> Vec<fe::ava::maps::MapRequest> {
+        self.fe.as_mut().map(|f| std::mem::take(&mut f.ava.maps.requests)).unwrap_or_default()
     }
 
     pub fn take_ui_sounds(&mut self) -> Vec<i32> {
@@ -226,6 +245,37 @@ pub fn resolve_path(cx: &mut Ctx, path: &str) -> Option<Value> {
         }
     }
     Some(cur)
+}
+
+pub fn apply_package_strings(files: &dyn FileSource, loc: &mut Localization) -> Vec<String> {
+    let Some(content) = files.content() else { return Vec::new() };
+    loc.content = Some(content.clone());
+    let strings = content.package_strings(loc.content_lang());
+    if strings.is_empty() {
+        return Vec::new();
+    }
+    loc.apply_package_strings(&strings)
+}
+
+impl GameUi {
+    pub fn reload_strings(&mut self, files: &dyn FileSource) -> Result<usize> {
+        let mut loc = Localization::load(files, self.loc.language)?;
+        for (key, text) in port::builtin_strings()? {
+            loc.add_port_string(&key, &text)?;
+        }
+        let refused = apply_package_strings(files, &mut loc);
+        if let Some(fe) = &self.fe {
+            for (key, text) in ssx_assets::content::characters::career::port_strings(&fe.career) {
+                let _ = loc.add_port_string(&key, &text);
+            }
+        }
+        for line in refused {
+            self.stats.content_notices.push(line);
+        }
+        let n = files.content().map_or(0, |c| c.package_strings(loc.content_lang()).len());
+        self.loc = loc;
+        Ok(n)
+    }
 }
 
 pub fn set_display(values: &mut UiValues, width: i32, height: i32) {

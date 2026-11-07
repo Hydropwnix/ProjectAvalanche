@@ -2,6 +2,7 @@ use std::io::Read;
 
 pub mod avm1;
 pub mod bits;
+pub mod limits;
 pub mod place;
 pub mod scaleform;
 pub mod shape;
@@ -11,6 +12,7 @@ pub mod types;
 use crate::{Error, Result};
 use avm1::Action;
 use bits::SwfReader;
+pub use limits::{Budget, Limits};
 use place::PlaceObject;
 use scaleform::{ExporterInfo, ExternalImage, SubImage};
 use shape::{DefineShape, MorphShape};
@@ -167,21 +169,36 @@ pub struct Movie {
 }
 
 pub fn decompress(file: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+    decompress_with(file, &Limits::default())
+}
+
+pub fn decompress_with(file: &[u8], limits: &Limits) -> Result<(Vec<u8>, Vec<u8>)> {
     if file.len() < 8 {
         return Err(Error::UnexpectedEof { offset: 0, wanted: 8, available: file.len() });
     }
+    if file.len() > limits.max_file_bytes {
+        return Err(Error::invalid(format!("the file is {} bytes, the cap {}", file.len(), limits.max_file_bytes)));
+    }
     let sig = &file[..3];
     let len = u32::from_le_bytes([file[4], file[5], file[6], file[7]]) as usize;
+    if len < 8 || len > limits.max_movie_bytes {
+        return Err(Error::invalid(format!("the header states {len} bytes (8 to {})", limits.max_movie_bytes)));
+    }
     let mut out = file[..8].to_vec();
     let padding = match sig {
         b"CFX" | b"CWS" => {
-            let mut z = flate2::read::ZlibDecoder::new(&file[8..]);
+            let cap = len.saturating_add(limits.max_inflate_padding);
+            let mut z = flate2::read::ZlibDecoder::new(&file[8..]).take(cap.saturating_sub(8) as u64 + 1);
             z.read_to_end(&mut out).map_err(|e| Error::Decompress(format!("movie zlib stream: {e}")))?;
-            if z.total_in() as usize != file.len() - 8 {
+            if out.len() > cap {
                 return Err(Error::invalid(format!(
-                    "{} bytes after the zlib stream",
-                    file.len() - 8 - z.total_in() as usize
+                    "the zlib stream inflates past {cap} bytes (the stated {len} + {} of padding)",
+                    limits.max_inflate_padding
                 )));
+            }
+            let total_in = z.into_inner().total_in() as usize;
+            if total_in != file.len() - 8 {
+                return Err(Error::invalid(format!("{} bytes after the zlib stream", file.len() - 8 - total_in)));
             }
             if out.len() < len {
                 return Err(Error::invalid(format!("inflated to {} bytes, header says {len}", out.len())));
@@ -200,10 +217,11 @@ pub fn decompress(file: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
     Ok((out, padding))
 }
 
-fn read_tags(data: &[u8], base: usize, swf_version: u8, nested: bool) -> Result<Vec<TagRecord>> {
+fn read_tags(data: &[u8], base: usize, swf_version: u8, nested: bool, budget: &Budget) -> Result<Vec<TagRecord>> {
     let mut r = SwfReader::new(data);
     let mut tags = Vec::new();
     loop {
+        budget.tag()?;
         let offset = base + r.pos();
         let head = r.u16()?;
         let code = head >> 6;
@@ -212,7 +230,7 @@ fn read_tags(data: &[u8], base: usize, swf_version: u8, nested: bool) -> Result<
         let len = if long_header { r.u32()? as usize } else { short };
         let body_at = base + r.pos();
         let body = r.bytes(len)?;
-        let tag = read_tag(code, body, body_at, swf_version, nested).map_err(|e| {
+        let tag = read_tag(code, body, body_at, swf_version, nested, budget).map_err(|e| {
             Error::invalid(format!("tag {code} ({}) at {offset:#x}: {e}", tag_name(code).unwrap_or("?")))
         })?;
         tags.push(TagRecord { code, offset, long_header, tag });
@@ -226,8 +244,8 @@ fn read_tags(data: &[u8], base: usize, swf_version: u8, nested: bool) -> Result<
     Ok(tags)
 }
 
-fn actions(code: &[u8]) -> Result<Vec<Action>> {
-    let a = avm1::decode(code)?;
+fn actions(code: &[u8], budget: &Budget) -> Result<Vec<Action>> {
+    let a = avm1::decode_in(code, budget)?;
     avm1::validate(&a, code.len() as u32)?;
     Ok(a)
 }
@@ -237,7 +255,7 @@ fn assets(r: &mut SwfReader) -> Result<Vec<(u16, String)>> {
     (0..n).map(|_| Ok((r.u16()?, r.string()?))).collect()
 }
 
-fn read_tag(code: u16, body: &[u8], body_at: usize, swf_version: u8, nested: bool) -> Result<Tag> {
+fn read_tag(code: u16, body: &[u8], body_at: usize, swf_version: u8, nested: bool, budget: &Budget) -> Result<Tag> {
     let mut r = SwfReader::new(body);
     let tag = match code {
         0 => Tag::End,
@@ -249,16 +267,17 @@ fn read_tag(code: u16, body: &[u8], body_at: usize, swf_version: u8, nested: boo
                 32 => 3,
                 _ => 4,
             };
-            return Ok(Tag::Shape(DefineShape::read(body, version)?));
+            return Ok(Tag::Shape(DefineShape::read_in(body, version, budget)?));
         }
         9 => Tag::SetBackgroundColor(Rgba::read_rgb(&mut r)?),
-        11 | 33 => return Ok(Tag::Text(StaticText::read(body, code == 33)?)),
-        12 => return Ok(Tag::DoAction(actions(body)?)),
+        11 | 33 => return Ok(Tag::Text(StaticText::read_in(body, code == 33, budget)?)),
+        12 => return Ok(Tag::DoAction(actions(body, budget)?)),
         26 | 70 => {
-            return Ok(Tag::PlaceObject(Box::new(PlaceObject::read(
+            return Ok(Tag::PlaceObject(Box::new(PlaceObject::read_in(
                 body,
                 if code == 26 { 2 } else { 3 },
                 swf_version,
+                budget,
             )?)));
         }
         28 => Tag::RemoveObject2 { depth: r.u16()? },
@@ -266,7 +285,8 @@ fn read_tag(code: u16, body: &[u8], body_at: usize, swf_version: u8, nested: boo
         39 if !nested => {
             let id = r.u16()?;
             let frame_count = r.u16()?;
-            let tags = read_tags(r.rest(), body_at + 4, swf_version, true)?;
+            budget.timeline(frame_count)?;
+            let tags = read_tags(r.rest(), body_at + 4, swf_version, true, budget)?;
             Tag::Sprite(Sprite { id, frame_count, tags })
         }
         43 => {
@@ -274,8 +294,8 @@ fn read_tag(code: u16, body: &[u8], body_at: usize, swf_version: u8, nested: boo
             let anchor = if r.at_end() { None } else { Some(r.u8()?) };
             Tag::FrameLabel { name, anchor }
         }
-        46 => return Ok(Tag::MorphShape(MorphShape::read(body)?)),
-        48 | 75 => return Ok(Tag::Font(Font::read(body, if code == 48 { 2 } else { 3 })?)),
+        46 => return Ok(Tag::MorphShape(MorphShape::read_in(body, budget)?)),
+        48 | 75 => return Ok(Tag::Font(Font::read_in(body, if code == 48 { 2 } else { 3 }, budget)?)),
         56 => Tag::ExportAssets(assets(&mut r)?),
         57 | 71 => {
             let url = r.string()?;
@@ -284,7 +304,7 @@ fn read_tag(code: u16, body: &[u8], body_at: usize, swf_version: u8, nested: boo
         }
         59 => {
             let sprite_id = r.u16()?;
-            Tag::DoInitAction { sprite_id, actions: actions(r.rest())? }
+            Tag::DoInitAction { sprite_id, actions: actions(r.rest(), budget)? }
         }
         69 => Tag::FileAttributes(r.u32()?),
         74 => return Ok(Tag::CsmTextSettings(CsmTextSettings::read(body)?)),
@@ -301,7 +321,16 @@ fn read_tag(code: u16, body: &[u8], body_at: usize, swf_version: u8, nested: boo
 
 impl Movie {
     pub fn parse(file: &[u8]) -> Result<Movie> {
-        let (data, padding) = decompress(file)?;
+        Movie::parse_with(file, &Limits::default())
+    }
+
+    pub fn parse_with(file: &[u8], limits: &Limits) -> Result<Movie> {
+        Movie::parse_in(file, &mut Budget::new(*limits))
+    }
+
+    pub fn parse_in(file: &[u8], budget: &mut Budget) -> Result<Movie> {
+        let budget = &*budget;
+        let (data, padding) = decompress_with(file, budget.limits())?;
         let unk_inflate_padding = padding.len();
         let mut signature = [0u8; 3];
         signature.copy_from_slice(&data[..3]);
@@ -311,8 +340,9 @@ impl Movie {
         let frame_size = Rect::read(&mut r)?;
         let frame_rate = r.u16()?;
         let frame_count = r.u16()?;
+        budget.timeline(frame_count)?;
         let at = 8 + r.pos();
-        let tags = read_tags(r.rest(), at, version, false)?;
+        let tags = read_tags(r.rest(), at, version, false, budget)?;
         Ok(Movie { signature, version, file_length, frame_size, frame_rate, frame_count, tags, unk_inflate_padding })
     }
 

@@ -26,55 +26,29 @@ const FIELD_AUDIO_DATA: u32 = 0x7DCA_51D1;
 const FIELD_AUDIO_TYPE: u32 = 0x8403_C6C2;
 const FIELD_AUDIO_SUBTYPE: u32 = 0x83F8_6C09;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Placement {
-    pub scale: [f32; 3],
-    pub rotation: [f32; 4],
-    pub position: [f32; 3],
-    pub unk: [f32; 6],
-}
-
-impl Placement {
-    pub fn ao_multiplier(&self) -> f32 {
-        self.unk[2]
-    }
-
-    pub fn decode(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() != 64 {
-            return None;
-        }
-        let f = |i: usize| f32::from_be_bytes(bytes[i * 4..i * 4 + 4].try_into().expect("4 bytes"));
-        Some(Placement {
-            scale: [f(0), f(1), f(2)],
-            rotation: [f(4), f(5), f(6), f(7)],
-            position: [f(8), f(9), f(10)],
-            unk: [f(3), f(11), f(12), f(13), f(14), f(15)],
-        })
-    }
-}
+pub use ssx_rules::placement::Placement;
 
 #[derive(Clone, Debug)]
 pub struct ObjectMesh {
     pub geometry: String,
     pub skeleton: Option<String>,
     pub material: Material,
+    pub material_key: u32,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct GameObject {
     pub name: String,
+    pub key: u32,
     pub lod_thresholds: Vec<f32>,
     pub lods: Vec<Vec<ObjectMesh>>,
     pub has_controller: bool,
+    pub controller: Option<String>,
     pub pob: Option<String>,
     pub audio: Option<AudioName>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct AudioName {
-    pub type_name: String,
-    pub sub_type: String,
-}
+pub use ssx_content::object::AudioName;
 
 #[derive(Clone, Debug, Default)]
 pub struct TrackObjects {
@@ -140,8 +114,8 @@ fn decode_placements(d: &FieldData) -> Vec<Placement> {
         .collect()
 }
 
-fn game_object(db: &Db<'_>, class: u32, key: u32) -> Result<GameObject> {
-    let mut o = GameObject { name: db.collection_name(key), ..Default::default() };
+pub fn game_object(db: &Db<'_>, class: u32, key: u32) -> Result<GameObject> {
+    let mut o = GameObject { name: db.collection_name(key), key, ..Default::default() };
     for f in db.fields(class, key)? {
         match f.key {
             FIELD_LOD_THRESHOLDS => {
@@ -155,7 +129,14 @@ fn game_object(db: &Db<'_>, class: u32, key: u32) -> Result<GameObject> {
                     o.lods.push(model_meshes(db, m.class, m.collection)?);
                 }
             }
-            FIELD_CONTROLLER => o.has_controller = refs(&f.data).iter().any(|r| r.collection != 0),
+            FIELD_CONTROLLER => {
+                o.has_controller = refs(&f.data).iter().any(|r| r.collection != 0);
+                if let Some(r) = refs(&f.data).into_iter().find(|r| r.collection != 0)
+                    && db.find(r.class, r.collection).is_some()
+                {
+                    o.controller = db.text_of(r.class, r.collection)?;
+                }
+            }
             FIELD_POB => o.pob = single_text(&f.data).filter(|s| !s.is_empty()),
             FIELD_AUDIO_DATA => {
                 if let Some(r) = refs(&f.data).into_iter().find(|r| r.collection != 0) {
@@ -186,20 +167,20 @@ fn model_meshes(db: &Db<'_>, class: u32, key: u32) -> Result<Vec<ObjectMesh>> {
             .filter(|g| g.class == CLASS_GEOMETRY && g.collection != 0);
         let Some(g) = geometry else { continue };
         let Some(path) = db.text_of(g.class, g.collection)? else { continue };
-        let material = match get(FIELD_MATERIAL).and_then(|f| single(&f.data)) {
+        let (material, material_key) = match get(FIELD_MATERIAL).and_then(|f| single(&f.data)) {
             Some(Value::Ref(m)) if m.class == CLASS_MATERIAL && m.collection != 0 => {
-                db.material(m.class, m.collection)?
+                (db.material(m.class, m.collection)?, m.collection)
             }
-            _ => Material::default(),
+            _ => (Material::default(), 0),
         };
         let skeleton = get(FIELD_SKELETON).and_then(|f| single_text(&f.data)).filter(|s| !s.is_empty());
-        meshes.push(ObjectMesh { geometry: path, skeleton, material });
+        meshes.push(ObjectMesh { geometry: path, skeleton, material, material_key });
     }
     Ok(meshes)
 }
 
 const CLASS_TRACK: u32 = fnv1("ge_track");
-const CLASS_GAMEOBJECT: u32 = fnv1("ge_scene_gameobject");
+pub const CLASS_GAMEOBJECT: u32 = fnv1("ge_scene_gameobject");
 const FIELD_TRACK_MG_SCALE: u32 = 0xA874_5E3A;
 const FIELD_TRACK_MG_POSITION: u32 = 0x0EAB_1CDD;
 const FIELD_TRACK_MG_ROTATION: u32 = 0x5ACF_C16A;

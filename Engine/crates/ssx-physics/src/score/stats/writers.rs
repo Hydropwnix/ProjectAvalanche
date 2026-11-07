@@ -31,7 +31,7 @@ impl StatsStore {
             self.add_int(id::NUM_TIMES_HELICOPTER_USED_TRACK, TRACK, 1);
             self.add_int(id::NUM_TIMES_HELICOPTER_USED, PERSISTENT, 1);
         }
-        let trick = record.trick_id as i32;
+        let trick = i32::from(record.trick_id.value());
         let mut family = TRICK_FAMILIES[0];
         if record.kind == RecordKind::Air {
             if trick == 1 {
@@ -59,10 +59,20 @@ impl StatsStore {
                 self.add_int(id::NUM_UBER_TRICKS_TRACK, TRACK, 1);
             }
         }
-        let key = format!("{family}{}", trick_name(record.trick_id));
+        let Some(name) = trick_name(record.trick_id) else { return };
+        let key = format!("{family}{name}");
         let h = fnv1(key.as_bytes());
         self.names.entry(h).or_insert(key);
         self.add_int_key(h, PERSISTENT, 1, true);
+    }
+
+    pub fn added_trick_flushed(&mut self, record: &TrickRecord, id: &std::sync::Arc<str>) {
+        if !self.writeable || record.kind != RecordKind::Air {
+            return;
+        }
+        let family = usize::from(record.awesome || record.super_awesome) + usize::from(record.super_awesome);
+        let n = &mut self.added_tricks.entry(id.clone()).or_default()[family];
+        *n = n.saturating_add(1);
     }
 
     pub fn combo_ended(&mut self, m: &ComboEnded, event_type: Option<i32>) {

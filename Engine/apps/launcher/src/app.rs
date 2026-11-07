@@ -7,8 +7,9 @@ use crate::art::{self, Gallery};
 use crate::catalog::{self, DropCache, Rider};
 use crate::command::{self, Invocation};
 use crate::jobs::{self, Background, SetupJob, Viewer};
+use crate::mod_list::ModsPage;
 use crate::settings::Settings;
-use crate::ui::{ExtrasTab, MenuItem, Page, SettingsTab};
+use crate::ui::{ExtrasTab, MenuItem, ModsTab, Page, SettingsTab};
 use crate::update::Update;
 
 pub struct ScreenshotPlan {
@@ -24,6 +25,10 @@ pub struct Launcher {
     pub cursor: MenuItem,
     pub settings_tab: SettingsTab,
     pub extras_tab: ExtrasTab,
+    pub mods_tab: ModsTab,
+    pub mods: ModsPage,
+    pub host: crate::host::HostPage,
+    pub last_page: Page,
     pub update: Update,
     pub gallery: Gallery,
     pub check: Option<Result<DiscCheck, String>>,
@@ -43,8 +48,13 @@ pub struct Launcher {
     pub auto_launch: bool,
     pub auto_launch_pending: bool,
     pub auto_play_pending: bool,
+    pub link: Option<String>,
+    pub link_note: Option<String>,
+    pub link_status: Option<crate::link_handler::Status>,
+    pub master_input: String,
+    pub master_note: Option<String>,
     pub forced_hover: Option<String>,
-    pub scripted_keys: std::collections::VecDeque<egui::Key>,
+    pub scripted_keys: std::collections::VecDeque<(egui::Key, bool)>,
     pub window_pixels: Option<[f32; 2]>,
     pub frame: u64,
     pub timing: Option<std::time::Instant>,
@@ -71,6 +81,10 @@ impl Launcher {
             cursor: MenuItem::Page(Page::Play),
             settings_tab: SettingsTab::default(),
             extras_tab: ExtrasTab::default(),
+            mods_tab: ModsTab::default(),
+            mods: ModsPage::default(),
+            host: crate::host::HostPage::default(),
+            last_page: Page::Play,
             update: Update::Idle,
             gallery,
             check: None,
@@ -90,12 +104,18 @@ impl Launcher {
             auto_launch: false,
             auto_launch_pending: false,
             auto_play_pending: false,
+            link: None,
+            link_note: None,
+            link_status: None,
+            master_input: String::new(),
+            master_note: None,
             forced_hover: None,
             scripted_keys: Default::default(),
             window_pixels: None,
             frame: 0,
             timing: None,
         };
+        app.refresh_mods(ctx);
         if app.data_ready {
             app.refresh_catalog();
         } else if let Some(iso) = app.settings.iso.clone().filter(|p| p.is_file()) {

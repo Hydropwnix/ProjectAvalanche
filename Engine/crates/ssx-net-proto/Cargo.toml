@@ -1,0 +1,30 @@
+[package]
+name = "ssx-net-proto"
+description = "The multiplayer wire types (port feature): the pose sample around the game's GMPY block, the join's request, answer, keys and ticket, the server info, versions, strict decoding. No Bevy, no network library."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+ssx-formats.workspace = true
+ssx-core.workspace = true
+ssx-files.workspace = true
+thiserror.workspace = true
+crypto_box.workspace = true
+ed25519-dalek.workspace = true
+x25519-dalek.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+zeroize.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+png = { workspace = true, optional = true }
+flate2 = { workspace = true, optional = true }
+
+[features]
+icon = ["dep:png", "dep:flate2"]
+
+[lints]
+workspace = true

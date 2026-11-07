@@ -1,0 +1,10 @@
+shape = "arrow"
+size = 2.0
+color = "#FF8020E0"
+glow = 1.5
+facing = "camera"
+draw_distance = 600.0
+
+[animation]
+bob = 0.4
+bob_period = 1.6

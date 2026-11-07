@@ -1,0 +1,38 @@
+{
+  "format": 1,
+  "sections": [
+    {"title": "TXT_AVA_CREDITS_PROJECT", "entries": [
+      {"name": "Project Avalanche", "by": "MnkyArts"}
+    ]},
+    {"title": "TXT_AVA_CREDITS_COMMUNITY", "entries": [
+      {"name": "SSX-Library", "by": "GlitcherOG"},
+      {"name": "SSX-Collection-Multitool", "by": "GlitcherOG"},
+      {"name": "bigfile", "by": "Lily (SSXModding)"},
+      {"name": "SSXTools", "by": "SSXModding"}
+    ]},
+    {"title": "TXT_AVA_CREDITS_TOOLS", "entries": [
+      {"name": "Xenia Canary", "by": "Ben Vanik and the Xenia Canary team"},
+      {"name": "Velocity", "by": "hetelek"},
+      {"name": "extract-xiso", "by": "in, maintained by XboxDev"},
+      {"name": "XeXtractor", "by": "XboxChef"},
+      {"name": "ImHex", "by": "WerWolv"},
+      {"name": "Kaitai Struct", "by": "Kaitai Project"},
+      {"name": "skate-3-rust-engine", "by": "SK8-ENGINE"},
+      {"name": "Ghidra", "by": "National Security Agency"},
+      {"name": "GhidraMCP", "by": "bethington, from LaurieWired's GhidraMCP"}
+    ]},
+    {"title": "TXT_AVA_CREDITS_LIBRARIES", "entries": [
+      {"name": "Bevy", "by": "the Bevy contributors"},
+      {"name": "lightyear", "by": "Charles Bournhonesque"},
+      {"name": "egui and eframe", "by": "Emil Ernerfeldt"},
+      {"name": "wgpu", "by": "The gfx-rs developers"},
+      {"name": "cpal", "by": "RustAudio"},
+      {"name": "rodio", "by": "The Rodio Project Contributors"},
+      {"name": "glam", "by": "bitshifter"}
+    ]},
+    {"title": "TXT_AVA_CREDITS_INSPIRATION", "entries": [
+      {"name": "MTA:SA", "by": "Multi Theft Auto"},
+      {"name": "FiveM", "by": "Cfx.re"}
+    ]}
+  ]
+}

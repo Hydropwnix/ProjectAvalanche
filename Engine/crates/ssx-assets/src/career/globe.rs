@@ -261,6 +261,8 @@ impl GlobeData {
             }
             Ok((meshes, lighting))
         })?;
+        let content = crate::content::GameContent::of(big_root);
+        let lighting = lighting.into_iter().map(|(k, p)| (k, content.route_lighting(k, p))).collect();
         for (range, m, p) in meshes {
             match range {
                 None => {
@@ -342,6 +344,12 @@ fn object_particles(db: &Db<'_>, big_root: &Path, object: u32) -> Result<Vec<Par
 }
 
 pub fn lighting_presets(big_root: &Path, track: &str) -> Result<std::collections::BTreeMap<u32, LightingPreset>> {
+    let presets = disc_lighting_presets(big_root, track)?;
+    let content = crate::content::GameContent::of(big_root);
+    Ok(presets.into_iter().map(|(k, p)| (k, content.route_lighting(k, p))).collect())
+}
+
+fn disc_lighting_presets(big_root: &Path, track: &str) -> Result<std::collections::BTreeMap<u32, LightingPreset>> {
     with_track_db(big_root, track, |db| {
         let mut out = std::collections::BTreeMap::new();
         for vault in 0..2 {

@@ -106,7 +106,7 @@ fn glyph_alpha(b: &GlyphBitmap, u: f32, v: f32) -> f32 {
 fn render_level0(font: &Font, text: &str, colour: [f32; 3]) -> Result<Image> {
     let c8 = colour.map(|c| ((c * 255.0) as i64).clamp(0, 255) as f32 / 255.0);
     let mut px = vec![[0.0f32; 4]; (WIDTH * HEIGHT) as usize];
-    // TODO(guess): pixel centres at +0.5 for the glyph quads, the glyph cache's padding as zero texels, the 8-bit blend rounded as Xenia's ROV model (local_lights.wgsl blend8) — the Xenos half-pixel convention and the cache packing are not decoded; settle: the glyph mesh build (0x8346E3E8) and the device's pixel-centre state.
+    // TODO(guess): pixel centres at +0.5 for the glyph quads, the glyph cache's padding as zero texels, the 8-bit blend rounded as Xenia's ROV model (local_lights.wesl blend8) — the Xenos half-pixel convention and the cache packing are not decoded; settle: the glyph mesh build (0x8346E3E8) and the device's pixel-centre state.
     for g in layout(font, text)? {
         let b = &g.bitmap;
         let (x1, y1) = (g.x + b.width as f32, g.y + b.height as f32);

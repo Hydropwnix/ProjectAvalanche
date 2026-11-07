@@ -13,6 +13,7 @@ pub struct MenuItem {
     pub advance: &'static str,
     pub highlight: &'static str,
     pub rider_net: bool,
+    pub back: &'static str,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -66,6 +67,7 @@ pub fn build_list(fe: &mut FrontEnd, env: &mut FeEnv) {
     let (dd, done, total, earnings) = (v.int(0x58), v.int(0x6F), v.int(0x70), v.int(0x16E));
     let loc = &mut *env.loc;
     let earnings = loc.currency(i64::from(earnings), true);
+    let back = if fe.ava.hub.on { crate::game::fe::ava::hub::MAIN_MENU_BACK } else { "" };
     fe.menu.items = vec![
         MenuItem {
             item: loc.text("TXT_M_GLOBE_CAMPAIGN"),
@@ -75,6 +77,7 @@ pub fn build_list(fe: &mut FrontEnd, env: &mut FeEnv) {
             advance: "A_MenuCampaign",
             highlight: "A_MenuCampaignHighlight",
             rider_net: false,
+            back,
         },
         MenuItem {
             item: loc.text("TXT_M_GLOBE_EXPLORE"),
@@ -84,6 +87,7 @@ pub fn build_list(fe: &mut FrontEnd, env: &mut FeEnv) {
             advance: "A_MenuExplore",
             highlight: "A_MenuExploreHighlight",
             rider_net: false,
+            back,
         },
         MenuItem {
             item: loc.text("TXT_M_GLOBE_LIVE_EVENTS"),
@@ -93,6 +97,7 @@ pub fn build_list(fe: &mut FrontEnd, env: &mut FeEnv) {
             advance: "A_MenuLiveEvents",
             highlight: "A_MenuLiveEventsHighlight",
             rider_net: false,
+            back,
         },
         MenuItem {
             item: String::new(),
@@ -102,6 +107,7 @@ pub fn build_list(fe: &mut FrontEnd, env: &mut FeEnv) {
             advance: "A_MenuRiderNet",
             highlight: "",
             rider_net: true,
+            back,
         },
     ];
     fe.menu.index = if campaign {
@@ -196,34 +202,41 @@ pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str) {
 
 pub fn build(fe: &FrontEnd, cx: &mut Ctx, dp: &str) -> Option<Value> {
     match dp {
-        "dp_debug_menu" => {
-            let mut items = Vec::new();
-            for (k, it) in fe.menu.items.iter().enumerate() {
-                let o = Value::Object(cx.new_object());
-                let _ = cx.set_member(&o, "strItem", Value::str(&it.item));
-                let _ = cx.set_member(&o, "strModeDesc", Value::str(&it.desc));
-                let _ = cx.set_member(&o, "bEnabled", Value::Bool(it.enabled));
-                let _ = cx.set_member(&o, "bFocusable", Value::Bool(it.focusable));
-                if it.rider_net {
-                    let _ = cx.set_member(&o, "bUseRiderNetCell", Value::Bool(true));
-                }
-                let _ = cx.set_member(&o, "eventAdvance", Value::str(it.advance));
-                if !it.highlight.is_empty() {
-                    let _ = cx.set_member(&o, "eventHighlight", Value::str(it.highlight));
-                    let _ = cx.set_member(&o, "eventHighlightParam", Value::Number(k as f64));
-                }
-                items.push(o);
-            }
-            Some(Value::Object(cx.new_array(items)))
-        }
+        "dp_debug_menu" => Some(items_value(cx, &fe.menu.items)),
         "dp_debug_menu_index" => Some(Value::Number(f64::from(fe.menu.index))),
-        _ => {
-            // TODO(guess): the sponsored events' object (0x825DC800) is online data; offline an empty `arrEventsList` (what the main menu's `Publish` reads); settle: the object's offline fields (0x825DC800).
-            let o = Value::Object(cx.new_object());
-            let list = Value::Object(cx.new_array(Vec::new()));
-            let _ = cx.set_member(&o, "arrEventsList", list);
-            let _ = cx.set_member(&o, "bIsMenuItemList", Value::Bool(false));
-            Some(o)
-        }
+        _ => Some(no_sponsored_events(cx)),
     }
+}
+
+pub fn items_value(cx: &mut Ctx, items: &[MenuItem]) -> Value {
+    let mut out = Vec::new();
+    for (k, it) in items.iter().enumerate() {
+        let o = Value::Object(cx.new_object());
+        let _ = cx.set_member(&o, "strItem", Value::str(&it.item));
+        let _ = cx.set_member(&o, "strModeDesc", Value::str(&it.desc));
+        let _ = cx.set_member(&o, "bEnabled", Value::Bool(it.enabled));
+        let _ = cx.set_member(&o, "bFocusable", Value::Bool(it.focusable));
+        if it.rider_net {
+            let _ = cx.set_member(&o, "bUseRiderNetCell", Value::Bool(true));
+        }
+        let _ = cx.set_member(&o, "eventAdvance", Value::str(it.advance));
+        if !it.back.is_empty() {
+            let _ = cx.set_member(&o, "eventBack", Value::str(it.back));
+        }
+        if !it.highlight.is_empty() {
+            let _ = cx.set_member(&o, "eventHighlight", Value::str(it.highlight));
+            let _ = cx.set_member(&o, "eventHighlightParam", Value::Number(k as f64));
+        }
+        out.push(o);
+    }
+    Value::Object(cx.new_array(out))
+}
+
+pub fn no_sponsored_events(cx: &mut Ctx) -> Value {
+    // TODO(guess): the sponsored events' object (0x825DC800) is online data; offline an empty `arrEventsList` (what the main menu's `Publish` reads); settle: the object's offline fields (0x825DC800).
+    let o = Value::Object(cx.new_object());
+    let list = Value::Object(cx.new_array(Vec::new()));
+    let _ = cx.set_member(&o, "arrEventsList", list);
+    let _ = cx.set_member(&o, "bIsMenuItemList", Value::Bool(false));
+    o
 }

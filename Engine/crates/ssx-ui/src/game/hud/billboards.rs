@@ -120,6 +120,20 @@ pub fn wingsuit_timer_pos(camera: &Camera, rider: [f32; 3]) -> [f32; 2] {
     [x + 75.0, y]
 }
 
+pub fn html_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     Ghost,
@@ -170,6 +184,7 @@ impl Billboard {
 
     fn init_ghost(&mut self, cx: &mut Ctx, name: &str, colour: u32) {
         let [_, r, g, b] = colour.to_be_bytes();
+        let name = html_text(name);
         let bottom = format!("<font color=\"#{r:02X}{g:02X}{b:02X}\">{name}</font>");
         let top = format!("<font color=\"#FFFFFF\">{name}</font>");
         for (k, (c, _)) in self.names.iter_mut().enumerate() {

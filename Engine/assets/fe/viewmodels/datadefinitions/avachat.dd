@@ -1,0 +1,9 @@
+{
+	"actions":
+		[
+		],
+	"data":
+		[
+			{ "viewname": "ava_chat", "type": "object", "dpname": "dp_ava_chat" }
+		]
+}

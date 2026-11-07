@@ -5,3 +5,5 @@ pub mod pathfinder;
 pub mod pathfinder_events;
 pub mod remix;
 pub mod remix_runtime;
+pub mod score;
+pub mod track_override;

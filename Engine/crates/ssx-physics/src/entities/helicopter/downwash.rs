@@ -49,6 +49,13 @@ pub fn downwash_query(collision: &CollisionWorld, rotor: (Quat, Vec3)) -> Downwa
     }
 }
 
+impl super::Helicopter {
+    pub fn physics_queries(&self, collision: &CollisionWorld) -> Option<Downwash> {
+        let (start, _) = self.flight.as_deref()?.wash.as_ref()?;
+        Some(downwash_query(collision, self.joint_world(start)?))
+    }
+}
+
 pub fn surface_frame(n: Vec3) -> Quat {
     let d = (n - Vec3::Y).abs();
     if d.max_element() <= crate::collision::SEGMENT_MIN_DELTA {

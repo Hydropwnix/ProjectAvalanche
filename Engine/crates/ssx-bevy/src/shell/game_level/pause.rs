@@ -11,12 +11,18 @@ pub(super) fn pause_now(l: &mut LevelGame, ride: &mut Ride, ui: &mut GameUi, aud
     let Some(paused) = fe.pause_step() else { return };
     let sound = fe.game_pause.audio_event();
     l.paused = paused;
-    if paused {
+    if l.live {
+        // TODO(guess): a port choice — the game's pause holds the simulation (0x823D2590, only the score manager's
+        // update runs; `Session::pause_begin`), and the original's pause in its online sessions (the live events) is
+        // not decoded; a network session cannot hold the others' ride; settle: the live events' pause, if it is ever
+        // decoded (the live-event manager 0x82426C18).
+        ride.hold_pads(paused);
+    } else if paused {
         ride.pause();
     } else {
         ride.resume();
     }
-    if let Some(a) = audio.filter(|_| !paused || sound.is_some()) {
+    if let Some(a) = audio.filter(|_| !l.live && (!paused || sound.is_some())) {
         a.game_pause_event(paused, sound == Some(true));
     }
     info!(

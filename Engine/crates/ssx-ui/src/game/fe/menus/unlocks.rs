@@ -95,10 +95,21 @@ pub fn items_of(notice: &Notice, db: &CareerDb, loc: &mut Localization) -> Vec<U
         Notice::RiderUnlocked(name) => {
             let key = fnv1(name.as_bytes());
             let title = db.riders.iter().find(|r| r.key == key).map(|r| r.title.clone()).unwrap_or_default();
-            let image = RIDER_SLIDES
+            let package = db
+                .riders
                 .iter()
-                .find(|(n, _)| fnv1(n.as_bytes()) == key)
-                .map_or_else(|| "assets/riderPortraitsLarge/elise.dds".into(), |(_, f)| slide(f));
+                .find(|r| r.key == key)
+                .and_then(|r| r.content.as_ref())
+                .and_then(|c| c.portrait.as_ref())
+                .filter(|p| p.namespace() != ssx_content::BASE_NAMESPACE)
+                .and_then(ssx_assets::content::textures::ui_path_of);
+            let image = match package {
+                Some(path) => path,
+                None => RIDER_SLIDES
+                    .iter()
+                    .find(|(n, _)| fnv1(n.as_bytes()) == key)
+                    .map_or_else(|| "assets/riderPortraitsLarge/elise.dds".into(), |(_, f)| slide(f)),
+            };
             let message = format!("{} {}", loc.text("TXT_YOU_HAVE_UNLOCKED"), loc.text(&title));
             vec![UnlockItem { item_name: text_mode1(loc, "TXT_CHARACTER"), category: 6, priority: 2, message, image }]
         }

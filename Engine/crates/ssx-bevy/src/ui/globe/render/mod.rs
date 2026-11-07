@@ -16,6 +16,7 @@ use bevy::shader::Shader;
 use super::super::UiCamera;
 use super::GlobeSystems;
 use super::dump::{self, Dumps};
+use crate::render::post::adapt::HdrAdaptation;
 use pipelines::{Pipelines, init};
 use prepare::prepare;
 use upload::{MeshBuffers, MidgroundGpu, Targets, target_texture};
@@ -51,6 +52,7 @@ pub(super) fn build(app: &mut App) {
     render_app
         .insert_resource(GlobeShaders { globe, post, midground, backdrop, fade, clouds, waves })
         .init_resource::<GlobeGpu>()
+        .init_resource::<HdrAdaptation>()
         .init_resource::<Dumps>()
         .add_systems(RenderStartup, init)
         .add_systems(Render, prepare.in_set(RenderSystems::PrepareResources))
@@ -150,6 +152,7 @@ fn globe_pass(
     gpu: Res<GlobeGpu>,
     cache: Res<PipelineCache>,
     dumps: Res<Dumps>,
+    adapt: Res<HdrAdaptation>,
     mut ctx: RenderContext,
 ) {
     let Some(p) = p else { return };
@@ -446,7 +449,7 @@ fn globe_pass(
         dumps.buffer(&device, encoder, d, "adapted_prev", &t.adapted, t.adapted.size());
     }
     {
-        let q = UVec2::new((t.size.x / 4).max(1), (t.size.y / 4).max(1));
+        let q = upload::quarter_of(t.size);
         let mut pass = encoder
             .begin_compute_pass(&ComputePassDescriptor { label: Some("ssx_globe_exposure"), timestamp_writes: None });
         pass.set_bind_group(0, &compute_group, &[]);
@@ -455,6 +458,7 @@ fn globe_pass(
         pass.set_pipeline(&reduce_p);
         pass.dispatch_workgroups(1, 1, 1);
     }
+    adapt.store(encoder, upload::quarter_of(t.size), &t.adapted);
     if let Some(d) = dd {
         dumps.buffer(&device, encoder, d, "adapted", &t.adapted, t.adapted.size());
         dumps.buffer(&device, encoder, d, "exposure", &t.exposure, 16);

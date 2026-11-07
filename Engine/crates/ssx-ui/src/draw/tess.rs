@@ -1,3 +1,85 @@
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Work {
+    pub edges: u64,
+    pub steps: u64,
+    pub vertices: u64,
+}
+
+impl Work {
+    pub fn add(&mut self, o: Work) {
+        self.edges = self.edges.saturating_add(o.edges);
+        self.steps = self.steps.saturating_add(o.steps);
+        self.vertices = self.vertices.saturating_add(o.vertices);
+    }
+
+    pub fn peak(&mut self, o: Work) {
+        self.edges = self.edges.max(o.edges);
+        self.steps = self.steps.max(o.steps);
+        self.vertices = self.vertices.max(o.vertices);
+    }
+
+    pub fn reached(&self, cap: &Work) -> bool {
+        self.edges >= cap.edges || self.steps >= cap.steps || self.vertices >= cap.vertices
+    }
+}
+
+pub const SHAPE_CAP: Work = Work { edges: 1 << 16, steps: 1 << 22, vertices: 1 << 17 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OverBudget {
+    pub what: &'static str,
+    pub cap: u64,
+}
+
+impl std::fmt::Display for OverBudget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the tessellation passed {} {} (the shape cap)", self.cap, self.what)
+    }
+}
+
+impl std::error::Error for OverBudget {}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Budget {
+    cap: Work,
+    used: Work,
+}
+
+impl Budget {
+    pub fn new(cap: Work) -> Self {
+        Budget { cap, used: Work::default() }
+    }
+
+    pub fn shape() -> Self {
+        Self::new(SHAPE_CAP)
+    }
+
+    pub fn used(&self) -> Work {
+        self.used
+    }
+
+    fn take(used: &mut u64, n: usize, cap: u64, what: &'static str) -> Result<(), OverBudget> {
+        let total = used.saturating_add(n as u64);
+        if total > cap {
+            return Err(OverBudget { what, cap });
+        }
+        *used = total;
+        Ok(())
+    }
+
+    pub fn edges(&mut self, n: usize) -> Result<(), OverBudget> {
+        Self::take(&mut self.used.edges, n, self.cap.edges, "edges")
+    }
+
+    pub fn steps(&mut self, n: usize) -> Result<(), OverBudget> {
+        Self::take(&mut self.used.steps, n, self.cap.steps, "scan-beam steps")
+    }
+
+    fn vertex(&mut self) -> Result<(), OverBudget> {
+        Self::take(&mut self.used.vertices, 1, self.cap.vertices, "vertices")
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Mesh {
     pub vertices: Vec<[f32; 2]>,
@@ -96,26 +178,28 @@ impl Span {
     }
 }
 
-struct MeshBuilder {
+struct MeshBuilder<'b> {
     mesh: Mesh,
     index: std::collections::HashMap<(u32, u32), u32>,
+    budget: &'b mut Budget,
 }
 
-impl MeshBuilder {
-    fn new() -> Self {
-        MeshBuilder { mesh: Mesh::default(), index: std::collections::HashMap::new() }
+impl<'b> MeshBuilder<'b> {
+    fn new(budget: &'b mut Budget) -> Self {
+        MeshBuilder { mesh: Mesh::default(), index: std::collections::HashMap::new(), budget }
     }
 
-    fn vertex(&mut self, x: f64, y: f64) -> u32 {
+    fn vertex(&mut self, x: f64, y: f64) -> Result<u32, OverBudget> {
         let p = [x as f32, y as f32];
         let key = (p[0].to_bits(), p[1].to_bits());
         if let Some(&i) = self.index.get(&key) {
-            return i;
+            return Ok(i);
         }
+        self.budget.vertex()?;
         let i = self.mesh.vertices.len() as u32;
         self.mesh.vertices.push(p);
         self.index.insert(key, i);
-        i
+        Ok(i)
     }
 
     fn triangle(&mut self, a: u32, b: u32, c: u32) {
@@ -124,17 +208,19 @@ impl MeshBuilder {
         }
     }
 
-    fn trapezoid(&mut self, top: f64, xt0: f64, xt1: f64, bottom: f64, xb0: f64, xb1: f64) {
-        let a = self.vertex(xt0, top);
-        let b = self.vertex(xt1, top);
-        let c = self.vertex(xb1, bottom);
-        let d = self.vertex(xb0, bottom);
+    fn trapezoid(&mut self, top: f64, xt0: f64, xt1: f64, bottom: f64, xb0: f64, xb1: f64) -> Result<(), OverBudget> {
+        let a = self.vertex(xt0, top)?;
+        let b = self.vertex(xt1, top)?;
+        let c = self.vertex(xb1, bottom)?;
+        let d = self.vertex(xb0, bottom)?;
         self.triangle(a, b, c);
         self.triangle(a, c, d);
+        Ok(())
     }
 }
 
-pub fn fill(edges: &[Edge], rule: FillRule) -> Mesh {
+pub fn fill(edges: &[Edge], rule: FillRule, budget: &mut Budget) -> Result<Mesh, OverBudget> {
+    budget.steps(edges.len())?;
     let mut spans: Vec<Span> = edges
         .iter()
         .filter_map(|e| {
@@ -150,19 +236,20 @@ pub fn fill(edges: &[Edge], rule: FillRule) -> Mesh {
         })
         .collect();
     if spans.is_empty() {
-        return Mesh::default();
+        return Ok(Mesh::default());
     }
     spans.sort_by(|a, b| a.y0.total_cmp(&b.y0));
     let mut ys: Vec<f64> = spans.iter().flat_map(|s| [s.y0, s.y1]).collect();
     ys.sort_by(f64::total_cmp);
     ys.dedup();
-    let mut out = MeshBuilder::new();
+    let mut out = MeshBuilder::new(budget);
     let mut active: Vec<Span> = Vec::new();
     let mut next = 0;
     let mut cuts: Vec<f64> = Vec::new();
     let mut xs: Vec<(f64, f64, f64, i32)> = Vec::new();
     for w in ys.windows(2) {
         let (top, bottom) = (w[0], w[1]);
+        out.budget.steps(active.len() + 1)?;
         active.retain(|s| s.y1 > top);
         while next < spans.len() && spans[next].y0 <= top {
             active.push(spans[next]);
@@ -177,6 +264,7 @@ pub fn fill(edges: &[Edge], rule: FillRule) -> Mesh {
         let mut ends: Vec<(f64, f64)> = active.iter().map(|s| (s.x_at(top), s.x_at(bottom))).collect();
         ends.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
         if ends.windows(2).any(|p| p[0].1 > p[1].1) {
+            out.budget.steps(ends.len() * (ends.len() - 1) / 2)?;
             for i in 0..ends.len() {
                 for j in i + 1..ends.len() {
                     let ((ti, bi), (tj, bj)) = (ends[i], ends[j]);
@@ -199,6 +287,7 @@ pub fn fill(edges: &[Edge], rule: FillRule) -> Mesh {
                 continue;
             }
             let mid = (t + b) / 2.0;
+            out.budget.steps(active.len())?;
             xs.clear();
             xs.extend(active.iter().map(|s| (s.x_at(mid), s.x_at(t), s.x_at(b), s.winding)));
             xs.sort_by(|a, b| a.0.total_cmp(&b.0).then((a.1 + a.2).total_cmp(&(b.1 + b.2))));
@@ -210,12 +299,12 @@ pub fn fill(edges: &[Edge], rule: FillRule) -> Mesh {
                     FillRule::NonZero => wind != 0,
                 };
                 if inside {
-                    out.trapezoid(t, xs[k].1, xs[k + 1].1, b, xs[k].2, xs[k + 1].2);
+                    out.trapezoid(t, xs[k].1, xs[k + 1].1, b, xs[k].2, xs[k + 1].2)?;
                 }
             }
         }
     }
-    out.mesh
+    Ok(out.mesh)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -240,10 +329,11 @@ pub struct StrokeStyle {
     pub join: Join,
 }
 
-fn polygon(edges: &mut Vec<Edge>, pts: &[[f32; 2]]) {
+fn polygon(edges: &mut Vec<Edge>, pts: &[[f32; 2]], budget: &mut Budget) -> Result<(), OverBudget> {
     if pts.len() < 3 {
-        return;
+        return Ok(());
     }
+    budget.edges(pts.len())?;
     let area: f32 = (0..pts.len())
         .map(|i| {
             let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
@@ -255,9 +345,10 @@ fn polygon(edges: &mut Vec<Edge>, pts: &[[f32; 2]]) {
         let (a, b) = (pts[i], pts[(i + 1) % n]);
         edges.push(if area >= 0.0 { Edge { from: a, to: b } } else { Edge { from: b, to: a } });
     }
+    Ok(())
 }
 
-fn disc(edges: &mut Vec<Edge>, c: [f32; 2], r: f32, tolerance: f32) {
+fn disc(edges: &mut Vec<Edge>, c: [f32; 2], r: f32, tolerance: f32, budget: &mut Budget) -> Result<(), OverBudget> {
     let ratio = (1.0 - tolerance / r.max(1e-6)).clamp(-1.0, 1.0);
     let n = (std::f32::consts::PI / ratio.acos().max(1e-3)).ceil().clamp(8.0, 128.0) as usize;
     let pts: Vec<[f32; 2]> = (0..n)
@@ -266,13 +357,18 @@ fn disc(edges: &mut Vec<Edge>, c: [f32; 2], r: f32, tolerance: f32) {
             [c[0] + r * a.cos(), c[1] + r * a.sin()]
         })
         .collect();
-    polygon(edges, &pts);
+    polygon(edges, &pts, budget)
 }
 
-pub fn stroke(polylines: &[Vec<[f32; 2]>], style: &StrokeStyle, tolerance: f32) -> Mesh {
+pub fn stroke(
+    polylines: &[Vec<[f32; 2]>],
+    style: &StrokeStyle,
+    tolerance: f32,
+    budget: &mut Budget,
+) -> Result<Mesh, OverBudget> {
     let hw = style.width / 2.0;
     if hw <= 0.0 || !hw.is_finite() {
-        return Mesh::default();
+        return Ok(Mesh::default());
     }
     let mut edges = Vec::new();
     for pl in polylines {
@@ -284,7 +380,7 @@ pub fn stroke(polylines: &[Vec<[f32; 2]>], style: &StrokeStyle, tolerance: f32) 
         }
         if pts.len() == 1 {
             if style.start_cap == Cap::Round {
-                disc(&mut edges, pts[0], hw, tolerance);
+                disc(&mut edges, pts[0], hw, tolerance, budget)?;
             }
             continue;
         }
@@ -308,7 +404,8 @@ pub fn stroke(polylines: &[Vec<[f32; 2]>], style: &StrokeStyle, tolerance: f32) 
                     [b[0] - n[0], b[1] - n[1]],
                     [a[0] - n[0], a[1] - n[1]],
                 ],
-            );
+                budget,
+            )?;
         }
         let joints: Vec<(usize, usize)> =
             (1..dirs.len()).map(|i| (i - 1, i)).chain(closed.then_some((dirs.len() - 1, 0))).collect();
@@ -320,8 +417,10 @@ pub fn stroke(polylines: &[Vec<[f32; 2]>], style: &StrokeStyle, tolerance: f32) 
             let n0 = [-d0[1] * hw * s, d0[0] * hw * s];
             let n1 = [-d1[1] * hw * s, d1[0] * hw * s];
             match style.join {
-                Join::Round => disc(&mut edges, p, hw, tolerance),
-                Join::Bevel => polygon(&mut edges, &[p, [p[0] + n0[0], p[1] + n0[1]], [p[0] + n1[0], p[1] + n1[1]]]),
+                Join::Round => disc(&mut edges, p, hw, tolerance, budget)?,
+                Join::Bevel => {
+                    polygon(&mut edges, &[p, [p[0] + n0[0], p[1] + n0[1]], [p[0] + n1[0], p[1] + n1[1]]], budget)?
+                }
                 Join::Miter(limit) => {
                     let half = ((1.0 + d0[0] * d1[0] + d0[1] * d1[1]) / 2.0).max(1e-6).sqrt();
                     let m = [(n0[0] + n1[0]) / 2.0, (n0[1] + n1[1]) / 2.0];
@@ -331,9 +430,9 @@ pub fn stroke(polylines: &[Vec<[f32; 2]>], style: &StrokeStyle, tolerance: f32) 
                     let pa = [p[0] + n0[0], p[1] + n0[1]];
                     let pb = [p[0] + n1[0], p[1] + n1[1]];
                     if 1.0 / half <= limit.max(1.0) {
-                        polygon(&mut edges, &[p, pa, tip, pb]);
+                        polygon(&mut edges, &[p, pa, tip, pb], budget)?;
                     } else {
-                        polygon(&mut edges, &[p, pa, pb]);
+                        polygon(&mut edges, &[p, pa, pb], budget)?;
                     }
                 }
             }
@@ -344,7 +443,7 @@ pub fn stroke(polylines: &[Vec<[f32; 2]>], style: &StrokeStyle, tolerance: f32) 
                 (pts[pts.len() - 1], dirs[dirs.len() - 1], style.end_cap),
             ] {
                 match cap {
-                    Cap::Round => disc(&mut edges, p, hw, tolerance),
+                    Cap::Round => disc(&mut edges, p, hw, tolerance, budget)?,
                     Cap::Square => {
                         let n = [-d[1] * hw, d[0] * hw];
                         let e = [d[0] * hw, d[1] * hw];
@@ -356,19 +455,28 @@ pub fn stroke(polylines: &[Vec<[f32; 2]>], style: &StrokeStyle, tolerance: f32) 
                                 [p[0] - n[0] + e[0], p[1] - n[1] + e[1]],
                                 [p[0] - n[0], p[1] - n[1]],
                             ],
-                        );
+                            budget,
+                        )?;
                     }
                     Cap::None => {}
                 }
             }
         }
     }
-    fill(&edges, FillRule::NonZero)
+    fill(&edges, FillRule::NonZero, budget)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fill(edges: &[Edge], rule: FillRule) -> Mesh {
+        super::fill(edges, rule, &mut Budget::shape()).expect("within the shape cap")
+    }
+
+    fn stroke(polylines: &[Vec<[f32; 2]>], style: &StrokeStyle, tolerance: f32) -> Mesh {
+        super::stroke(polylines, style, tolerance, &mut Budget::shape()).expect("within the shape cap")
+    }
 
     fn poly(pts: &[[f32; 2]]) -> Vec<Edge> {
         (0..pts.len()).map(|i| Edge { from: pts[i], to: pts[(i + 1) % pts.len()] }).collect()
@@ -427,5 +535,23 @@ mod tests {
         let round = StrokeStyle { start_cap: Cap::Round, end_cap: Cap::Round, join: Join::Round, ..style };
         let dot = stroke(&[vec![[5.0, 5.0], [5.0, 5.0]]], &round, 0.01);
         assert!((dot.area() - std::f64::consts::PI * 25.0).abs() < 0.5, "{}", dot.area());
+    }
+
+    #[test]
+    fn hostile_geometry_stops_at_its_cap() {
+        let n = 3000;
+        let edges: Vec<Edge> =
+            (0..n).map(|i| Edge { from: [i as f32, 0.0], to: [(n - i) as f32 * 1.001, 1000.0] }).collect();
+        let mut b = Budget::shape();
+        let e = super::fill(&edges, FillRule::EvenOdd, &mut b).unwrap_err();
+        assert_eq!(e.what, "scan-beam steps");
+        assert!(b.used().steps <= SHAPE_CAP.steps && b.used().vertices == 0);
+        let line: Vec<[f32; 2]> = (0..1_000_000).map(|i| [i as f32, (i % 2) as f32 * 10.0]).collect();
+        let style = StrokeStyle { width: 2.0, start_cap: Cap::Round, end_cap: Cap::Round, join: Join::Round };
+        let mut b = Budget::shape();
+        assert_eq!(super::stroke(&[line], &style, 0.1, &mut b).unwrap_err().what, "edges");
+        let mut b = Budget::new(Work { edges: 100, steps: 1 << 20, vertices: 3 });
+        let sq = poly(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]);
+        assert_eq!(super::fill(&sq, FillRule::EvenOdd, &mut b).unwrap_err().what, "vertices");
     }
 }

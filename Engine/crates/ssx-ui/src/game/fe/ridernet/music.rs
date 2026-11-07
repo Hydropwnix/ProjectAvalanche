@@ -37,17 +37,29 @@ pub struct LicensedSong {
     pub artist: String,
     pub album: String,
     pub on: bool,
+    pub key: Option<ssx_content::ContentId>,
 }
 
 pub fn licensed_songs(mb: &ssx_assets::musicbox::MusicBox) -> Vec<LicensedSong> {
-    ssx_assets::sfx::store::in_game_music(&mb.songs)
+    mb.menu_list()
         .into_iter()
-        .map(|(id, on)| {
+        .map(|(id, key)| {
             let s = mb.song(id);
             let get = |k: &str| s.and_then(|s| s.get(k)).unwrap_or("").to_string();
-            LicensedSong { id, title: get("Title"), artist: get("Artist"), album: get("Album"), on: on != 0 }
+            let on = key.is_some() || s.is_some_and(|s| s.level() != 0);
+            LicensedSong { id, title: get("Title"), artist: get("Artist"), album: get("Album"), on, key }
         })
         .collect()
+}
+
+pub fn menu_songs(big_root: &std::path::Path) -> Vec<LicensedSong> {
+    let Ok(mut mb) = ssx_assets::musicbox::MusicBox::load(big_root) else { return Vec::new() };
+    let plan =
+        ssx_assets::content::GameContent::of(big_root).music_plan(&ssx_assets::content::audio::AudioScope::MusicMenu);
+    if !plan.music.is_empty() {
+        mb.add_packages(&plan.music);
+    }
+    licensed_songs(&mb)
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -67,7 +79,7 @@ pub struct CustomSlot {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum MusicRequest {
-    Preview(u32),
+    Preview { id: u32, key: Option<ssx_content::ContentId> },
     StopPreview,
 }
 
@@ -79,6 +91,7 @@ pub struct Music {
     pub custom: Vec<CustomSlot>,
     pub controller_playing: bool,
     pub requests: Vec<MusicRequest>,
+    switches_dirty: bool,
     pub alive: bool,
     preview_row: i32,
     total: i32,
@@ -109,6 +122,7 @@ impl Default for Music {
             custom: vec![CustomSlot::default(); CUSTOM_SLOTS],
             controller_playing: false,
             requests: Vec::new(),
+            switches_dirty: false,
             alive: false,
             preview_row: NONE,
             total: -1,
@@ -138,15 +152,60 @@ impl Music {
     }
 
     pub fn set_flags(&mut self, flags: &[(u32, bool)]) {
-        for s in &mut self.songs {
+        for s in self.songs.iter_mut().filter(|s| s.key.is_none()) {
             if let Some(&(_, on)) = flags.iter().find(|(id, _)| *id == s.id) {
                 s.on = on;
             }
         }
+        self.switches_changed();
     }
 
     pub fn flags(&self) -> Vec<(u32, bool)> {
-        self.songs.iter().map(|s| (s.id, s.on)).collect()
+        self.songs.iter().filter(|s| s.key.is_none()).map(|s| (s.id, s.on)).collect()
+    }
+
+    pub fn package_keys(&self) -> Vec<ssx_content::ContentId> {
+        self.songs.iter().filter_map(|s| s.key.clone()).collect()
+    }
+
+    pub fn package_switches(&self) -> Vec<(ssx_content::ContentId, bool)> {
+        self.songs.iter().filter_map(|s| Some((s.key.clone()?, s.on))).collect()
+    }
+
+    pub fn set_package_switches(&mut self, switches: &[(ssx_content::ContentId, bool)]) {
+        for s in &mut self.songs {
+            if let Some((_, on)) = s.key.as_ref().and_then(|k| switches.iter().find(|(key, _)| key == k)) {
+                s.on = *on;
+            }
+        }
+        self.switches_changed();
+    }
+
+    pub fn replace_songs(&mut self, songs: Vec<LicensedSong>) {
+        let old = std::mem::replace(&mut self.songs, songs);
+        for s in &mut self.songs {
+            if let Some(o) = old.iter().find(|o| o.key == s.key && (s.key.is_some() || o.id == s.id)) {
+                s.on = o.on;
+            }
+        }
+        self.browser.first = self.browser.first.min(self.songs.len().saturating_sub(ROWS));
+        if self.browser.state == 5 {
+            self.browser.state = 2;
+        }
+        self.total = -1;
+        self.switches_changed();
+    }
+
+    pub fn switches(&self) -> ssx_assets::musicbox::SongSwitches {
+        ssx_assets::musicbox::SongSwitches { disc: self.flags(), packages: self.package_switches() }
+    }
+
+    pub fn take_switches_changed(&mut self) -> bool {
+        std::mem::take(&mut self.switches_dirty)
+    }
+
+    fn switches_changed(&mut self) {
+        self.switches_dirty = true;
     }
 
     pub fn rows(&self) -> &[LicensedSong] {
@@ -200,7 +259,7 @@ impl Music {
                 if self.browser.preview != Some(abs)
                     && let Some(s) = self.songs.get(abs).filter(|s| s.id != 0)
                 {
-                    self.requests.push(MusicRequest::Preview(s.id));
+                    self.requests.push(MusicRequest::Preview { id: s.id, key: s.key.clone() });
                 }
                 self.browser.preview = Some(abs);
                 self.browser.hold = PREVIEW_HOLD;
@@ -221,6 +280,7 @@ impl Music {
         if let Some(r) = self.page.rows.get_mut(row) {
             r.on = on;
         }
+        self.switches_changed();
     }
 
     fn service_reset(&mut self) {
@@ -230,6 +290,7 @@ impl Music {
         for r in &mut self.page.rows {
             r.on = true;
         }
+        self.switches_changed();
     }
 
     fn service_next(&mut self) -> bool {
@@ -501,6 +562,7 @@ fn row(cx: &mut Ctx, item: &str, description: Option<&str>, param: usize) -> Val
 }
 
 pub fn build(fe: &mut FrontEnd, cx: &mut Ctx, loc: &mut Localization, dp: &str) -> Option<Value> {
+    let glyphs = fe.ava.glyphs.as_ref();
     let m = &mut fe.music;
     let list = |cx: &mut Ctx, rows: Vec<Value>| Some(Value::Object(cx.new_array(rows)));
     match dp {
@@ -544,6 +606,7 @@ pub fn build(fe: &mut FrontEnd, cx: &mut Ctx, loc: &mut Localization, dp: &str) 
         }
         DP_SSX_MUSIC => {
             let (preview, total) = (m.preview_row, m.total);
+            let shown = |t: &str| crate::game::fe::ava::shown(t, glyphs);
             let mut rows = Vec::new();
             for (i, s) in m.page.rows.iter().enumerate().take(ROWS) {
                 if s.title.is_empty() {
@@ -552,8 +615,8 @@ pub fn build(fe: &mut FrontEnd, cx: &mut Ctx, loc: &mut Localization, dp: &str) 
                 rows.push(object(
                     cx,
                     vec![
-                        ("strSong", Value::str(&s.title)),
-                        ("strArtist", Value::str(&s.artist)),
+                        ("strSong", Value::str(&shown(&s.title))),
+                        ("strArtist", Value::str(&shown(&s.artist))),
                         ("isChecked", Value::Bool(s.on)),
                         ("eventSelect", Value::str("A_ActivityFeedMusicSelectItem")),
                         ("eventSelectParam", Value::Number(i as f64)),
@@ -647,7 +710,7 @@ mod tests {
         ready(&mut m);
         m.service_preview(1);
         m.service_preview(1);
-        assert_eq!(m.requests, vec![MusicRequest::Preview(101)]);
+        assert_eq!(m.requests, vec![MusicRequest::Preview { id: 101, key: None }]);
         assert_eq!(m.browser.preview, Some(1));
         m.service_preview(NONE);
         assert_eq!(m.browser.preview, None);
@@ -657,6 +720,36 @@ mod tests {
         assert_eq!(m.requests.len(), 1);
         m.service_update();
         assert_eq!(m.requests.last(), Some(&MusicRequest::StopPreview));
+    }
+
+    #[test]
+    fn package_songs_follow_the_discs_with_their_own_switches() {
+        let key = |n: u32| -> ssx_content::ContentId { format!("tunes:music/list/{n}").parse().unwrap() };
+        let mut songs: Vec<LicensedSong> = music(3).songs;
+        for n in 1..=2 {
+            songs.push(LicensedSong {
+                id: ssx_assets::musicbox::FIRST_PACKAGE_SONG + n - 1,
+                title: format!("<b>package {n}</b>"),
+                on: true,
+                key: Some(key(n)),
+                ..Default::default()
+            });
+        }
+        let mut m = Music::with_songs(songs);
+        m.set_package_switches(&[(key(2), false), (key(9), false)]);
+        assert_eq!(m.package_switches(), [(key(1), true), (key(2), false)]);
+        assert_eq!(m.flags(), [(100, true), (101, true), (102, true)], "the disc's slots only");
+        m.set_flags(&[(100, false), (ssx_assets::musicbox::FIRST_PACKAGE_SONG, false)]);
+        assert!(m.songs[3].on, "a disc flag never reaches a package song");
+        ready(&mut m);
+        assert_eq!(m.page.rows.len(), 5);
+        assert_eq!(m.page.rows[3].title, "<b>package 1</b>", "the record's text as it is");
+        m.service_toggle(3, false);
+        assert_eq!(m.switches().packages, [(key(1), false), (key(2), false)]);
+        assert_eq!(m.switches().off(), 3);
+        m.service_reset();
+        assert_eq!(m.switches().off(), 0);
+        assert!(m.take_switches_changed() && !m.take_switches_changed(), "the change is taken once");
     }
 
     #[test]

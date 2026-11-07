@@ -135,16 +135,25 @@ impl Ctx<'_> {
         }
         match &mut o.kind {
             Kind::Array(a) => {
+                let len = a.len();
                 if name == "length" {
                     let n = crate::avm1::value::to_int32(primitive_to_number(&v, 7)).max(0) as usize;
-                    a.resize(n.min(1 << 24), Value::Undefined);
+                    self.grew_array(n, n.saturating_sub(len))?;
+                    if let Some(Kind::Array(a)) = self.vm.heap.get_mut(id).map(|o| &mut o.kind) {
+                        a.resize(n, Value::Undefined);
+                    }
                     return Ok(());
                 }
                 if let Some(i) = array_index(name) {
-                    if i >= a.len() {
-                        a.resize(i + 1, Value::Undefined);
+                    if i >= len {
+                        self.grew_array(i + 1, i + 1 - len)?;
                     }
-                    a[i] = v;
+                    if let Some(Kind::Array(a)) = self.vm.heap.get_mut(id).map(|o| &mut o.kind) {
+                        if i >= a.len() {
+                            a.resize(i + 1, Value::Undefined);
+                        }
+                        a[i] = v;
+                    }
                     return Ok(());
                 }
             }
@@ -176,6 +185,11 @@ impl Ctx<'_> {
             }
             cur = o.proto.as_object();
         }
+        let props = self.vm.heap.get(id).map_or(0, |o| o.props.len());
+        if props >= super::super::sandbox::caps::PROPS {
+            return Err(Fault::Abort("an object of more than 65 536 properties"));
+        }
+        self.new_property(name);
         if let Some(o) = self.vm.heap.get_mut(id) {
             o.props.insert(Str::from(name), Property::new(v, 0));
         }

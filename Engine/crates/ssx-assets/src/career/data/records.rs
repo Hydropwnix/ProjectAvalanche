@@ -101,13 +101,33 @@ pub struct Rider {
     pub display_name: String,
     pub cost: i64,
     pub locked: bool,
-    pub unk_349e965b: bool,
+    pub default: bool,
     pub unk_940b9b22: i64,
     pub stat_bonuses: Vec<(i32, u8)>,
     pub portrait: String,
     pub description: String,
     pub round_icon: String,
     pub icon: String,
+    pub content: Option<RiderContent>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RiderContent {
+    pub id: ssx_content::ContentId,
+    pub stand_in: u32,
+    pub portrait: Option<ssx_content::ContentId>,
+    pub round_icon: Option<ssx_content::ContentId>,
+    pub icon: Option<ssx_content::ContentId>,
+    pub added: bool,
+    pub default_board: Option<u32>,
+    pub disc_stat_bonuses: Option<Vec<(i32, u8)>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ItemContent {
+    pub id: ssx_content::ContentId,
+    pub added: bool,
+    pub disc_attributes: Option<Vec<(i32, u8)>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -126,6 +146,7 @@ pub struct Item {
     pub attributes: Vec<(i32, u8)>,
     pub unk_b6ef00c6: i64,
     pub descriptions: Vec<u32>,
+    pub content: Option<ItemContent>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

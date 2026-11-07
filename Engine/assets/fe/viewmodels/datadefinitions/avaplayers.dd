@@ -1,0 +1,16 @@
+{
+	"actions":
+		[
+			{ "viewname": "A_AvaPlayersSetup", "actionname": "A_AvaPlayersSetup", "argumenttype": "object" },
+			{ "viewname": "A_AvaPlayersRequestData", "actionname": "A_AvaPlayersRequestData", "argumenttype": "float" },
+			{ "viewname": "A_AvaPlayersPage", "actionname": "A_AvaPlayersPage", "argumenttype": "float" },
+			{ "viewname": "A_AvaPlayersMute", "actionname": "A_AvaPlayersMute" },
+			{ "viewname": "A_AvaPlayersBack", "actionname": "A_AvaPlayersBack" }
+		],
+	"data":
+		[
+			{ "viewname": "ava_players", "type": "object", "dpname": "dp_ava_players" },
+			{ "viewname": "ava_players_rows", "type": "array", "dpname": "dp_ava_players_rows" },
+			{ "viewname": "ava_players_rows_index", "type": "int", "dpname": "dp_ava_players_rows_index" }
+		]
+}

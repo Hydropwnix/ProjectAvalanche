@@ -1,0 +1,10 @@
+{
+	"title": "TXT_AVA_LINK_TITLE",
+	"body": "",
+	"useoverride": true,
+	"defaultButton": 1,
+	"buttons":	[
+					{"label": "TXT_YES", "event": "ava_link_yes"},
+					{"label": "TXT_NO", "event": "ava_link_no"}
+				]
+}

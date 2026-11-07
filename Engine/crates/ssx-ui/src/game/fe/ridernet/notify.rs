@@ -10,6 +10,9 @@ pub const DP: &str = "dp_notification_data";
 pub const KIND_BADGE: u32 = 0x14;
 pub const QUEUE_MAX: usize = 25;
 
+// TODO(guess): the port's notices show as the docks' generic notification (style 0: the gamer picture, the header, the body; the rider's icon as the picture), non-actionable, held until the next dock asks (the results' DockPostGame, not the ride's dock that unloads with the switch) and then taken by request 1 as types 7/0xE/0x10/0x14/0x17 are, 6 s, the generic sounds 0x1E/0x1F; the game has no such notice (port feature); settle: none on the disc — a design choice to review.
+pub const KIND_PORT: u32 = 0x100;
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Notification {
     pub kind: u32,
@@ -26,6 +29,7 @@ pub struct Notifications {
     pub request: u32,
     pub expanded: bool,
     next_id: i32,
+    held: Vec<Notification>,
 }
 
 pub fn style(kind: u32) -> i32 {
@@ -71,13 +75,29 @@ impl Notifications {
         }
     }
 
+    pub fn hold(&mut self, n: Notification) {
+        self.held.push(n);
+        if self.held.len() > QUEUE_MAX {
+            self.held.remove(0);
+        }
+    }
+
+    pub fn set_request(&mut self, n: u32) {
+        self.request = n;
+        if n != 0 {
+            for h in std::mem::take(&mut self.held) {
+                self.push(h);
+            }
+        }
+    }
+
     fn take(&mut self) -> Option<Notification> {
         let all = match self.request {
             1 => false,
             2 => true,
             _ => return None,
         };
-        let i = self.queue.iter().position(|n| all || matches!(n.kind, 7 | 0xE | 0x10 | 0x14 | 0x17))?;
+        let i = self.queue.iter().position(|n| all || matches!(n.kind, 7 | 0xE | 0x10 | 0x14 | 0x17 | KIND_PORT))?;
         self.queue.remove(i)
     }
 }
@@ -92,6 +112,28 @@ pub fn post_badge(fe: &mut FrontEnd, loc: &mut Localization, b: &ssx_assets::car
     };
     fe.note(format!("notification: badge {} ({})", b.name, n.title));
     fe.notifications.push(n);
+}
+
+pub fn post_best_not_kept(
+    fe: &mut FrontEnd,
+    loc: &mut Localization,
+    why: ssx_assets::career::profile::BestNotKept,
+    icon: &str,
+) {
+    use ssx_assets::career::profile::BestNotKept;
+    let body = match why {
+        BestNotKept::ModStateFull => "TXT_AVA_BEST_NOT_KEPT_FULL",
+        BestNotKept::NoEventId => "TXT_AVA_BEST_NOT_KEPT_NO_ID",
+    };
+    let n = Notification {
+        kind: KIND_PORT,
+        id: 0,
+        title: loc.text("TXT_AVA_BEST_NOT_KEPT_TITLE"),
+        message: loc.text(body),
+        icon: icon.to_string(),
+    };
+    fe.note(format!("notification: best not kept ({why:?}), held for the next dock that asks"));
+    fe.notifications.hold(n);
 }
 
 pub const KIND_HINT: u32 = 0x18;
@@ -126,7 +168,7 @@ pub fn action(fe: &mut FrontEnd, action: &str, param: &ActionParam) {
         "A_NotificationSetRequestType" => {
             let n = param.number as u32;
             if n <= 2 {
-                fe.notifications.request = n;
+                fe.notifications.set_request(n);
             }
         }
         "A_NotificationSetExpanded" => fe.notifications.expanded = param.number != 0.0,
@@ -177,5 +219,23 @@ mod tests {
         q.request = 2;
         assert_eq!(q.take().map(|n| n.id), Some(5));
         assert_eq!((style(KIND_BADGE), display_time(KIND_BADGE), sounds(KIND_BADGE)), (1, 3000, (26, 27)));
+        q.request = 1;
+        q.hold(Notification { kind: KIND_PORT, ..Default::default() });
+        assert!(q.take().is_none(), "held from the dock that asked before it");
+        q.set_request(0);
+        assert!(q.take().is_none(), "a provider's reset does not ask");
+        q.set_request(1);
+        assert_eq!(q.take().map(|n| n.kind), Some(KIND_PORT));
+        q.queue.clear();
+        for i in 0..30 {
+            q.hold(Notification { kind: KIND_PORT, message: i.to_string(), ..Default::default() });
+        }
+        q.set_request(2);
+        assert_eq!(q.queue.len(), QUEUE_MAX);
+        assert_eq!(q.queue.front().map(|n| n.message.as_str()), Some("5"));
+        assert_eq!(
+            (style(KIND_PORT), display_time(KIND_PORT), sounds(KIND_PORT), actionable(KIND_PORT)),
+            (0, 6000, (0x1E, 0x1F), false)
+        );
     }
 }

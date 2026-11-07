@@ -1,8 +1,9 @@
 mod instances;
 mod interp;
 mod operators;
+mod provenance;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -12,10 +13,12 @@ use ssx_formats::aems::{INSTANCE_HEADER, Node, Op};
 use ssx_formats::csi::{CsiFile, Kind};
 
 use crate::music::Bytes;
+use crate::sfx_override::{Choice, OverrideSound};
 
 pub use instances::*;
 use interp::*;
 use operators::*;
+use provenance::*;
 
 pub const MIXER_RATE: u32 = 48_000;
 pub const FRAME_SAMPLES: usize = 256;
@@ -35,7 +38,8 @@ pub fn tick_frames() -> (u32, f32) {
 }
 
 pub trait VoiceHost {
-    fn start(&mut self, bank: usize, entry: &SampleEntry, params: &[(u8, i32)]) -> Option<u32>;
+    fn start(&mut self, bank: usize, entry: &SampleEntry, params: &[(u8, i32)], choice: Option<&Choice>)
+    -> Option<u32>;
     fn set_param(&mut self, voice: u32, id: u8, value: i32);
     fn destroy(&mut self, voice: u32);
     fn pause(&mut self, voice: u32);
@@ -58,6 +62,8 @@ struct ModuleLinks {
     handle_refs: HashMap<u32, (u32, String)>,
     function: Option<u32>,
     handles: HashMap<u32, u32>,
+    players: Vec<u32>,
+    player_events: HashMap<u32, Vec<u32>>,
 }
 
 impl Bank {
@@ -105,6 +111,7 @@ impl Bank {
 struct CsisInstance {
     function: u32,
     modules: Vec<usize>,
+    origin: Option<u32>,
 }
 
 struct Instance {
@@ -112,7 +119,12 @@ struct Instance {
     module: usize,
     state: Vec<u8>,
     csis: usize,
+    received: Vec<(u32, Option<u32>, u64)>,
+    started: HashMap<u32, u64>,
+    script: Option<u32>,
 }
+
+const RECEIVED: usize = 16;
 
 #[derive(Clone, Debug)]
 pub struct LogLine {
@@ -136,6 +148,12 @@ pub struct Aems {
     watched: Vec<u32>,
     global_changes: Vec<(u32, i32)>,
     pub verbose: bool,
+    files: Vec<String>,
+    overrides: HashMap<u32, Arc<OverrideSound>>,
+    pub script_routes: HashMap<u32, String>,
+    ticks: u64,
+    override_seen: HashSet<(u32, usize, usize, usize)>,
+    pub voice_names: HashMap<i32, (String, String)>,
 }
 
 fn round(x: f32) -> i32 {
@@ -228,6 +246,12 @@ impl Aems {
             watched: Vec::new(),
             global_changes: Vec::new(),
             verbose: false,
+            files: Vec::new(),
+            overrides: HashMap::new(),
+            script_routes: HashMap::new(),
+            ticks: 0,
+            override_seen: HashSet::new(),
+            voice_names: HashMap::new(),
         }
     }
 
@@ -240,13 +264,35 @@ impl Aems {
     }
 
     pub fn add_interface(&mut self, csi: &CsiFile) {
+        self.add_interface_file(csi, "");
+    }
+
+    pub fn add_interface_file(&mut self, csi: &CsiFile, file: &str) {
         for e in &csi.entries {
             let key = self.entries.len() as u32;
             if e.kind == Kind::Global {
                 self.globals.insert(key, e.default);
             }
             self.entries.push(e.clone());
+            self.files.push(file.to_string());
         }
+    }
+
+    pub fn entry_file(&self, key: u32) -> Option<(&str, &str)> {
+        Some((self.files.get(key as usize)?.as_str(), self.entries.get(key as usize)?.name.as_str()))
+    }
+
+    pub fn key_in(&self, file: &str, name: &str) -> Option<u32> {
+        (0..self.entries.len()).find(|&k| self.files[k] == file && self.entries[k].name == name).map(|k| k as u32)
+    }
+
+    pub fn set_overrides(&mut self, overrides: HashMap<u32, Arc<OverrideSound>>) {
+        self.overrides = overrides;
+        self.override_seen.clear();
+    }
+
+    pub fn has_overrides(&self) -> bool {
+        !self.overrides.is_empty()
     }
 
     pub fn resolve(&self, id: u32, name: &str) -> Option<u32> {
@@ -257,10 +303,11 @@ impl Aems {
 
     pub fn load_interfaces(&mut self, big_root: &Path) -> Result<usize> {
         let mut n = 0;
-        for dir in ["data/xenon/audio/sfx", "data/xenon/audio/tuna"] {
+        for (dir, part) in [("data/xenon/audio/sfx", "sfx"), ("data/xenon/audio/tuna", "tuna")] {
             for p in crate::music::find_files(big_root, dir, "csi") {
                 let csi = CsiFile::parse(&std::fs::read(&p)?).with_context(|| p.display().to_string())?;
-                self.add_interface(&csi);
+                let stem = p.file_stem().map(|s| s.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+                self.add_interface_file(&csi, &format!("{part}/{stem}"));
                 n += 1;
             }
         }
@@ -283,6 +330,7 @@ impl Aems {
                     None => unbound.push(n.clone()),
                 }
             }
+            (l.players, l.player_events) = player_events(&l.program, &l.handles);
         }
         if !unbound.is_empty() {
             unbound.sort();
@@ -356,13 +404,18 @@ impl Aems {
     }
 
     pub fn fire_event(&mut self, id: u32, params: &[i32]) {
+        self.fire_event_from(id, params, None);
+    }
+
+    pub fn fire_event_from(&mut self, id: u32, params: &[i32], origin: Option<u32>) {
         if self.verbose {
             let name = self.name(id);
             self.logf(format!("event {name} {params:?}"));
         }
         for k in 0..self.instances.len() {
-            let Some(inst) = self.instances[k].as_mut() else { continue };
+            let Some(mut inst) = self.instances[k].take() else { continue };
             let bank = &self.banks[inst.bank];
+            let mut got = false;
             for (&off, &eid) in &bank.links[inst.module].handles {
                 let m = &bank.abk.modules[inst.module];
                 if eid == id && node_at(&m.program, off).is_some_and(|n| n.op == Op::EventReceived) {
@@ -372,8 +425,13 @@ impl Aems {
                         wr(&mut inst.state, o + 0x1C + 4 * j, p);
                     }
                     wb(&mut inst.state, o + 0x19, 1);
+                    got = true;
                 }
             }
+            if got {
+                self.remember(&mut inst, id, origin);
+            }
+            self.instances[k] = Some(inst);
         }
     }
 

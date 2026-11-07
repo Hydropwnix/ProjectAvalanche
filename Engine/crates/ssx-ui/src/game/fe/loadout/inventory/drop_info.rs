@@ -135,10 +135,7 @@ impl Inventory {
 
     pub fn rider_stats(&self, db: &CareerDb, profile: &Profile, rider: u32) -> ssx_assets::career::profile::RiderStats {
         use ssx_assets::career::profile::{RiderStats, SRC_NONE};
-        let created = || {
-            let name = db.riders.iter().find(|r| r.key == rider).map(|r| r.name.clone()).unwrap_or_default();
-            RiderStats::created(&name, |k| self.catalog.entries.contains_key(&k))
-        };
+        let created = || RiderStats::created_for(db, rider, |k| self.catalog.entries.contains_key(&k));
         match profile.riders.get(&rider) {
             Some(s) if s.last_suit.1 == SRC_NONE && s.last_board.1 == SRC_NONE => {
                 let c = created();

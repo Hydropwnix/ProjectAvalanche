@@ -24,6 +24,10 @@ pub const REQUIRED_EQUIPMENT_NAMES: [&str; 7] = [
 ];
 
 pub fn requirements(fe: &FrontEnd, env: &mut FeEnv, drop: u32) -> String {
+    requirements_text(fe, env.loc, drop)
+}
+
+pub fn requirements_text(fe: &FrontEnd, loc: &mut crate::game::loc::Localization, drop: u32) -> String {
     let Some(e) = fe.career.event(drop) else { return String::new() };
     if e.required.is_empty() {
         return String::new();
@@ -39,41 +43,47 @@ pub fn requirements(fe: &FrontEnd, env: &mut FeEnv, drop: u32) -> String {
     let name = |loc: &mut crate::game::loc::Localization, i: i64| {
         REQUIRED_EQUIPMENT_NAMES.get(i as usize).map(|k| loc.text(k)).unwrap_or_default()
     };
-    let mut out = name(env.loc, best);
+    let mut out = name(loc, best);
     for &item in &e.required {
         if item == best {
             continue;
         }
-        let t = name(env.loc, item);
+        let t = name(loc, item);
         if t.is_empty() {
             continue;
         }
         if !out.is_empty() {
-            out.push_str(&env.loc.text("TXT_COMMA_SPACE"));
+            out.push_str(&loc.text("TXT_COMMA_SPACE"));
         }
         out.push_str(&t);
     }
     out
 }
 
-pub fn write(fe: &FrontEnd, env: &mut FeEnv, drop: u32) {
-    let Some(e) = fe.career.event(drop) else { return };
-    let drop_name = fe.career.drop(e.drop).map(|d| env.loc.text(&d.title)).unwrap_or_default();
+pub fn drop_fields(fe: &FrontEnd, loc: &mut crate::game::loc::Localization, drop: u32) -> Option<DropPanel> {
+    let e = fe.career.event(drop)?;
+    let drop_name = fe.career.drop(e.drop).map(|d| loc.text(&d.title)).unwrap_or_default();
     let mut p = DropPanel { drop_name, ..DropPanel::default() };
     let (peak, _) = fe.career.peak_and_range(e);
-    p.peak_name = fe.career.peak(peak).map(|pk| env.loc.text(&pk.title)).unwrap_or_default();
+    p.peak_name = fe.career.peak(peak).map(|pk| loc.text(&pk.title)).unwrap_or_default();
     let type_key = if crate::game::fe::globe::TUTORIAL_DROPS.contains(&drop) {
         "TXT_EVENTTYPE_TUTORIAL"
     } else {
         crate::game::hud::results::EVENT_TYPE_NAMES.get(e.event_type as usize).copied().unwrap_or("")
     };
-    p.event_type = if type_key.is_empty() { String::new() } else { env.loc.text(type_key) };
+    p.event_type = if type_key.is_empty() { String::new() } else { loc.text(type_key) };
     p.difficulty = e.difficulty as i32;
-    p.difficulty_text = DIFFICULTY_NAMES.get(e.difficulty as usize).map(|k| env.loc.text(k)).unwrap_or_default();
-    p.requirements = requirements(fe, env, drop);
+    p.difficulty_text = DIFFICULTY_NAMES.get(e.difficulty as usize).map(|k| loc.text(k)).unwrap_or_default();
+    p.requirements = requirements_text(fe, loc, drop);
     p.warning = e.warning as i32;
     p.time_of_day = e.time_of_day as i32;
-    p.elevation = env.loc.distance_with_unit(0.0);
+    p.elevation = loc.distance_with_unit(0.0);
+    Some(p)
+}
+
+pub fn write(fe: &FrontEnd, env: &mut FeEnv, drop: u32) {
+    let Some(e) = fe.career.event(drop) else { return };
+    let Some(mut p) = drop_fields(fe, env.loc, drop) else { return };
     match e.drop_type {
         DropType::Explore => {
             let medal = crate::game::fe::explore::fe_medal(fe, 3, drop).0;

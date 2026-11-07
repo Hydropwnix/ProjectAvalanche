@@ -1,0 +1,7 @@
+{
+	"view": "ava_keyboard",
+	"dataproviders":
+	[
+		"avakeyboard"
+	]
+}

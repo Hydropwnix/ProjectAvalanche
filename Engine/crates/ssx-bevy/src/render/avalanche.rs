@@ -2,7 +2,11 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use bevy::mesh::MeshTag;
-use bevy::prelude::*;
+use bevy::prelude::{
+    App, Assets, Commands, Component, Entity, FixedPostUpdate, Image, IntoScheduleConfigs, Mesh, Mesh3d,
+    MeshMaterial3d, Name, Quat, Query, Res, ResMut, Resource, Transform, Vec3, Visibility, With, info, resource_exists,
+    warn,
+};
 use ssx_assets::avalanche_entities::{self, AvalancheEntities};
 use ssx_assets::particles::ParticleNode;
 use ssx_physics::SIM_HZ;
@@ -134,10 +138,14 @@ impl AvalancheScene {
             }));
         }
         let mut loaded = Vec::with_capacity(models.len());
+        let content = ssx_assets::content::GameContent::of(big_root);
         for m in &models {
-            let geom = avalanche_entities::geometry_file(big_root, m)
+            let id = ssx_assets::content::models::model_id(&m.geometry)
+                .filter(|id| content.has(id))
                 .with_context(|| format!("{} not found under {}", m.geometry, big_root.display()))?;
-            let part = load_part(big_root, &geom, &m.material).with_context(|| m.geometry.clone())?;
+            let material = content.material_for(&m.material, ssx_assets::content::resolve::MaterialUse::Objects);
+            let part = load_part(big_root, &id, ssx_assets::content::resolve::ModelUse::Static, &material)
+                .with_context(|| m.geometry.clone())?;
             let bounds = part.bounds;
             loaded.push(ChunkModel { name: m.schema.clone(), nodes: m.nodes.clone(), part: Some(part), bounds });
         }
@@ -304,7 +312,7 @@ fn spawn_chunks(
                     AvalancheChunk,
                     Mesh3d(mesh),
                     MeshMaterial3d(material),
-                    MeshTag(0),
+                    MeshTag::new(0),
                     Transform::default(),
                     Visibility::Hidden,
                 ))

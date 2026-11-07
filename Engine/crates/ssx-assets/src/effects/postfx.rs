@@ -173,7 +173,11 @@ impl Decoded<'_> {
     }
 
     fn preset(&self, name: &str) -> Result<PostFxPreset> {
-        let i = self.find(CLASS_POSTFX, fnv1(name)).with_context(|| format!("no postfx collection {name:?}"))?;
+        self.preset_by_key(fnv1(name), name)
+    }
+
+    fn preset_by_key(&self, key: u32, name: &str) -> Result<PostFxPreset> {
+        let i = self.find(CLASS_POSTFX, key).with_context(|| format!("no postfx collection {name:?}"))?;
         let mut p = PostFxPreset { name: name.to_string(), ..Default::default() };
         let mut cur = Some(i);
         while let Some(c) = cur {
@@ -302,6 +306,12 @@ pub fn build_cube(stacks: &[ColourStack], blends: &[ColourCubeBlend]) -> Result<
 }
 
 pub fn load_presets(big_root: &Path, names: &[&str]) -> Result<Vec<(PostFxPreset, CubeBuild)>> {
+    let presets = disc_presets(big_root, names)?;
+    let content = crate::content::GameContent::of(big_root);
+    Ok(presets.into_iter().map(|(p, b)| content.route_postfx(p, b)).collect())
+}
+
+fn disc_presets(big_root: &Path, names: &[&str]) -> Result<Vec<(PostFxPreset, CubeBuild)>> {
     with_vault(big_root, "attribdb.vlt", |db| {
         let stacks = db.stacks(big_root)?;
         names
@@ -313,6 +323,24 @@ pub fn load_presets(big_root: &Path, names: &[&str]) -> Result<Vec<(PostFxPreset
                 Ok((preset, build))
             })
             .collect()
+    })
+}
+
+pub fn load_preset_by_key(big_root: &Path, key: u32, name: &str) -> Result<PostFxPreset> {
+    with_vault(big_root, "attribdb.vlt", |db| db.preset_by_key(key, name))
+}
+
+pub fn build_cube_for(big_root: &Path, blends: &[ColourCubeBlend]) -> Result<CubeBuild> {
+    with_vault(big_root, "attribdb.vlt", |db| build_cube(&db.stacks(big_root)?, blends))
+}
+
+pub fn stack_groups(big_root: &Path) -> Result<Vec<(u32, String, Vec<String>)>> {
+    with_vault(big_root, "attribdb.vlt", |db| {
+        Ok(db
+            .stacks(big_root)?
+            .into_iter()
+            .map(|s| (s.index, s.xml.name.clone(), s.xml.groups.iter().map(|g| g.name.clone()).collect()))
+            .collect())
     })
 }
 

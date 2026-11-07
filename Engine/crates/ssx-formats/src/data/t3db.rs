@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::reader::Reader;
 
+pub mod format;
 mod write;
 use crate::{Error, Result};
 pub use write::FLAG_WRITTEN;

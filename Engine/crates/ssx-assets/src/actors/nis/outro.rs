@@ -25,9 +25,9 @@ pub fn load_outro(big_root: &Path, character: &str, reaction: i64) -> Result<Int
         "{}: not a NIS_Out branch window",
         t.name()
     );
-    let blend = t.guid("OverrideBlend").and_then(|g| db.get(g)).and_then(|b| b.f32("BlendTime")).unwrap_or(0.0);
     let cut = db.get(t.guid("To").context("transition without target")?).context("camera-cut node")?;
     let (ready, jump) = (walk.scene(&start)?, walk.scene(&cut)?);
+    let blend = walk.transition_blend(&t, Some(&ready))?;
     let branch_out = ready.actor(ROLE_CHARACTER1).and_then(|a| a.tags.branch_out);
     let controller = sf.name().to_string();
     let Binding { bundles, rigs: [rider, heli, camera], .. } = bind;
@@ -69,7 +69,7 @@ pub fn load_heli_pickup_outro(big_root: &Path, character: &str) -> Result<IntroN
         controller,
         jump: ready.clone(),
         ready,
-        transition_blend: 0.0,
+        transition_blend: Blend::cut(),
         branch_out: None,
         bundles,
         rider,
@@ -93,7 +93,7 @@ pub fn load_heli_grab_outro(big_root: &Path, character: &str, reaction: i64) -> 
     let b = db.by_name(binding).context("binding")?;
     let sf = db.get(b.guid("ControllerAsset").context("binding without controller")?).context("state flow")?;
     let start = db.get(sf.guid("StartNode").context("no start node")?).context("start node")?;
-    let exit = |from: &Asset, window: &str| -> Result<(Asset, f32)> {
+    let exit = |from: &Asset, window: &str| -> Result<(Asset, Blend)> {
         let t = sf
             .guids("StateFlowTransitionAssets")
             .into_iter()
@@ -102,7 +102,8 @@ pub fn load_heli_grab_outro(big_root: &Path, character: &str, reaction: i64) -> 
                 same(t.guid("From"), from.guid) && walk.name(t, "BranchWindowTypeAsset").as_deref() == Some(window)
             })
             .with_context(|| format!("{binding}: no {window} transition from {}", from.name()))?;
-        let blend = t.guid("OverrideBlend").and_then(|g| db.get(g)).and_then(|b| b.f32("BlendTime")).unwrap_or(0.0);
+        let left = walk.scene(from)?;
+        let blend = walk.transition_blend(&t, Some(&left))?;
         Ok((db.get(t.guid("To").context("transition without target")?).context("target node")?, blend))
     };
     let window_of = |sc: &NisScene, early: bool| {

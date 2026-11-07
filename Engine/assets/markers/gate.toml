@@ -1,0 +1,9 @@
+shape = "gate"
+size = 8.0
+color = "#FF6030E0"
+glow = 1.5
+facing = "world"
+draw_distance = 600.0
+
+[animation]
+spin = 0.0

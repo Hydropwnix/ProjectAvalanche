@@ -118,6 +118,25 @@ impl MovieAudio {
     }
 }
 
+#[cfg(feature = "movie-decode")]
+impl ssx_movie::play::AudioSink for MovieAudio {
+    fn push(&self, frames: &[f32]) {
+        MovieAudio::push(self, frames);
+    }
+
+    fn finish(&self) {
+        MovieAudio::finish(self);
+    }
+
+    fn queued_frames(&self) -> usize {
+        MovieAudio::queued_frames(self)
+    }
+
+    fn stopped(&self) -> bool {
+        MovieAudio::stopped(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

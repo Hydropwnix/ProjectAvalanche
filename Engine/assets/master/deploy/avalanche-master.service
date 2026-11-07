@@ -1,0 +1,76 @@
+# Project Avalanche master server as a systemd service (Linux), serving HTTPS on 443 itself with a Let's Encrypt
+# certificate (Docs/architecture/server-procedure.md, "The master on the Internet").
+#
+# Install (as root), the binary built from the source (cargo build --release -p avalanche-master):
+#   useradd --system --home-dir /var/lib/avalanche-master --shell /usr/sbin/nologin avalanche-master
+#   install -D -m 0755 avalanche-master /opt/avalanche-master/avalanche-master
+#   install -D -m 0644 master.toml.example /etc/avalanche-master/master.toml   (then edit it)
+#   install -D -m 0644 avalanche-master.service /etc/systemd/system/avalanche-master.service
+#   install -d -o avalanche-master -g avalanche-master -m 0750 /var/lib/avalanche-master /var/lib/avalanche-master/data
+#   install -d -o root -g avalanche-master -m 0750 /etc/avalanche-master/tls   (root's: the master reads, never writes)
+#   install -D -m 0755 certbot-deploy-hook.sh /etc/letsencrypt/renewal-hooks/deploy/avalanche-master.sh
+#   certbot certonly --standalone -d masterlist.example.org   (port 80 open while it runs; the hook copies the files)
+#   RENEWED_LINEAGE=/etc/letsencrypt/live/masterlist.example.org /etc/letsencrypt/renewal-hooks/deploy/avalanche-master.sh
+#   sudo -u avalanche-master /opt/avalanche-master/avalanche-master check --config /etc/avalanche-master/master.toml --data /var/lib/avalanche-master/data
+#   systemctl daemon-reload && systemctl enable --now avalanche-master
+# The log: journalctl -u avalanche-master, and /var/lib/avalanche-master/data/logs/master.log.
+# Open TCP 443 in the firewall (and TCP 80 for certbot's standalone renewal, which binds it only while it renews).
+# A renewal runs the deploy hook, which copies the new files and runs `systemctl reload avalanche-master`: SIGHUP, the
+# certificate and the blocklists read again without a restart (the list of servers stays).
+
+[Unit]
+Description=Project Avalanche master server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=avalanche-master
+Group=avalanche-master
+WorkingDirectory=/var/lib/avalanche-master
+ExecStart=/opt/avalanche-master/avalanche-master run --config /etc/avalanche-master/master.toml --data /var/lib/avalanche-master/data
+ExecReload=/bin/kill -HUP $MAINPID
+# The first SIGTERM is the graceful stop; a second ends it at once.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+Restart=on-failure
+RestartSec=5
+# The console reads stdin: a service has none (the console ends, the master runs on).
+StandardInput=null
+# (the TLS files are in /etc/avalanche-master/tls, root's and read-only here: the deploy hook writes them as root, so
+# no folder on their path may be the master's)
+StateDirectory=avalanche-master avalanche-master/data
+StateDirectoryMode=0750
+UMask=0077
+NoNewPrivileges=yes
+# Binding 443 as an unprivileged user needs this one capability (the master opens its listening socket itself, with
+# no socket activation and no proxy in front); nothing else is granted, and nothing else is in the bounding set.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+ProtectSystem=strict
+ReadWritePaths=/var/lib/avalanche-master
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ProtectProc=invisible
+KeyringMode=private
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

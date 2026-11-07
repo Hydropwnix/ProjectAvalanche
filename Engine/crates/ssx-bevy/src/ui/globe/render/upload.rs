@@ -86,17 +86,18 @@ pub(super) fn upload_mesh(device: &RenderDevice, queue: &RenderQueue, m: &GlobeM
 
 // TODO(guess): the host GPU's block decode stands in for the Xenos texture unit's, as for the terrain (`terrain::textures::block_format`); settle: the Xenos' own DXT interpolation (a capture of decoded texels from the console).
 fn block_format(device: &RenderDevice, b: &super::super::Blocks) -> Option<TextureFormat> {
-    use ssx_formats::xenos::TextureFormat as X;
+    use ssx_content::texture::BlockFormat as B;
     let off = std::env::var("SSX_BC_TEXTURES").is_ok_and(|v| matches!(v.as_str(), "off" | "0" | "false" | "fallback"));
     if off || !device.features().contains(WgpuFeatures::TEXTURE_COMPRESSION_BC) {
         return None;
     }
     match b.format {
-        X::Dxt1 => Some(TextureFormat::Bc1RgbaUnorm),
-        X::Dxt23 => Some(TextureFormat::Bc2RgbaUnorm),
-        X::Dxt45 => Some(TextureFormat::Bc3RgbaUnorm),
-        X::Dxn => Some(TextureFormat::Bc5RgUnorm),
-        _ => None,
+        B::Bc1 => Some(TextureFormat::Bc1RgbaUnorm),
+        B::Bc2 => Some(TextureFormat::Bc2RgbaUnorm),
+        B::Bc3 => Some(TextureFormat::Bc3RgbaUnorm),
+        B::Bc4 => Some(TextureFormat::Bc4RUnorm),
+        B::Bc5 => Some(TextureFormat::Bc5RgUnorm),
+        B::Bc7 => Some(TextureFormat::Bc7RgbaUnorm),
     }
 }
 
@@ -227,12 +228,16 @@ pub(super) fn target_texture(
     })
 }
 
+pub(super) fn quarter_of(size: UVec2) -> UVec2 {
+    UVec2::new((size.x / 4).max(1), (size.y / 4).max(1))
+}
+
 pub(super) fn targets(device: &RenderDevice, size: UVec2) -> Targets {
     let usage = TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_SRC;
     let view = |t: &Texture| t.create_view(&TextureViewDescriptor::default());
     let hdr = target_texture(device, "ssx_globe_hdr", size, HDR_FORMAT, usage);
     let frame = target_texture(device, "ssx_globe_frame_buffer", size, HDR_FORMAT, usage | TextureUsages::COPY_DST);
-    let q = UVec2::new((size.x / 4).max(1), (size.y / 4).max(1));
+    let q = quarter_of(size);
     let quarter = target_texture(device, "ssx_globe_quarter", q, HDR_FORMAT, usage);
     let bloom_a = target_texture(device, "ssx_globe_bloom_a", q, LDR_FORMAT, usage);
     let bloom_b = target_texture(device, "ssx_globe_bloom_b", q, LDR_FORMAT, usage);
@@ -251,7 +256,7 @@ pub(super) fn targets(device: &RenderDevice, size: UVec2) -> Targets {
         device.create_buffer(&BufferDescriptor {
             label: Some(label),
             size: size.next_multiple_of(16),
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         })
     };

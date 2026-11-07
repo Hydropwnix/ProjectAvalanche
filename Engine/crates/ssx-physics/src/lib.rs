@@ -16,6 +16,7 @@ pub use anim::{anim_lua, graph, rootmotion, tags};
 pub use cinematics::{nis, nis_events, outro};
 pub use consts::*;
 pub use entities::{avalanche, controllers, helicopter, rigid};
+pub use level::map;
 pub use level::{death, event, objectives, rewind, session};
 pub use params::{character, curve, gear, tuning};
 pub use riding::{

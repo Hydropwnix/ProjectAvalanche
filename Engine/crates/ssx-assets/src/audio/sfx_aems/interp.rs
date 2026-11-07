@@ -26,6 +26,7 @@ impl Aems {
             }
         }
         self.now_ms += f64::from(self.tick_ms);
+        self.ticks += 1;
     }
 
     fn run(&mut self, inst: &mut Instance, host: &mut dyn VoiceHost) -> bool {
@@ -58,6 +59,7 @@ impl Aems {
                         wr(&mut inst.state, o + 0x1C + 4 * j, p);
                     }
                     wb(&mut inst.state, o + 0x19, 1);
+                    self.remember(inst, id, None);
                 }
                 _ => {}
             }

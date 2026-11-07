@@ -229,7 +229,7 @@ impl Voice {
                 match SoundCursor::open(audio, t, e) {
                     Ok(c) => self.cur = Some(c),
                     Err(err) => {
-                        eprintln!("music: track {t} entry {e}: {err:#}");
+                        ssx_core::eprintln!("music: track {t} entry {e}: {err:#}");
                         continue;
                     }
                 }
@@ -240,7 +240,7 @@ impl Voice {
                 Ok(true) => return true,
                 Ok(false) => self.cur = None,
                 Err(err) => {
-                    eprintln!("music: decoding track {}: {err:#}", cur.track);
+                    ssx_core::eprintln!("music: decoding track {}: {err:#}", cur.track);
                     self.cur = None;
                 }
             }
@@ -256,6 +256,9 @@ pub struct PathfinderMusic {
     voices: Vec<Voice>,
     tick_left: usize,
     tmp: Vec<f32>,
+    overrides: Vec<Option<crate::track_override::TrackOverride>>,
+    cursors: Vec<crate::track_override::OverrideCursor>,
+    score: Option<crate::score::ScorePlayer>,
 }
 
 impl PathfinderMusic {
@@ -313,7 +316,62 @@ impl PathfinderMusic {
             }
         }
         let voices = (0..crate::pathfinder::MAX_PLAYERS).map(|_| Voice::default()).collect();
-        Ok(Self { rt, tracks, voices, tick_left: 0, tmp: Vec::new() })
+        Ok(Self {
+            rt,
+            tracks,
+            voices,
+            tick_left: 0,
+            tmp: Vec::new(),
+            overrides: Vec::new(),
+            cursors: Vec::new(),
+            score: None,
+        })
+    }
+
+    pub fn track_heads(&self, track: usize) -> Result<Vec<(usize, u32, u32, u16)>> {
+        let audio = self.tracks.get(track).and_then(Option::as_ref).context("no such track with audio")?;
+        let mut out = Vec::new();
+        for e in 0..audio.index.entries.len() {
+            let (h, _) = audio.sound(e)?;
+            let record = if audio.ram { e } else { audio.first_sample + e };
+            out.push((record, h.num_samples, h.sample_rate, u16::from(h.channels)));
+        }
+        Ok(out)
+    }
+
+    pub fn decode_track_sound(&self, track: usize, k: usize) -> Result<Vec<f32>> {
+        let audio = self.tracks.get(track).and_then(Option::as_ref).context("no such track with audio")?;
+        let (h, body) = audio.sound(k)?;
+        let blocks = read_v0_blocks(&h, &audio.data, body)?;
+        Ok(ssx_formats::ealayer3_decode::decode_sound(&h, &blocks)?.samples)
+    }
+
+    pub fn set_track_override(&mut self, track: usize, o: crate::track_override::TrackOverride) {
+        if track >= crate::pathfinder::MAX_PLAYERS {
+            return;
+        }
+        if self.overrides.is_empty() {
+            self.overrides = vec![None; crate::pathfinder::MAX_PLAYERS];
+            self.cursors = vec![Default::default(); crate::pathfinder::MAX_PLAYERS];
+        }
+        self.rt.logf(format!("p{track}: {}", o.label));
+        self.overrides[track] = Some(o);
+    }
+
+    pub fn clear_packages(&mut self) {
+        if self.overrides.iter().any(Option::is_some) || self.score.is_some() {
+            self.rt.logf("the package's music removed: the project's own again".into());
+        }
+        self.overrides.clear();
+        self.cursors.clear();
+        self.score = None;
+        self.rt.score = None;
+    }
+
+    pub fn set_score(&mut self, score: crate::score::ScorePlayer, label: &str) {
+        self.rt.logf(format!("score: {label} in place of the project's"));
+        self.rt.score = Some(crate::score::ScoreInbox::default());
+        self.score = Some(score);
     }
 
     pub fn bank_for_part(mpf: &MpfFile, part: u8) -> Option<usize> {
@@ -330,12 +388,23 @@ impl PathfinderMusic {
         while done < n {
             if self.tick_left == 0 {
                 self.rt.tick();
+                if let (Some(score), Some(inbox)) = (self.score.as_mut(), self.rt.score.as_mut()) {
+                    score.take(inbox);
+                    let ms = self.rt.now;
+                    for text in score.log.drain(..) {
+                        self.rt.log.push(crate::pathfinder::LogLine { ms, text });
+                    }
+                }
                 self.tick_left = TICK_FRAMES;
             }
             let chunk = (n - done).min(self.tick_left);
-            for i in 0..self.voices.len() {
-                if self.rt.players[i].is_some() {
-                    self.render_voice(i, &mut out[done * 2..(done + chunk) * 2]);
+            if let Some(score) = self.score.as_mut() {
+                score.render(&mut out[done * 2..(done + chunk) * 2]);
+            } else {
+                for i in 0..self.voices.len() {
+                    if self.rt.players[i].is_some() {
+                        self.render_voice(i, &mut out[done * 2..(done + chunk) * 2]);
+                    }
                 }
             }
             self.rt.frame += chunk as u64;
@@ -376,6 +445,9 @@ impl PathfinderMusic {
             let Some(front) = self.rt.players[i].as_ref().and_then(|p| p.stream.items.front()) else {
                 self.voices[i].item = None;
                 self.voices[i].pos = 0.0;
+                if let Some(c) = self.cursors.get_mut(i) {
+                    c.started = false;
+                }
                 break;
             };
             if front.start_frame.is_some_and(|s| self.rt.frame + (f as u64) < s) {
@@ -391,17 +463,32 @@ impl PathfinderMusic {
                 let ms = (at * 1000 / u64::from(SAMPLE_RATE)) as u32;
                 self.rt.log.push(crate::pathfinder::LogLine { ms, text });
                 self.voices[i].open(id, sounds, carry);
+                if let Some(o) = self.overrides.get(i).and_then(Option::as_ref) {
+                    let section = self.rt.mpf.nodes.get(usize::from(front.node)).map_or(0, |n| n.section);
+                    if let Some(text) = o.enter(&mut self.cursors[i], section) {
+                        self.rt.log.push(crate::pathfinder::LogLine { ms, text });
+                    }
+                }
             }
             // TODO(guess): the Pathfinder voices run on this engine's 44.1 kHz 10 ms tick (gains ramp over the tick, float position) instead of the game's Send / Resample kernels (`sfx_dsp::ramp_gain` / `Resampler`, 256-sample 48 kHz blocks); settle: move the stream voices onto the 48 kHz block graph (`sfx_bus`).
             let g = g0 + (target - g0) * (f + 1) as f32 / frames as f32;
             let v = &mut self.voices[i];
-            let k = v.pos.floor();
-            let frac = (v.pos - k) as f32;
-            let a = v.frame(k as usize, &self.tracks, &mut self.tmp);
-            let b =
-                if frac > 0.0 && k + 1.0 < total { v.frame(k as usize + 1, &self.tracks, &mut self.tmp) } else { a };
-            out[2 * f] += (a[0] + (b[0] - a[0]) * frac) * g;
-            out[2 * f + 1] += (a[1] + (b[1] - a[1]) * frac) * g;
+            if let Some(o) = self.overrides.get(i).and_then(Option::as_ref) {
+                let x = o.frame(&mut self.cursors[i], ratio);
+                out[2 * f] += x[0] * g;
+                out[2 * f + 1] += x[1] * g;
+            } else {
+                let k = v.pos.floor();
+                let frac = (v.pos - k) as f32;
+                let a = v.frame(k as usize, &self.tracks, &mut self.tmp);
+                let b = if frac > 0.0 && k + 1.0 < total {
+                    v.frame(k as usize + 1, &self.tracks, &mut self.tmp)
+                } else {
+                    a
+                };
+                out[2 * f] += (a[0] + (b[0] - a[0]) * frac) * g;
+                out[2 * f + 1] += (a[1] + (b[1] - a[1]) * frac) * g;
+            }
             v.pos += ratio;
             if v.pos >= total {
                 let done = total - v.reported;

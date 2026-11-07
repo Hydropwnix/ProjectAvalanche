@@ -1,11 +1,17 @@
+#[cfg(feature = "pipeline")]
+use std::collections::BTreeSet;
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom, Write};
+#[cfg(feature = "pipeline")]
+use std::io::Write;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+#[cfg(feature = "pipeline")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use ssx_formats::big::BigArchive;
+#[cfg(feature = "pipeline")]
 use ssx_formats::chunk;
 use ssx_formats::xdvdfs::{Disc, Extent, Layout};
 use ssx_formats::xex::Xex;
@@ -31,6 +37,7 @@ pub const SSX_PE_NAME: &str = "ssxvzf.exe";
 pub const MARKER: &str = "setup.json";
 const MARKER_FORMAT: u64 = 2;
 pub const MOVIE_DIR: &str = "data/common/fmv";
+#[cfg(feature = "pipeline")]
 const COPY_CHUNK: usize = 1 << 20;
 
 pub fn big_root(out: &Path) -> PathBuf {
@@ -116,6 +123,7 @@ pub struct Summary {
     pub failures: Vec<String>,
     pub movies_written: usize,
     pub movies_kept: usize,
+    pub content_files: usize,
 }
 
 struct Fnv(u64);
@@ -132,7 +140,7 @@ impl Fnv {
     }
 }
 
-fn open_disc(iso: &Path) -> Result<Disc<File>> {
+pub(super) fn open_disc(iso: &Path) -> Result<Disc<File>> {
     let file = File::open(iso).with_context(|| format!("opening {}", iso.display()))?;
     Disc::open(file).with_context(|| format!("{} is not an Xbox / Xbox 360 disc image (XDVDFS)", iso.display()))
 }
@@ -141,7 +149,7 @@ pub fn inspect(iso: &Path) -> Result<DiscCheck> {
     check_disc(&mut open_disc(iso)?)
 }
 
-fn check_disc(disc: &mut Disc<File>) -> Result<DiscCheck> {
+pub(super) fn check_disc(disc: &mut Disc<File>) -> Result<DiscCheck> {
     let xex_extent = disc.find("default.xex").context("the image has no default.xex — not a game disc")?.extent();
     let xex = disc.read_extent(xex_extent)?;
     let pe_name =
@@ -213,14 +221,72 @@ pub fn needs_update(out: &Path) -> bool {
     })
 }
 
+#[cfg(feature = "pipeline")]
 fn write_marker(out: &Path, marker: &Value) -> Result<()> {
-    let tmp = out.join(format!("{MARKER}.partial"));
-    fs::write(&tmp, serde_json::to_string_pretty(marker)?)?;
-    fs::rename(&tmp, out.join(MARKER))?;
+    Ok(ssx_files::replace(
+        &out.join(MARKER),
+        serde_json::to_string_pretty(marker)?.as_bytes(),
+        &ssx_files::Options::new(),
+    )?)
+}
+
+#[cfg(feature = "pipeline")]
+const MEMBER: ssx_files::Options = ssx_files::Options::new().folder_synced_by_caller();
+
+// TODO(guess): 16 threads (the most measured, on one btrfs SSD); settle: the setup timed with 8 / 16 / 32 on ext4,
+// NTFS and a hard disk.
+#[cfg(feature = "pipeline")]
+const COMMIT_THREADS: usize = 16;
+
+#[cfg(feature = "pipeline")]
+fn sync_folders(top: &Path, dirs: &BTreeSet<PathBuf>) -> Result<()> {
+    let mut all = BTreeSet::new();
+    for dir in dirs {
+        for d in dir.ancestors().take_while(|d| d.starts_with(top)) {
+            if !all.insert(d.to_path_buf()) {
+                break;
+            }
+        }
+    }
+    for d in all.iter().rev() {
+        ssx_files::sync_folder(d)?;
+    }
     Ok(())
 }
 
-fn safe_relative(path: &str) -> Option<PathBuf> {
+#[cfg(feature = "pipeline")]
+fn copy_chunks(
+    r: &mut impl Read,
+    f: &mut File,
+    size: usize,
+    buf: &mut [u8],
+    job: &mut Progressing,
+    dest: &Path,
+) -> Result<()> {
+    let base = job.p.bytes_done;
+    let mut left = size;
+    while left > 0 {
+        if job.cancel.load(Ordering::Relaxed) {
+            return Err(anyhow::Error::new(Cancelled));
+        }
+        let n = left.min(buf.len());
+        r.read_exact(&mut buf[..n])?;
+        f.write_all(&buf[..n]).with_context(|| format!("writing {}", dest.display()))?;
+        left -= n;
+        job.p.bytes_done = base + (size - left) as u64;
+        (job.progress)(&*job.p);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "pipeline")]
+struct Progressing<'a, 'b> {
+    cancel: &'a AtomicBool,
+    p: &'a mut Progress,
+    progress: &'a mut (dyn FnMut(&Progress) + 'b),
+}
+
+pub(super) fn safe_relative(path: &str) -> Option<PathBuf> {
     let mut out = PathBuf::new();
     for part in path.split('/') {
         let bad = |c: char| c.is_control() || "\\:*?\"<>|".contains(c);
@@ -232,7 +298,7 @@ fn safe_relative(path: &str) -> Option<PathBuf> {
     Some(out)
 }
 
-fn read_index(disc: &mut Disc<File>, name: &str, extent: Extent) -> Result<BigArchive> {
+pub(super) fn read_index(disc: &mut Disc<File>, name: &str, extent: Extent) -> Result<BigArchive> {
     let mut r = disc.reader(extent)?;
     let mut head = [0u8; 0x30];
     r.read_exact(&mut head)?;
@@ -246,10 +312,11 @@ fn read_index(disc: &mut Disc<File>, name: &str, extent: Extent) -> Result<BigAr
     BigArchive::parse(&table).with_context(|| format!("parsing {name}.big"))
 }
 
+#[cfg(feature = "pipeline")]
 pub fn run(iso: &Path, out: &Path, cancel: &AtomicBool, progress: &mut dyn FnMut(&Progress)) -> Result<Summary> {
     let mut disc = open_disc(iso)?;
     let check = check_disc(&mut disc)?;
-    fs::create_dir_all(out).with_context(|| format!("creating {}", out.display()))?;
+    ssx_files::create_dir_all(out).with_context(|| format!("creating {}", out.display()))?;
     let same_disc = |m: &Value| {
         m["format"].as_u64().is_some_and(|f| (1..=MARKER_FORMAT).contains(&f))
             && m["fingerprint"] == json!(check.fingerprint)
@@ -284,7 +351,7 @@ pub fn run(iso: &Path, out: &Path, cancel: &AtomicBool, progress: &mut dyn FnMut
     let movies = movie_files(&disc);
     let member_bytes: u64 = todo.iter().map(|(_, _, b)| b.entries.iter().map(|e| e.size as u64).sum::<u64>()).sum();
     let p = Progress {
-        archive_count: todo.len() + 1,
+        archive_count: todo.len() + 2,
         files_total: todo.iter().map(|(_, _, b)| b.entries.len()).sum::<usize>() + movies.len(),
         bytes_total: member_bytes + movies.iter().map(|(_, e)| e.size as u64).sum::<u64>(),
         ..Default::default()
@@ -294,7 +361,7 @@ pub fn run(iso: &Path, out: &Path, cancel: &AtomicBool, progress: &mut dyn FnMut
         job.p.archive = name.to_string();
         job.p.archive_index = i;
         (job.progress)(&job.p);
-        let counts = job.archive(name, *extent, big, &big_root(out).join(name))?;
+        let counts = job.archive(name, *extent, big, &big_root(out).join(name), out)?;
         finished.insert(name.to_string(), counts);
         marker["finished"] = Value::Object(finished.clone());
         write_marker(out, &marker)?;
@@ -303,12 +370,24 @@ pub fn run(iso: &Path, out: &Path, cancel: &AtomicBool, progress: &mut dyn FnMut
     job.p.archive = "movies".to_string();
     job.p.archive_index = todo.len();
     (job.progress)(&job.p);
-    marker["movies"] = job.movies(&movies, &disc_root(out))?;
+    marker["movies"] = job.movies(&movies, &disc_root(out), out)?;
+    job.p.archive = "content hashes".to_string();
+    job.p.archive_index = todo.len() + 1;
+    (job.progress)(&job.p);
+    if cancel.load(Ordering::Relaxed) {
+        return Err(Cancelled.into());
+    }
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let hashed = crate::content::hash::hash_data(out, threads)?;
+    crate::content::hash::write_index(out, &hashed.index)?;
+    summary.content_files = hashed.index.entries.len();
+    marker["content_index"] = json!({ "files": hashed.index.entries.len(), "bytes": hashed.bytes });
     marker["complete"] = json!(true);
     write_marker(out, &marker)?;
     Ok(summary)
 }
 
+#[cfg(feature = "pipeline")]
 struct Job<'a> {
     disc: &'a mut Disc<File>,
     resume: bool,
@@ -318,6 +397,7 @@ struct Job<'a> {
     summary: &'a mut Summary,
 }
 
+#[cfg(feature = "pipeline")]
 impl Job<'_> {
     fn check_cancel(&self) -> Result<()> {
         if self.cancel.load(Ordering::Relaxed) {
@@ -326,131 +406,123 @@ impl Job<'_> {
         Ok(())
     }
 
-    fn movies(&mut self, list: &[(String, Extent)], root: &Path) -> Result<Value> {
+    fn movies(&mut self, list: &[(String, Extent)], root: &Path, top: &Path) -> Result<Value> {
         let mut list: Vec<_> = list.iter().collect();
         list.sort_by_key(|(_, e)| e.sector);
         let (mut written, mut kept, mut bytes) = (0usize, 0usize, 0u64);
+        let mut folders = BTreeSet::new();
         let mut buf = vec![0u8; COPY_CHUNK];
-        for (path, extent) in list {
-            self.check_cancel()?;
-            let rel = safe_relative(path).with_context(|| format!("unusable movie path {path:?}"))?;
-            let dest = root.join(rel);
-            let size = extent.size as u64;
-            let have = fs::metadata(&dest).ok().filter(|m| m.is_file()).map(|m| m.len());
-            if self.resume && have == Some(size) {
-                kept += 1;
-            } else {
-                fs::create_dir_all(dest.parent().context("movie path has a parent")?)?;
-                let mut tmp_name = dest.file_name().context("movie has a name")?.to_os_string();
-                tmp_name.push(".partial");
-                let tmp = dest.with_file_name(tmp_name);
-                let mut r = self.disc.reader(*extent)?;
-                let mut f = File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
-                let base = self.p.bytes_done;
-                let mut left = extent.size as usize;
-                while left > 0 {
-                    if self.cancel.load(Ordering::Relaxed) {
-                        drop(f);
-                        let _ = fs::remove_file(&tmp);
-                        return Err(anyhow::Error::new(Cancelled));
-                    }
-                    let n = left.min(COPY_CHUNK);
-                    r.read_exact(&mut buf[..n])?;
-                    f.write_all(&buf[..n]).with_context(|| format!("writing {}", tmp.display()))?;
-                    left -= n;
-                    self.p.bytes_done = base + (extent.size as usize - left) as u64;
-                    (self.progress)(&self.p);
+        ssx_files::committing(COMMIT_THREADS, |commits| -> Result<()> {
+            for (path, extent) in list {
+                self.check_cancel()?;
+                let rel = safe_relative(path).with_context(|| format!("unusable movie path {path:?}"))?;
+                let dest = root.join(rel);
+                let size = extent.size as u64;
+                let have = fs::metadata(&dest).ok().filter(|m| m.is_file()).map(|m| m.len());
+                if self.resume && have == Some(size) {
+                    kept += 1;
+                } else {
+                    let dir = dest.parent().context("movie path has a parent")?;
+                    fs::create_dir_all(dir)?;
+                    let mut r = self.disc.reader(*extent)?;
+                    let mut job = Progressing { cancel: self.cancel, p: &mut self.p, progress: &mut *self.progress };
+                    let base = job.p.bytes_done;
+                    let file = ssx_files::prepare_with(&dest, &MEMBER, |f| {
+                        copy_chunks(&mut r, f, extent.size as usize, &mut buf, &mut job, &dest)
+                    })?;
+                    commits.commit(file)?;
+                    folders.insert(dir.to_path_buf());
+                    self.p.bytes_done = base;
+                    written += 1;
+                    bytes += size;
                 }
-                drop(f);
-                fs::rename(&tmp, &dest)?;
-                self.p.bytes_done = base;
-                written += 1;
-                bytes += size;
+                self.p.files_done += 1;
+                self.p.bytes_done += size;
+                (self.progress)(&self.p);
             }
-            self.p.files_done += 1;
-            self.p.bytes_done += size;
-            (self.progress)(&self.p);
-        }
+            Ok(())
+        })?;
+        sync_folders(top, &folders)?;
         self.summary.movies_written += written;
         self.summary.movies_kept += kept;
         self.summary.bytes_written += bytes;
         Ok(json!({ "files": written + kept, "written": written, "kept": kept, "bytes": bytes }))
     }
 
-    fn archive(&mut self, name: &str, extent: Extent, big: &BigArchive, root: &Path) -> Result<Value> {
+    fn archive(&mut self, name: &str, extent: Extent, big: &BigArchive, root: &Path, top: &Path) -> Result<Value> {
         let mut entries: Vec<_> = big.entries.iter().collect();
         entries.sort_by_key(|e| e.offset);
         let (mut written, mut kept, mut bytes) = (0usize, 0usize, 0u64);
+        let mut folders = BTreeSet::new();
         let mut failures = Vec::new();
         let mut buf = vec![0u8; COPY_CHUNK];
-        for e in entries {
-            self.check_cancel()?;
-            let path = e.path();
-            if e.offset + e.size as u64 > extent.size as u64 {
-                bail!("{name}.big: {path} ends past the archive");
-            }
-            let rel = safe_relative(&path).with_context(|| format!("{name}.big: unusable member path {path:?}"))?;
-            let dest = root.join(rel);
-            let mut r = self.disc.reader(extent)?;
-            r.seek(SeekFrom::Start(e.offset))?;
-            let mut head = vec![0u8; (e.size as usize).min(28)];
-            r.read_exact(&mut head)?;
-            let container = chunk::detect(&head).is_some();
-            let size = if container {
-                chunk::read_header(&head).ok().map(|h| h.full_size as u64)
-            } else {
-                Some(e.size as u64)
-            };
-            let have = fs::metadata(&dest).ok().filter(|m| m.is_file()).map(|m| m.len());
-            if self.resume && size.is_some() && have == size {
-                kept += 1;
-            } else {
-                fs::create_dir_all(dest.parent().context("member path has a parent")?)?;
-                let mut tmp_name = dest.file_name().context("member has a name")?.to_os_string();
-                tmp_name.push(".partial");
-                let tmp = dest.with_file_name(tmp_name);
-                r.seek(SeekFrom::Start(e.offset))?;
-                if container {
-                    let mut stored = vec![0u8; e.size as usize];
-                    r.read_exact(&mut stored)?;
-                    match chunk::decompress(&stored) {
-                        Ok(data) => {
-                            fs::write(&tmp, &data).with_context(|| format!("writing {}", tmp.display()))?;
-                            fs::rename(&tmp, &dest)?;
-                            written += 1;
-                            bytes += data.len() as u64;
-                        }
-                        Err(err) => failures.push(format!("{path}: {err}")),
-                    }
-                } else {
-                    let mut f = File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
-                    let base = self.p.bytes_done;
-                    let mut left = e.size as usize;
-                    while left > 0 {
-                        if self.cancel.load(Ordering::Relaxed) {
-                            drop(f);
-                            let _ = fs::remove_file(&tmp);
-                            return Err(anyhow::Error::new(Cancelled));
-                        }
-                        let n = left.min(COPY_CHUNK);
-                        r.read_exact(&mut buf[..n])?;
-                        f.write_all(&buf[..n]).with_context(|| format!("writing {}", tmp.display()))?;
-                        left -= n;
-                        self.p.bytes_done = base + (e.size as usize - left) as u64;
-                        (self.progress)(&self.p);
-                    }
-                    drop(f);
-                    fs::rename(&tmp, &dest)?;
-                    self.p.bytes_done = base;
-                    written += 1;
-                    bytes += e.size as u64;
+        let mut seen = BTreeSet::new();
+        ssx_files::committing(COMMIT_THREADS, |commits| -> Result<()> {
+            for e in entries {
+                self.check_cancel()?;
+                let path = e.path();
+                if e.offset + e.size as u64 > extent.size as u64 {
+                    bail!("{name}.big: {path} ends past the archive");
                 }
+                if !seen.insert(path.to_ascii_lowercase()) {
+                    bail!("{name}.big: {path} is listed twice");
+                }
+                let rel = safe_relative(&path).with_context(|| format!("{name}.big: unusable member path {path:?}"))?;
+                let dest = root.join(rel);
+                let mut r = self.disc.reader(extent)?;
+                r.seek(SeekFrom::Start(e.offset))?;
+                let mut head = vec![0u8; (e.size as usize).min(28)];
+                r.read_exact(&mut head)?;
+                let container = chunk::detect(&head).is_some();
+                let size = if container {
+                    chunk::read_header(&head).ok().map(|h| h.full_size as u64)
+                } else {
+                    Some(e.size as u64)
+                };
+                let have = fs::metadata(&dest).ok().filter(|m| m.is_file()).map(|m| m.len());
+                if self.resume && size.is_some() && have == size {
+                    kept += 1;
+                } else {
+                    let dir = dest.parent().context("member path has a parent")?;
+                    fs::create_dir_all(dir)?;
+                    r.seek(SeekFrom::Start(e.offset))?;
+                    if container {
+                        let mut stored = vec![0u8; e.size as usize];
+                        r.read_exact(&mut stored)?;
+                        match chunk::decompress(&stored) {
+                            Ok(data) => {
+                                let file = ssx_files::prepare_with(&dest, &MEMBER, |f| {
+                                    f.write_all(&data).with_context(|| format!("writing {}", dest.display()))
+                                })?;
+                                commits.commit(file)?;
+                                folders.insert(dir.to_path_buf());
+                                written += 1;
+                                bytes += data.len() as u64;
+                            }
+                            Err(err) => failures.push(format!("{path}: {err}")),
+                        }
+                    } else {
+                        let mut job =
+                            Progressing { cancel: self.cancel, p: &mut self.p, progress: &mut *self.progress };
+                        let base = job.p.bytes_done;
+                        let file = ssx_files::prepare_with(&dest, &MEMBER, |f| {
+                            copy_chunks(&mut r, f, e.size as usize, &mut buf, &mut job, &dest)
+                        })?;
+                        commits.commit(file)?;
+                        folders.insert(dir.to_path_buf());
+                        self.p.bytes_done = base;
+                        written += 1;
+                        bytes += e.size as u64;
+                    }
+                }
+                self.p.files_done += 1;
+                self.p.bytes_done += e.size as u64;
+                self.p.failed = self.summary.failures.len() + failures.len();
+                (self.progress)(&self.p);
             }
-            self.p.files_done += 1;
-            self.p.bytes_done += e.size as u64;
-            self.p.failed = self.summary.failures.len() + failures.len();
-            (self.progress)(&self.p);
-        }
+            Ok(())
+        })?;
+        sync_folders(top, &folders)?;
         self.summary.members_written += written;
         self.summary.members_kept += kept;
         self.summary.bytes_written += bytes;
@@ -473,6 +545,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "pipeline")]
     #[test]
     fn an_older_markers_folder_needs_the_update() {
         let dir = std::env::temp_dir().join(format!("ssx-setup-marker-{}", std::process::id()));

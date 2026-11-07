@@ -2,9 +2,12 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
-use bevy::prelude::*;
-use ssx_assets::track_objects::asset_file;
-use ssx_assets::vault_db::{fnv1, single, with_track_db};
+use bevy::prelude::{
+    App, Assets, Capsule3d, ChildOf, Color, Commands, Component, Cuboid, Image, IntoScheduleConfigs, Mesh, Mesh3d,
+    MeshMaterial3d, Name, Quat, Res, ResMut, Resource, StandardMaterial, Transform, Vec3, Visibility, World, default,
+    info, resource_exists, warn,
+};
+use ssx_assets::vault_db::{fnv1, single};
 use ssx_formats::attrib::Value;
 
 use crate::render::lighting::GameLighting;
@@ -46,8 +49,8 @@ impl LoadedBoard {
     }
 }
 
-pub fn load_board(big_root: &Path, track: &str) -> Result<LoadedBoard> {
-    let (geom, material) = with_track_db(big_root, track, |db| {
+pub fn load_board(big_root: &Path, track: Option<&str>) -> Result<LoadedBoard> {
+    let (geom, material) = ssx_assets::vault_db::with_level_db(big_root, track, |db| {
         let fields = db.fields(fnv1("ge_mesh"), fnv1(BOARD_MESH))?;
         let reference = |name: &str| {
             fields
@@ -63,8 +66,12 @@ pub fn load_board(big_root: &Path, track: &str) -> Result<LoadedBoard> {
         let m = reference("Material")?;
         Ok((geom, db.material(m.class, m.collection)?))
     })?;
-    let path = asset_file(big_root, &geom).with_context(|| format!("{geom} not found under {}", big_root.display()))?;
-    let part = load_part(big_root, &path, &material)?;
+    let content = ssx_assets::content::GameContent::of(big_root);
+    let id = ssx_assets::content::models::model_id(&geom)
+        .filter(|id| content.has(id))
+        .with_context(|| format!("{geom} not found under {}", big_root.display()))?;
+    let def = content.material_for(&material, ssx_assets::content::resolve::MaterialUse::Riders);
+    let part = load_part(big_root, &id, ssx_assets::content::resolve::ModelUse::Rider, &def)?;
     let source = format!("{geom} ({}, {})", material.name, material.effect.as_deref().unwrap_or("no effect"));
     Ok(LoadedBoard { part, source })
 }
@@ -77,6 +84,10 @@ struct PendingRider {
 
 pub fn register(app: &mut App) {
     app.add_systems(crate::shell::level::LevelStartup, spawn_rider.run_if(resource_exists::<PendingRider>));
+    app.add_systems(
+        bevy::prelude::Update,
+        crate::rider::reload::follow.run_if(resource_exists::<crate::render::reload::ContentReload>),
+    );
     crate::shell::level::scoped::<PendingRider>(app);
     crate::shell::level::scoped::<RiderShading>(app);
     crate::shell::level::scoped::<crate::rider::skin::RiderRig>(app);
@@ -104,7 +115,8 @@ fn spawn_rider(
     let rider_light =
         lighting.as_deref().map_or_else(CharacterLightUniform::viewer_default, CharacterLightUniform::from_preset);
     let mut board_material = None;
-    let board_entity = match pending.board.take() {
+    let separate = pending.board.take().filter(|_| !pending.body.as_ref().is_some_and(|b| b.has_board_part()));
+    let board_entity = match separate {
         Some(board) => {
             info!("Ride: board {}", board.source);
             for problem in &board.part.problems {
@@ -124,6 +136,7 @@ fn spawn_rider(
             ));
             Some((entity.id(), true))
         }
+        None if pending.body.as_ref().is_some_and(|b| b.has_board_part()) => None,
         None => {
             let id = commands
                 .spawn((

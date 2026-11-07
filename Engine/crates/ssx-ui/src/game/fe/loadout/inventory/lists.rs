@@ -29,7 +29,21 @@ impl Inventory {
             let icon = |k: u32| db.descriptions.iter().find(|d| d.key == k).map(|d| d.icon.clone()).unwrap_or_default();
             u.asset = icon(rec.descriptions[0]);
             u.secondary = icon(rec.descriptions[1]);
-            if let Some(r) = db.riders.iter().find(|r| r.key == rec.descriptions[0]) {
+            let package_portrait = db
+                .riders
+                .iter()
+                .find(|r| r.key == rec.descriptions[0])
+                .and_then(|r| r.content.as_ref())
+                .and_then(|c| c.portrait.as_ref())
+                .filter(|p| p.namespace() != ssx_content::BASE_NAMESPACE)
+                .and_then(ssx_assets::content::textures::ui_path_of);
+            // TODO(guess): a package's rider shows its one portrait where the disc composes the locked picture or the
+            // rider in its last suit (jacket + pants pictures by the suit's look ids, 0x8248D2D0…0x8248D5D0); a package
+            // has no per-suit pictures, and no record field names them yet.
+            if let Some(path) = package_portrait {
+                u.asset = path;
+                u.secondary.clear();
+            } else if let Some(r) = db.riders.iter().find(|r| r.key == rec.descriptions[0]) {
                 if !rec.owned {
                     u.asset = format!("{PORTRAIT_LOCKED}{}.dds", r.portrait);
                 } else if let Some((suit, src)) = self.rider_suit(db, profile, r.key) {
@@ -129,7 +143,7 @@ impl Inventory {
             return db
                 .riders
                 .iter()
-                .filter(|r| r.unk_349e965b || owned(r.key))
+                .filter(|r| r.default || owned(r.key))
                 .filter(|r| forced.is_none_or(|f| f == r.key))
                 .filter(|r| !drop.is_some_and(|d| d.rider_forced) || drop.and_then(|d| d.forced(RIDER)) == Some(r.key))
                 .map(|r| r.key)

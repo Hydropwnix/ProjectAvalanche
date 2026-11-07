@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -9,22 +9,26 @@ use bevy::log::warn;
 use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension,
 };
-use ssx_assets::texture::{self, DxnExport};
-use ssx_formats::xpr::XprFile;
+use ssx_assets::content::GameContent;
+use ssx_assets::texture;
+use ssx_content::texture::{BlockChain, BlockFormat, Want};
+use ssx_content::{ContentId, Layer};
+
+use crate::render::reload::Recipe;
 
 pub struct MipChain {
     pub levels: Vec<texture::Image>,
     pub blocks: Option<BlockChain>,
-}
-
-pub struct BlockChain {
-    pub format: ssx_formats::xenos::TextureFormat,
-    pub levels: Vec<texture::BlockLevel>,
+    pub origin: Option<(ContentId, Layer)>,
 }
 
 impl MipChain {
     pub fn from_levels(levels: Vec<texture::Image>) -> Self {
-        Self { levels, blocks: None }
+        Self { levels, blocks: None, origin: None }
+    }
+
+    pub fn is_mod(&self) -> bool {
+        self.origin.as_ref().is_some_and(|(_, l)| *l > Layer::Port)
     }
 }
 
@@ -33,7 +37,7 @@ pub static DECODED_BYTES: AtomicU64 = AtomicU64::new(0);
 
 static BLOCK_TEXTURES: AtomicBool = AtomicBool::new(true);
 
-fn block_textures() -> bool {
+pub(crate) fn block_textures() -> bool {
     static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let off = *OFF
         .get_or_init(|| std::env::var("SSX_BC_TEXTURES").is_ok_and(|v| matches!(v.as_str(), "off" | "0" | "false")));
@@ -71,16 +75,17 @@ fn decode_blocks(
 }
 
 fn image_to_rgba8(image: &mut Image) -> Result<()> {
-    use ssx_formats::xenos::TextureFormat as X;
     let desc = &image.texture_descriptor;
-    let (xenos, format) = match desc.format {
-        TextureFormat::Bc1RgbaUnorm => (X::Dxt1, TextureFormat::Rgba8Unorm),
-        TextureFormat::Bc2RgbaUnorm => (X::Dxt23, TextureFormat::Rgba8Unorm),
-        TextureFormat::Bc3RgbaUnorm => (X::Dxt45, TextureFormat::Rgba8Unorm),
-        TextureFormat::Bc5RgUnorm => (X::Dxn, TextureFormat::Rgba8Unorm),
-        TextureFormat::Bc1RgbaUnormSrgb => (X::Dxt1, TextureFormat::Rgba8UnormSrgb),
-        TextureFormat::Bc2RgbaUnormSrgb => (X::Dxt23, TextureFormat::Rgba8UnormSrgb),
-        TextureFormat::Bc3RgbaUnormSrgb => (X::Dxt45, TextureFormat::Rgba8UnormSrgb),
+    let (blocks, format) = match desc.format {
+        TextureFormat::Bc1RgbaUnorm => (BlockFormat::Bc1, TextureFormat::Rgba8Unorm),
+        TextureFormat::Bc2RgbaUnorm => (BlockFormat::Bc2, TextureFormat::Rgba8Unorm),
+        TextureFormat::Bc3RgbaUnorm => (BlockFormat::Bc3, TextureFormat::Rgba8Unorm),
+        TextureFormat::Bc4RUnorm => (BlockFormat::Bc4, TextureFormat::Rgba8Unorm),
+        TextureFormat::Bc5RgUnorm => (BlockFormat::Bc5, TextureFormat::Rgba8Unorm),
+        TextureFormat::Bc7RgbaUnorm => (BlockFormat::Bc7, TextureFormat::Rgba8Unorm),
+        TextureFormat::Bc1RgbaUnormSrgb => (BlockFormat::Bc1, TextureFormat::Rgba8UnormSrgb),
+        TextureFormat::Bc2RgbaUnormSrgb => (BlockFormat::Bc2, TextureFormat::Rgba8UnormSrgb),
+        TextureFormat::Bc3RgbaUnormSrgb => (BlockFormat::Bc3, TextureFormat::Rgba8UnormSrgb),
         _ => return Ok(()),
     };
     let (w, h, layers, mips) =
@@ -91,12 +96,10 @@ fn image_to_rgba8(image: &mut Image) -> Result<()> {
     for _ in 0..layers {
         for m in 0..mips {
             let (lw, lh) = ((w >> m).max(1), (h >> m).max(1));
-            let [bw, bh] = xenos.blocks(lw, lh);
-            let n = (bw * bh * xenos.bytes_per_block()) as usize;
-            let blocks = data.get(at..at + n).context("block data shorter than its levels")?.to_vec();
+            let n = blocks.level_bytes(lw, lh) as usize;
+            let level = data.get(at..at + n).context("block data shorter than its levels")?;
             at += n;
-            let level = texture::BlockLevel { width: lw, height: lh, blocks };
-            out.extend_from_slice(&texture::decode_block_level(xenos, &level)?.rgba);
+            out.extend(ssx_content::texture::bc::decode_level(blocks, level, lw, lh).map_err(anyhow::Error::msg)?);
         }
     }
     image.data = Some(out);
@@ -110,16 +113,17 @@ fn count_bytes(format: TextureFormat, bytes: usize) {
 }
 
 // TODO(guess): the host GPU's block decode stands in for Xenos' texture unit (the disc's DXT1 / DXT2-3 / DXT4-5 / DXN blocks are BC1 / BC2 / BC3 / BC5 byte for byte; palette rounding at most one code value apart, `bc_check`: on the development machine's GPU 75–85 % of the disc's channel values equal the CPU decoder's, the rest one code value off); settle: a console capture of decoded DXT texels.
-fn block_format(format: ssx_formats::xenos::TextureFormat, texels: Texels) -> Option<TextureFormat> {
-    use ssx_formats::xenos::TextureFormat as X;
+fn block_format(format: BlockFormat, texels: Texels) -> Option<TextureFormat> {
     match (texels, format) {
-        (Texels::Linear, X::Dxt1) => Some(TextureFormat::Bc1RgbaUnorm),
-        (Texels::Linear, X::Dxt23) => Some(TextureFormat::Bc2RgbaUnorm),
-        (Texels::Linear, X::Dxt45) => Some(TextureFormat::Bc3RgbaUnorm),
-        (Texels::Linear | Texels::NormalXy, X::Dxn) => Some(TextureFormat::Bc5RgUnorm),
-        (Texels::ColourSrgb, X::Dxt1) => Some(TextureFormat::Bc1RgbaUnormSrgb),
-        (Texels::ColourSrgb, X::Dxt23) => Some(TextureFormat::Bc2RgbaUnormSrgb),
-        (Texels::ColourSrgb, X::Dxt45) => Some(TextureFormat::Bc3RgbaUnormSrgb),
+        (Texels::Linear, BlockFormat::Bc1) => Some(TextureFormat::Bc1RgbaUnorm),
+        (Texels::Linear, BlockFormat::Bc2) => Some(TextureFormat::Bc2RgbaUnorm),
+        (Texels::Linear, BlockFormat::Bc3) => Some(TextureFormat::Bc3RgbaUnorm),
+        (Texels::Linear, BlockFormat::Bc4) => Some(TextureFormat::Bc4RUnorm),
+        (Texels::Linear | Texels::NormalXy, BlockFormat::Bc5) => Some(TextureFormat::Bc5RgUnorm),
+        (Texels::Linear, BlockFormat::Bc7) => Some(TextureFormat::Bc7RgbaUnorm),
+        (Texels::ColourSrgb, BlockFormat::Bc1) => Some(TextureFormat::Bc1RgbaUnormSrgb),
+        (Texels::ColourSrgb, BlockFormat::Bc2) => Some(TextureFormat::Bc2RgbaUnormSrgb),
+        (Texels::ColourSrgb, BlockFormat::Bc3) => Some(TextureFormat::Bc3RgbaUnormSrgb),
         _ => None,
     }
 }
@@ -145,39 +149,199 @@ fn block_upload(chains: &[(&MipChain, usize)], mips: usize, texels: Texels) -> O
             if (level.width, level.height) != (rgba.width, rgba.height) {
                 return None;
             }
-            data.extend_from_slice(&level.blocks);
+            data.extend_from_slice(&level.data);
         }
     }
     Some((format, data))
 }
 
-pub fn decode_xpr(path: &Path) -> Result<MipChain> {
-    let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    let xpr = XprFile::parse(&data).with_context(|| format!("parsing {}", path.display()))?;
-    let res = xpr.resources.first().with_context(|| format!("{}: no resource", path.display()))?;
-    let mut levels = texture::decode_resource(&data, &xpr, res, true, DxnExport::Raw)
-        .with_context(|| format!("decoding {}", path.display()))?;
-    levels.retain(|l| l.face == 0);
-    levels.sort_by_key(|l| l.level);
-    ensure!(!levels.is_empty(), "{}: no levels", path.display());
-    let blocks = texture::resource_blocks(&data, &xpr, res)
-        .with_context(|| format!("blocks of {}", path.display()))?
-        .map(|(format, levels)| BlockChain { format, levels });
-    Ok(MipChain { levels: levels.into_iter().map(|l| l.image).collect(), blocks })
+pub fn load_chain(big_root: &Path, id: &ContentId, want: &Want) -> Result<MipChain> {
+    let found = GameContent::of(big_root).texture_for_gpu(id, want, block_textures())?;
+    let t = found.texture;
+    let levels: Vec<texture::Image> = t
+        .levels
+        .into_iter()
+        .filter_map(|l| {
+            let (width, height) = (l.width, l.height);
+            l.images.into_iter().next().map(|rgba| texture::Image { width, height, rgba })
+        })
+        .collect();
+    ensure!(!levels.is_empty(), "{id}: no levels");
+    Ok(MipChain { levels, blocks: t.blocks, origin: Some((id.clone(), found.layer)) })
 }
 
-pub fn decode_all<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Result<HashMap<PathBuf, MipChain>> {
-    let mut unique: Vec<&Path> = paths.into_iter().collect();
+pub fn model_image_chain(
+    big_root: &Path,
+    model: &ContentId,
+    image: usize,
+    kind: ssx_content::texture::TextureKind,
+    want: &Want,
+) -> Result<MipChain> {
+    let found = GameContent::of(big_root).model_image_for_gpu(model, image, kind, want, block_textures())?;
+    let t = found.texture;
+    let levels: Vec<texture::Image> = t
+        .levels
+        .into_iter()
+        .filter_map(|l| {
+            let (width, height) = (l.width, l.height);
+            l.images.into_iter().next().map(|rgba| texture::Image { width, height, rgba })
+        })
+        .collect();
+    ensure!(!levels.is_empty(), "{model} image {image}: no levels");
+    Ok(MipChain { levels, blocks: t.blocks, origin: Some((model.clone(), found.layer)) })
+}
+
+pub fn rgba_chain(big_root: &Path, id: &ContentId, want: &Want) -> Result<MipChain> {
+    let found = GameContent::of(big_root).texture(id, want)?;
+    let t = found.texture;
+    let levels: Vec<texture::Image> = t
+        .levels
+        .into_iter()
+        .filter_map(|l| {
+            let (width, height) = (l.width, l.height);
+            l.images.into_iter().next().map(|rgba| texture::Image { width, height, rgba })
+        })
+        .collect();
+    ensure!(!levels.is_empty(), "{id}: no levels");
+    Ok(MipChain { levels, blocks: t.blocks, origin: Some((id.clone(), found.layer)) })
+}
+
+pub fn decode_all(
+    big_root: &Path,
+    items: impl IntoIterator<Item = (ContentId, Want)>,
+) -> Result<HashMap<(ContentId, Want), MipChain>> {
+    let mut unique: Vec<(ContentId, Want)> = items.into_iter().collect();
     unique.sort();
     unique.dedup();
     std::thread::scope(|scope| {
-        let jobs: Vec<_> = unique.iter().map(|&p| (p, scope.spawn(move || decode_xpr(p)))).collect();
+        let jobs: Vec<_> =
+            unique.iter().map(|item| (item, scope.spawn(move || load_chain(big_root, &item.0, &item.1)))).collect();
         jobs.into_iter()
-            .map(|(p, job)| {
-                let chain = job.join().map_err(|_| anyhow::anyhow!("decoder thread panicked on {}", p.display()))??;
-                Ok((p.to_path_buf(), chain))
+            .map(|(item, job)| {
+                let chain = job.join().map_err(|_| anyhow::anyhow!("decoder thread panicked on {}", item.0))??;
+                Ok((item.clone(), chain))
             })
             .collect()
+    })
+}
+
+pub fn fit_layers(big_root: &Path, layers: &[&MipChain], want: &Want) -> Vec<Option<MipChain>> {
+    let base = layers.iter().filter(|c| !c.is_mod()).map(|c| c.levels[0].width).min();
+    let content = GameContent::of(big_root);
+    layers
+        .iter()
+        .map(|chain| {
+            let base = base?;
+            if !chain.is_mod() || chain.levels.iter().any(|l| l.width == base) {
+                return None;
+            }
+            let (id, _) = chain.origin.clone()?;
+            let w = chain.levels[0].width;
+            match content.base_texture(&id, want) {
+                Ok(found) => {
+                    warn!("content: {id} from a mod is {w} wide, without the {base}-wide level its array stacks at: the disc's is used");
+                    let levels = found
+                        .texture
+                        .levels
+                        .into_iter()
+                        .filter_map(|l| {
+                            let (width, height) = (l.width, l.height);
+                            l.images.into_iter().next().map(|rgba| texture::Image { width, height, rgba })
+                        })
+                        .collect();
+                    Some(MipChain { levels, blocks: found.texture.blocks, origin: Some((id, Layer::Base)) })
+                }
+                Err(e) => {
+                    warn!("content: {id}: the disc's texture for its array: {e}");
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+pub fn plane_recipe(big_root: &Path, id: &ContentId, want: Want, texels: Texels, sampler: ImageSampler) -> Recipe {
+    let (root, one) = (big_root.to_path_buf(), id.clone());
+    Recipe::new(vec![id.clone()], move || Ok(texture_2d(&load_chain(&root, &one, &want)?, texels, sampler.clone())))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Origin {
+    Registry,
+    Package(String, ssx_content::Layer),
+    Base,
+}
+
+pub fn origin_chain(big_root: &Path, id: &ContentId, origin: &Origin, want: &Want) -> Result<MipChain> {
+    let content = GameContent::of(big_root);
+    let found = match origin {
+        Origin::Registry => return load_chain(big_root, id, want),
+        Origin::Package(source, layer) => content.texture_for_gpu_from(id, source, *layer, want, block_textures())?,
+        Origin::Base => content.base_texture(id, want)?,
+    };
+    let t = found.texture;
+    let levels: Vec<texture::Image> = t
+        .levels
+        .into_iter()
+        .filter_map(|l| {
+            let (width, height) = (l.width, l.height);
+            l.images.into_iter().next().map(|rgba| texture::Image { width, height, rgba })
+        })
+        .collect();
+    ensure!(!levels.is_empty(), "{id}: no levels");
+    Ok(MipChain { levels, blocks: t.blocks, origin: Some((id.clone(), found.layer)) })
+}
+
+pub fn source_recipe(
+    big_root: &Path,
+    src: &ssx_content::material::TextureRef,
+    origin: &Origin,
+    want: Want,
+    texels: Texels,
+    sampler: ImageSampler,
+) -> Option<Recipe> {
+    use ssx_content::material::TextureRef;
+    match src {
+        TextureRef::Id(id) if *origin == Origin::Registry => Some(plane_recipe(big_root, id, want, texels, sampler)),
+        TextureRef::Id(id) => {
+            let (root, one, origin) = (big_root.to_path_buf(), id.clone(), origin.clone());
+            Some(Recipe::new(vec![id.clone()], move || {
+                Ok(texture_2d(&origin_chain(&root, &one, &origin, &want)?, texels, sampler.clone()))
+            }))
+        }
+        TextureRef::ModelImage { model, image, kind } => {
+            let (root, model, image, kind) = (big_root.to_path_buf(), model.clone(), *image, *kind);
+            let ids = vec![model.clone()];
+            Some(Recipe::new(ids, move || {
+                Ok(texture_2d(&model_image_chain(&root, &model, image, kind, &want)?, texels, sampler.clone()))
+            }))
+        }
+        TextureRef::Path(_) => None,
+    }
+}
+
+pub fn source_chain(
+    big_root: &Path,
+    src: &ssx_content::material::TextureRef,
+    origin: &Origin,
+    want: &Want,
+) -> Result<MipChain> {
+    use ssx_content::material::TextureRef;
+    match src {
+        TextureRef::Id(id) => origin_chain(big_root, id, origin, want),
+        TextureRef::ModelImage { model, image, kind } => model_image_chain(big_root, model, *image, *kind, want),
+        TextureRef::Path(p) => anyhow::bail!("{p:?} is not a texture id"),
+    }
+}
+
+pub fn array_recipe(big_root: &Path, ids: &[ContentId], want: Want, texels: Texels, sampler: ImageSampler) -> Recipe {
+    let (root, all) = (big_root.to_path_buf(), ids.to_vec());
+    Recipe::new(ids.to_vec(), move || {
+        let chains = all.iter().map(|id| load_chain(&root, id, &want)).collect::<Result<Vec<_>>>()?;
+        let layers: Vec<&MipChain> = chains.iter().collect();
+        let fitted = fit_layers(&root, &layers, &want);
+        let layers: Vec<&MipChain> = layers.iter().zip(&fitted).map(|(c, f)| f.as_ref().unwrap_or(c)).collect();
+        array_texture(&layers, texels, sampler.clone())
     })
 }
 

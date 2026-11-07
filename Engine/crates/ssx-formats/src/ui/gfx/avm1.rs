@@ -1,4 +1,5 @@
 use super::bits::SwfReader;
+use super::limits::Budget;
 use crate::{Error, Result};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -261,9 +262,17 @@ fn read_data(op: u8, body: &[u8]) -> Result<ActionData> {
 }
 
 pub fn decode(code: &[u8]) -> Result<Vec<Action>> {
+    decode_in(code, &Budget::unlimited())
+}
+
+pub fn decode_in(code: &[u8], budget: &Budget) -> Result<Vec<Action>> {
+    if u32::try_from(code.len()).is_err() {
+        return Err(Error::invalid(format!("an action block of {} bytes", code.len())));
+    }
     let mut r = SwfReader::new(code);
     let mut out = Vec::new();
     while !r.at_end() {
+        budget.actions(1)?;
         let offset = r.pos() as u32;
         let op = r.u8()?;
         if op_name(op).is_none() {
@@ -275,6 +284,13 @@ pub fn decode(code: &[u8]) -> Result<Vec<Action>> {
         } else {
             ActionData::None
         };
+        budget.actions(match &data {
+            ActionData::ConstantPool(p) => p.len() as u64,
+            ActionData::Push(v) => v.len() as u64,
+            ActionData::DefineFunction { params, .. } => params.len() as u64,
+            ActionData::DefineFunction2 { params, .. } => params.len() as u64,
+            _ => 0,
+        })?;
         out.push(Action { offset, op, data });
     }
     Ok(out)

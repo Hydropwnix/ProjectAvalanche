@@ -105,6 +105,11 @@ impl Ride {
             self.steps = 0;
             self.distance = 0.0;
             self.session.reset();
+            if let Some(m) = self.map.as_mut() {
+                m.gates.reset(&mut self.session);
+                m.player = m.player.new_run();
+                m.finished = false;
+            }
             self.outro = None;
             self.rewinding = false;
             self.auto_rewind = AutoRewind::default();
@@ -118,10 +123,28 @@ impl Ride {
             (self.grind_since, self.grind_ended) = (None, None);
             self.a_lock = PadLock::default();
             self.messages_logged = 0.0;
+            self.go_step = None;
+            if let Some(pb) = self.pose_blocks.as_mut() {
+                pb.respawned();
+            }
         }
     }
 
     pub(super) fn advance(&mut self, mut anim: Option<&mut RiderAnimation>) {
+        if let Some(i) = self.state.start.as_mut().and_then(|l| l.intro.as_mut())
+            && i.held()
+        {
+            if let super::live::StartGate::Go { .. } = self.start_gate {
+                i.round_go();
+                info!(
+                    "Ride step {}: the round's start: the GO given to the held intro (its last scene from the next step)",
+                    self.steps + 1
+                );
+            }
+            self.steps += 1;
+            self.prev = self.curr;
+            return;
+        }
         let (before, was_air) = (self.state.position, self.state.state != RideState::Riding);
         let was_janked = self.state.janked.janked;
         let t0 = Instant::now();
@@ -130,10 +153,8 @@ impl Ride {
         {
             if !self.intro_graph {
                 self.intro_graph = true;
-                let first = self.intro.as_deref().and_then(|i| i.cabin_view(0));
-                self.cabin_seen = first.as_ref().map(|_| 0);
-                let nis = first.as_ref().or(self.intro.as_deref().map(|i| &i.nis));
-                if let Err(e) = a.graph_mut().set_intro(&self.big_root, nis) {
+                self.cabin_seen = self.intro.as_deref().filter(|i| !i.nis.cabin.is_empty()).map(|_| 0);
+                if let Err(e) = a.graph_mut().set_intro(&self.big_root, self.intro.as_deref().map(|i| &i.nis)) {
                     warn!("intro: the rider's NIS graph failed ({e:#}); the level start poses nothing");
                 }
             }
@@ -166,8 +187,43 @@ impl Ride {
             }
         }
         let (input, tricks) = self.locked_controls();
+        let at_start = self.state.start.is_some();
+        let gate = if at_start { self.start_gate } else { super::live::StartGate::Free };
+        let released =
+            || (ssx_physics::rider::Input::default(), ssx_physics::rider::TrickInput::default(), RewindPad::default());
+        let (input, tricks, pad) = match gate {
+            super::live::StartGate::Hold => {
+                (self.state.grind.pad_l2, self.state.wingsuit.pad_r1) = (false, false);
+                released()
+            }
+            super::live::StartGate::Go { pressed } => {
+                (self.state.grind.pad_l2, self.state.wingsuit.pad_r1) = (false, false);
+                let releasing = self
+                    .state
+                    .start
+                    .as_ref()
+                    .and_then(|l| l.intro.as_ref())
+                    .is_some_and(|i| i.round_hold() == ssx_physics::nis::RoundHold::Held { go: true });
+                if releasing {
+                    released()
+                } else {
+                    self.start_gate = super::live::StartGate::Go { pressed: !pressed };
+                    let (mut i, t, p) = released();
+                    i.jump = !pressed;
+                    (i, t, p)
+                }
+            }
+            super::live::StartGate::Free if self.pads_held || self.chat_held => {
+                (self.state.grind.pad_l2, self.state.wingsuit.pad_r1) = (false, false);
+                released()
+            }
+            super::live::StartGate::Free => (input, tricks, pad),
+        };
         let ready = |s: &RiderState| s.start.as_ref().and_then(|l| l.intro.as_ref()).is_some_and(|i| i.in_ready_loop());
+        let waiting =
+            |s: &RiderState| s.start.as_ref().is_some_and(|l| l.intro.as_ref().map_or(l.idle(), |i| i.waits_for_go()));
         let was_ready = ready(&self.state);
+        let was_waiting = waiting(&self.state);
         if let Some(h) = self.heli.as_mut() {
             let was = h.interaction.interact;
             self.session.heli_interaction(h, &mut self.state, &self.world, &tricks);
@@ -188,8 +244,69 @@ impl Ride {
                 );
             }
         }
-        let e = self.session.execute(&mut self.state, &self.world, &input, &tricks, self.r2, &pad, graph);
+        let (heli, world, steps) = (&mut self.heli, &self.world, self.steps);
+        let mut actors = |session: &mut ssx_physics::session::Session, state: &mut RiderState, dt: f32| {
+            let Some(h) = heli.as_mut() else { return };
+            let course = session.event.setup.course;
+            h.step(&ssx_physics::helicopter::HeliStep {
+                intro: state.start.as_ref().and_then(|l| l.intro.as_ref()),
+                dt,
+                time: (steps + 1) as f32 / SIM_HZ,
+                race_proper_started: session.flow.race_proper_started,
+                track_finished: session.flow.track_finished,
+                remaining: course.map(|c| (1.0 - session.event.progress) * (c.start_y - c.end_y)),
+                target: (state.traj, state.traj_velocity),
+            });
+            session.heli_physics_queries(h, world);
+        };
+        let held = self.pads_held || self.chat_held || gate != super::live::StartGate::Free;
+        let r2 = if held { 0.0 } else { self.r2 };
+        let e = self.session.execute_with(&mut self.state, &self.world, &input, &tricks, r2, &pad, graph, &mut actors);
         self.log_messages();
+        if let Some(m) = self.map.as_mut() {
+            let g = m.gates.update(&mut self.session, self.state.traj);
+            if let Some(k) = g.passed {
+                let ms = m.gates.times.last().copied().unwrap_or(0);
+                let opened = if g.opened { "; the finish opens" } else { "" };
+                info!(
+                    "Ride step {}: map gate {} of {} passed ({ms} ms){opened}",
+                    self.steps + 1,
+                    k + 1,
+                    m.gates.checkpoints.len()
+                );
+            }
+            if g.time_up {
+                info!("Ride step {}: the map's time limit ends the event", self.steps + 1);
+            }
+            if !m.finished {
+                m.player.hash(&self.state);
+                let (f, n) = (m.player.fingerprint, m.player.hashed);
+                if e.rider_dead.is_some() && e.was_alive {
+                    info!(
+                        "Ride step {}: map ride: the rider dies at {:.2}; fingerprint {f:016x} over {n} steps",
+                        self.steps + 1,
+                        self.state.traj
+                    );
+                }
+                if self.session.event.track_finished {
+                    m.finished = true;
+                    let ms = self.session.event.finish_ms.unwrap_or(0);
+                    info!(
+                        "Ride step {}: map ride: finish at {:.2}: {ms} ms on the event clock; fingerprint {f:016x} over \
+                         {n} steps",
+                        self.steps + 1,
+                        self.state.traj
+                    );
+                }
+            }
+        }
+        if was_waiting && !waiting(&self.state) {
+            self.go_step = Some(self.steps + 1);
+            if let super::live::StartGate::Go { .. } = self.start_gate {
+                info!("Ride step {}: the round's start: the GO taken", self.steps + 1);
+                self.start_gate = super::live::StartGate::Free;
+            }
+        }
         if was_ready && !ready(&self.state) {
             info!(
                 "Ride step {}: the ready loop ends (GO; this step's controls: A {}, the left stick {:.2} / {:.2})",
@@ -208,13 +325,7 @@ impl Ride {
             && i.cabin.map(|c| c.index) != self.cabin_seen
         {
             self.cabin_seen = i.cabin.map(|c| c.index);
-            let view = i.cabin.and_then(|c| i.assets.cabin_view(c.index));
             info!("Ride step {}: intro {} ({})", self.steps + 1, i.current().node, i.current().sequence);
-            if let Some(a) = anim.as_deref_mut()
-                && let Err(e) = a.graph_mut().set_intro(&self.big_root, Some(view.as_ref().unwrap_or(&i.assets.nis)))
-            {
-                warn!("intro: the rider's NIS graph failed ({e:#})");
-            }
         }
         if e.survive != ssx_physics::session::survive::SurviveStep::None
             && let Some(l) = self.session.survive.as_ref()
@@ -299,18 +410,6 @@ impl Ride {
             let w = &mut self.state.avalanche.switches;
             (w.tuning_set, w.carving_sensitivity, w.impact_sensitivity) = (set, k, k);
         }
-        if let Some(h) = &mut self.heli {
-            let course = self.session.event.setup.course;
-            h.step(&ssx_physics::helicopter::HeliStep {
-                intro: self.state.start.as_ref().and_then(|l| l.intro.as_ref()),
-                dt: e.dt,
-                time: (self.steps + 1) as f32 / SIM_HZ,
-                race_proper_started: self.session.flow.race_proper_started,
-                track_finished: self.session.flow.track_finished,
-                remaining: course.map(|c| (1.0 - self.session.event.progress) * (c.start_y - c.end_y)),
-                target: (self.state.traj, self.state.traj_velocity),
-            });
-        }
         if self.session.heli_jump.is_some() {
             let nodes = anim.as_deref().map(|a| a.graph().path());
             match self.session.heli_jump_update(&mut self.state, &self.world, self.heli.as_mut(), nodes.as_deref()) {
@@ -323,11 +422,9 @@ impl Ride {
                     if u.outro
                         && let Some(assets) = self.session.heli_jump.as_ref().and_then(|h| h.outro.clone())
                     {
-                        let first = assets.cabin_view(0);
-                        self.cabin_seen = first.as_ref().map(|_| 0);
+                        self.cabin_seen = (!assets.nis.cabin.is_empty()).then_some(0);
                         if let Some(a) = anim.as_deref_mut()
-                            && let Err(e) =
-                                a.graph_mut().set_intro(&self.big_root, Some(first.as_ref().unwrap_or(&assets.nis)))
+                            && let Err(e) = a.graph_mut().set_intro(&self.big_root, Some(&assets.nis))
                         {
                             warn!("heli jump: the rider's NIS graph failed ({e:#})");
                         }
@@ -402,6 +499,12 @@ impl Ride {
         self.step_ticks = e.dt;
         if let Some(a) = anim {
             a.after_step(&self.state);
+            if let Some(pb) = self.pose_blocks.as_mut()
+                && let Err(err) = pb.record(self.steps + 1, &self.state, a.graph(), a.posed().0, &e, r.active)
+                && pb.failures == 1
+            {
+                warn!("live: the pose block was not recorded: {err:#}");
+            }
         }
         self.rewinding = r.active;
         if self.state.score.grind_capture > 0.0 {

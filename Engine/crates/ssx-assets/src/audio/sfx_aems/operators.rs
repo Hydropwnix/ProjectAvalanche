@@ -219,7 +219,13 @@ impl Aems {
                         };
                         let params: Vec<(u8, i32)> =
                             (0..np).map(|k| (rb(s, st + 0x1C + 12 * k), rd(s, st + 0x24 + 12 * k))).collect();
-                        let voice = if entry.is_unused() { None } else { host.start(inst.bank, &entry, &params) };
+                        let choice = if entry.is_unused() { None } else { self.choose(inst, st as u32, &params) };
+                        let s = &mut inst.state;
+                        let voice = if entry.is_unused() {
+                            None
+                        } else {
+                            host.start(inst.bank, &entry, &params, choice.as_ref())
+                        };
                         wr(s, st + 8, voice.unwrap_or(0) as i32);
                         if voice.is_some() {
                             for k in 0..np {

@@ -60,6 +60,7 @@ pub struct Session {
     pub effects_fresh: bool,
     pub effects_from: usize,
     pub last_sim_dt_s: f32,
+    pub downwash: Option<crate::helicopter::downwash::Downwash>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -123,6 +124,7 @@ impl Session {
             effects_fresh: true,
             effects_from: 0,
             last_sim_dt_s: 0.0,
+            downwash: None,
         }
     }
 
@@ -177,6 +179,7 @@ impl Session {
             t.reset();
         }
         (self.head_pending, self.racer_end) = (true, [false; crate::event::MAX_RACERS]);
+        self.downwash = None;
     }
 
     pub fn pause_begin(&mut self) {
@@ -190,6 +193,16 @@ impl Session {
     pub fn paused_frame(&mut self, s: &mut RiderState, w: &World) -> EventUpdate {
         let rewinding = self.rewind_backwards;
         self.score_manager(s, w, self.last_sim_dt_s, rewinding, true)
+    }
+
+    pub fn update_live_racers(&mut self, now: f64, player: glam::Vec3) {
+        let Some(b) = self.bots.as_mut() else { return };
+        for k in b.update_live(now, player) {
+            if let Some(r) = self.event.racers.get_mut(k) {
+                *r = crate::event::RacerProgress::default();
+            }
+            self.racer_end[k] = false;
+        }
     }
 
     pub fn rewinding(&self) -> bool {

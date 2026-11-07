@@ -1,0 +1,1317 @@
+pub mod confirm_history;
+#[cfg(feature = "client_diagnostics")]
+pub mod diagnostics;
+pub mod message;
+pub mod server_mutate_ticks;
+
+use alloc::collections::VecDeque;
+
+use bevy::prelude::*;
+use bytes::{Buf, Bytes};
+use log::{Level, debug, error, log_enabled, trace};
+use postcard::experimental::max_size::MaxSize;
+
+use crate::{
+    postcard_utils,
+    prelude::*,
+    shared::{
+        backend::channels::{ClientChannel, ServerChannel},
+        replication::{
+            deferred_entity::{DeferredEntity, EntityScratch},
+            message_flags::{MutateFlags, UpdateFlags},
+            mutate_index::MutateIndex,
+            receive_markers::{EntityMarkers, ReceiveMarkers},
+            registry::{
+                ReplicationRegistry,
+                ctx::{BufferedSpawner, DespawnCtx, EntityBuffer, RemoveCtx, WriteCtx},
+            },
+            signature::SignatureMap,
+        },
+        server_entity_map::{EntityEntry, ServerEntityMap},
+    },
+};
+use confirm_history::{ConfirmHistory, EntityReplicated};
+// Project Avalanche patch (T12)
+use crate::shared::receive_error::{ReplicationLimits, ReplicationReceiveError};
+use server_mutate_ticks::{MutateTickReceived, ServerMutateTicks};
+
+/// Client functionality and replication receiving.
+///
+/// Can be disabled for server-only apps.
+pub struct ClientPlugin;
+
+impl Plugin for ClientPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<ClientMessages>()
+            .init_resource::<ClientStats>()
+            .init_resource::<ServerEntityMap>()
+            .init_resource::<ServerUpdateTick>()
+            .init_resource::<ServerMutateTicks>()
+            .init_resource::<BufferedUpdates>()
+            .init_resource::<BufferedMutations>()
+            .init_resource::<ReplicatedDespawns>()
+            .add_message::<EntityReplicated>()
+            .add_message::<MutateTickReceived>()
+            // Project Avalanche patch (T12)
+            .add_message::<ReplicationReceiveError>()
+            // Project Avalanche patch (T14)
+            .init_resource::<ReplicationLimits>()
+            .configure_sets(
+                PreUpdate,
+                (
+                    ClientSystems::ReceivePackets,
+                    ClientSystems::Receive,
+                    ClientSystems::Diagnostics,
+                )
+                    .chain(),
+            )
+            .configure_sets(
+                OnEnter(ClientState::Connected),
+                (ClientSystems::Receive, ClientSystems::Diagnostics).chain(),
+            )
+            .configure_sets(
+                PostUpdate,
+                (ClientSystems::Send, ClientSystems::SendPackets).chain(),
+            )
+            .add_observer(cleanup_storage)
+            .add_observer(cleanup_entity_map)
+            .add_systems(
+                PreUpdate,
+                receive_replication
+                    .in_set(ClientSystems::Receive)
+                    .run_if(in_state(ClientState::Connected)),
+            )
+            .add_systems(
+                OnEnter(ClientState::Connected),
+                receive_replication.in_set(ClientSystems::Receive),
+            )
+            .add_systems(
+                OnExit(ClientState::Connected),
+                reset.in_set(ClientSystems::Reset),
+            );
+
+        let auth_method = *app.world().resource::<AuthMethod>();
+        debug!("using authorization method `{auth_method:?}`");
+        if auth_method == AuthMethod::ProtocolCheck {
+            app.add_observer(log_protocol_error).add_systems(
+                OnEnter(ClientState::Connected),
+                send_protocol_hash.in_set(ClientSystems::SendHash),
+            );
+        }
+
+        if log_enabled!(Level::Debug) {
+            app.add_systems(OnEnter(ClientState::Disconnected), || {
+                debug!("disconnected")
+            })
+            .add_systems(OnEnter(ClientState::Connecting), || debug!("connecting"))
+            .add_systems(OnEnter(ClientState::Connected), || debug!("connected"));
+        }
+    }
+
+    fn finish(&self, app: &mut App) {
+        app.world_mut()
+            .resource_scope(|world, mut messages: Mut<ClientMessages>| {
+                let channels = world.resource::<RepliconChannels>();
+                messages.setup_server_channels(channels.server_channels().len());
+            });
+    }
+}
+
+/// Receives and applies replication messages from the server.
+///
+/// Update messages are sent over the [`ServerChannel::Updates`] and are applied first to ensure valid state
+/// for component mutations.
+///
+/// Mutate messages are sent over [`ServerChannel::Mutations`], which means they may appear
+/// ahead-of or behind update messages from the same server tick. A mutation will only be applied if its
+/// update tick has already appeared in an update message, otherwise it will be buffered while waiting.
+/// Since a deferred update does not advance [`ServerUpdateTick`], mutations waiting for its tick stay
+/// buffered as well, even if [`ShouldApplyReplication`] observers would otherwise apply them.
+/// Since component mutations can arrive in any order, mutations are normally only applied if they
+/// correspond to a more recent server tick than the last confirmed tick for each entity, unless a
+/// receive marker requests history. Diff replication also processes older mutations because they
+/// may contain missing diffs.
+///
+/// Buffered mutate messages are processed last.
+///
+/// Acknowledgments for accepted mutate messages are sent back to the server after they are
+/// successfully parsed and retained. An acknowledgment therefore does not imply that a mutation
+/// has already been applied.
+///
+/// See also [`ReplicationMessages`](crate::server::replication_messages::ReplicationMessages).
+pub(super) fn receive_replication(
+    world: &mut World,
+    mut scratch: Local<EntityScratch>,
+    mut entity_markers: Local<EntityMarkers>,
+    mut entity_buffer: Local<EntityBuffer>,
+) {
+    // Too many nested `resource_scope` break rustfmt.
+    // Relevant issue to support multiple resources in a single scope: https://github.com/bevyengine/bevy/issues/23476
+    let mut messages = world.remove_resource::<ClientMessages>().unwrap();
+    let mut entity_map = world.remove_resource::<ServerEntityMap>().unwrap();
+    let mut signature_map = world.remove_resource::<SignatureMap>().unwrap();
+    let mut storage = world.remove_resource::<ReplicationStorage>().unwrap();
+    let mut mutate_ticks = world.remove_resource::<ServerMutateTicks>().unwrap();
+    let mut buffered_updates = world.remove_resource::<BufferedUpdates>().unwrap();
+    let mut buffered_mutations = world.remove_resource::<BufferedMutations>().unwrap();
+    let receive_markers = world.remove_resource::<ReceiveMarkers>().unwrap();
+    let registry = world.remove_resource::<ReplicationRegistry>().unwrap();
+    let mut replicated = world
+        .remove_resource::<Messages<EntityReplicated>>()
+        .unwrap();
+
+    let type_registry = world.resource::<AppTypeRegistry>().clone();
+    let mut stats = world.remove_resource::<ClientReplicationStats>();
+    // Project Avalanche patch (T14): the application's limits for this receive
+    let limits = world.get_resource::<ReplicationLimits>().copied().unwrap_or_default();
+    entity_map.set_limit(Some(limits.max_entities));
+
+    let mut params = ReceiveParams {
+        scratch: &mut scratch,
+        entity_markers: &mut entity_markers,
+        entity_buffer: &mut entity_buffer,
+        entity_map: &mut entity_map,
+        signature_map: &mut signature_map,
+        storage: &mut storage,
+        mutate_ticks: &mut mutate_ticks,
+        replicated: &mut replicated,
+        stats: stats.as_mut(),
+        receive_markers: &receive_markers,
+        registry: &registry,
+        type_registry: &type_registry,
+    };
+
+    apply_replication(
+        world,
+        &mut params,
+        limits,
+        &mut messages,
+        &mut buffered_updates,
+        &mut buffered_mutations,
+    );
+
+    if let Some(stats) = stats {
+        world.insert_resource(stats);
+    }
+
+    world.insert_resource(messages);
+    world.insert_resource(entity_map);
+    world.insert_resource(signature_map);
+    world.insert_resource(storage);
+    world.insert_resource(mutate_ticks);
+    world.insert_resource(buffered_updates);
+    world.insert_resource(buffered_mutations);
+    world.insert_resource(receive_markers);
+    world.insert_resource(registry);
+    world.insert_resource(replicated);
+}
+
+// The storage resource may be unavailable while receiving replication.
+// Cleanup is handled manually in the receive logic.
+fn cleanup_storage(remove: On<Remove<Remote>>, mut storage: If<ResMut<ReplicationStorage>>) {
+    storage.entities.remove(&remove.entity);
+}
+
+// The server can despawn an entity without sending a replication message,
+// so we need to manually remove the entity from the `ServerEntityMap`
+// when it is despawned on the client.
+fn cleanup_entity_map(
+    despawn: On<Despawn<Remote>>,
+    entity_map: Option<ResMut<ServerEntityMap>>,
+    mut despawns: ResMut<ReplicatedDespawns>,
+) {
+    if let Some(mut entity_map) = entity_map {
+        entity_map.remove_by_client(despawn.entity);
+    } else {
+        despawns.push(despawn.entity);
+    }
+}
+
+fn reset(
+    mut messages: ResMut<ClientMessages>,
+    mut stats: ResMut<ClientStats>,
+    mut update_tick: ResMut<ServerUpdateTick>,
+    mut entity_map: ResMut<ServerEntityMap>,
+    mut buffered_updates: ResMut<BufferedUpdates>,
+    mut buffered_mutations: ResMut<BufferedMutations>,
+    mut despawns: ResMut<ReplicatedDespawns>,
+    mutate_ticks: Option<ResMut<ServerMutateTicks>>,
+    replication_stats: Option<ResMut<ClientReplicationStats>>,
+) {
+    messages.clear();
+    *stats = Default::default();
+    *update_tick = Default::default();
+    entity_map.clear();
+    buffered_updates.clear();
+    buffered_mutations.clear();
+    despawns.clear();
+    if let Some(mut mutate_ticks) = mutate_ticks {
+        mutate_ticks.clear();
+    }
+    if let Some(mut replication_stats) = replication_stats {
+        *replication_stats = Default::default();
+    }
+}
+
+fn send_protocol_hash(mut commands: Commands, protocol: Res<ProtocolHash>) {
+    debug!("sending `{:?}` to the server", *protocol);
+    commands.client_trigger(*protocol);
+}
+
+fn log_protocol_error(_on: On<ProtocolMismatch>) {
+    error!(
+        "server reported protocol mismatch; make sure replication rules and events registration order match with the server"
+    );
+}
+
+/// Reads all received messages and applies them.
+///
+/// Sends acknowledgments for mutate messages back.
+fn apply_replication(
+    world: &mut World,
+    params: &mut ReceiveParams,
+    limits: ReplicationLimits,
+    messages: &mut ClientMessages,
+    buffered_updates: &mut BufferedUpdates,
+    buffered_mutations: &mut BufferedMutations,
+) {
+    // Update messages are ordered, so a deferred update blocks all later ones.
+    // It also stalls `ServerUpdateTick`, which holds back mutations waiting for a
+    // newer update tick. This is intended: a mutation can only be applied after
+    // the updates for ticks before it have been applied.
+    while buffered_updates
+        .front()
+        .is_some_and(|update| should_apply_update(world, update))
+    {
+        let mut update = buffered_updates.pop_front().unwrap();
+        try_apply_update(world, params, &mut update);
+    }
+
+    for message in messages.drain_received(ServerChannel::Updates) {
+        let mut update = match buffer_update_message(params, message) {
+            Ok(update) => update,
+            Err(e) => {
+                error!("unable to receive update message: {e}");
+                report(world, format!("unable to receive update message: {e}"));
+                continue;
+            }
+        };
+
+        if buffered_updates.is_empty() && should_apply_update(world, &update) {
+            try_apply_update(world, params, &mut update);
+        } else if buffered_updates.len() >= limits.max_buffered_messages {
+            // Project Avalanche patch (T14): the buffer of updates that cannot apply yet is bounded
+            report(
+                world,
+                format!(
+                    "more than {} update messages wait to apply (the server's replication limit)",
+                    limits.max_buffered_messages
+                ),
+            );
+        } else {
+            trace!("buffering update message for {:?}", update.message_tick);
+            buffered_updates.push_back(update);
+        }
+    }
+
+    // Unlike update messages, we read all mutate messages first, sort them by tick
+    // in descending order to ensure that the last mutation will be applied first.
+    // Since mutate messages manually split by packet size, we apply all messages,
+    // but skip outdated data per-entity unless a marker or rule needs history.
+    // Older mutations may still contain missing diffs even if they were already acknowledged.
+    let update_tick = *world.resource::<ServerUpdateTick>();
+    let mutations_count = messages.received_count(ServerChannel::Mutations);
+    if mutations_count != 0 {
+        let mut acks = Vec::with_capacity(MutateIndex::POSTCARD_MAX_SIZE * mutations_count);
+        for message in messages.drain_received(ServerChannel::Mutations) {
+            // Project Avalanche patch (T14): the buffer of mutations that cannot apply yet is bounded
+            if buffered_mutations.len() >= limits.max_buffered_messages {
+                report(
+                    world,
+                    format!(
+                        "more than {} mutate messages wait to apply (the server's replication limit)",
+                        limits.max_buffered_messages
+                    ),
+                );
+                break;
+            }
+            if let Err(e) = buffer_mutate_message(params, buffered_mutations, message, &mut acks) {
+                error!("unable to buffer mutate message: {e}");
+                report(world, format!("unable to buffer mutate message: {e}"));
+            }
+        }
+        messages.send(ClientChannel::MutationAcks, acks);
+    }
+
+    buffered_mutations.retain_mut(|mutate| {
+        if mutate.update_tick.is_newer(*update_tick) {
+            return true;
+        }
+
+        if !should_apply_mutate(world, mutate) {
+            return true;
+        }
+
+        if let Err(e) = apply_mutate_message(world, params, mutate) {
+            error!(
+                "unable to apply mutate message for tick `{:?}`: {e}",
+                mutate.message_tick
+            );
+            report(world, format!("unable to apply mutate message: {e}"));
+
+            // SAFETY: components in the scratch were pushed using this world.
+            unsafe { params.scratch.manual_drop(world.components()) };
+            params.entity_buffer.free(world);
+        }
+
+        false
+    });
+}
+
+/// Project Avalanche patch (`Engine/vendor/PATCHES.md`, T12): the application learns that the server's replication
+/// data was refused.
+fn report(world: &mut World, error: String) {
+    world.write_message(ReplicationReceiveError {
+        client: None,
+        error,
+    });
+}
+
+/// Partially deserializes a received update message.
+///
+/// For details see [`replication_messages`](crate::server::replication_messages).
+fn buffer_update_message(params: &mut ReceiveParams, mut message: Bytes) -> Result<BufferedUpdate> {
+    if let Some(stats) = &mut params.stats {
+        stats.messages += 1;
+        stats.bytes += message.len();
+    }
+
+    let flags: UpdateFlags = postcard_utils::from_buf(&mut message)?;
+    let message_tick = postcard_utils::from_buf(&mut message)?;
+    let userdata = if flags.contains(UpdateFlags::USERDATA) {
+        Some(read_userdata(&mut message)?)
+    } else {
+        None
+    };
+
+    Ok(BufferedUpdate {
+        flags,
+        message_tick,
+        userdata,
+        message,
+    })
+}
+
+fn try_apply_update(world: &mut World, params: &mut ReceiveParams, update: &mut BufferedUpdate) {
+    if let Err(e) = apply_update_message(world, params, update) {
+        error!(
+            "unable to apply update message for tick `{:?}`: {e}",
+            update.message_tick
+        );
+        report(world, format!("unable to apply update message: {e}"));
+
+        // SAFETY: components in the scratch were pushed using this world.
+        unsafe { params.scratch.manual_drop(world.components()) };
+        params.entity_buffer.free(world);
+    }
+}
+
+/// Applies a partially deserialized update message.
+fn apply_update_message(
+    world: &mut World,
+    params: &mut ReceiveParams,
+    update: &mut BufferedUpdate,
+) -> Result<()> {
+    trace!(
+        "applying update message with `{:?}` for {:?}",
+        update.flags, update.message_tick
+    );
+    world.resource_mut::<ServerUpdateTick>().0 = update.message_tick;
+
+    let last_flag = update.flags.last();
+    for (_, flag) in update.flags.iter_names() {
+        let array_kind = if flag != last_flag {
+            ArrayKind::Sized
+        } else {
+            ArrayKind::Dynamic
+        };
+
+        match flag {
+            UpdateFlags::USERDATA => {
+                let bytes = update
+                    .userdata
+                    .take()
+                    .expect("userdata should be extracted while buffering the message");
+                world.trigger(UserdataReceived {
+                    message_tick: update.message_tick,
+                    bytes,
+                });
+            }
+            UpdateFlags::MAPPINGS => {
+                let len = apply_array(array_kind, &mut update.message, |message| {
+                    apply_entity_mapping(world, params, message)
+                })
+                .map_err(|e| format!("unable to apply mappings: {e}"))?;
+                if let Some(stats) = &mut params.stats {
+                    stats.mappings += len;
+                }
+            }
+            UpdateFlags::DESPAWNS => {
+                let len = apply_array(array_kind, &mut update.message, |message| {
+                    apply_despawn(world, params, message, update.message_tick)
+                })
+                .map_err(|e| format!("unable to apply despawns: {e}"))?;
+                // Update resources that are removed from the world.
+                for client_entity in world.resource_mut::<ReplicatedDespawns>().drain(..) {
+                    params.entity_map.remove_by_client(client_entity);
+                    params.signature_map.remove(client_entity);
+                    params.storage.entities.remove(&client_entity);
+                }
+                if let Some(stats) = &mut params.stats {
+                    stats.despawns += len;
+                }
+            }
+            UpdateFlags::REMOVALS => {
+                let len = apply_array(array_kind, &mut update.message, |message| {
+                    apply_removals(world, params, message, update.message_tick)
+                })
+                .map_err(|e| format!("unable to apply removals: {e}"))?;
+                if let Some(stats) = &mut params.stats {
+                    stats.entities_changed += len;
+                }
+            }
+            UpdateFlags::CHANGES => {
+                debug_assert_eq!(array_kind, ArrayKind::Dynamic);
+                let len = apply_array(array_kind, &mut update.message, |message| {
+                    apply_changes(world, params, message, update.message_tick)
+                })
+                .map_err(|e| format!("unable to apply changes: {e}"))?;
+                if let Some(stats) = &mut params.stats {
+                    stats.entities_changed += len;
+                }
+            }
+            _ => unreachable!("iteration should yield only named flags"),
+        }
+    }
+
+    Ok(())
+}
+
+/// Reads and buffers mutate message.
+///
+/// For details see [`replication_messages`](crate::server::replication_messages).
+///
+/// Returns mutate index to be used for acknowledgment.
+fn buffer_mutate_message(
+    params: &mut ReceiveParams,
+    buffered_mutations: &mut BufferedMutations,
+    mut message: Bytes,
+    acks: &mut Vec<u8>,
+) -> Result<()> {
+    if let Some(stats) = &mut params.stats {
+        stats.messages += 1;
+        stats.bytes += message.len();
+    }
+
+    let flags: MutateFlags = postcard_utils::from_buf(&mut message)?;
+    let mutate_index: MutateIndex = postcard_utils::from_buf(&mut message)?;
+    let update_tick = postcard_utils::from_buf(&mut message)?;
+    let message_tick = postcard_utils::from_buf(&mut message)?;
+    let userdata = if flags.contains(MutateFlags::USERDATA) {
+        Some(read_userdata(&mut message)?)
+    } else {
+        None
+    };
+    trace!("received mutate message for {message_tick:?}");
+    buffered_mutations.insert(BufferedMutate {
+        flags,
+        update_tick,
+        message_tick,
+        userdata,
+        message,
+    });
+
+    // An ACK means the mutation has been successfully parsed and durably retained.
+    // Application can happen later when both its update and `ShouldApplyReplication` observers are ready.
+    postcard_utils::to_extend_mut(&mutate_index, acks)?;
+
+    Ok(())
+}
+
+/// Reads and applies a buffered mutate message.
+fn apply_mutate_message(
+    world: &mut World,
+    params: &mut ReceiveParams,
+    mutate: &mut BufferedMutate,
+) -> Result<()> {
+    trace!(
+        "applying mutate message with `{:?}` for {:?}",
+        mutate.flags, mutate.message_tick
+    );
+
+    let mut messages_count = None;
+    for (_, flag) in mutate.flags.iter_names() {
+        match flag {
+            MutateFlags::USERDATA => {
+                let bytes = mutate
+                    .userdata
+                    .take()
+                    .expect("userdata should be extracted while buffering the message");
+                world.trigger(UserdataReceived {
+                    message_tick: mutate.message_tick,
+                    bytes,
+                });
+            }
+            MutateFlags::MESSAGES_COUNT => {
+                messages_count = Some(
+                    postcard_utils::from_buf(&mut mutate.message)
+                        .map_err(|e| format!("unable to confirm mutate tick: {e}"))?,
+                );
+            }
+            MutateFlags::MUTATIONS => {
+                let len = apply_array(ArrayKind::Dynamic, &mut mutate.message, |message| {
+                    apply_mutations(world, params, message, mutate.message_tick)
+                })
+                .map_err(|e| format!("unable to apply mutations: {e}"))?;
+                if let Some(stats) = &mut params.stats {
+                    stats.entities_changed += len;
+                }
+            }
+            _ => unreachable!("iteration should yield only named flags"),
+        }
+    }
+
+    if let Some(messages_count) = messages_count {
+        confirm_mutate_tick(
+            world,
+            params.mutate_ticks,
+            mutate.message_tick,
+            messages_count,
+        );
+    }
+
+    Ok(())
+}
+
+/// Deserializes and applies the mapping from a server entity to a client
+/// entity by comparing hashes calculated from the [`Signature`] component.
+fn apply_entity_mapping(
+    world: &mut World,
+    params: &mut ReceiveParams,
+    message: &mut Bytes,
+) -> Result<()> {
+    let server_entity = postcard_utils::entity_from_buf(message)?;
+    let hash = u64::from_le_bytes(postcard_utils::from_buf(message)?); // Hash uses fixint encoding.
+
+    let Some(client_entity) = params.signature_map.get(hash) else {
+        // Client entity may have been despawned already.
+        debug!("skipping unknown hash 0x{hash:016x} for `{server_entity}`");
+        return Ok(());
+    };
+
+    debug!("mapping `{server_entity}` to `{client_entity}` using hash 0x{hash:016x}");
+    params.entity_map.insert(server_entity, client_entity);
+    world.entity_mut(client_entity).insert(Remote);
+
+    Ok(())
+}
+
+/// Deserializes and applies entity despawn from update message.
+fn apply_despawn(
+    world: &mut World,
+    params: &mut ReceiveParams,
+    message: &mut Bytes,
+    message_tick: RepliconTick,
+) -> Result<()> {
+    // The entity might have already been despawned because of hierarchy or
+    // with the last replication message, but the server might not yet have received confirmation
+    // from the client and could include the deletion in this message.
+    let server_entity = postcard_utils::entity_from_buf(message)?;
+    if let Some(&client_entity) = params.entity_map.to_client().get(&server_entity)
+        && let Ok(client_entity) = world.get_entity_mut(client_entity)
+    {
+        debug!("applying despawn for `{}`", client_entity.id());
+        let ctx = DespawnCtx { message_tick };
+        (params.registry.despawn)(&ctx, client_entity);
+    }
+
+    Ok(())
+}
+
+/// Deserializes and applies component removals for an entity.
+fn apply_removals(
+    world: &mut World,
+    params: &mut ReceiveParams,
+    message: &mut Bytes,
+    message_tick: RepliconTick,
+) -> Result<()> {
+    let server_entity = postcard_utils::entity_from_buf(message)?;
+    let data_size: usize = postcard_utils::from_buf(message)?;
+
+    let Some(&client_entity) = params.entity_map.to_client().get(&server_entity) else {
+        // Client could predict despawn.
+        debug!("ignoring removals for unknown server's `{server_entity}`");
+        advance_checked(message, data_size)?;
+        return Ok(());
+    };
+
+    let Ok(mut client_entity) = world
+        .get_entity_mut(client_entity)
+        .map(|entity| DeferredEntity::new(entity, params.scratch))
+    else {
+        // Entity could've been disabled while despawned, which doesn't remove it from the entity mapping.
+        debug!("ignoring removals for invalid `{client_entity}`");
+        params.entity_map.remove_by_client(client_entity);
+        advance_checked(message, data_size)?;
+        return Ok(());
+    };
+
+    params
+        .entity_markers
+        .read(params.receive_markers, &*client_entity);
+
+    confirm_tick(&mut client_entity, params.replicated, message_tick);
+
+    // Project Avalanche patch (T12): the size is the server's; upstream's `split_to` panicked beyond the message
+    let mut data = split_checked(message, data_size)?;
+    let len = apply_array(ArrayKind::Dynamic, &mut data, |data| {
+        let fns_id = postcard_utils::from_buf(data)?;
+        // Project Avalanche patch (T12): the id is the server's; upstream's `get` panicked on an unknown one
+        let (_, component_id, fns) = params
+            .registry
+            .try_get(fns_id)
+            .ok_or_else(|| format!("replication `{fns_id:?}` is not registered"))?;
+        let mut ctx = RemoveCtx {
+            message_tick,
+            component_id,
+        };
+        trace!(
+            "applying removal for `{}` with `{fns_id:?}`",
+            client_entity.id()
+        );
+
+        fns.remove(&mut ctx, params.entity_markers, &mut client_entity);
+
+        Ok(())
+    })?;
+
+    if let Some(stats) = &mut params.stats {
+        stats.components_changed += len;
+    }
+
+    client_entity.flush();
+
+    Ok(())
+}
+
+/// Deserializes and applies component insertions and/or mutations for an entity.
+fn apply_changes(
+    world: &mut World,
+    params: &mut ReceiveParams,
+    message: &mut Bytes,
+    message_tick: RepliconTick,
+) -> Result<()> {
+    debug_assert!(
+        params.entity_buffer.is_empty(),
+        "`{:?}` should be freed before reuse",
+        params.entity_buffer
+    );
+
+    let server_entity = postcard_utils::entity_from_buf(message)?;
+    let data_size: usize = postcard_utils::from_buf(message)?;
+
+    let world_cell = world.as_unsafe_world_cell();
+    let entity_allocator = world_cell.entity_allocator();
+    // SAFETY: used only to create `DeferredEntity`, which won't let mutably alias `EntityAllocator`.
+    let world = unsafe { world_cell.world_mut() };
+
+    // Project Avalanche patch (T14): a new server entity beyond the mapping limit is refused before it is spawned
+    let (at_limit, mapped) = (params.entity_map.at_limit(), params.entity_map.to_client().len());
+    let mut client_entity = match params.entity_map.server_entry(server_entity) {
+        EntityEntry::Occupied(entry) => {
+            let Ok(client_entity) = world.get_entity_mut(entry.get()) else {
+                // Client could predict despawn.
+                debug!("ignoring changes for despawned `{}`", entry.get());
+                advance_checked(message, data_size)?;
+                return Ok(());
+            };
+
+            let mut client_entity = DeferredEntity::new(client_entity, params.scratch);
+            if !client_entity.contains::<Remote>() {
+                // Even though the entity already exists, it could have been spawned during
+                // deserialization of another component and doesn't have the marker yet.
+                client_entity.insert(Remote);
+            }
+            client_entity
+        }
+        EntityEntry::Vacant(_) if at_limit => {
+            return Err(format!(
+                "`{server_entity}` would be a replicated entity beyond the client's limit of {mapped}"
+            )
+            .into());
+        }
+        EntityEntry::Vacant(entry) => {
+            let mut client_entity = DeferredEntity::new(world.spawn_empty(), params.scratch);
+            client_entity.insert(Remote);
+            entry.insert(client_entity.id());
+            client_entity
+        }
+    };
+
+    params
+        .entity_markers
+        .read(params.receive_markers, &*client_entity);
+
+    confirm_tick(&mut client_entity, params.replicated, message_tick);
+
+    // Project Avalanche patch (T12): the size is the server's; upstream's `split_to` panicked beyond the message
+    let mut data = split_checked(message, data_size)?;
+    // The server sorts incoming markers with `affects_same_update` from highest to lowest priority
+    // before all other components. Only the first component needs to be checked because, if it's a
+    // marker, lower-priority markers can't affect receive-function selection.
+    let mut first_component = true;
+    let len = apply_array(ArrayKind::Dynamic, &mut data, |data| {
+        let spawner = BufferedSpawner::new(entity_allocator, params.entity_buffer);
+        let fns_id = postcard_utils::from_buf(data)?;
+        // Project Avalanche patch (T12): the id is the server's; upstream's `get` panicked on an unknown one
+        let (_, component_id, fns) = params
+            .registry
+            .try_get(fns_id)
+            .ok_or_else(|| format!("replication `{fns_id:?}` is not registered"))?;
+        if first_component {
+            params
+                .entity_markers
+                .include(params.receive_markers, component_id);
+            first_component = false;
+        }
+        let mut ctx = WriteCtx {
+            entity: client_entity.id(),
+            component_id,
+            message_tick,
+            entity_map: params.entity_map,
+            storage: params.storage,
+            type_registry: params.type_registry,
+            spawner,
+            ignore_mapping: false,
+        };
+        trace!(
+            "applying change for `{}` with `{fns_id:?}`",
+            client_entity.id(),
+        );
+
+        fns.write(&mut ctx, params.entity_markers, &mut client_entity, data)?;
+        // Project Avalanche patch (T14): an entity the data named was refused at the mapping limit
+        if params.entity_map.take_refused() {
+            return Err("component data names an entity beyond the client's replicated entity limit".into());
+        }
+
+        Ok(())
+    })?;
+
+    if let Some(stats) = &mut params.stats {
+        stats.components_changed += len;
+    }
+
+    // SAFETY: only used to spawn entities.
+    params
+        .entity_buffer
+        .spawn(unsafe { client_entity.world_mut() });
+    client_entity.flush();
+
+    Ok(())
+}
+
+/// Advances the message cursor past a block of the announced size.
+///
+/// [`Bytes::advance`] panics if the count exceeds the remaining length, so the
+/// size read from the message is checked against it first.
+fn advance_checked(message: &mut Bytes, size: usize) -> Result<()> {
+    if size > message.len() {
+        return Err(format!(
+            "data size ({size}) exceeds remaining message length ({})",
+            message.len()
+        )
+        .into());
+    }
+
+    message.advance(size);
+
+    Ok(())
+}
+
+/// Project Avalanche patch (`Engine/vendor/PATCHES.md`, T12): [`Bytes::split_to`] panics if the count exceeds the
+/// remaining length, so the size read from the message is checked against it first (as [`advance_checked`] does).
+fn split_checked(message: &mut Bytes, size: usize) -> Result<Bytes> {
+    if size > message.len() {
+        return Err(format!(
+            "data size ({size}) exceeds remaining message length ({})",
+            message.len()
+        )
+        .into());
+    }
+
+    Ok(message.split_to(size))
+}
+
+/// Splits the userdata prefix off the front of the message.
+fn read_userdata(message: &mut Bytes) -> Result<Bytes> {
+    let len: usize = postcard_utils::from_buf(message)?;
+    if len > message.len() {
+        return Err(format!(
+            "userdata length ({len}) exceeds remaining message length ({})",
+            message.len()
+        )
+        .into());
+    }
+
+    Ok(message.split_to(len))
+}
+
+fn should_apply_update(world: &mut World, update: &BufferedUpdate) -> bool {
+    should_apply(world, update.message_tick, update.userdata.as_ref())
+}
+
+fn should_apply_mutate(world: &mut World, mutate: &BufferedMutate) -> bool {
+    should_apply(world, mutate.message_tick, mutate.userdata.as_ref())
+}
+
+fn should_apply(world: &mut World, message_tick: RepliconTick, userdata: Option<&Bytes>) -> bool {
+    let mut event = ShouldApplyReplication {
+        message_tick,
+        userdata: userdata.cloned(),
+        should_apply: true,
+    };
+    world.trigger_ref(&mut event);
+    event.should_apply
+}
+
+fn apply_array(
+    kind: ArrayKind,
+    message: &mut Bytes,
+    mut f: impl FnMut(&mut Bytes) -> Result<()>,
+) -> Result<usize> {
+    match kind {
+        ArrayKind::Sized => {
+            let len = postcard_utils::from_buf(message)?;
+            for _ in 0..len {
+                (f)(message)?;
+            }
+
+            Ok(len)
+        }
+        ArrayKind::Dynamic => {
+            let mut len = 0;
+            while message.has_remaining() {
+                (f)(message)?;
+                len += 1;
+            }
+
+            Ok(len)
+        }
+    }
+}
+
+/// Type of serialized array.
+#[derive(PartialEq, Eq, Debug)]
+enum ArrayKind {
+    /// Size is serialized before the array.
+    Sized,
+    /// Size is unknown, means that all bytes needs to be consumed.
+    Dynamic,
+}
+
+fn confirm_tick(
+    entity: &mut DeferredEntity,
+    replicated: &mut Messages<EntityReplicated>,
+    tick: RepliconTick,
+) {
+    if let Some(mut history) = entity.get_mut::<ConfirmHistory>() {
+        history.set_last_tick(tick);
+    } else {
+        entity.insert(ConfirmHistory::new(tick));
+    }
+    replicated.write(EntityReplicated {
+        entity: entity.id(),
+        tick,
+    });
+}
+
+fn confirm_mutate_tick(
+    world: &mut World,
+    mutate_ticks: &mut ServerMutateTicks,
+    tick: RepliconTick,
+    messages_count: usize,
+) {
+    if mutate_ticks.confirm(tick, messages_count) {
+        mutate_ticks.set_last_confirmed_tick(tick);
+        world.write_message(MutateTickReceived { tick });
+    }
+}
+
+/// Deserializes and applies component mutations for an entity.
+fn apply_mutations(
+    world: &mut World,
+    params: &mut ReceiveParams,
+    message: &mut Bytes,
+    message_tick: RepliconTick,
+) -> Result<()> {
+    debug_assert!(
+        params.entity_buffer.is_empty(),
+        "`{:?}` should be freed before applying mutations",
+        params.entity_buffer
+    );
+
+    let server_entity = postcard_utils::entity_from_buf(message)?;
+    let data_size: usize = postcard_utils::from_buf(message)?;
+
+    let Some(&client_entity) = params.entity_map.to_client().get(&server_entity) else {
+        // Mutation could arrive after a despawn from update message
+        // or client could predict the despawn.
+        debug!("ignoring mutations for unknown server's `{server_entity}`");
+        advance_checked(message, data_size)?;
+        return Ok(());
+    };
+
+    let world_cell = world.as_unsafe_world_cell();
+    let entity_allocator = world_cell.entity_allocator();
+    // SAFETY: used only to create `DeferredEntity`, which won't let mutably alias `EntityAllocator`.
+    let world = unsafe { world_cell.world_mut() };
+
+    let Ok(mut client_entity) = world
+        .get_entity_mut(client_entity)
+        .map(|entity| DeferredEntity::new(entity, params.scratch))
+    else {
+        // Entity could've been disabled while despawned, which doesn't remove it from the entity mapping.
+        debug!("ignoring mutations for invalid `{client_entity}`");
+        params.entity_map.remove_by_client(client_entity);
+        advance_checked(message, data_size)?;
+        return Ok(());
+    };
+
+    params
+        .entity_markers
+        .read(params.receive_markers, &*client_entity);
+
+    let Some(mut history) = client_entity.get_mut::<ConfirmHistory>() else {
+        if !client_entity.contains::<Remote>() {
+            // An old mutation can reference an already despawned entity and recreate
+            // it as an empty placeholder. Skip mutations targeting that placeholder
+            // so the remaining entities in the message can still be updated.
+            debug!(
+                "ignoring mutations for uninitialized entity placeholder `{}`",
+                client_entity.id()
+            );
+            advance_checked(message, data_size)?;
+            return Ok(());
+        }
+
+        return Err(format!(
+            "`{}` missing history component inserted on the first update message",
+            client_entity.id()
+        )
+        .into());
+    };
+
+    let new_tick = message_tick.is_newer(history.last_tick());
+    let ago = history.last_tick().get().wrapping_sub(message_tick.get());
+    let write_history = !new_tick && params.entity_markers.need_history() && ago < u64::BITS;
+    if new_tick {
+        history.set_last_tick(message_tick);
+    } else if write_history {
+        history.set(ago);
+    } else if !params.registry.needs_history() {
+        trace!("ignoring outdated mutations for `{}`", client_entity.id());
+        advance_checked(message, data_size)?;
+        return Ok(());
+    }
+    if new_tick || write_history {
+        params.replicated.write(EntityReplicated {
+            entity: client_entity.id(),
+            tick: message_tick,
+        });
+    }
+
+    // Project Avalanche patch (T12): the size is the server's; upstream's `split_to` panicked beyond the message
+    let mut data = split_checked(message, data_size)?;
+    let len = apply_array(ArrayKind::Dynamic, &mut data, |data| {
+        let spawner = BufferedSpawner::new(entity_allocator, params.entity_buffer);
+        let fns_id = postcard_utils::from_buf(data)?;
+        // Project Avalanche patch (T12): the id is the server's; upstream's `get` panicked on an unknown one
+        let (_, component_id, fns) = params
+            .registry
+            .try_get(fns_id)
+            .ok_or_else(|| format!("replication `{fns_id:?}` is not registered"))?;
+        let mut ctx = WriteCtx {
+            entity: client_entity.id(),
+            component_id,
+            message_tick,
+            entity_map: params.entity_map,
+            storage: params.storage,
+            type_registry: params.type_registry,
+            spawner,
+            ignore_mapping: false,
+        };
+        trace!(
+            "applying mutation for `{}` with `{fns_id:?}`",
+            client_entity.id(),
+        );
+
+        if new_tick {
+            fns.write(&mut ctx, params.entity_markers, &mut client_entity, data)?;
+        } else {
+            fns.consume_or_write(
+                &mut ctx,
+                params.entity_markers,
+                params.receive_markers,
+                &mut client_entity,
+                data,
+                write_history,
+            )?;
+        }
+        // Project Avalanche patch (T14): an entity the data named was refused at the mapping limit
+        if params.entity_map.take_refused() {
+            return Err("component data names an entity beyond the client's replicated entity limit".into());
+        }
+
+        Ok(())
+    })?;
+
+    if let Some(stats) = &mut params.stats {
+        stats.components_changed += len;
+    }
+
+    // SAFETY: only used to spawn entities.
+    params
+        .entity_buffer
+        .spawn(unsafe { client_entity.world_mut() });
+    client_entity.flush();
+
+    Ok(())
+}
+
+/// Borrowed resources from the world and locals.
+///
+/// To avoid passing a lot of arguments into all receive functions.
+struct ReceiveParams<'a> {
+    scratch: &'a mut EntityScratch,
+    entity_markers: &'a mut EntityMarkers,
+    entity_buffer: &'a mut EntityBuffer,
+    entity_map: &'a mut ServerEntityMap,
+    signature_map: &'a mut SignatureMap,
+    storage: &'a mut ReplicationStorage,
+    mutate_ticks: &'a mut ServerMutateTicks,
+    replicated: &'a mut Messages<EntityReplicated>,
+    stats: Option<&'a mut ClientReplicationStats>,
+    receive_markers: &'a ReceiveMarkers,
+    registry: &'a ReplicationRegistry,
+    type_registry: &'a AppTypeRegistry,
+}
+
+/// Set with replication and event systems related to client.
+#[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone, Copy)]
+pub enum ClientSystems {
+    /// Systems that receive packets from the messaging backend and update [`ClientState`].
+    ///
+    /// Used by messaging backend implementations.
+    ///
+    /// Runs in [`PreUpdate`].
+    ReceivePackets,
+    /// Systems that read data from [`ClientMessages`].
+    ///
+    /// Runs in [`PreUpdate`] and [`OnEnter`] for [`ClientState::Connected`] (to avoid 1 frame delay).
+    Receive,
+    /// Systems that populate Bevy's [`Diagnostics`](bevy::diagnostic::Diagnostics).
+    ///
+    /// Runs in [`PreUpdate`] and [`OnEnter`] for [`ClientState::Connected`] (to avoid 1 frame delay).
+    Diagnostics,
+    /// System that sends [`ProtocolHash`].
+    ///
+    /// Runs in [`OnEnter`] for [`ClientState::Connected`].
+    SendHash,
+    /// Systems that write data to [`ClientMessages`].
+    ///
+    /// Runs in [`PostUpdate`].
+    Send,
+    /// Systems that send packets to the messaging backend.
+    ///
+    /// Used by messaging backend implementations.
+    ///
+    /// Runs in [`PostUpdate`].
+    SendPackets,
+    /// Systems that reset the client.
+    ///
+    /// Runs in [`OnExit`] for [`ClientState::Connected`].
+    Reset,
+}
+
+/// Triggered on the client before applying a received replication message.
+///
+/// Observe this event to inspect a message's tick and userdata before Replicon applies
+/// the rest of the message. Set [`Self::should_apply`] to `false` to buffer the message;
+/// it will be re-triggered on later receives until an observer leaves it as `true`.
+/// If it is not set to false, messages will be applied immediately.
+///
+/// Update messages preserve their wire order: a deferred update also holds back all later updates
+/// and any mutation waiting for its tick, since [`ServerUpdateTick`] only advances on apply.
+/// Mutation messages reuse Replicon's existing mutation buffer. They are acknowledged after being
+/// parsed and retained, so an acknowledgment can precede application.
+///
+/// # Example
+///
+/// Defer messages carrying userdata greater than a threshold:
+///
+/// ```
+/// # use bevy::prelude::*;
+/// # use bevy_replicon::prelude::*;
+/// #[derive(Resource, Default)]
+/// struct Ready(u32);
+///
+/// fn defer_large_userdata(mut trigger: On<ShouldApplyReplication>, ready: Res<Ready>) {
+///     let Some(userdata) = trigger.userdata.as_ref() else {
+///         return;
+///     };
+///     let value = u32::from_le_bytes(userdata.as_ref().try_into().unwrap());
+///     if value > ready.0 {
+///         trigger.should_apply = false;
+///     }
+/// }
+/// ```
+#[derive(Event, Debug, Clone)]
+pub struct ShouldApplyReplication {
+    /// Tick associated with the message.
+    pub message_tick: RepliconTick,
+    /// Userdata split off the front of the message, if the server attached any.
+    pub userdata: Option<Bytes>,
+    /// Whether to apply the message during the current receive.
+    ///
+    /// You can set to `false` to defer it.
+    pub should_apply: bool,
+}
+
+/// Last applied tick for update messages from the server.
+///
+/// In other words, the last [`RepliconTick`] with a removal, insertion, spawn or despawn.
+/// This value is not updated when mutation messages are received or applied.
+///
+/// See also [`ServerMutateTicks`].
+#[derive(Resource, Deref, Default, Reflect, Debug, Clone, Copy)]
+pub struct ServerUpdateTick(RepliconTick);
+
+/// Cached ordered update messages deferred by [`ShouldApplyReplication`] observers.
+#[derive(Resource, Default, Deref, DerefMut)]
+struct BufferedUpdates(VecDeque<BufferedUpdate>);
+
+/// Partially-deserialized update message waiting for [`ShouldApplyReplication`] observers to apply it.
+struct BufferedUpdate {
+    /// Sections remaining in [`Self::message`].
+    flags: UpdateFlags,
+
+    /// Tick associated with the message.
+    message_tick: RepliconTick,
+
+    /// Userdata split off the front of the received message, if present.
+    userdata: Option<Bytes>,
+
+    /// Remaining unparsed message bytes after the buffered metadata.
+    message: Bytes,
+}
+
+/// Cached buffered mutate messages, used to synchronize mutations with update messages.
+#[derive(Resource, Default, Deref, DerefMut)]
+pub(crate) struct BufferedMutations(Vec<BufferedMutate>);
+
+impl BufferedMutations {
+    /// Inserts a new buffered message, maintaining sorting by their message tick in descending order.
+    fn insert(&mut self, mutate: BufferedMutate) {
+        let index = self.partition_point(|other| mutate.message_tick.is_older(other.message_tick));
+        self.0.insert(index, mutate);
+    }
+}
+
+/// Entities that were despawned during replication message processing.
+///
+///
+/// When despawns are applied from a message, resources like
+/// [`ServerEntityMap`] or [`SignatureMap`] are unavailable.
+///
+/// So despawns are collected into this resource and cleaned up
+/// after applying all despawns.
+#[derive(Resource, Default, Deref, DerefMut)]
+struct ReplicatedDespawns(Vec<Entity>);
+
+/// Partially-deserialized mutate message that is waiting for its tick to appear in an update message.
+///
+/// See also [`crate::server::replication_messages`].
+pub(super) struct BufferedMutate {
+    /// Flags for data in the message.
+    flags: MutateFlags,
+
+    /// Required tick to wait for.
+    update_tick: RepliconTick,
+
+    /// The tick this mutations corresponds to.
+    message_tick: RepliconTick,
+
+    /// Userdata split off the front of the received message, if present.
+    userdata: Option<Bytes>,
+
+    /// Remaining unparsed message bytes after the buffered metadata.
+    message: Bytes,
+}
+
+/// Replication stats during message processing.
+///
+/// Statistic will be collected only if the resource is present.
+/// The resource is not added by default.
+///
+/// See also [`ClientDiagnosticsPlugin`]
+/// for automatic integration with Bevy diagnostics.
+#[derive(Resource, Default, Reflect, Debug, Clone, Copy)]
+pub struct ClientReplicationStats {
+    /// Incremented per entity that changes.
+    pub entities_changed: usize,
+    /// Incremented for every component that changes.
+    pub components_changed: usize,
+    /// Incremented per client mapping added.
+    pub mappings: usize,
+    /// Incremented per entity despawn.
+    pub despawns: usize,
+    /// Replication messages received.
+    pub messages: usize,
+    /// Replication bytes received in message payloads (without internal messaging plugin data).
+    pub bytes: usize,
+}
+
+/// Marker for entities spawned by replication.
+///
+/// Automatically inserted for each newly received entity.
+///
+/// Unlike [`Replicated`], it doesn't affect the replication
+/// logic and exists purely as an informational marker.
+/// For example, you can event register [`Replicated`] as required
+/// component for it:
+///
+/// ```
+/// # use bevy::prelude::*;
+/// # use bevy_replicon::prelude::*;
+/// # let mut app = App::new();
+/// app.register_required_components::<Remote, Replicated>();
+/// ```
+///
+/// This way, after a client disconnects, it can start a new server
+/// with the same entities now being replicated.
+#[derive(Component, Default, Reflect, Debug, Clone, Copy)]
+#[reflect(Component)]
+pub struct Remote;
+
+/// Triggered when user-defined bytes are applied from a replication message.
+///
+/// This is emitted for data sent through [`ReplicationUserdata`](crate::server::ReplicationUserdata).
+#[derive(Event)]
+pub struct UserdataReceived {
+    /// Tick of the message with the metadata.
+    pub message_tick: RepliconTick,
+
+    /// Raw user-defined bytes received from the server.
+    pub bytes: Bytes,
+}

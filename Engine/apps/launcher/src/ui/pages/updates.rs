@@ -24,6 +24,12 @@ impl Launcher {
         let mut apply = false;
         let mut discard = false;
         let mut open = None;
+        let blocker = install_blocker(Busy {
+            started: self.running(),
+            server: self.host.server_running() || self.host.busy(),
+            setup: self.job.is_some(),
+            install: self.mods.install.is_some(),
+        });
         match &self.update {
             Update::Idle => {
                 widgets::status(ui, theme::TEXT_DIM, "Automatic checks are off.");
@@ -84,9 +90,12 @@ impl Launcher {
                     "Restart the launcher to finish the update. It closes, the new files are put in place and it \
                      starts again.",
                 );
+                if let Some(why) = blocker {
+                    widgets::status(ui, theme::WARN, why);
+                }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if widgets::button(ui, "Restart and install", Kind::Primary, true).clicked() {
+                    if widgets::button(ui, "Restart and install", Kind::Primary, blocker.is_none()).clicked() {
                         apply = true;
                     }
                     if widgets::button(ui, "Cancel", Kind::Plain, true).clicked() {
@@ -101,7 +110,10 @@ impl Launcher {
         if download && let Err(e) = self.update.download(ui.ctx()) {
             self.update = Update::Failed(e);
         }
-        if apply && let Err(e) = self.update.apply() {
+        if apply
+            && blocker.is_none()
+            && let Err(e) = self.update.apply()
+        {
             self.update = Update::Failed(e);
         }
         if discard {
@@ -110,6 +122,28 @@ impl Launcher {
         if let Some(url) = open {
             ui.ctx().open_url(egui::OpenUrl::new_tab(url));
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct Busy {
+    started: bool,
+    server: bool,
+    setup: bool,
+    install: bool,
+}
+
+fn install_blocker(busy: Busy) -> Option<&'static str> {
+    if busy.started {
+        Some("Close the game or tool the launcher started first: the update replaces its program.")
+    } else if busy.server {
+        Some("Stop the server on the Host page first: the update replaces its program.")
+    } else if busy.setup {
+        Some("Wait for the game data's setup to end: closing the launcher would stop it.")
+    } else if busy.install {
+        Some("Wait for the mod install to end: closing the launcher would cut it short.")
+    } else {
+        None
     }
 }
 
@@ -122,4 +156,26 @@ fn truncate(text: &str, max: usize) -> String {
         end -= 1;
     }
     format!("{}…", &text[..end])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_restart_waits_for_what_the_launcher_runs() {
+        assert_eq!(install_blocker(Busy::default()), None);
+        let each = [
+            Busy { started: true, ..Busy::default() },
+            Busy { server: true, ..Busy::default() },
+            Busy { setup: true, ..Busy::default() },
+            Busy { install: true, ..Busy::default() },
+        ];
+        let reasons: Vec<_> = each.iter().map(|b| install_blocker(*b).expect("blocked")).collect();
+        for (i, r) in reasons.iter().enumerate() {
+            assert!(reasons[i + 1..].iter().all(|other| other != r), "one reason per cause: {r}");
+        }
+        let all = Busy { started: true, server: true, setup: true, install: true };
+        assert_eq!(install_blocker(all), Some(reasons[0]));
+    }
 }

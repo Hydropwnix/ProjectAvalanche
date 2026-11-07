@@ -9,6 +9,7 @@ mod gpu;
 mod movie;
 pub mod reader;
 mod ui;
+pub mod vmx;
 
 pub use anim::{ant, ant_anim, ghost, rigamate};
 pub use archive::{big, chunk, lzx, xdvdfs};

@@ -194,7 +194,17 @@ impl Ctx<'_> {
                     let r = self.player.root_of(id);
                     Value::Object(self.object_for(r))
                 }
-                "_xmouse" | "_ymouse" => Value::Number(0.0),
+                "_xmouse" | "_ymouse" => {
+                    let p = self.vm.pointer.position;
+                    match self.player.to_local(id, p) {
+                        Some((x, y)) => {
+                            let v = if lower == "_xmouse" { x } else { y };
+                            Value::Number((f64::from(v) + 0.5).floor() * 0.05)
+                        }
+                        // TODO(guess): a clip whose matrix cannot be inverted reads 0; Scaleform's 0x8266EF10 with a singular matrix was not read; settle: the matrix inverse in 0x8266EF10.
+                        None => Value::Number(0.0),
+                    }
+                }
                 "_droptarget" => Value::str(""),
                 "_highquality" | "_focusrect" => Value::Number(1.0),
                 "_quality" => Value::str("HIGH"),
@@ -637,8 +647,9 @@ impl Ctx<'_> {
                 let shadow = has(self, "distance")? || has(self, "angle")?;
                 let c = num(self, "color", 0.0)? as u32;
                 let alpha = num(self, "alpha", 1.0)? as f32;
-                let (d, a) = if shadow {
-                    (num(self, "distance", 4.0)? as f32 * 20.0, (num(self, "angle", 45.0)? as f32).to_radians())
+                let offset = if shadow {
+                    let (d, a) = (num(self, "distance", 4.0)? as f32, (num(self, "angle", 45.0)? as f32).to_radians());
+                    crate::display::shadow_offset(d, a)
                 } else {
                     (0.0, 0.0)
                 };
@@ -650,7 +661,7 @@ impl Ctx<'_> {
                     blur_x: bx,
                     blur_y: by,
                     strength: num(self, "strength", 2.0)? as f32,
-                    offset: (d * a.cos(), d * a.sin()),
+                    offset,
                     knockout: self.to_bool(&knockout),
                     hide_object: self.to_bool(&hide),
                     high_quality: quality > 1.0,

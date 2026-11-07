@@ -50,45 +50,11 @@ pub(super) fn weather(p: &View, ps: &mut [Particle], ctx: &Context, st: &mut Act
     }
 }
 
-pub(super) fn vec_cos_approx(x: f32) -> f32 {
-    const C: [f32; 12] = [
-        1.0,
-        -0.5,
-        0.041_666_668,
-        -0.001_388_888_9,
-        2.480_158_8e-5,
-        -2.755_732e-7,
-        2.087_675_8e-9,
-        -1.147_074_5e-11,
-        4.779_477_3e-14,
-        -1.561_920_7e-16,
-        4.110_317_6e-19,
-        -8.896_791e-22,
-    ];
-    let n = (x * 0.159_154_94).round_ties_even();
-    let r = (-6.283_185_5f32).mul_add(n, x);
-    let x2 = r * r;
-    let x4 = x2 * x2;
-    let mut v = C[1].mul_add(x2, C[0]);
-    let x6 = x4 * x2;
-    v = C[2].mul_add(x4, v);
-    let x8 = x4 * x4;
-    let x10 = x6 * x4;
-    v = C[3].mul_add(x6, v);
-    let (x12, x14, x16, x18) = (x6 * x6, x8 * x6, x8 * x8, x10 * x8);
-    v = C[4].mul_add(x8, v);
-    let (x22, x20) = (x12 * x10, x10 * x10);
-    for (c, p) in C[5..].iter().zip([x10, x12, x14, x16, x18, x20, x22]) {
-        v = c.mul_add(p, v);
-    }
-    v
-}
-
 pub(super) fn turbulence_table() -> &'static [f32; 256] {
     static TABLE: std::sync::OnceLock<[f32; 256]> = std::sync::OnceLock::new();
     TABLE.get_or_init(|| {
         std::array::from_fn(|i| {
-            let c = vec_cos_approx(i as f32 * 0.024_543_693);
+            let c = ssx_formats::vmx::cos(i as f32 * 0.024_543_693);
             c * (((c * c) * c) * c)
         })
     })

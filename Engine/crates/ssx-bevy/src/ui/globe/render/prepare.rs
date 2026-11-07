@@ -12,9 +12,11 @@ use super::super::midground::MipTexture;
 use super::super::{GlobeTexture, GlobeView, uniform};
 use super::GlobeGpu;
 use super::pipelines::Pipelines;
+use super::upload;
 use super::upload::{
     buffer, floats_bytes, targets, upload_lut, upload_mesh, upload_midground, upload_mips, upload_texture, upload_waves,
 };
+use crate::render::post::adapt::{AdaptMode, HdrAdaptation};
 
 fn gaussian_taps(sigma: f32) -> ([f32; 4], [f32; 4]) {
     let mut w = [0.0f32; 9];
@@ -99,11 +101,15 @@ pub(super) fn prepare(
     cache: Res<PipelineCache>,
     mut gpu: ResMut<GlobeGpu>,
     dumps: Res<Dumps>,
+    mut adapt: ResMut<HdrAdaptation>,
 ) {
     gpu.active = false;
     gpu.dump = None;
     let (Some(view), Some(mut p)) = (view, pipelines) else { return };
-    let (Some(assets), Some(frame)) = (view.assets.as_ref(), view.frame.as_ref()) else { return };
+    let (Some(assets), Some(frame)) = (view.assets.as_ref(), view.frame.as_ref()) else {
+        gpu.targets = None;
+        return;
+    };
     let Some(target) = views.iter().next() else { return };
     let format = target.main_texture_format();
     if !p.composite.contains_key(&format) {
@@ -116,6 +122,7 @@ pub(super) fn prepare(
                 shader_defs: Vec::new(),
                 entry_point: Some("vs_full".into()),
                 buffers: Vec::new(),
+                constants: Vec::new(),
             },
             fragment: Some(FragmentState {
                 shader,
@@ -137,6 +144,7 @@ pub(super) fn prepare(
                 shader_defs: Vec::new(),
                 entry_point: Some("vs_full".into()),
                 buffers: Vec::new(),
+                constants: Vec::new(),
             },
             fragment: Some(FragmentState {
                 shader,
@@ -180,18 +188,16 @@ pub(super) fn prepare(
     let (r, ra) = (frame.globe_r[0], frame.atmos_r[0]);
     let earth = floats_bytes(&uniform(frame, &assets.earth_material, &frame.light, r, ra));
     let halo = floats_bytes(&uniform(frame, &assets.halo_material, &frame.light, r, ra));
-    let fresh = gpu.targets.as_ref().is_some_and(|t| t.fresh);
-    let mode = if view.raw_scale.is_some() {
-        1.0
-    } else if fresh {
-        2.0
-    } else {
-        0.0
-    };
+    let mut mode = AdaptMode::Clear;
     if let Some(t) = gpu.targets.as_mut() {
+        mode = adapt.begin(&device, &queue, upload::quarter_of(size), &t.adapted, t.fresh);
         t.fresh = false;
     }
-    let post = post_uniform(&view, frame, size, mode);
+    if view.raw_scale.is_some() {
+        mode = AdaptMode::Current;
+    }
+    adapt.ran();
+    let post = post_uniform(&view, frame, size, mode.code());
     gpu.bloom = view.post.as_ref().is_some_and(|p| p.bloom);
     let mg = frame.midground.as_ref().zip(view.midground.as_ref()).filter(|(f, m)| f.range == m.range);
     gpu.midground = false;

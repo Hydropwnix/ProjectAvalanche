@@ -3,12 +3,15 @@ use std::sync::Arc;
 
 use ssx_formats::gfx::text::Font;
 
-use crate::display::{BlendMode, Instance, InstanceId, InstanceKind, Player, TextFilter};
+use crate::display::{BlendMode, Instance, InstanceId, InstanceKind, Player};
 use crate::geom::{Cxform, Mat2d, RectF};
+use crate::glyph_filter::{GlyphFilter, ShadowParam, TextFieldParam, shadow_size};
 use crate::library::{CharRef, Character, Library};
+
+pub mod overlay;
 use crate::scale9::Slice9;
 use crate::shape::{self, Paint, ShapeMesh, Tolerance};
-use crate::tess::Mesh;
+use crate::tess::{Budget, Mesh, OverBudget, Work};
 
 #[derive(Clone, Debug)]
 pub struct DrawItem {
@@ -26,8 +29,6 @@ pub enum Command {
     MaskEnd,
     MaskPopBegin,
     MaskPopEnd,
-    FilterBegin { filter: TextFilter, bounds: RectF, scale: f32 },
-    FilterEnd,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -97,11 +98,56 @@ enum MeshKey {
     Bitmap(CharRef),
 }
 
+pub const FRAME_TESSELLATION: Work = Work { edges: 1 << 19, steps: 1 << 22, vertices: 1 << 20 };
+
+pub const CACHE_VERTICES: u64 = 1 << 21;
+
+const REFUSED_KEPT: usize = 256;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TessStats {
+    pub shape_peak: Work,
+    pub frame_peak: Work,
+    pub deferred: u64,
+    pub refused: u64,
+    pub evicted: u64,
+    pub cached_vertices_peak: u64,
+}
+
+struct Cached {
+    mesh: Arc<ShapeMesh>,
+    vertices: u64,
+    frame: u64,
+    owner: Option<std::sync::Weak<Font>>,
+}
+
 #[derive(Default)]
 pub struct Renderer {
-    meshes: HashMap<MeshKey, Arc<ShapeMesh>>,
+    meshes: HashMap<MeshKey, Cached>,
+    cached_vertices: u64,
+    frame: u64,
+    frame_work: Work,
+    pub tess_stats: TessStats,
+    refused: Vec<String>,
     pub tessellated: usize,
     pub glyphs: crate::glyph::GlyphCache,
+    pub no_filters: bool,
+    overlay: overlay::OverlayCache,
+}
+
+#[derive(Default)]
+struct TextLayers {
+    shadow: Vec<Command>,
+    raster: Vec<Command>,
+    vector: Vec<Command>,
+}
+
+impl TextLayers {
+    fn emit(self, out: &mut Vec<Command>) {
+        out.extend(self.shadow);
+        out.extend(self.raster);
+        out.extend(self.vector);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -118,7 +164,23 @@ impl Renderer {
         Self::default()
     }
 
+    pub fn new_frame(&mut self) {
+        self.glyphs.begin_frame();
+        self.tess_stats.frame_peak.peak(self.frame_work);
+        self.frame += 1;
+        self.frame_work = Work::default();
+    }
+
+    pub fn frame_work(&self) -> Work {
+        self.frame_work
+    }
+
+    pub fn take_refused(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.refused)
+    }
+
     pub fn build(&mut self, lib: &Library, player: &Player, viewport: (u32, u32), mode: ScaleMode) -> RenderList {
+        self.new_frame();
         let mut out = RenderList { commands: Vec::new(), viewport, background: None };
         let Some(root) = player.levels.values().next().and_then(|r| player.get(*r)) else { return out };
         let movie = lib.movie(root.movie);
@@ -219,8 +281,7 @@ impl Renderer {
                 }
             }
             InstanceKind::EditText(t) => {
-                let filter = inst.filter.filter(|_| !here.mask);
-                let scale = here.xf.max_scale();
+                let param = inst.filter.filter(|_| !here.mask && !self.no_filters).map(|f| TextFieldParam::new(&f));
                 // TODO(guess): the line buffer's flags 0x04 / 0x20 (+0x34, they turn these tests off) are taken as clear; settle: their setters (not among the writers of +0x34 / the view's +0x64).
                 let g = crate::text::GUTTER;
                 let tr = RectF { x0: t.bounds.x0 + g, y0: t.bounds.y0 + g, x1: t.bounds.x1 - g, y1: t.bounds.y1 - g };
@@ -268,16 +329,13 @@ impl Renderer {
                 if let Some(r) = &rect {
                     out.extend([Command::MaskBegin, Command::Draw(r.clone()), Command::MaskEnd]);
                 }
-                if let Some(f) = filter {
-                    out.push(Command::FilterBegin { filter: f, bounds: t.bounds.transform(&here.xf), scale });
-                }
+                let mut layers = TextLayers::default();
                 for g in shown {
                     let size = g.scale * crate::text::em_units(&g.font);
-                    self.text_glyph(&g.font, g.index, size, &here.xf, (g.x, g.y), g.color, &here, out);
+                    let glyph = TextGlyph { font: &g.font, index: g.index, size, at: (g.x, g.y), color: g.color };
+                    self.text_glyph(&glyph, &here.xf, &here, param.as_ref(), &mut layers);
                 }
-                if filter.is_some() {
-                    out.push(Command::FilterEnd);
-                }
+                layers.emit(out);
                 if let Some(r) = rect {
                     out.extend([Command::MaskPopBegin, Command::Draw(r), Command::MaskPopEnd]);
                 }
@@ -306,6 +364,51 @@ fn emit(out: &mut Vec<Command>, mesh: &ShapeMesh, here: &Inherited) {
 }
 
 impl Renderer {
+    fn tessellated(
+        &mut self,
+        key: MeshKey,
+        what: impl FnOnce() -> String,
+        make: impl FnOnce(&mut Budget) -> Result<ShapeMesh, OverBudget>,
+    ) -> Option<Arc<ShapeMesh>> {
+        if let Some(c) = self.meshes.get_mut(&key) {
+            c.frame = self.frame;
+            return Some(c.mesh.clone());
+        }
+        if self.frame_work.reached(&FRAME_TESSELLATION) {
+            self.tess_stats.deferred += 1;
+            return None;
+        }
+        let mut budget = Budget::shape();
+        let made = make(&mut budget);
+        self.frame_work.add(budget.used());
+        self.tess_stats.shape_peak.peak(budget.used());
+        self.tessellated += 1;
+        let mesh = match made {
+            Ok(m) => m,
+            Err(e) => {
+                self.tess_stats.refused += 1;
+                if self.refused.len() < REFUSED_KEPT {
+                    self.refused.push(format!("{}: {e}", what()));
+                }
+                ShapeMesh::default()
+            }
+        };
+        let vertices: u64 = mesh.layers.iter().map(|l| l.mesh.vertices.len() as u64).sum();
+        if self.cached_vertices + vertices > CACHE_VERTICES {
+            let (frame, before) = (self.frame, self.meshes.len());
+            self.meshes.retain(|_, c| c.frame == frame);
+            self.tess_stats.evicted += (before - self.meshes.len()) as u64;
+            self.cached_vertices = self.meshes.values().map(|c| c.vertices).sum();
+        }
+        let mesh = Arc::new(mesh);
+        if self.cached_vertices + vertices <= CACHE_VERTICES {
+            self.meshes.insert(key, Cached { mesh: mesh.clone(), vertices, frame: self.frame, owner: None });
+            self.cached_vertices += vertices;
+            self.tess_stats.cached_vertices_peak = self.tess_stats.cached_vertices_peak.max(self.cached_vertices);
+        }
+        Some(mesh)
+    }
+
     fn character_mesh(&mut self, lib: &Library, inst: &Instance, xf: &Mat2d) -> Option<Arc<ShapeMesh>> {
         let r = inst.character?;
         let bucket = scale_bucket(xf.max_scale());
@@ -314,50 +417,50 @@ impl Renderer {
             InstanceKind::Bitmap => MeshKey::Bitmap(r),
             _ => MeshKey::Shape(r, bucket),
         };
-        if let Some(m) = self.meshes.get(&key) {
-            return Some(m.clone());
-        }
         let tol = bucket_tolerance(bucket);
-        let mesh = match lib.resolve(r)?.1 {
-            Character::Shape(s) => {
-                shape::build(lib, r.movie, &s.shape.styles, &s.shape.records, s.uses_fill_winding_rule, &tol)
-            }
-            Character::Morph(ms) => {
+        let what = || format!("{}: character {} at scale 2^{bucket}", lib.movie(r.movie).path, r.id);
+        match lib.resolve(r)?.1 {
+            Character::Shape(s) => self.tessellated(key, what, |b| {
+                shape::build(lib, r.movie, &s.shape.styles, &s.shape.records, s.uses_fill_winding_rule, &tol, b)
+            }),
+            Character::Morph(ms) => self.tessellated(key, what, |b| {
                 let (styles, records) = shape::morph_at(ms, inst.ratio);
-                shape::build(lib, r.movie, &styles, &records, false, &tol)
-            }
-            Character::Bitmap(b) => bitmap_quad(*b),
-            _ => return None,
-        };
-        self.tessellated += 1;
-        let mesh = Arc::new(mesh);
-        self.meshes.insert(key, mesh.clone());
-        Some(mesh)
+                shape::build(lib, r.movie, &styles, &records, false, &tol, b)
+            }),
+            Character::Bitmap(b) => self.tessellated(key, what, |_| Ok(bitmap_quad(*b))),
+            _ => None,
+        }
     }
 
     fn glyph(&mut self, font: &Arc<Font>, index: usize, scale: f32) -> Arc<ShapeMesh> {
         let bucket = scale_bucket(scale);
         let key = MeshKey::Glyph(Arc::as_ptr(font) as usize, index, bucket);
-        if let Some(m) = self.meshes.get(&key) {
-            return m.clone();
-        }
         let tol = bucket_tolerance(bucket);
-        let mesh = font.glyphs.get(index).map(|g| shape::glyph_mesh(&g.records, tol.curve)).unwrap_or_default();
-        let layers = if mesh.is_empty() {
-            Vec::new()
-        } else {
-            vec![shape::ShapeLayer { paint: Paint::Solid([1.0; 4]), mesh: Arc::new(mesh) }]
-        };
-        self.tessellated += 1;
-        let mesh = Arc::new(ShapeMesh { layers });
-        self.meshes.insert(key, mesh.clone());
-        mesh
+        let what = || format!("font {:?}: glyph {index} at scale 2^{bucket}", font.name);
+        let mesh = self.tessellated(key, what, |b| {
+            let mesh = match font.glyphs.get(index) {
+                Some(g) => shape::glyph_mesh(&g.records, tol.curve, b)?,
+                None => Mesh::default(),
+            };
+            let layers = if mesh.is_empty() {
+                Vec::new()
+            } else {
+                vec![shape::ShapeLayer { paint: Paint::Solid([1.0; 4]), mesh: Arc::new(mesh) }]
+            };
+            Ok(ShapeMesh { layers })
+        });
+        if let Some(c) = self.meshes.get_mut(&key) {
+            c.owner.get_or_insert_with(|| Arc::downgrade(font));
+        }
+        mesh.unwrap_or_default()
     }
 
     // TODO(guess): for a zero-glyph font the font library's font of that name stands in, index for index (never reached on the disc); settle: Scaleform's static text with a substituted font.
     fn static_text(&mut self, lib: &Library, inst: &Instance, here: Inherited, out: &mut Vec<Command>) {
         let Some(r) = inst.character else { return };
         let Some((_, Character::Text(t))) = lib.resolve(r) else { return };
+        let param = inst.filter.filter(|_| !here.mask && !self.no_filters).map(|f| TextFieldParam::new(&f));
+        let mut layers = TextLayers::default();
         let base = here.xf.mul(&Mat2d::from_swf(&t.matrix));
         let (mut font, mut color, mut height) = (None, [0.0, 0.0, 0.0, 1.0], 240.0);
         let (mut x, mut y) = (0.0f32, 0.0f32);
@@ -379,47 +482,53 @@ impl Renderer {
             }
             let Some(f) = font.clone() else { continue };
             for &(g, adv) in &rec.glyphs {
-                self.text_glyph(&f, g as usize, height, &base, (x, y), color, &here, out);
+                let glyph = TextGlyph { font: &f, index: g as usize, size: height, at: (x, y), color };
+                self.text_glyph(&glyph, &base, &here, param.as_ref(), &mut layers);
                 x += adv as f32;
             }
         }
+        layers.emit(out);
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn text_glyph(
         &mut self,
-        font: &Arc<Font>,
-        index: usize,
-        size: f32,
+        g: &TextGlyph,
         node: &Mat2d,
-        at: (f32, f32),
-        color: [f32; 4],
         here: &Inherited,
-        out: &mut Vec<Command>,
+        param: Option<&TextFieldParam>,
+        layers: &mut TextLayers,
     ) {
         use crate::glyph::{CachedGlyph, height_ratio, snapped_size};
-        let fs = snapped_size(size * height_ratio(node));
-        let pen = node.mul(&Mat2d::translate(at.0, at.1));
-        match self.glyphs.glyph(font, index, fs) {
-            CachedGlyph::Raster(r) => {
-                let k = size / (f32::from(fs) * 0.0625).max(1e-5);
-                out.push(Command::Draw(DrawItem {
-                    mesh: r.quad,
-                    paint: Paint::Glyph { raster: r.raster, rect: r.rect, color },
-                    transform: pen.mul(&Mat2d::scale(k, k)),
-                    cxform: here.cx,
-                    blend: here.blend,
-                }));
+        let ratio = height_ratio(node);
+        let screen = g.size * ratio;
+        let shadow = param.and_then(|p| p.shadow);
+        if let Some(sh) = shadow.filter(ShadowParam::drawn) {
+            let ss = shadow_size(screen);
+            if let CachedGlyph::Raster(r) = self.glyphs.filtered(g.font, g.index, ss, sh.filter, ratio, screen) {
+                let pen = node.mul(&Mat2d::translate(g.at.0 + sh.offset.0, g.at.1 + sh.offset.1));
+                layers.shadow.push(raster_draw(&r, ss, g.size, &pen, sh.color, here));
             }
+        }
+        if shadow.is_some_and(|s| s.filter.flags & GlyphFilter::KNOCKOUT != 0) {
+            return;
+        }
+        let fs = snapped_size(screen);
+        let pen = node.mul(&Mat2d::translate(g.at.0, g.at.1));
+        let cached = match param.map(|p| p.text).filter(GlyphFilter::blurred) {
+            Some(f) => self.glyphs.filtered(g.font, g.index, fs, f, ratio, screen),
+            None => self.glyphs.glyph(g.font, g.index, fs),
+        };
+        match cached {
+            CachedGlyph::Raster(r) => layers.raster.push(raster_draw(&r, fs, g.size, &pen, g.color, here)),
             CachedGlyph::Empty => {}
             CachedGlyph::Vector => {
-                let k = size / crate::text::em_units(font);
+                let k = g.size / crate::text::em_units(g.font);
                 let xf = pen.mul(&Mat2d::scale(k, k));
-                let mesh = self.glyph(font, index, xf.max_scale());
+                let mesh = self.glyph(g.font, g.index, xf.max_scale());
                 for layer in &mesh.layers {
-                    out.push(Command::Draw(DrawItem {
+                    layers.vector.push(Command::Draw(DrawItem {
                         mesh: layer.mesh.clone(),
-                        paint: Paint::Solid(color),
+                        paint: Paint::Solid(g.color),
                         transform: xf,
                         cxform: here.cx,
                         blend: here.blend,
@@ -433,6 +542,10 @@ impl Renderer {
         self.meshes.len()
     }
 
+    pub fn cached_vertices(&self) -> u64 {
+        self.cached_vertices
+    }
+
     pub fn tessellate_all(&mut self, lib: &Library, movie: crate::library::MovieId, scale: f32) -> (usize, usize) {
         let tol = Tolerance::for_scale(scale);
         let (mut n, mut tris) = (0, 0);
@@ -440,24 +553,68 @@ impl Renderer {
         let mut ids: Vec<u16> = m.chars.keys().copied().collect();
         ids.sort();
         for id in ids {
+            let mut budget;
             let mesh = match &m.chars[&id] {
                 Character::Shape(s) => {
-                    shape::build(lib, movie, &s.shape.styles, &s.shape.records, s.uses_fill_winding_rule, &tol)
+                    budget = Budget::shape();
+                    shape::build(
+                        lib,
+                        movie,
+                        &s.shape.styles,
+                        &s.shape.records,
+                        s.uses_fill_winding_rule,
+                        &tol,
+                        &mut budget,
+                    )
                 }
                 Character::Morph(ms) => {
                     let (a, ra) = shape::morph_at(ms, 0.0);
                     let (b, rb) = shape::morph_at(ms, 1.0);
-                    let mut mesh = shape::build(lib, movie, &a, &ra, false, &tol);
-                    mesh.layers.extend(shape::build(lib, movie, &b, &rb, false, &tol).layers);
-                    mesh
+                    budget = Budget::shape();
+                    shape::build(lib, movie, &a, &ra, false, &tol, &mut budget).and_then(|mut mesh| {
+                        budget = Budget::shape();
+                        mesh.layers.extend(shape::build(lib, movie, &b, &rb, false, &tol, &mut budget)?.layers);
+                        Ok(mesh)
+                    })
                 }
                 _ => continue,
+            };
+            self.tess_stats.shape_peak.peak(budget.used());
+            let Ok(mesh) = mesh else {
+                self.tess_stats.refused += 1;
+                continue;
             };
             n += 1;
             tris += mesh.triangle_count();
         }
         (n, tris)
     }
+}
+
+struct TextGlyph<'a> {
+    font: &'a Arc<Font>,
+    index: usize,
+    size: f32,
+    at: (f32, f32),
+    color: [f32; 4],
+}
+
+fn raster_draw(
+    r: &crate::glyph::RasterGlyph,
+    class: u16,
+    size: f32,
+    pen: &Mat2d,
+    color: [f32; 4],
+    here: &Inherited,
+) -> Command {
+    let k = size / (f32::from(class) * 0.0625).max(1e-5) * r.scale;
+    Command::Draw(DrawItem {
+        mesh: r.quad.clone(),
+        paint: Paint::Glyph { raster: r.raster.clone(), rect: r.rect, color },
+        transform: pen.mul(&Mat2d::scale(k, k)),
+        cxform: here.cx,
+        blend: here.blend,
+    })
 }
 
 fn bitmap_quad(b: crate::library::BitmapDef) -> ShapeMesh {
@@ -520,7 +677,6 @@ mod tests {
                 Command::MaskEnd => "end",
                 Command::MaskPopBegin => "pop",
                 Command::MaskPopEnd => "popend",
-                _ => "other",
             })
             .collect();
         assert_eq!(kinds, ["begin", "draw", "end", "draw", "pop", "draw", "popend", "draw"]);

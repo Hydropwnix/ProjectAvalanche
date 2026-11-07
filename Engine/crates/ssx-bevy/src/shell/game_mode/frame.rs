@@ -2,7 +2,6 @@ use std::time::Instant;
 
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
-use ssx_ui::game::input::Button;
 
 use super::{
     GameUiRes, LAUNCH_BOOT_WAIT, PadSlots, Shell, Stage, UiPipelinesReady, WorldCheck, pad_presses, screenshot,
@@ -11,6 +10,14 @@ use crate::audio::music::frontend::FrontEndAudio;
 use crate::shell::game_level;
 use crate::ui;
 
+#[derive(SystemParam)]
+pub(super) struct TextKeys<'w, 's> {
+    typed: MessageReader<'w, 's, bevy::input::keyboard::KeyboardInput>,
+    ime: MessageReader<'w, 's, bevy::window::Ime>,
+    windows: Query<'w, 's, &'static mut Window, With<bevy::window::PrimaryWindow>>,
+    clipboard: Option<ResMut<'w, bevy::clipboard::Clipboard>>,
+}
+
 pub(super) fn shell_input(
     keys: Res<ButtonInput<KeyCode>>,
     pads: Query<(Entity, &Gamepad)>,
@@ -18,12 +25,39 @@ pub(super) fn shell_input(
     mut shell: ResMut<Shell>,
     mut ui: ResMut<GameUiRes>,
     level: Option<Res<game_level::LevelGame>>,
+    mut text: TextKeys,
 ) {
     let s = &mut *shell;
+    let focused = s.started && ui.text_focused();
+    if let Ok(mut w) = text.windows.single_mut()
+        && w.ime_enabled != focused
+    {
+        w.ime_enabled = focused;
+    }
+    if focused {
+        let ctrl = [KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::SuperLeft, KeyCode::SuperRight]
+            .iter()
+            .any(|k| keys.pressed(*k));
+        text_input(&mut text, &mut ui, ctrl);
+        if ctrl
+            && keys.just_pressed(KeyCode::KeyV)
+            && let Some(clipboard) = text.clipboard.as_deref_mut()
+        {
+            paste(clipboard, &mut ui);
+        }
+    } else {
+        text.typed.clear();
+        text.ime.clear();
+    }
     if !s.started || level.is_some_and(|l| l.takes_input()) {
         return;
     }
-    for (b, device) in pad_presses(&keys, &pads, &slots, &mut s.stick_dpad) {
+    let keyboard = ssx_ui::game::input::KEYBOARD_DEVICE;
+    let search = ui.browser_active();
+    for (b, device) in pad_presses(&keys, &pads, &slots, &mut s.stick_dpad, search) {
+        if focused && device == keyboard {
+            continue;
+        }
         s.host.press_from(&mut ui, b, device);
     }
     let mut stick = Vec2::ZERO;
@@ -31,7 +65,7 @@ pub(super) fn shell_input(
         stick +=
             Vec2::new(pad.get(GamepadAxis::LeftStickX).unwrap_or(0.0), pad.get(GamepadAxis::LeftStickY).unwrap_or(0.0));
     }
-    let key = |k: KeyCode| if keys.pressed(k) { 1.0 } else { 0.0 };
+    let key = |k: KeyCode| if keys.pressed(k) && !focused { 1.0 } else { 0.0 };
     stick += Vec2::new(key(KeyCode::KeyD) - key(KeyCode::KeyA), key(KeyCode::KeyW) - key(KeyCode::KeyS));
     if (stick != Vec2::ZERO || s.last_stick != Vec2::ZERO)
         && let Some(fe) = ui.fe.as_mut()
@@ -44,6 +78,57 @@ pub(super) fn shell_input(
         s.movie_ended = ui.fe.as_ref().map(|x| x.movie_serial);
         s.host.finish_movie(&mut ui);
     }
+}
+
+fn paste(clipboard: &mut bevy::clipboard::Clipboard, ui: &mut GameUiRes) {
+    use ssx_ui::game::fe::ava::keyboard::TextInput as T;
+    match clipboard.fetch_text().poll_result() {
+        Some(Ok(text)) => {
+            let typed = text.chars().filter(|c| !c.is_control()).take(MAX_PASTE);
+            typed.for_each(|c| ui.text_input(T::Char(c)));
+        }
+        Some(Err(e)) => warn!("shell: the clipboard: {e}"),
+        None => {}
+    }
+}
+
+const MAX_PASTE: usize = ssx_ui::game::fe::ava::keyboard::MAX_LEN;
+
+fn text_input(text: &mut TextKeys, ui: &mut GameUiRes, ctrl: bool) {
+    use bevy::input::ButtonState;
+    use ssx_ui::game::fe::ava::keyboard::TextInput as T;
+    for e in text.typed.read() {
+        if ctrl {
+            continue;
+        }
+        if e.state == ButtonState::Pressed {
+            for i in key_text(e.key_code, e.text.as_deref()) {
+                ui.text_input(i);
+            }
+        }
+    }
+    for e in text.ime.read() {
+        if let bevy::window::Ime::Commit { value, .. } = e {
+            value.chars().filter(|c| !c.is_control()).for_each(|c| ui.text_input(T::Char(c)));
+        }
+    }
+}
+
+// TODO(guess): a port choice — Enter confirms and Escape cancels a text field, Backspace / Delete / the arrows / Home / End edit it (the game has no text entry and no keyboard text); settle: none.
+pub(super) fn key_text(key: KeyCode, text: Option<&str>) -> Vec<ssx_ui::game::fe::ava::keyboard::TextInput> {
+    use ssx_ui::game::fe::ava::keyboard::TextInput as T;
+    let edit = match key {
+        KeyCode::Backspace => T::Backspace,
+        KeyCode::Delete => T::Delete,
+        KeyCode::ArrowLeft => T::Left,
+        KeyCode::ArrowRight => T::Right,
+        KeyCode::Home => T::Home,
+        KeyCode::End => T::End,
+        KeyCode::Enter | KeyCode::NumpadEnter => T::Enter,
+        KeyCode::Escape => T::Escape,
+        _ => return text.unwrap_or("").chars().filter(|c| !c.is_control()).map(T::Char).collect(),
+    };
+    vec![edit]
 }
 
 #[derive(SystemParam)]
@@ -64,6 +149,7 @@ pub(super) struct Frame<'w, 's> {
     audio: Option<ResMut<'w, FrontEndAudio>>,
     world_check: Res<'w, WorldCheck>,
     exit: MessageWriter<'w, AppExit>,
+    live: Option<ResMut<'w, crate::shell::live::LiveSession>>,
 }
 
 pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mut f: Frame) {
@@ -121,12 +207,28 @@ pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mu
     if f.level.as_ref().is_some_and(|l| l.results_shown()) {
         s.next_segment();
     }
+    if let Some(live) = f.live.as_deref_mut()
+        && s.live_frame(&mut ui, f.level.as_deref(), live)
+    {
+        f.commands.remove_resource::<crate::shell::live::LiveSession>();
+        #[cfg(feature = "net")]
+        crate::net::finished(&mut f.commands);
+    }
+    #[cfg(feature = "net")]
+    if s.link.is_some()
+        && ui.fe.as_ref().is_some_and(|fe| fe.ava.hub.active)
+        && !ui.views_loading()
+        && let Some(address) = s.link.take()
+    {
+        info!("shell: the link's server {address}: the browser asks the player");
+        ui.open_link(address);
+        ui.nav.raise(ssx_ui::game::fe::ava::browser::OPEN);
+    }
     if s.stage == Stage::Menus
         && let Some((name, at)) = s.test_launch.clone()
         && s.host.time >= at
     {
         let screen = ui.fe.as_ref().map(|fe| fe.screen);
-        let movie = ui.fe.as_ref().is_some_and(|fe| fe.movie.is_some());
         let menu = !ui.nav.is_active("backgroundcontainer_on") && screen != Some(ssx_ui::game::fe::screens::id::BOOT);
         if menu && !ui.views_loading() {
             s.test_launch = None;
@@ -147,23 +249,14 @@ pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mu
                 ui.nav.is_active("backgroundcontainer_on"),
                 ui.loading_view_names()
             );
-        } else if screen == Some(ssx_ui::game::fe::screens::id::BOOT)
-            && !movie
-            && s.host.time >= s.launch_start_at
-            && ui.fe.as_ref().is_some_and(|fe| fe.saveload.dialog == Some(0xC))
-        {
-            info!("shell: --launch {name}: A on the save library's autosave notice");
-            s.host.press(&mut ui, Button::DigitalOne);
-            s.launch_start_at = s.host.time + 1.0;
-        } else if screen == Some(ssx_ui::game::fe::screens::id::BOOT) && !movie && s.host.time >= s.launch_start_at {
-            info!("shell: --launch {name}: START on the boot screen first (the boot flow ends on the main menu)");
-            s.host.press(&mut ui, Button::Start);
-            s.launch_start_at = s.host.time + 1.0;
+        } else {
+            s.boot_press(&mut ui, &format!("--launch {name}"));
         }
     }
+    s.maps_frame(&mut ui);
     let window = f.windows.iter().next().map_or(Vec2::new(1280.0, 720.0), |w| w.size());
     s.play_movie(&mut ui, dt, window, &mut f.images, &mut f.sprites, &mut f.cameras, f.audio.as_deref_mut());
-    s.stage_step(&mut ui, f.level.as_deref(), f.ride.as_deref());
+    s.stage_step(&mut ui, f.level.as_deref(), f.ride.as_deref(), f.live.as_deref_mut());
     let sc = &mut *f.scene;
     let t0 = Instant::now();
     if let Some(vm) = sc.vm.as_mut() {
@@ -185,10 +278,18 @@ pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mu
     } else if presses == 0 {
         s.popup_reported = false;
     }
-    for r in ui.take_requests() {
+    let mut requests = ui.take_requests();
+    if std::mem::take(&mut s.host.exit_asked) {
+        requests.push(ssx_ui::game::fe::pause::GameRequest::ExitGame);
+    }
+    for r in requests {
         use ssx_ui::game::fe::pause::GameRequest;
         info!("shell: game request {r:?}");
         match (r, f.level.as_mut()) {
+            (GameRequest::ExitGame, _) => {
+                info!("shell: Exit: the game closes (the profile {})", s.save.describe());
+                f.exit.write(AppExit::Success);
+            }
             (GameRequest::SaveSettings, _) => {
                 s.save.front_end_from(&ui.values);
                 s.write_save(&mut ui, "settings", f.audio.as_deref(), f.ride.as_deref());
@@ -201,6 +302,16 @@ pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mu
             (r, Some(l)) => l.request(r),
             _ => {}
         }
+    }
+    #[cfg(feature = "net")]
+    for r in ui.take_net_requests() {
+        info!("shell: the browser asks {r:?}");
+        if f.live.is_some() && matches!(r, ssx_ui::game::fe::ava::browser::NetRequest::Connect(_)) {
+            let reason = Some("a network session is already running".to_string());
+            ui.net_progress(ssx_ui::game::fe::ava::browser::NetProgress::Ended { reason, refusal: None });
+            continue;
+        }
+        crate::net::request(&mut f.commands, r);
     }
     let asked = ui.fe.as_mut().map(|fe| std::mem::take(&mut fe.saveload.requests)).unwrap_or_default();
     for r in asked {
@@ -231,12 +342,16 @@ pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mu
         use ssx_ui::game::fe::music::MusicRequest;
         for r in music_requests {
             match r {
-                MusicRequest::Preview(id) => audio.preview(&s.big_root, id),
+                MusicRequest::Preview { id, key } => audio.preview(&s.big_root, id, key.as_ref()),
                 MusicRequest::StopPreview => audio.stop_preview(),
             }
         }
+        audio.set_level_loading(s.loading.is_some());
         if let Some(fe) = ui.fe.as_mut() {
             fe.music.controller_playing = audio.preview_playing();
+            if fe.music.take_switches_changed() {
+                audio.set_song_switches(&fe.music.switches());
+            }
         }
     }
     if let Some(audio) = f.audio.as_mut() {
@@ -393,4 +508,21 @@ fn report_popup(sc: &mut ui::UiScene) {
         input.join("; "),
         list.join(", ")
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ssx_ui::game::fe::ava::keyboard::TextInput as T;
+
+    #[test]
+    fn keys_become_text() {
+        assert_eq!(key_text(KeyCode::KeyA, Some("a")), [T::Char('a')]);
+        assert_eq!(key_text(KeyCode::KeyA, Some("A")), [T::Char('A')]);
+        assert_eq!(key_text(KeyCode::Backspace, Some("\u{8}")), [T::Backspace]);
+        assert_eq!(key_text(KeyCode::Enter, Some("\r")), [T::Enter]);
+        assert_eq!(key_text(KeyCode::Tab, Some("\t")), []);
+        assert_eq!(key_text(KeyCode::ShiftLeft, None), []);
+        assert_eq!(key_text(KeyCode::Digit2, Some("\u{e9}")), [T::Char('\u{e9}')]);
+    }
 }

@@ -1,0 +1,25 @@
+Project Avalanche dedicated server as a Windows service
+
+avalanche-server.exe is a console program; it is not a Windows service program itself (it does not speak the Service
+Control Manager's protocol). Run it as a service through a service wrapper that starts it as a child process and stops
+it with Ctrl-C (a console control event: the server's graceful stop), for example WinSW or NSSM. Neither ships with
+Project Avalanche; read their own documentation and licences.
+
+1. Unpack ProjectAvalanche-server-windows-x64 to C:\AvalancheServer and set up the rules from your own disc once:
+     cd C:\AvalancheServer
+     .\avalanche-server.exe setup D:\path\to\your\ssx.iso --out data
+     copy server.toml.example server.toml   (and edit it)
+     .\avalanche-server.exe check
+2. With NSSM (from an administrator's console):
+     nssm install AvalancheServer C:\AvalancheServer\avalanche-server.exe run --config C:\AvalancheServer\server.toml --data C:\AvalancheServer\data
+     nssm set AvalancheServer AppDirectory C:\AvalancheServer
+     nssm set AvalancheServer AppStopMethodConsole 15000
+     nssm set AvalancheServer AppStdout C:\AvalancheServer\data\logs\service-output.log
+     nssm set AvalancheServer AppStderr C:\AvalancheServer\data\logs\service-output.log
+     nssm start AvalancheServer
+   (AppStopMethodConsole sends Ctrl-C and waits 15 s: the server tells its riders and the masters, then ends.)
+3. Run the service as its own account (not LocalSystem): give that account full control of C:\AvalancheServer\data
+   only. The key files in data\ are the server's identity: back them up, never share them.
+4. Open UDP 27450, TCP 27450 and UDP 27451 in Windows Defender Firewall for avalanche-server.exe.
+
+The server's own log is data\logs\server.log (rotated at 16 MiB).

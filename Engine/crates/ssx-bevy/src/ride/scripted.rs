@@ -39,6 +39,15 @@ pub(super) fn back_script() -> Option<&'static [f32]> {
         .as_deref()
 }
 
+fn grab_buttons_script() -> Option<&'static [char]> {
+    static SEQ: std::sync::OnceLock<Option<Vec<char>>> = std::sync::OnceLock::new();
+    SEQ.get_or_init(|| {
+        let v = std::env::var("SSX_RIDE_GRAB_BUTTONS").ok()?;
+        ssx_physics::harness::buttons::parse(&v).map_err(|e| warn!("SSX_RIDE_GRAB_BUTTONS {e}: not used")).ok()
+    })
+    .as_deref()
+}
+
 pub(super) fn press_script() -> Option<(bool, f32, f32)> {
     let v = std::env::var("SSX_RIDE_PRESS").ok()?;
     let mut parts = v.split(',');
@@ -90,6 +99,18 @@ impl Ride {
 
     pub(super) fn scripted_controls(&mut self) {
         self.rewind_pad = RewindPad::default();
+        if self.autoplay
+            && let Some(m) = self.map.as_mut()
+        {
+            let target = m.target(&self.world);
+            let (input, pad, turned) = m.player.controls(self.steps, &self.state, target);
+            if turned {
+                info!("Ride step {}: the test player turns off the slope's side (SSX_MAP_FALL_AT)", self.steps + 1);
+            }
+            (self.input, self.tricks, self.rewind_pad) = (input, TrickInput::default(), pad);
+            (self.r2, self.l2, self.r1) = (0.0, false, false);
+            return;
+        }
         if self.autoplay {
             let intro = self.state.start.as_ref().and_then(|l| l.intro.as_ref());
             if intro.is_some_and(|i| i.cabin.is_some()) {
@@ -231,7 +252,14 @@ fn autoplay_input(ride: &Ride) -> (Input, TrickInput) {
         (input.steer, input.tuck, input.brake) = (1.0, 0.0, 0.0);
     }
     if s.state != RideState::Riding && s.air.air_time < 0.5 * 60.0 {
-        tricks.right_stick = Vec2::Y;
+        match grab_buttons_script() {
+            Some(seq) if !s.on_ground => ssx_physics::harness::buttons::press(
+                &mut tricks,
+                ssx_physics::harness::buttons::pressed(seq, s.air.air_time),
+            ),
+            Some(_) => {}
+            None => tricks.right_stick = Vec2::Y,
+        }
     }
     (input, tricks)
 }

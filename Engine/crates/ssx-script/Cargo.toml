@@ -1,0 +1,32 @@
+[package]
+name = "ssx-script"
+description = "The Luau runtime for mod and resource scripts: sandboxed VMs, the script host and its API (port feature: modding)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+wire = ["dep:ssx-net-proto"]
+
+[dependencies]
+mlua.workspace = true
+thiserror.workspace = true
+ssx-content.workspace = true
+toml.workspace = true
+blake3.workspace = true
+cap-std.workspace = true
+cap-fs-ext.workspace = true
+ssx-files = { workspace = true, features = ["cap-std"] }
+ssx-core.workspace = true
+ssx-net-proto = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+mlua.workspace = true
+
+[lints]
+workspace = true

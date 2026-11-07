@@ -1,0 +1,17 @@
+{
+	"actions":
+		[
+			{ "viewname": "A_AvaSingleplayer", "actionname": "A_AvaSingleplayer" },
+			{ "viewname": "A_AvaMultiplayer", "actionname": "A_AvaMultiplayer" },
+			{ "viewname": "A_AvaMaps", "actionname": "A_AvaMaps" },
+			{ "viewname": "A_AvaOptions", "actionname": "A_AvaOptions" },
+			{ "viewname": "A_AvaCredits", "actionname": "A_AvaCredits" },
+			{ "viewname": "A_AvaExit", "actionname": "A_AvaExit" },
+			{ "viewname": "A_AvaHubHighlight", "actionname": "A_AvaHubHighlight" }
+		],
+	"data":
+		[
+			{ "viewname": "ava_hub_menu", "type": "array", "dpname": "dp_ava_hub_menu" },
+			{ "viewname": "ava_hub_menu_index", "type": "int", "dpname": "dp_ava_hub_menu_index" }
+		]
+}

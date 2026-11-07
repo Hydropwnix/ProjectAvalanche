@@ -1,0 +1,7 @@
+{
+	"view": "ava_hub",
+	"dataproviders":
+	[
+		"avahub", "gamemodes", "globe", "errorscreen", "onlinepass"
+	]
+}

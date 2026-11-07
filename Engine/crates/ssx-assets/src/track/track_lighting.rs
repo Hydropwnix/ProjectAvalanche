@@ -58,6 +58,7 @@ pub struct LightingPreset {
     pub vectors: BTreeMap<String, [f32; 4]>,
     pub textures: BTreeMap<String, String>,
     pub sun_node: Option<crate::particles::ParticleNode>,
+    pub sky: Option<ssx_content::ContentId>,
 }
 
 impl LightingPreset {
@@ -78,9 +79,21 @@ pub struct Drop {
     pub postfx: Option<String>,
     pub selectable: bool,
     pub lighting: LightingPreset,
+    pub lighting_key: Option<u32>,
 }
 
 pub fn load_track_drops(big_root: &Path, track: &str) -> Result<Vec<Drop>> {
+    let mut drops = disc_track_drops(big_root, track)?;
+    let content = crate::content::GameContent::of(big_root);
+    for d in &mut drops {
+        if let Some(key) = d.lighting_key {
+            d.lighting = content.route_lighting(key, std::mem::take(&mut d.lighting));
+        }
+    }
+    Ok(drops)
+}
+
+pub fn disc_track_drops(big_root: &Path, track: &str) -> Result<Vec<Drop>> {
     let track_key = fnv1(&format!("{track}_track"));
     with_track_db(big_root, track, |db| {
         let mut out = Vec::new();
@@ -92,11 +105,11 @@ pub fn load_track_drops(big_root: &Path, track: &str) -> Result<Vec<Drop>> {
                 continue;
             }
             let postfx = text(FIELD_POSTFX);
-            let lighting = match get(FIELD_LIGHTING) {
+            let (lighting, lighting_key) = match get(FIELD_LIGHTING) {
                 Some(Value::Ref(r)) if r.class == CLASS_LIGHTING && r.collection != 0 => {
-                    preset(db, r.collection, postfx.as_deref())?
+                    (preset(db, r.collection, postfx.as_deref())?, Some(r.collection))
                 }
-                _ => LightingPreset::default(),
+                _ => (LightingPreset::default(), None),
             };
             out.push(Drop {
                 key,
@@ -105,13 +118,14 @@ pub fn load_track_drops(big_root: &Path, track: &str) -> Result<Vec<Drop>> {
                 postfx,
                 selectable: matches!(get(FIELD_SELECTABLE), Some(Value::Bool(true))),
                 lighting,
+                lighting_key,
             });
         }
         Ok(out)
     })
 }
 
-fn preset(db: &Db<'_>, key: u32, postfx: Option<&str>) -> Result<LightingPreset> {
+pub(crate) fn preset(db: &Db<'_>, key: u32, postfx: Option<&str>) -> Result<LightingPreset> {
     let mut name = db.collection_name(key);
     if let Some(base) = postfx.and_then(|p| p.strip_suffix("_postfx")) {
         let candidates = [format!("{base}_lighting"), format!("{base}_pre_lighting")];

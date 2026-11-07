@@ -4,7 +4,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
-use ssx_assets::musicbox::{LicensedMusic, MUSIC_SUBMIX_LEVEL, MusicBox};
+use ssx_assets::content::audio::{AudioScope, MusicDecision};
+use ssx_assets::musicbox::{LicensedMusic, MUSIC_SUBMIX_LEVEL, MusicBox, SongSwitches};
 use ssx_assets::sfx::frontend::{FlowInputs, FlowState, FrontEndMusic, StateMsg, UiContext, UiSounds};
 use ssx_assets::sfx::movie::MovieAudio;
 use ssx_assets::sfx::music_pause::MusicPause;
@@ -14,10 +15,15 @@ use ssx_assets::sfx::{MusicSource, OutputMix, SfxEngine};
 
 use super::{GameAudio, output};
 
+mod reload;
+pub use reload::FrontEndReload;
+
 #[derive(Resource, Clone, Copy)]
 pub struct AudioSettingsRes(pub AudioSettings);
 
-struct FeMusicBus(Arc<Mutex<FrontEndMusic>>, Arc<Mutex<Option<Preview>>>);
+struct FeMusicBus(Arc<Mutex<FrontEndMusic>>, Arc<Mutex<Option<Preview>>>, MenuSongs);
+
+type MenuSongs = Arc<Mutex<Option<(LicensedMusic, Vec<f32>)>>>;
 
 impl MusicSource for FeMusicBus {
     fn render(&mut self, out: &mut [f32]) {
@@ -31,6 +37,18 @@ impl MusicSource for FeMusicBus {
             pv.render_add(out);
             if pv.stopped {
                 *p = None;
+            }
+        }
+        if let Ok(mut menu) = self.2.lock()
+            && let Some((lm, buf)) = menu.as_mut()
+        {
+            buf.resize(out.len(), 0.0);
+            lm.render(buf, MUSIC_SUBMIX_LEVEL);
+            for (o, x) in out.iter_mut().zip(buf.iter()) {
+                *o += x;
+            }
+            if lm.finished() {
+                *menu = None;
             }
         }
     }
@@ -79,6 +97,9 @@ impl Preview {
 pub struct FrontEndAudioData {
     engine: SfxEngine,
     music: Option<FrontEndMusic>,
+    plan: Arc<MusicDecision>,
+    menu_plan: Arc<MusicDecision>,
+    big_root: std::path::PathBuf,
 }
 
 #[derive(Resource)]
@@ -99,6 +120,12 @@ pub struct FrontEndAudio {
     verbose: bool,
     music_pause: MusicPause,
     speech_pause: SpeechPause,
+    plan: Arc<MusicDecision>,
+    menu_plan: Arc<MusicDecision>,
+    menu: MenuSongs,
+    switches: SongSwitches,
+    level_loading: bool,
+    big_root: std::path::PathBuf,
 }
 
 pub fn load(big_root: Option<&Path>) -> Option<FrontEndAudioData> {
@@ -107,27 +134,45 @@ pub fn load(big_root: Option<&Path>) -> Option<FrontEndAudioData> {
         return None;
     }
     let big_root = big_root?;
-    let engine = match SfxEngine::load(big_root, &["fe_sfx"]) {
+    let mut engine = match SfxEngine::load(big_root, &["fe_sfx"]) {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("warning: front-end audio unavailable: {e:#}");
+            ssx_core::eprintln!("warning: front-end audio unavailable: {e:#}");
             return None;
         }
     };
+    let content = ssx_assets::content::GameContent::of(big_root);
+    let sounds = content.sound_overrides(None);
+    if !sounds.sounds.is_empty() {
+        for id in engine.set_overrides(&sounds.sounds) {
+            ssx_core::eprintln!("warning: front-end audio: {id}: no interface of the front end's engine defines it");
+        }
+    }
+    let plan = content.music_plan(&AudioScope::FrontEnd);
+    let menu_plan = content.music_plan(&AudioScope::MusicMenu);
     let music_mode = std::env::var("SSX_MUSIC").unwrap_or_default().to_ascii_lowercase();
     let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(5489, |d| d.subsec_nanos());
-    let music = if matches!(music_mode.as_str(), "off" | "0" | "false") {
+    let mut music = if matches!(music_mode.as_str(), "off" | "0" | "false") {
         None
     } else {
-        FrontEndMusic::load(big_root, seed).map_err(|e| eprintln!("warning: front-end music unavailable: {e:#}")).ok()
+        FrontEndMusic::load(big_root, seed)
+            .map_err(|e| ssx_core::eprintln!("warning: front-end music unavailable: {e:#}"))
+            .ok()
     };
-    Some(FrontEndAudioData { engine, music })
+    if let Some(m) = music.as_mut()
+        && !plan.music.is_empty()
+    {
+        let mut log = Vec::new();
+        ssx_assets::content::audio::apply::apply_project(&mut m.music, "ssx_fe", &plan.music, &mut log);
+        log.iter().for_each(|l| ssx_core::eprintln!("{l}"));
+    }
+    Some(FrontEndAudioData { engine, music, plan, menu_plan, big_root: big_root.to_path_buf() })
 }
 
 pub fn start(world: &mut World, data: Option<FrontEndAudioData>) {
     let Some(data) = data else { return };
     let Some(g) = world.get_resource::<GameAudio>().cloned() else {
-        eprintln!("warning: front-end audio: no output (music::frontend::register)");
+        ssx_core::eprintln!("warning: front-end audio: no output (music::frontend::register)");
         return;
     };
     let mut data = data;
@@ -152,6 +197,12 @@ pub fn start(world: &mut World, data: Option<FrontEndAudioData>) {
         verbose: std::env::var("SSX_FE_AUDIO_LOG").is_ok_and(|v| v == "1"),
         music_pause: MusicPause::default(),
         speech_pause: SpeechPause::default(),
+        plan: data.plan,
+        menu_plan: data.menu_plan,
+        menu: Arc::new(Mutex::new(None)),
+        switches: SongSwitches::default(),
+        level_loading: false,
+        big_root: data.big_root,
     };
     fe.plug();
     world.insert_resource(fe);
@@ -215,8 +266,9 @@ impl FrontEndAudio {
             return;
         }
         let engine = self.engine.lock().ok().and_then(|mut e| e.take());
+        self.arm_menu_songs();
         let music: Option<Box<dyn MusicSource>> =
-            self.music.as_ref().map(|m| Box::new(FeMusicBus(m.clone(), self.preview.clone())) as _);
+            self.music.as_ref().map(|m| Box::new(FeMusicBus(m.clone(), self.preview.clone(), self.menu.clone())) as _);
         let _turn = crate::audio::music::GameTurn::take();
         let Ok(mut m) = self.out.lock() else { return };
         let old_sfx = engine.is_some().then(|| std::mem::replace(&mut m.sfx, engine));
@@ -233,10 +285,51 @@ impl FrontEndAudio {
         self.reset_music_pause();
     }
 
+    fn arm_menu_songs(&mut self) {
+        if self.plan.music.added.iter().all(|s| !s.song.menu) {
+            return;
+        }
+        match MusicBox::load(&self.big_root) {
+            Ok(mut mb) => {
+                mb.add_packages(&self.plan.music);
+                mb.apply_switches(&self.switches);
+                if let Ok(mut m) = self.menu.lock() {
+                    *m = Some((LicensedMusic::menu(mb), Vec::new()));
+                }
+            }
+            Err(e) => ssx_core::eprintln!("warning: the menus' package songs: {e:#}"),
+        }
+    }
+
+    pub fn set_song_switches(&mut self, switches: &SongSwitches) {
+        if self.switches == *switches {
+            return;
+        }
+        self.switches = switches.clone();
+        let _turn = crate::audio::music::GameTurn::take();
+        if let Ok(mut m) = self.menu.lock()
+            && let Some((lm, _)) = m.as_mut()
+        {
+            lm.mb.apply_switches(switches);
+        }
+    }
+
+    pub fn set_level_loading(&mut self, loading: bool) {
+        self.level_loading = loading;
+    }
+
     fn reset_music_pause(&mut self) {
         self.music_pause = MusicPause::default();
         self.speech_pause = SpeechPause::default();
         ssx_assets::musicbox::set_paused(false);
+    }
+
+    pub fn set_unplugged_sounds(&self, sounds: &ssx_assets::sfx_override::SoundOverrides) {
+        if let Ok(mut e) = self.engine.lock()
+            && let Some(e) = e.as_mut()
+        {
+            e.set_overrides(sounds);
+        }
     }
 
     pub fn aems_rng(&self) -> Option<[u32; 6]> {
@@ -258,21 +351,40 @@ impl FrontEndAudio {
         self.reset_music_pause();
     }
 
-    pub fn preview(&mut self, big_root: &Path, id: u32) {
+    pub fn preview(&mut self, big_root: &Path, id: u32, key: Option<&ssx_content::ContentId>) {
         if self.music.is_none() {
             return;
         }
-        let player = match MusicBox::load(big_root) {
-            Ok(mb) => LicensedMusic::song(mb, id),
+        let mut mb = match MusicBox::load(big_root) {
+            Ok(mb) => mb,
             Err(e) => {
-                eprintln!("warning: the music menu's preview: {e:#}");
+                ssx_core::eprintln!("warning: the music menu's preview: {e:#}");
                 return;
             }
         };
+        if !self.menu_plan.music.is_empty() {
+            mb.add_packages(&self.menu_plan.music);
+        }
+        let id = match key {
+            None => id,
+            Some(k) => match mb.package.keys.iter().find(|(_, key)| *key == k) {
+                Some((&id, _)) => id,
+                None => {
+                    warn!("music: no preview: {k} is no longer a song of the packages' music");
+                    return;
+                }
+            },
+        };
+        let player = LicensedMusic::song(mb, id);
         let label = player.mb.song(id).map_or_else(|| format!("{id:#x}"), |s| s.label());
         info!("music: preview {label} (PlaySong {id:#x})");
         let preview = Preview { player, level: MUSIC_SUBMIX_LEVEL, fade: None, stopped: false, buf: Vec::new() };
         let _turn = crate::audio::music::GameTurn::take();
+        if let Ok(mut m) = self.menu.lock()
+            && let Some((lm, _)) = m.as_mut()
+        {
+            lm.stop(0.0);
+        }
         if let Ok(mut p) = self.preview.lock() {
             *p = Some(preview);
         }
@@ -301,6 +413,11 @@ impl FrontEndAudio {
     pub fn gameplay_start(&mut self) {
         let secs = ssx_assets::sfx_game::tuning::MUSIC_LEVEL_START_FADE;
         self.stop_preview_over((secs * ssx_assets::pathfinder::SAMPLE_RATE as f32).round() as u32);
+        if let Ok(mut m) = self.menu.lock()
+            && let Some((lm, _)) = m.as_mut()
+        {
+            lm.end_posts(secs);
+        }
         if let Some(music) = &self.music
             && let Ok(mut m) = music.lock()
         {
@@ -350,6 +467,12 @@ impl FrontEndAudio {
         let _turn = crate::audio::music::GameTurn::take();
         let Ok(mut m) = self.out.lock() else { return };
         let level_song = m.music_tail.as_ref().is_some_and(|t| !t.finished());
+        let preview = self.preview.lock().is_ok_and(|p| p.as_ref().is_some_and(|pv| !pv.stopped));
+        if let Ok(mut menu) = self.menu.lock()
+            && let Some((lm, _)) = menu.as_mut()
+        {
+            lm.hold_posts(level_song || preview || self.level_loading);
+        }
         if let Some(e) = m.sfx.as_mut() {
             if self.plugged {
                 for l in e.mixer.events.drain(..) {
@@ -373,7 +496,10 @@ impl FrontEndAudio {
                 && let Ok(mut fm) = music.lock()
             {
                 let fm = &mut *fm;
-                let playing = level_song || self.preview.lock().is_ok_and(|p| p.as_ref().is_some_and(|pv| !pv.stopped));
+                let menu_song = self.menu.lock().is_ok_and(|m| m.as_ref().is_some_and(|(lm, _)| lm.song_open()));
+                let playing = level_song
+                    || menu_song
+                    || self.preview.lock().is_ok_and(|p| p.as_ref().is_some_and(|pv| !pv.stopped));
                 fm.module.state_msg(&mut fm.music.rt, &msg, &mut e.settings, playing);
                 fm.module.update(&mut fm.music.rt);
                 for l in fm.module.log.drain(..).chain(fm.music.rt.log.drain(..).map(|l| l.text)) {

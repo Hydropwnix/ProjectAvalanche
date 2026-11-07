@@ -235,7 +235,7 @@ impl LandingState {
         let mut a = *alignment;
         let use_impact_tuning = impact.use_impact_tuning();
         let spin_kick = impact.spin_kick(&t.spin_impact, a, c.speed_threshold);
-        let spin = slip_angle(c, a.conjugate() * v, steering.cached_slip);
+        let spin = slip_angle(c, ground_frame(a, n).conjugate() * v, steering.cached_slip);
         let spin_vel = twist(a.conjugate() * w * a, Vec3::Y) + spin_kick;
         a = (a * Quat::from_rotation_y(-spin)).normalize();
         let pitch_kick = impact.pitch_kick(&t.pitch_impact, ground_frame(a, n));

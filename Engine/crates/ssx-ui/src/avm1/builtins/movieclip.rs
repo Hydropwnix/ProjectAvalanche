@@ -1,6 +1,6 @@
 use super::{Builder, R, arg};
 use crate::avm1::object::{Kind, ObjId};
-use crate::avm1::runtime::{LoadRequest, LoadTarget};
+use crate::avm1::runtime::LoadTarget;
 use crate::avm1::value::{Value, to_int32};
 use crate::avm1::{ClipEvent, Ctx, Fault, Job};
 use crate::display::InstanceId;
@@ -204,26 +204,19 @@ fn remove_movie_clip(cx: &mut Ctx, this: Value, _: &[Value]) -> R {
 fn load_movie(cx: &mut Ctx, this: Value, a: &[Value]) -> R {
     let Some(o) = this.as_object() else { return Ok(Value::Undefined) };
     let url = cx.to_string(&arg(a, 0))?.to_string();
-    cx.vm.loads.push(LoadRequest { url, target: LoadTarget::Clip(o), loader: None });
+    cx.queue_load(url, LoadTarget::Clip(o), None)?;
     Ok(Value::Undefined)
 }
 
 fn unload_movie(cx: &mut Ctx, this: Value, _: &[Value]) -> R {
     if let Some(o) = this.as_object().filter(|_| cx.display_of(&this).is_some()) {
-        cx.vm.loads.push(LoadRequest { url: String::new(), target: LoadTarget::Clip(o), loader: None });
+        cx.queue_load(String::new(), LoadTarget::Clip(o), None)?;
     }
     Ok(Value::Undefined)
 }
 
 pub(crate) fn world_matrix(cx: &Ctx, id: InstanceId) -> Mat2d {
-    let mut m = Mat2d::IDENTITY;
-    let mut cur = Some(id);
-    while let Some(c) = cur {
-        let Some(i) = cx.player.get(c) else { break };
-        m = i.matrix.mul(&m);
-        cur = i.parent;
-    }
-    m
+    cx.player.world_matrix(id)
 }
 
 fn rect_object(cx: &mut Ctx, r: RectF) -> Result<Value, Fault> {
@@ -262,22 +255,36 @@ fn convert_point(cx: &mut Ctx, this: &Value, a: &[Value], to_global: bool) -> R 
 
 fn hit_test(cx: &mut Ctx, this: Value, a: &[Value]) -> R {
     let Some(id) = cx.display_of(&this) else { return Ok(Value::Bool(false)) };
-    let bounds = |cx: &Ctx, i: InstanceId| {
-        let l = cx.player.local_bounds(cx.lib, i);
-        if l.is_empty() { l } else { l.transform(&world_matrix(cx, i)) }
-    };
-    let mine = bounds(cx, id);
-    if mine.is_empty() {
-        return Ok(Value::Bool(false));
-    }
-    if let Some(other) = a.first().and_then(|t| cx.display_of(t)) {
-        let o = bounds(cx, other);
-        let hit = !o.is_empty() && mine.x0 <= o.x1 && o.x0 <= mine.x1 && mine.y0 <= o.y1 && o.y0 <= mine.y1;
+    let bounds = |cx: &Ctx, i: InstanceId| crate::display::hit::stage_bounds(cx.player, cx.lib, i);
+    if a.len() == 1 {
+        let Some(other) = cx.display_of(&a[0]) else { return Ok(Value::Bool(false)) };
+        let (mine, o) = (bounds(cx, id), bounds(cx, other));
+        let hit = !mine.is_empty()
+            && !o.is_empty()
+            && mine.x0 <= o.x1
+            && o.x0 <= mine.x1
+            && mine.y0 <= o.y1
+            && o.y0 <= mine.y1;
         return Ok(Value::Bool(hit));
     }
     let x = cx.to_number(&arg(a, 0)) as f32 * 20.0;
     let y = cx.to_number(&arg(a, 1)) as f32 * 20.0;
-    Ok(Value::Bool(mine.contains(x, y)))
+    if !x.is_finite() || !y.is_finite() {
+        return Ok(Value::Bool(false));
+    }
+    let shape = a.len() > 2 && cx.to_bool(&a[2]);
+    if !shape {
+        let b = bounds(cx, id);
+        return Ok(Value::Bool(!b.is_empty() && b.contains(x, y)));
+    }
+    let mut meshes = std::mem::take(&mut cx.vm.pointer.meshes);
+    let hit = crate::display::hit::Hit { player: cx.player, lib: cx.lib, meshes: &mut meshes }.shape(
+        id,
+        (x, y),
+        crate::display::hit::Visibility::Ignore,
+    );
+    cx.vm.pointer.meshes = meshes;
+    Ok(Value::Bool(hit))
 }
 
 fn text_format_ctor(cx: &mut Ctx, this: Value, a: &[Value]) -> R {
@@ -464,7 +471,7 @@ fn load_clip(cx: &mut Ctx, this: Value, a: &[Value]) -> R {
             LoadTarget::Level(n as i32)
         }
     };
-    cx.vm.loads.push(LoadRequest { url, target, loader: this.as_object() });
+    cx.queue_load(url, target, this.as_object())?;
     Ok(Value::Bool(true))
 }
 

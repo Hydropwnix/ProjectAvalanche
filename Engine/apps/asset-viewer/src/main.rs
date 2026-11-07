@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
-use bevy::prelude::*;
+use bevy::prelude::{App, AppExit, DefaultPlugins, PluginGroup, Startup, Vec2, Vec3, Window, WindowPlugin, default};
 use bevy::window::PresentMode;
 use clap::Parser;
 use ssx_bevy::{RenderArgs, WINDOW_SIZE, level, lighting, music, screenshot, sfx};
@@ -108,6 +108,10 @@ struct Cli {
     /// The rider drawn on the board (a `character` collection of the vault, e.g. `alex`, `zoe`).
     #[arg(long, value_name = "NAME", default_value = ssx_assets::character::DEFAULT_CHARACTER)]
     character: String,
+
+    /// Mount the client mods the enabled list (`<app dir>/mods.toml`) names, as the game does.
+    #[arg(long)]
+    mods: bool,
 }
 
 /// A right-stick grab direction (`--ride-grab`).
@@ -132,7 +136,7 @@ impl GrabDir {
 
 fn main() -> AppExit {
     if std::env::args_os().skip(1).any(|a| a == "--game") {
-        eprintln!(
+        ssx_core::eprintln!(
             "error: the game is its own program now: run avalanche-game (next to the launcher), not asset-viewer --game"
         );
         return AppExit::error();
@@ -140,7 +144,7 @@ fn main() -> AppExit {
     match run(Cli::parse()) {
         Ok(exit) => exit,
         Err(e) => {
-            eprintln!("error: {e:#}");
+            ssx_core::eprintln!("error: {}", ssx_core::text::one_line(e.as_ref()));
             AppExit::error()
         }
     }
@@ -165,6 +169,13 @@ fn run(cli: Cli) -> Result<AppExit> {
         screenshot_steps: cli.screenshot.as_ref().map(|_| cli.frames),
         ..default()
     });
+    if cli.mods {
+        let big = cli.big_root.clone().or_else(|| ssx_bevy::terrain_look::find_big_root(&track_dir));
+        let big = big.context("--mods needs the extracted archive root (--big-root)")?;
+        ssx_assets::content::data::tuning::set_bundle_reader(ssx_physics::tuning::read_check);
+        let report = ssx_assets::content::GameContent::of(&big).mount_client_mods(&ssx_assets::setup::app_dir());
+        report.lines().iter().for_each(|l| ssx_core::eprintln!("{l}"));
+    }
     let spec = level::LevelSpec {
         track_dir,
         big_root: cli.big_root.clone(),
@@ -182,6 +193,7 @@ fn run(cli: Cli) -> Result<AppExit> {
         ride,
         character: cli.character.clone(),
         screenshot: cli.screenshot.is_some(),
+        map: None,
     };
     let data = level::LevelData::load(&spec)?;
     let name = data.name.clone();
@@ -191,7 +203,7 @@ fn run(cli: Cli) -> Result<AppExit> {
 
     let mut app = App::new();
     let window = Window {
-        title: format!("SSX-Rust asset viewer — {name}"),
+        title: format!("SSX-Rust asset viewer — {}", ssx_core::text::shown(&name)),
         resolution: WINDOW_SIZE.into(),
         present_mode: if cli.render.no_vsync { PresentMode::AutoNoVsync } else { PresentMode::default() },
         ..default()
@@ -200,6 +212,7 @@ fn run(cli: Cli) -> Result<AppExit> {
         DefaultPlugins
             .set(WindowPlugin { primary_window: Some(window), ..default() })
             .set(level::render_plugin())
+            .set(level::log_plugin())
             .disable::<bevy::audio::AudioPlugin>(),
         FrameTimeDiagnosticsPlugin::default(),
     ));

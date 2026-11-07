@@ -1,0 +1,30 @@
+[package]
+name = "ssx-net-join"
+description = "The client's side of the multiplayer join (port feature): the player's identity file, the servers' keys trusted on first use, the join over HTTP. No Bevy."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+ssx-net-proto = { workspace = true, features = ["icon"] }
+ssx-core.workspace = true
+ssx-files.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ureq = { workspace = true, features = ["rustls-no-provider"] }
+rustls.workspace = true
+rustls-native-certs.workspace = true
+zeroize.workspace = true
+socket2.workspace = true
+ssx-net-lan.workspace = true
+ssx-content.workspace = true
+
+[dev-dependencies]
+avalanche-master.workspace = true
+rcgen.workspace = true
+
+[lints]
+workspace = true

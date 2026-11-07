@@ -1,33 +1,63 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/ssx-core",
     "crates/ssx-formats",
     "crates/ssx-assets",
     "crates/ssx-physics",
+    "crates/ssx-gameplay",
     "crates/ssx-ui",
     "crates/ssx-lua",
     "crates/ssx-bevy",
+    "crates/ssx-content",
+    "crates/ssx-script",
+    "crates/ssx-net-proto",
+    "crates/ssx-net",
+    "crates/ssx-net-join",
     "apps/game",
     "apps/asset-viewer",
     "apps/launcher",
+    "apps/avalanche-server",
+    "crates/ssx-net-lan",
+    "apps/avalanche-master",
+    "crates/ssx-net-portmap",
+    "crates/ssx-movie",
+    "crates/ssx-rules",
+    "crates/ssx-files",
+    "crates/ssx-net-ops",
 ]
+exclude = ["vendor"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
-rust-version = "1.95"
+rust-version = "1.97.1"
 license = "MIT"
 publish = false
 
 [workspace.dependencies]
+ssx-core = { path = "crates/ssx-core" }
 ssx-formats = { path = "crates/ssx-formats" }
 ssx-assets = { path = "crates/ssx-assets" }
 ssx-physics = { path = "crates/ssx-physics" }
+ssx-gameplay = { path = "crates/ssx-gameplay" }
 ssx-ui = { path = "crates/ssx-ui" }
 ssx-lua = { path = "crates/ssx-lua" }
 ssx-bevy = { path = "crates/ssx-bevy" }
+ssx-content = { path = "crates/ssx-content" }
+ssx-script = { path = "crates/ssx-script" }
+ssx-net-proto = { path = "crates/ssx-net-proto" }
+ssx-net = { path = "crates/ssx-net" }
+ssx-net-join = { path = "crates/ssx-net-join" }
+ssx-net-lan = { path = "crates/ssx-net-lan" }
+avalanche-master = { path = "apps/avalanche-master" }
+ssx-net-portmap = { path = "crates/ssx-net-portmap" }
+ssx-movie = { path = "crates/ssx-movie" }
+ssx-rules = { path = "crates/ssx-rules" }
+ssx-files = { path = "crates/ssx-files" }
+ssx-net-ops = { path = "crates/ssx-net-ops" }
 
-bevy = { version = "0.19.1" }
+bevy = { version = "0.20.0", default-features = false }
 thiserror = "2"
 flate2 = "1"
 anyhow = "1"
@@ -38,15 +68,70 @@ memmap2 = "0.9"
 aes = "0.8"
 sha1 = "0.10"
 png = "0.18"
-glam = "0.32"
+toml = "1.1.8"
+blake3 = "1.8.7"
+mlua = { version = "=0.12.2", features = ["luau", "send", "serialize"] }
+cap-std = "4.0.3"
+libtest-mimic = "0.8.2"
+cap-fs-ext = "4.0.3"
+libc = "0.2"
+lightyear = { version = "=0.31.0", default-features = false, features = ["std", "client", "server", "replication", "interpolation", "netcode", "udp", "crossbeam"] }
+bevy_replicon = { version = "=0.45.2", default-features = false, features = ["client", "server"] }
+lightyear_replication = { version = "=0.31.0", default-features = false }
+lightyear_serde = { version = "=0.31.0", default-features = false }
+lightyear_sync = { version = "=0.31.0", default-features = false }
+bytes = "1.8"
+bevy_app = "0.20.0"
+bevy_ecs = "0.20.0"
+bevy_time = "0.20.0"
+bevy_state = "0.20.0"
+crypto_box = { version = "0.9.1", default-features = false, features = ["std", "seal", "salsa20", "getrandom"] }
+ed25519-dalek = { version = "2.2.0", default-features = false, features = ["std", "zeroize", "fast", "rand_core"] }
+x25519-dalek = { version = "2.0.1", default-features = false, features = ["zeroize"] }
+sha2 = { version = "0.10.9", default-features = false, features = ["std"] }
+hmac = "0.12.1"
+subtle = "2.6.1"
+zeroize = "1.8"
+tokio = { version = "1.53.2", default-features = false, features = ["rt", "net", "time", "sync", "signal", "macros"] }
+hyper = { version = "1.12.0", default-features = false, features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
+http-body-util = "0.1.5"
+ureq = { version = "3.5.0", default-features = false }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "ansi", "registry", "std"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
+rustls-native-certs = "0.8.5"
+socket2 = "0.6.5"
+md-5 = "0.10.6"
+quick-xml = "0.41.0"
+getrandom = "0.3.4"
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring", "pem"] }
+zune-jpeg = "0.5.15"
+ruzstd = "0.8.3"
+texpresso = "2.0.2"
+bcdec_rs = "=0.2.0"
+glam = "0.33"
 cpal = "0.17"
-eframe = { version = "0.35.0", default-features = false, features = ["default_fonts", "wgpu", "wayland", "x11"] }
+eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "wgpu", "wayland", "x11"] }
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
+trash = "5.2.9"
+gltf-json = { version = "=1.4.1", default-features = false, features = ["names", "extras"] }
+bevy_mikktspace = { version = "=1.0.0", default-features = false, features = ["std"] }
+image = { version = "0.25.10", default-features = false, features = ["hdr"] }
+exr = { version = "=1.74.2", default-features = false }
+symphonia = { version = "=0.6.1", default-features = false, features = ["ogg", "vorbis", "flac", "wav", "pcm"] }
+half = "2.7.1"
+naga = { version = "30.0.1", default-features = false, features = ["wgsl-in"] }
+wesl = { version = "=0.6.0", default-features = false }
+skrifa = { version = "=0.44.0", default-features = false, features = ["std"] }
+harfrust = { version = "=0.12.0", default-features = false, features = ["std"] }
+icu_properties = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
+icu_segmenter = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
 
-ureq = { version = "3.5.0", default-features = false, features = ["rustls-no-provider"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-rustls-native-certs = "0.8"
-sha2 = "0.10"
+rav1d = { version = "=1.1.0", default-features = false, features = ["bitdepth_8"] }
+seccompiler = { version = "=0.5.0", default-features = false }
+
 semver = "1"
 tar = "0.4"
 
@@ -56,6 +141,18 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 3
+debug = false
+
+[patch.crates-io]
+lightyear = { path = "vendor/lightyear-0.31.0" }
+lightyear_core = { path = "vendor/lightyear_core-0.31.0" }
+lightyear_messages = { path = "vendor/lightyear_messages-0.31.0" }
+lightyear_netcode = { path = "vendor/lightyear_netcode-0.31.0" }
+lightyear_replication = { path = "vendor/lightyear_replication-0.31.0" }
+lightyear_transport = { path = "vendor/lightyear_transport-0.31.0" }
+lightyear_udp = { path = "vendor/lightyear_udp-0.31.0" }
+bevy_replicon = { path = "vendor/bevy_replicon-0.45.2" }
+rav1d = { path = "vendor/rav1d-1.1.0" }
 
 [workspace.lints.clippy]
 collapsible_else_if = "allow"

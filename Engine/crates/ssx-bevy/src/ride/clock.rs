@@ -1,5 +1,6 @@
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
+use bevy::time::TimeUpdateStrategy;
 use ssx_physics::rider::RiderState;
 use ssx_physics::{KMH_PER_M_PER_TICK, SIM_HZ};
 
@@ -7,7 +8,7 @@ use super::{Clock, Pose, Ride};
 use crate::camera::FlyCam;
 use crate::rider::skin::RiderRig;
 use crate::rider::visual::{self as rider_visual, RiderBody, RiderRoot};
-use crate::shell::screenshot::PipelinesReady;
+use crate::shell::screenshot::{FIXED_FRAME, FixedShotClock, PipelinesReady};
 
 pub(super) fn pose_of(s: &RiderState) -> Pose {
     Pose {
@@ -130,9 +131,14 @@ pub(super) fn frame_step(
     mut ride: ResMut<Ride>,
     mut rig: Option<ResMut<RiderRig>>,
     shadow: Option<Res<crate::particles::shadow_query::PlayerShadowQuery>>,
+    (mut clock, mut time, mut strategy): (
+        Option<ResMut<FixedShotClock>>,
+        ResMut<Time<Virtual>>,
+        ResMut<TimeUpdateStrategy>,
+    ),
 ) {
     let ready = ready.is_some_and(|r| r.0) && !ride.hold;
-    let (step_now, last) = match &mut ride.clock {
+    let (step_now, last, frame) = match &mut ride.clock {
         Clock::PerFrame { started, remaining, sub, drawn, phase } => {
             *started |= ready;
             let go = *started && *remaining > 0;
@@ -141,10 +147,20 @@ pub(super) fn frame_step(
                 *phase = *drawn % *sub;
                 *drawn += 1;
             }
-            (go && *phase == 0, go && *remaining == 0)
+            (go && *phase == 0, go && *remaining == 0, (go && *remaining > 0).then(|| FIXED_FRAME / *sub))
         }
-        Clock::Fixed => (false, false),
+        Clock::Fixed => (false, false, None),
     };
+    if let Some(clock) = clock.as_deref_mut() {
+        clock.ride = true;
+        match frame {
+            Some(d) => {
+                *strategy = TimeUpdateStrategy::ManualDuration(d);
+                time.unpause();
+            }
+            None => time.pause(),
+        }
+    }
     if step_now {
         if ride.scripted() {
             ride.scripted_controls();

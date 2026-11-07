@@ -4,9 +4,12 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use bevy::camera::visibility::DynamicSkinnedMeshBounds;
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
-use bevy::prelude::*;
-use ssx_assets::character::model_matrix;
-use ssx_assets::character::{Character, Loadout, Srt, load_character, load_character_with};
+use bevy::prelude::{
+    AlphaMode, Assets, ChildOf, Commands, Entity, Handle, Image, Mat4, Mesh, Mesh3d, MeshMaterial3d, Name, Quat, Query,
+    Resource, Transform, Vec3,
+};
+use ssx_assets::character::{Character, Loadout, PartMaterial, Srt, model_matrix};
+use ssx_assets::content::characters::dress::{DressRequest, dress};
 use ssx_assets::track_lights::SceneLight;
 use ssx_formats::crsf::SceneGraph;
 
@@ -17,7 +20,7 @@ use crate::render::objects::{LoadedPart, MaterialHandle, part_from_mesh};
 use crate::rider::anim::{JointRecord, RiderAnimation, world_records};
 use crate::rider::material::{CharacterLightUniform, CharacterMaterial};
 
-struct SkinnedPart {
+pub(super) struct SkinnedPart {
     slot: String,
     wingsuit: bool,
     part: LoadedPart,
@@ -33,7 +36,9 @@ pub struct LoadedRider {
     parts: Vec<SkinnedPart>,
     anim: RiderAnimation,
     gear_lights: Vec<GearLight>,
-    source: (PathBuf, String, String),
+    source: (PathBuf, Option<String>, DressRequest),
+    loadout: Loadout,
+    pub riders: Option<ssx_assets::content::characters::budget::RiderLooks>,
     pub problems: Vec<String>,
     pub load_secs: f32,
 }
@@ -47,11 +52,12 @@ pub struct GearLight {
     pub light: SceneLight,
 }
 
-pub fn load_rider(big_root: &Path, track: &str, name: &str) -> Result<LoadedRider> {
+pub fn load_rider(big_root: &Path, track: Option<&str>, req: &DressRequest) -> Result<LoadedRider> {
     let start = Instant::now();
-    let character = load_character(big_root, track, name)?;
+    let name = req.stand_in.as_str();
+    let character = dress(big_root, track, req, &Loadout::default())?;
     if character.parts.is_empty() {
-        anyhow::bail!("{name}: no part loaded ({})", character.problems.join("; "));
+        anyhow::bail!("{}: no part loaded ({})", req.id, character.problems.join("; "));
     }
     let summary = character.summary();
     let mut problems = character.problems.clone();
@@ -60,12 +66,26 @@ pub fn load_rider(big_root: &Path, track: &str, name: &str) -> Result<LoadedRide
     let (anim, rig, bind) = (loaded.anim, loaded.rig, loaded.bind);
     let board = rig.find("Board").context("the rig has no Board joint")?;
     let (parts, gear_lights) = load_parts(big_root, character, &rig, &mut problems);
-    let source = (big_root.to_path_buf(), track.to_string(), name.to_string());
+    let source = (big_root.to_path_buf(), track.map(str::to_string), req.clone());
     let load_secs = start.elapsed().as_secs_f32();
-    Ok(LoadedRider { summary, rig, bind, board, parts, anim, gear_lights, source, problems, load_secs })
+    let loadout = Loadout::default();
+    Ok(LoadedRider {
+        summary,
+        rig,
+        bind,
+        board,
+        parts,
+        anim,
+        gear_lights,
+        source,
+        loadout,
+        riders: None,
+        problems,
+        load_secs,
+    })
 }
 
-fn load_parts(
+pub(super) fn load_parts(
     big_root: &Path,
     character: Character,
     rig: &SceneGraph,
@@ -74,8 +94,18 @@ fn load_parts(
     let mut parts = Vec::new();
     for p in character.parts {
         let label = p.mesh_name.clone();
-        let wingsuit = p.material.effect.as_deref() == Some("player_wingsuit.fx");
-        let loaded = part_from_mesh(big_root, p.mesh, &label, &p.material)
+        let wingsuit = p.material.effect() == Some("player_wingsuit.fx");
+        let material = match &p.material {
+            PartMaterial::Disc(m) => ssx_assets::content::GameContent::of(big_root)
+                .material_for(m, ssx_assets::content::resolve::MaterialUse::Riders),
+            PartMaterial::Def(d) => (**d).clone(),
+        };
+        let palette: Option<Vec<usize>> = p.skin.palette.iter().map(|j| rig.find(&j.name)).collect();
+        let Some(palette) = palette else {
+            problems.push(format!("{label}: a palette joint the rig lacks"));
+            continue;
+        };
+        let loaded = part_from_mesh(big_root, p.mesh, &label, &material)
             .and_then(|part| part.with_skin(p.skin.joints, p.skin.weights));
         match loaded {
             Ok(part) => {
@@ -84,7 +114,7 @@ fn load_parts(
                     slot: p.slot,
                     wingsuit,
                     part,
-                    palette: p.skin.palette.iter().map(|j| j.node).collect(),
+                    palette,
                     inverse_binds: p.skin.palette.iter().map(|j| Mat4::from_cols_array_2d(&j.inverse_bind)).collect(),
                 });
             }
@@ -110,17 +140,22 @@ fn load_parts(
 }
 
 impl LoadedRider {
+    pub fn has_board_part(&self) -> bool {
+        self.parts.iter().any(|p| p.slot == "snowboard")
+    }
+
     pub fn dress(&mut self, loadout: &Loadout) -> Result<()> {
         let start = Instant::now();
-        let (big_root, track, name) = self.source.clone();
-        let character = load_character_with(&big_root, &track, &name, loadout)?;
+        let (big_root, track, req) = self.source.clone();
+        let character = dress(&big_root, track.as_deref(), &req, loadout)?;
         if character.parts.is_empty() {
-            anyhow::bail!("{name}: no part loaded ({})", character.problems.join("; "));
+            anyhow::bail!("{}: no part loaded ({})", req.id, character.problems.join("; "));
         }
         self.summary = character.summary();
         let mut problems = character.problems.clone();
         let (parts, lights) = load_parts(&big_root, character, &self.rig, &mut problems);
         (self.parts, self.gear_lights) = (parts, lights);
+        self.loadout = loadout.clone();
         self.problems.extend(problems);
         self.load_secs += start.elapsed().as_secs_f32();
         Ok(())
@@ -144,6 +179,87 @@ pub struct RiderRig {
     pub gear_lights: Vec<GearLight>,
     pub drawn_gear_lights: Vec<JointRecord>,
     props: Vec<PropInHands>,
+    pub(super) root: Entity,
+    pub(super) part_entities: Vec<Entity>,
+    pub(super) redress: Redress,
+}
+
+#[derive(Clone)]
+pub(super) struct Redress {
+    pub big_root: PathBuf,
+    pub track: Option<String>,
+    pub request: DressRequest,
+    pub loadout: Loadout,
+    pub riders: Option<ssx_assets::content::characters::budget::RiderLooks>,
+}
+
+impl RiderRig {
+    pub(super) fn rig(&self) -> &SceneGraph {
+        &self.rig
+    }
+
+    pub(super) fn nodes(&self) -> &[Entity] {
+        &self.nodes
+    }
+}
+
+pub(super) struct SpawnedParts {
+    pub entities: Vec<Entity>,
+    pub character_materials: Vec<Handle<CharacterMaterial>>,
+    pub wingsuit_materials: Vec<Handle<CharacterMaterial>>,
+}
+
+pub(super) struct PartAssets<'a> {
+    pub meshes: &'a mut Assets<Mesh>,
+    pub images: &'a mut Assets<Image>,
+    pub light: &'a GameLightAssets,
+    pub rider_light: &'a CharacterLightUniform,
+    pub objects: &'a mut Assets<ObjectMaterial>,
+    pub foreground: &'a mut Assets<ForegroundMaterial>,
+    pub characters: &'a mut Assets<CharacterMaterial>,
+    pub bindposes: &'a mut Assets<SkinnedMeshInverseBindposes>,
+}
+
+pub(super) fn spawn_parts(
+    commands: &mut Commands,
+    root: Entity,
+    nodes: &[Entity],
+    parts: Vec<SkinnedPart>,
+    a: &mut PartAssets,
+) -> SpawnedParts {
+    let mut out =
+        SpawnedParts { entities: Vec::new(), character_materials: Vec::new(), wingsuit_materials: Vec::new() };
+    for p in parts {
+        let inverse_bindposes = a.bindposes.add(SkinnedMeshInverseBindposes::from(p.inverse_binds));
+        let joints = p.palette.iter().filter_map(|&n| nodes.get(n).copied()).collect();
+        let bundle = (
+            Name::new(format!("rider {}", p.slot)),
+            SkinnedMesh { inverse_bindposes, joints },
+            DynamicSkinnedMeshBounds,
+            Transform::default(),
+            ChildOf(root),
+        );
+        if p.part.is_character() {
+            let (mesh, material) = p.part.add_character(a.meshes, a.images, a.light, a.rider_light, a.characters);
+            if p.wingsuit {
+                if let Some(mut m) = a.characters.get_mut(&material) {
+                    m.base.alpha_mode = AlphaMode::Mask(0.25);
+                }
+                out.wingsuit_materials.push(material.clone());
+            }
+            out.character_materials.push(material.clone());
+            out.entities.push(commands.spawn((bundle, Mesh3d(mesh), MeshMaterial3d(material))).id());
+            continue;
+        }
+        let (mesh, material) = p.part.add(a.meshes, a.images, a.light, a.objects, a.foreground);
+        let mut entity = commands.spawn((bundle, Mesh3d(mesh)));
+        match material {
+            MaterialHandle::Object(m) => entity.insert(MeshMaterial3d(m)),
+            MaterialHandle::Foreground(m) => entity.insert(MeshMaterial3d(m)),
+        };
+        out.entities.push(entity.id());
+    }
+    out
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -248,37 +364,9 @@ pub fn spawn(
     let nodes: Vec<Entity> = (rider.rig.nodes.iter().zip(&bind_records))
         .map(|(node, r)| commands.spawn((Name::new(node.name.clone()), record_transform(r), ChildOf(rig_root))).id())
         .collect();
-    let mut character_materials = Vec::new();
-    let mut wingsuit_materials = Vec::new();
-    for p in rider.parts {
-        let inverse_bindposes = bindposes.add(SkinnedMeshInverseBindposes::from(p.inverse_binds));
-        let joints = p.palette.iter().map(|&n| nodes[n]).collect();
-        let bundle = (
-            Name::new(format!("rider {}", p.slot)),
-            SkinnedMesh { inverse_bindposes, joints },
-            DynamicSkinnedMeshBounds,
-            Transform::default(),
-            ChildOf(root),
-        );
-        if p.part.is_character() {
-            let (mesh, material) = p.part.add_character(meshes, images, light, rider_light, characters);
-            if p.wingsuit {
-                if let Some(mut m) = characters.get_mut(&material) {
-                    m.base.alpha_mode = AlphaMode::Mask(0.25);
-                }
-                wingsuit_materials.push(material.clone());
-            }
-            character_materials.push(material.clone());
-            commands.spawn((bundle, Mesh3d(mesh), MeshMaterial3d(material)));
-            continue;
-        }
-        let (mesh, material) = p.part.add(meshes, images, light, objects, foreground);
-        let mut entity = commands.spawn((bundle, Mesh3d(mesh)));
-        match material {
-            MaterialHandle::Object(m) => entity.insert(MeshMaterial3d(m)),
-            MaterialHandle::Foreground(m) => entity.insert(MeshMaterial3d(m)),
-        };
-    }
+    let mut assets = PartAssets { meshes, images, light, rider_light, objects, foreground, characters, bindposes };
+    let spawned = spawn_parts(commands, root, &nodes, rider.parts, &mut assets);
+    let SpawnedParts { entities: part_entities, character_materials, wingsuit_materials } = spawned;
     let props = PROPS_IN_HANDS
         .iter()
         .filter_map(|&(source, target, weight)| {
@@ -305,6 +393,15 @@ pub fn spawn(
         gear_lights: rider.gear_lights,
         drawn_gear_lights: Vec::new(),
         props,
+        root,
+        part_entities,
+        redress: Redress {
+            big_root: rider.source.0,
+            track: rider.source.1,
+            request: rider.source.2,
+            loadout: rider.loadout,
+            riders: rider.riders,
+        },
     }
 }
 

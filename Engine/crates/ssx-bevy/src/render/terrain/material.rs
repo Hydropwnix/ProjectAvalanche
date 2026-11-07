@@ -1,5 +1,5 @@
+use ssx_content::ContentId;
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use bevy::asset::embedded_asset;
 use bevy::mesh::MeshVertexBufferLayoutRef;
@@ -16,8 +16,8 @@ use crate::render::snow_tracks::{SnowTrackParams, SnowTrackTextures};
 use crate::render::terrain::look::TerrainLook;
 use crate::rider::material::CharacterMaterialPlugin;
 
-const SHADER_PATH: &str = "embedded://ssx_bevy/render/terrain/terrain.wgsl";
-const PREPASS_SHADER_PATH: &str = "embedded://ssx_bevy/render/terrain/terrain_prepass.wgsl";
+const SHADER_PATH: &str = "embedded://ssx_bevy/render/terrain/terrain.wesl";
+const PREPASS_SHADER_PATH: &str = "embedded://ssx_bevy/render/terrain/terrain_prepass.wesl";
 
 pub const SHADER_STATUS: &str = "\
 terrain (microcode port): tri-planar max(|n|*7-1.4,0), UDN base normals, <=4 top-down snow types + scatter, \
@@ -34,12 +34,12 @@ pub struct TerrainMaterialPlugin;
 
 impl Plugin for TerrainMaterialPlugin {
     fn build(&self, app: &mut App) {
-        embedded_asset!(app, "terrain.wgsl");
-        embedded_asset!(app, "terrain_prepass.wgsl");
-        bevy::shader::load_shader_library!(app, "terrain_ripple.wgsl");
+        embedded_asset!(app, "terrain.wesl");
+        embedded_asset!(app, "terrain_prepass.wesl");
+        bevy::shader::load_shader_library!(app, "terrain_ripple.wesl");
         app.add_plugins((
-            MaterialPlugin::<TerrainMaterial>::default(),
             GameLightingPlugin,
+            MaterialPlugin::<TerrainMaterial>::default(),
             ObjectMaterialPlugin,
             CharacterMaterialPlugin,
         ))
@@ -251,7 +251,7 @@ fn terrain_samplers() -> anyhow::Result<[crate::render::fx_states::SamplerStates
 
 pub struct PreparedLooks {
     looks: Vec<(TerrainParams, LookImages)>,
-    images: Vec<Image>,
+    images: crate::render::reload::BuiltImages,
 }
 
 struct LookImages {
@@ -263,14 +263,19 @@ struct LookImages {
 }
 
 impl PreparedLooks {
-    pub fn decode(looks: &[TerrainLook]) -> anyhow::Result<PreparedLooks> {
-        use crate::render::terrain::textures::{Texels, array_texture, decode_all, texture_2d};
-        let paths = looks.iter().flat_map(|look| {
-            let base = look.base.iter().flat_map(|s| [s.diffuse.as_path(), s.normal.as_path()]);
-            base.chain(look.snow.iter().map(|l| l.normal.as_path()))
-                .chain([look.scatter.as_path(), look.sparkle.as_path()])
+    pub fn decode(big_root: &std::path::Path, looks: &[TerrainLook]) -> anyhow::Result<PreparedLooks> {
+        use crate::render::terrain::textures::{
+            Texels, array_recipe, array_texture, decode_all, fit_layers, plane_recipe, texture_2d,
+        };
+        use ssx_content::texture::Want;
+        let want = |texels: Texels| if texels == Texels::NormalXy { Want::NORMAL } else { Want::PLANE };
+        let items = looks.iter().flat_map(|look| {
+            let base =
+                look.base.iter().flat_map(|s| [(s.diffuse.clone(), Want::PLANE), (s.normal.clone(), Want::NORMAL)]);
+            base.chain(look.snow.iter().map(|l| (l.normal.clone(), Want::NORMAL)))
+                .chain([(look.scatter.clone(), Want::PLANE), (look.sparkle.clone(), Want::PLANE)])
         });
-        let chains = decode_all(paths)?;
+        let chains = decode_all(big_root, items)?;
         let states = terrain_samplers()?;
         let [diffuse_s, normal_s, snow_s, scatter_s, _] = states;
         let shared = snow_s.descriptor()?;
@@ -280,16 +285,23 @@ impl PreparedLooks {
         );
         let sampler_of = |kind: usize| -> anyhow::Result<bevy::image::ImageSampler> { states[kind].image_sampler() };
         let mut images = Vec::new();
-        let mut index: HashMap<(Vec<PathBuf>, Texels, usize), usize> = HashMap::new();
-        let mut image = |layers: Vec<PathBuf>, texels: Texels, array: bool, kind: usize| -> anyhow::Result<usize> {
+        let mut index: HashMap<(Vec<ContentId>, Texels, usize), usize> = HashMap::new();
+        let mut image = |layers: Vec<ContentId>, texels: Texels, array: bool, kind: usize| -> anyhow::Result<usize> {
             if let Some(&i) = index.get(&(layers.clone(), texels, kind)) {
                 return Ok(i);
             }
-            let layer_chains: Vec<_> = layers.iter().map(|p| &chains[p]).collect();
+            let w = want(texels);
+            let layer_chains: Vec<_> = layers.iter().map(|id| &chains[&(id.clone(), w)]).collect();
+            let sampler = sampler_of(kind)?;
             images.push(if array {
-                array_texture(&layer_chains, texels, sampler_of(kind)?)?
+                let fitted = fit_layers(big_root, &layer_chains, &w);
+                let layer_chains: Vec<_> =
+                    layer_chains.iter().zip(&fitted).map(|(c, f)| f.as_ref().unwrap_or(c)).collect();
+                let recipe = array_recipe(big_root, &layers, w, texels, sampler.clone());
+                (array_texture(&layer_chains, texels, sampler)?, recipe)
             } else {
-                texture_2d(layer_chains[0], texels, sampler_of(kind)?)
+                let recipe = plane_recipe(big_root, &layers[0], w, texels, sampler.clone());
+                (texture_2d(layer_chains[0], texels, sampler), recipe)
             });
             index.insert((layers, texels, kind), images.len() - 1);
             Ok(images.len() - 1)
@@ -322,7 +334,11 @@ impl PreparedLooks {
         light: &GameLightAssets,
         tracks: &SnowTrackTextures,
     ) -> Vec<[TerrainMaterial; 3]> {
-        let handles: Vec<Handle<Image>> = self.images.into_iter().map(|image| images.add(image)).collect();
+        let handles: Vec<Handle<Image>> = self
+            .images
+            .into_iter()
+            .map(|(image, recipe)| crate::render::reload::add(images, image, Some(recipe)))
+            .collect();
         let shadow_pass = shadow_pass();
         self.looks
             .into_iter()

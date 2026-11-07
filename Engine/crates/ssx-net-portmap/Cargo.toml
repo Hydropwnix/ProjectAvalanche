@@ -1,0 +1,33 @@
+[package]
+name = "ssx-net-portmap"
+description = "The dedicated server's port mapping on the gateway (port feature, opt-in): UPnP IGD (SSDP and SOAP), NAT-PMP and PCP, every answer bounded and checked, only the gateway's own address contacted. No Bevy, no network library."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+fake-gateways = []
+
+[dependencies]
+ssx-core.workspace = true
+getrandom.workspace = true
+quick-xml.workspace = true
+socket2.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+] }
+
+[[test]]
+name = "gateways"
+path = "tests/gateways.rs"
+required-features = ["fake-gateways"]
+
+[lints]
+workspace = true

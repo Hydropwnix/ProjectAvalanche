@@ -467,6 +467,17 @@ impl VbrAnimation {
         self.assemble(&self.decode_block(block)?.rows[row], None, 0.0)
     }
 
+    pub fn stored_key(&self, k: usize) -> Result<Pose> {
+        let mut pose = self.key(k)?;
+        let (block, row) = self.key_location(k);
+        let rows = self.decode_block(block)?;
+        let r = &rows.rows[row];
+        for (j, &ch) in self.anim_channels.iter().enumerate().take(usize::from(self.quat_count)) {
+            pose.quats[ch] = std::array::from_fn(|l| r[4 * j + l]);
+        }
+        Ok(pose)
+    }
+
     pub fn sample(&self, frame: f32) -> Result<Pose> {
         let (k0, k1, t) = self.keys_at(frame);
         let (b0, r0) = self.key_location(k0);

@@ -1,0 +1,17 @@
+[package]
+name = "ssx-gameplay"
+description = "The multiplayer rules (port feature): instances, the server's pose plausibility checks without the disc, the relay's rate tiers. Pure, no Bevy, no network library."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+ssx-net-proto.workspace = true
+ssx-formats.workspace = true
+ssx-rules.workspace = true
+glam.workspace = true
+
+[lints]
+workspace = true

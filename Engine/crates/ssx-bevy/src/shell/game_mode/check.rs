@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use bevy::prelude::*;
+use bevy::prelude::{Commands, On, Res, ResMut, Resource, Vec2, error, info};
 use bevy::render::MainWorld;
 use bevy::render::render_resource::PipelineCache;
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
@@ -153,6 +153,8 @@ impl WorldCheck {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+
+    use bevy::prelude::{UVec2, default};
 
     use super::*;
 

@@ -5,7 +5,12 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use bevy::camera::visibility::RenderLayers;
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
-use bevy::prelude::*;
+use bevy::prelude::{
+    App, AppExit, Camera, Camera2d, ClearColorConfig, Color, Component, DefaultPlugins, Deref, DerefMut, Entity, IVec2,
+    IntoScheduleConfigs, Msaa, PluginGroup, PreUpdate, Res, Resource, Sprite, Startup, UVec2, Update, Vec2, Visibility,
+    Window, WindowPlugin, WindowPosition, World, default, error, info, warn,
+};
+use bevy::render::view::Tonemapping;
 use bevy::render::{ExtractSchedule, RenderApp};
 use bevy::window::{PresentMode, WindowResolution};
 use bevy::winit::WinitSettings;
@@ -24,7 +29,10 @@ use crate::ui;
 
 mod check;
 mod frame;
+mod live;
+mod maps;
 mod pads;
+mod pointer;
 mod save;
 mod stage;
 mod window;
@@ -32,6 +40,7 @@ mod world;
 
 pub use check::{UiPipelinesReady, WorldCheck, report_pipelines, screenshot, ui_cover};
 use frame::{shell_input, shell_step};
+pub use live::shown_text;
 pub use pads::{PadSlots, PadState, StickDpad, pad_presses, pads_frame};
 pub use save::SaveSlot;
 pub use window::{WindowHidden, hidden_frame};
@@ -94,6 +103,25 @@ pub struct GameArgs {
     pub no_objects: bool,
     pub wireframe: bool,
     pub launch: Option<(String, f64)>,
+    pub launch_map: Option<(String, f64)>,
+    pub launch_mode: Option<String>,
+    pub mods: bool,
+    pub classic_front_end: bool,
+    pub connect: Option<NetConnect>,
+    pub open_view: Option<String>,
+    pub play_movie: Option<String>,
+    #[cfg(feature = "net")]
+    pub link: Option<ssx_ui::game::fe::ava::browser::ServerAddress>,
+    #[cfg(feature = "net")]
+    pub fake_servers: Option<usize>,
+    pub mod_dev: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug)]
+pub struct NetConnect {
+    pub server: String,
+    pub password_file: Option<PathBuf>,
+    pub name: Option<String>,
 }
 
 fn report_gpu(
@@ -140,7 +168,7 @@ fn start_failure_hook() {
             } else {
                 ""
             };
-            eprintln!("Project Avalanche stopped: {text}{hint}");
+            ssx_core::eprintln!("Project Avalanche stopped: {text}{hint}");
         }));
     });
 }
@@ -166,14 +194,16 @@ pub fn summary(p: &Profile) -> String {
     )
 }
 
-pub fn boot_ui(big_root: &Path, lang: Language) -> Result<(GameUi, ui::UiScene)> {
+pub fn mount(big_root: &Path, classic: bool) -> Result<Box<dyn ssx_ui::fs::FileSource>> {
+    ssx_ui::game::port::files::mount(big_root, classic)
+}
+
+pub fn boot_ui(big_root: &Path, lang: Language, classic: bool) -> Result<(GameUi, ui::UiScene)> {
     use ssx_ui::avm1::{Vm, natives};
     use ssx_ui::display::Player;
-    use ssx_ui::fs::Disc;
     use ssx_ui::library::Library;
-    let disc = Disc::new(big_root)?;
-    let game = GameUi::new(&disc, lang)?;
-    let mut lib = Library::new(Box::new(Disc::new(big_root)?));
+    let game = GameUi::new(mount(big_root, classic)?.as_ref(), lang)?;
+    let mut lib = Library::new(mount(big_root, classic)?);
     lib.load_font_library(lang.font_region())?;
     let mut player = Player::new();
     let mut vm = Vm::new();
@@ -207,6 +237,7 @@ fn spawn_front_end_camera(world: &mut World) {
     world.spawn((
         Camera2d,
         Camera { clear_color: ClearColorConfig::Custom(FE_BACKGROUND), ..default() },
+        Tonemapping::None,
         Msaa::Off,
         ui::UiCamera,
         FrontEndCamera,
@@ -281,12 +312,21 @@ struct Shell {
     done_at: Option<f64>,
     test_launch: Option<(String, f64)>,
     launch_start_at: f64,
+    test_map: Option<(String, f64)>,
+    test_map_mode: Option<String>,
     popup_reported: bool,
     frame_sleep: Option<u64>,
     input_log: bool,
     fade_shots: u32,
     fade_frames: u32,
     fade_last: f32,
+    live_profile: Option<Profile>,
+    live_quit_asked: bool,
+    live_away: Option<live::Away>,
+    live_hub_at: f64,
+    live_next_since: Option<f64>,
+    #[cfg(feature = "net")]
+    link: Option<ssx_ui::game::fe::ava::browser::ServerAddress>,
 }
 
 const LAUNCH_BOOT_WAIT: f64 = 20.0;
@@ -294,14 +334,58 @@ const LAUNCH_BOOT_WAIT: f64 = 20.0;
 pub fn run(a: GameArgs) -> Result<AppExit> {
     use ssx_ui::game::fe::host::parse_script;
     let lang = Language::parse(&a.lang).with_context(|| format!("--lang {}", a.lang))?;
+    let (mods, dev) = mount_mods(&a);
+    #[cfg(feature = "scripts")]
+    let scripts = crate::script::ScriptPlugin {
+        big_root: a.big_root.clone(),
+        packages: mods
+            .iter()
+            .flat_map(|r| r.mounted.iter().filter(|m| m.scripts > 0))
+            .map(|m| ssx_assets::setup::app_dir().join(ssx_assets::content::mods::MODS_DIR).join(&m.folder))
+            .collect(),
+        dev: dev.clone(),
+        storage: ssx_assets::setup::app_dir().join("ScriptData").join("local"),
+        monitor: a.mod_dev.is_some(),
+        maps: mods.iter().flat_map(|r| &r.mounted).any(|m| m.kinds.contains_key(&ssx_content::Kind::Map)),
+        sessions: cfg!(feature = "net"),
+        server_packages: mods
+            .iter()
+            .flat_map(|r| r.mounted.iter().filter(|m| m.server_scripts > 0))
+            .map(|m| {
+                (m.name.clone(), ssx_assets::setup::app_dir().join(ssx_assets::content::mods::MODS_DIR).join(&m.folder))
+            })
+            .collect(),
+        server_storage: ssx_assets::setup::app_dir().join("ScriptData").join("local-server"),
+    };
     crate::render::fx_states::init(&a.big_root);
-    let (mut game, scene) = boot_ui(&a.big_root, lang)?;
-    let mut fe = ssx_ui::game::fe::FrontEnd::new(&a.big_root, Profile::new())?;
+    let (mut game, scene) = boot_ui(&a.big_root, lang, a.classic_front_end)?;
+    let mut fe = ssx_ui::game::fe::FrontEnd::with_files(
+        mount(&a.big_root, a.classic_front_end)?.as_ref(),
+        &a.big_root,
+        Profile::new(),
+    )?;
+    fe.ava.options.file = Some(ssx_assets::setup::app_dir().join("settings.json"));
+    #[cfg(feature = "net")]
+    {
+        fe.ava.browser.app_dir = Some(ssx_assets::setup::app_dir());
+        fe.ava.browser.fake = a.fake_servers;
+    }
     let schema = SaveSchema::load(&a.big_root, &fe.career)?;
     let stat_names = std::sync::Arc::new(ssx_assets::career::save::modelled_stats(&schema));
     let (save, profile, note) = SaveSlot::load(a.save.clone().unwrap_or_else(default_save_path), schema)?;
     fe.saveload.load_error = save.damaged.then_some(ssx_ui::game::fe::saveload::LoadError::Corrupt);
     game.fe = Some(fe);
+    if let Some(name) = &a.play_movie {
+        if ssx_assets::content::fmv::movie_id(name).is_none() {
+            anyhow::bail!("--play-movie {name:?}: not a movie id (`ssx:movie/<name>` or `<package>:movie/<path>`)");
+        }
+        let request = ssx_ui::game::fe::MovieRequest::new(name.clone(), "test");
+        game.fe_call(|fe, _| fe.queue_movie(request));
+    }
+    if !a.classic_front_end {
+        let port = ssx_ui::game::port::PortFe::new(a.open_view.as_deref())?;
+        game.enable_port_fe(mount(&a.big_root, false)?.as_ref(), port)?;
+    }
     let stored_audio = save.profile_into(&mut game, profile);
     let mut segments: std::collections::VecDeque<_> =
         a.script.split('|').map(parse_script).collect::<Result<_>>().context("--script")?;
@@ -325,12 +409,30 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
         DefaultPlugins
             .set(WindowPlugin { primary_window: Some(a.window.window("Project Avalanche")), ..default() })
             .set(level::render_plugin())
+            .set(level::log_plugin())
             .disable::<bevy::audio::AudioPlugin>(),
         FrameTimeDiagnosticsPlugin::default(),
         ui::UiPlugin,
         ui::globe::GlobePlugin,
     ));
     app.add_systems(Startup, report_gpu);
+    if let Some(watch) = dev {
+        app.add_plugins(crate::render::reload::ReloadPlugin { big_root: a.big_root.clone(), watch });
+    }
+    #[cfg(feature = "scripts")]
+    if scripts.wanted() {
+        app.add_plugins(scripts);
+    }
+    app.add_systems(Startup, move || match &mods {
+        Some(report) => {
+            for line in report.lines() {
+                let problem =
+                    ["mods: skipped", "mods: conflict", "mods: none mounted"].iter().any(|p| line.starts_with(p));
+                if problem { warn!("{line}") } else { info!("{line}") }
+            }
+        }
+        None => info!("mods: off (--no-mods)"),
+    });
     app.add_systems(Startup, move || match &globe_note {
         Some(Ok(line)) => info!("globe assets: {line}"),
         Some(Err(e)) => error!("globe assets: {e}"),
@@ -346,6 +448,7 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
         || a.autoplay
         || a.follow_prompts
         || a.launch.is_some()
+        || a.launch_map.is_some()
         || a.seconds.is_some()
         || a.rides.is_some();
     let real_focus = std::env::var("SSX_SHELL_REAL_FOCUS").is_ok_and(|v| v == "1");
@@ -367,6 +470,7 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
         .spawn((
             Camera2d,
             Camera { order: 1, clear_color: ClearColorConfig::None, is_active: false, ..default() },
+            Tonemapping::None,
             Msaa::Off,
             movie_layer,
             ui::fade::FadeCamera,
@@ -423,9 +527,18 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
             done_at: None,
             test_launch: a.launch.clone(),
             launch_start_at: 0.0,
+            test_map: a.launch_map.clone(),
+            test_map_mode: a.launch_mode.clone(),
             popup_reported: false,
             frame_sleep: std::env::var("SSX_SHELL_FRAME_SLEEP_MS").ok().and_then(|v| v.parse().ok()),
             input_log: std::env::var_os("SSX_SHELL_INPUT_LOG").is_some(),
+            live_profile: None,
+            live_quit_asked: false,
+            live_away: None,
+            live_hub_at: 0.0,
+            live_next_since: None,
+            #[cfg(feature = "net")]
+            link: a.link.clone(),
         })
         .add_systems(Startup, move |world: &mut World| {
             spawn_front_end_camera(world);
@@ -445,10 +558,40 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
         )
         .add_systems(
             Update,
-            (game_level::level_frame, shell_input, shell_step).chain().after(crate::ride::RideStepSet),
+            (game_level::level_frame, shell_input, pointer::pointer_system, shell_step)
+                .chain()
+                .after(crate::ride::RideStepSet),
         );
     app.sub_app_mut(RenderApp).add_systems(ExtractSchedule, report_pipelines);
+    #[cfg(feature = "net")]
+    if !a.classic_front_end {
+        crate::net::register(&mut app);
+        app.insert_resource(crate::shell::session_content::SessionRoot(a.big_root.clone()));
+        app.add_plugins(crate::shell::session_content::SessionContentPlugin);
+    }
+    if let Some(connect) = a.connect.clone() {
+        if a.classic_front_end {
+            anyhow::bail!("--connect {}: not with the classic front end", connect.server);
+        }
+        #[cfg(feature = "net")]
+        crate::net::connect_at_start(&mut app, connect);
+        #[cfg(not(feature = "net"))]
+        anyhow::bail!("--connect {}: this build has no network session (the `net` feature)", connect.server);
+    }
     Ok(app.run())
+}
+
+fn mount_mods(
+    a: &GameArgs,
+) -> (Option<ssx_assets::content::mods::ModsReport>, Option<std::sync::Arc<ssx_assets::content::dev::DevWatch>>) {
+    ssx_assets::content::data::tuning::set_bundle_reader(ssx_physics::tuning::read_check);
+    let content = ssx_assets::content::GameContent::of(&a.big_root);
+    let app_dir = ssx_assets::setup::app_dir();
+    let Some(dir) = &a.mod_dev else { return (a.mods.then(|| content.mount_client_mods(&app_dir)), None) };
+    let name = ssx_content::PackageSource::open(dir).ok().map(|p| p.manifest.resource.name);
+    let report = a.mods.then(|| content.mount_client_mods_except(&app_dir, name.as_deref()));
+    let mounted = report.iter().flat_map(|r| r.mounted.iter().map(|m| (m.name.clone(), m.version))).collect();
+    (report, Some(ssx_assets::content::dev::watch(dir, content, mounted)))
 }
 
 fn audio_values(list: &[(u16, i32)]) -> Vec<(u32, i32)> {

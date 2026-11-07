@@ -1,0 +1,7 @@
+disallowed-macros = [
+    { path = "std::println", reason = "a printed line may quote outside text: ssx_core::println! escapes and bounds it" },
+    { path = "std::eprintln", reason = "a printed line may quote outside text: ssx_core::eprintln! escapes and bounds it" },
+    { path = "std::print", reason = "a printed line may quote outside text: ssx_core::println! escapes and bounds it" },
+    { path = "std::eprint", reason = "a printed line may quote outside text: ssx_core::eprintln! escapes and bounds it" },
+    { path = "std::dbg", reason = "a debug print reaches the terminal raw" },
+]

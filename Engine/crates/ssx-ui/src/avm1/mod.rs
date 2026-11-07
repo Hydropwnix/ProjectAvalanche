@@ -1,10 +1,13 @@
 pub mod builtins;
+pub mod calls;
 pub mod display;
 pub mod interp;
 pub mod members;
 pub mod natives;
 pub mod object;
+pub mod pointer;
 pub mod runtime;
+pub mod sandbox;
 pub mod value;
 
 #[cfg(test)]
@@ -26,6 +29,7 @@ pub use runtime::LoadRequest;
 pub enum Fault {
     Throw(Value),
     Abort(&'static str),
+    Stopped(MovieId),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -48,7 +52,13 @@ impl Diagnostics {
     }
 
     pub fn note(&mut self, kind: &str, detail: &str) {
-        *self.counts.entry((kind.to_string(), detail.to_string())).or_insert(0) += 1;
+        let detail = ssx_core::text::escape(cut(detail, sandbox::caps::DETAIL_BYTES)).into_owned();
+        let key = (kind.to_string(), detail);
+        if self.counts.len() >= sandbox::caps::DIAGNOSTICS && !self.counts.contains_key(&key) {
+            *self.counts.entry((kind.to_string(), "(more)".to_string())).or_insert(0) += 1;
+            return;
+        }
+        *self.counts.entry(key).or_insert(0) += 1;
     }
 
     pub fn by_kind(&self) -> BTreeMap<&str, (u64, usize)> {
@@ -60,6 +70,17 @@ impl Diagnostics {
         }
         out
     }
+}
+
+pub fn cut(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 #[derive(Clone, Debug)]
@@ -146,11 +167,12 @@ pub struct Vm {
     pub(crate) queue: [VecDeque<Job>; 3],
     pub(crate) intervals: BTreeMap<i32, Interval>,
     pub(crate) next_interval: i32,
-    pub trace_log: Vec<String>,
+    pub trace_log: VecDeque<String>,
     pub print_trace: bool,
     pub diag: Diagnostics,
-    pub native_calls: Vec<NativeCall>,
+    pub native_calls: VecDeque<NativeCall>,
     pub(crate) loads: Vec<LoadRequest>,
+    pub(crate) package_loads: std::collections::HashMap<crate::library::MovieId, LoadRequest>,
     pub time: f64,
     pub(crate) depth: u32,
     pub(crate) budget: u64,
@@ -167,6 +189,11 @@ pub struct Vm {
     pub debug_stacks: bool,
     pub watch: Option<String>,
     pub natives: natives::NativeState,
+    pub class_data: HashMap<ObjId, Arc<dyn std::any::Any + Send + Sync>>,
+    pub pointer: pointer::Pointer,
+    pub sandbox: sandbox::Sandbox,
+    pub trace_dropped: u64,
+    pub natives_total: u64,
 }
 
 pub const ACTION_BUDGET: u64 = 20_000_000;
@@ -193,11 +220,12 @@ impl Vm {
             queue: Default::default(),
             intervals: BTreeMap::new(),
             next_interval: 1,
-            trace_log: Vec::new(),
+            trace_log: VecDeque::new(),
             print_trace: false,
             diag: Diagnostics::default(),
-            native_calls: Vec::new(),
+            native_calls: VecDeque::new(),
             loads: Vec::new(),
+            package_loads: std::collections::HashMap::new(),
             time: 0.0,
             depth: 0,
             budget: ACTION_BUDGET,
@@ -214,14 +242,39 @@ impl Vm {
             debug_stacks: std::env::var_os("SSX_AVM1_STACKS").is_some(),
             watch: std::env::var("SSX_AVM1_WATCH").ok(),
             natives: natives::NativeState::default(),
+            class_data: HashMap::new(),
+            pointer: pointer::Pointer::default(),
+            sandbox: sandbox::Sandbox::default(),
+            trace_dropped: 0,
+            natives_total: 0,
         }
     }
 
     pub fn trace(&mut self, s: &str) {
+        let s = ssx_core::text::escape(cut(s, sandbox::caps::TRACE_BYTES)).into_owned();
         if self.print_trace {
-            println!("trace: {s}");
+            ssx_core::println!("trace: {s}");
         }
-        self.trace_log.push(s.to_string());
+        if self.trace_log.len() >= sandbox::caps::TRACE_LINES {
+            self.trace_log.pop_front();
+            self.trace_dropped += 1;
+        }
+        self.trace_log.push_back(s.to_string());
+    }
+
+    pub fn take_stops(&mut self) -> Vec<sandbox::Stop> {
+        std::mem::take(&mut self.sandbox.new_stops)
+    }
+
+    pub fn reload_stopped(&mut self, movie: crate::library::MovieId) -> bool {
+        match self.package_loads.remove(&movie) {
+            Some(mut req) => {
+                req.by = req.by.filter(|&b| b != movie && !self.sandbox.is_stopped(b));
+                self.loads.push(req);
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn timer_ms(&self) -> f64 {

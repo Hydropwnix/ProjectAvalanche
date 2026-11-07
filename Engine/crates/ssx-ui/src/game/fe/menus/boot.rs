@@ -76,7 +76,9 @@ pub fn update(fe: &mut FrontEnd, env: &mut FeEnv, dt: f64) {
 pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: f64) {
     match action {
         "A_BootStart" => {
-            start(fe, env, param as i32);
+            // TODO(guess): a port choice — a start without a device (the boot logo's own button `mcNextButton` clicked with the pointer: `OnStartPressed` gets no argument, the parameter is NaN, which the game's conversion makes controller 0) signs in the PC's keyboard and pointer (device 4), so that no absent pad 0 is taken for the player's; settle: none (the 360 has no pointer: its mouse device is never connected).
+            let device = if param.is_nan() { i32::from(crate::game::input::KEYBOARD_DEVICE) } else { param as i32 };
+            start(fe, env, device);
             env.values.set_int(BACKGROUND_TRANSITION, 1);
             env.values.set_bool(BOOT_FLOW_STARTED, true);
         }

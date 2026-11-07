@@ -22,7 +22,8 @@ game data is included in this repository or in its builds.
 ## Play on Windows
 
 1. Download the Windows build (the `ProjectAvalanche-windows-x64` artifact of a CI run, or a release) and
-   unpack it anywhere: `Project Avalanche.exe` and `avalanche-game.exe` (the game) must stay in the same folder.
+   unpack it anywhere: `Project Avalanche.exe`, `avalanche-game.exe` (the game) and the `fonts` folder must stay in
+   the same folder.
 2. Start **Project Avalanche.exe**. On the first start, click the large **SET UP GAME DATA** tile, then
    **Select SSX (2012) Xbox 360 ISO…**, and pick your own disc image (an `.iso` dumped from the retail Xbox 360
    disc). The image is only read, never changed.
@@ -42,8 +43,10 @@ replace them.
 ## Play on Linux
 
 1. Download the Linux build (the `ProjectAvalanche-linux-x64` artifact of a CI run, or a release) and
-   unpack `ProjectAvalanche-linux-x64.tar.gz` anywhere: `project-avalanche` (the launcher) and `avalanche-game`
-   (the game) must stay in the same folder.
+   unpack `ProjectAvalanche-linux-x64.tar.gz` into a folder of its own (it has no top-level folder:
+   `mkdir ProjectAvalanche && tar -xzf ProjectAvalanche-linux-x64.tar.gz -C ProjectAvalanche`):
+   `project-avalanche` (the launcher), `avalanche-game` (the game) and the `fonts` folder must stay in the same
+   folder.
 2. Start `./project-avalanche` and set up the game data as on Windows (steps 2 to 4 above). The data goes to
    `~/.local/share/project-avalanche/GameData` (`$XDG_DATA_HOME/project-avalanche`; `PROJECT_AVALANCHE_HOME`
    overrides it), the progress to `~/.local/share/project-avalanche/Saves/ssxvprofile`.
@@ -57,12 +60,31 @@ with that glibc or newer.
 The launcher checks the project's [latest release](https://github.com/MnkyArts/ProjectAvalanche/releases/latest) when
 it starts; a newer version is shown under **Extras, Updates** (the running version is in the footer and on
 **Extras, About**). It downloads the release's archive, checks it against the SHA-256 GitHub publishes, unpacks it
-beside the launcher and restarts. Your settings, saves and game data stay where they are; only the launcher and the
-game are replaced. `--no-update-check` (or `SSX_NO_UPDATE_CHECK=1`) turns the check off.
+beside the launcher and restarts. Your settings, saves and game data stay where they are; only the launcher, the
+game, the server and the `fonts` folder's files are replaced. `--no-update-check` (or `SSX_NO_UPDATE_CHECK=1`) turns
+the check off.
 
 The downloads above always take the latest release: the Windows `.zip` for a manual install, the Linux
 `.tar.gz`; the launcher uses its own `ProjectAvalanche-windows-x64.tar.gz` /
 `ProjectAvalanche-linux-x64.tar.gz` assets.
+
+## Host a server
+
+**On your computer:** the launcher's **HOST** page sets up a server folder (the rules it needs come from your own game
+data, about 21 MB), starts the dedicated server as its own program, shows its output, joins it with the game and stops
+it with the launcher. Friends on your network find it in the game's LAN tab; others join by your address.
+
+**On a server machine:** the dedicated server (`ProjectAvalanche-server-windows-x64` / `ProjectAvalanche-server-linux-x64`,
+or `cargo build --release -p avalanche-server`) runs headless: no GPU, sound or display.
+
+1. `avalanche-server setup /path/to/your/ssx.iso --out data` takes the rules from your own disc image (21 MB of it).
+2. Copy `server.toml.example` to `server.toml`, edit it, and run `avalanche-server check`.
+3. Start `avalanche-server`. It listens on port 27450 (UDP for the game, TCP for the join) and 27451 (UDP, the query);
+   `bind = "::"` listens on IPv6 and IPv4; `[port_mapping] enabled = true` maps the ports on your router (off by
+   default). It makes its keys in `data/` at the first start and logs to `data/logs/server.log`.
+
+A systemd unit, a Windows service note and a Docker example are in `Engine/assets/server/deploy/` (the systemd unit
+and the Windows note are in the server downloads too).
 
 ## Controls
 
@@ -76,18 +98,24 @@ works too; the launcher lists the keys under **Settings, Controls**:
 
 ## Build from source
 
-You need Rust (stable, 1.95 or newer, from [rustup](https://rustup.rs)). On Linux, Bevy also needs a few system
-libraries; on Debian or Ubuntu:
+You need Rust (stable, 1.97.1 or newer, from [rustup](https://rustup.rs)), a C++ compiler (Luau, the scripts' engine,
+is built from source) and [NASM](https://nasm.us) 2.14 or newer on the `PATH` (the mod movies' AV1 decoder assembles
+its x86-64 kernels with it). On Linux, Bevy also needs a few system libraries; on Debian or Ubuntu (`build-essential`
+brings the C++ compiler):
 
 ```sh
-sudo apt-get install pkg-config libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev libgtk-3-dev
+sudo apt-get install build-essential pkg-config libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev \
+  libgtk-3-dev nasm
 ```
+
+On Windows: `winget install NASM.NASM` (or `choco install nasm`), then add `C:\Program Files\NASM` to the `PATH`.
 
 Then, in `Engine/`:
 
 ```sh
 cargo build --release -p avalanche-game -p avalanche-launcher   # the game and the launcher
 cargo build --release -p asset-viewer                           # optional: the asset viewer
+cargo build --release -p avalanche-server                       # optional: the dedicated server (headless)
 target/release/project-avalanche                                # the launcher: set up the game data, then Play
 ```
 
@@ -126,12 +154,28 @@ The Rust workspace is in `Engine/`:
 | `apps/game` | the game, `avalanche-game`: movies, front end, levels, HUD and audio in one window |
 | `apps/launcher` | the launcher, `project-avalanche`: the game data setup from your disc image, the options, Play |
 | `apps/asset-viewer` | the asset viewer, `asset-viewer`: a track's terrain and objects with a fly camera, test rides (a development tool) |
+| `apps/avalanche-server` | the dedicated multiplayer server, `avalanche-server`: headless, the join over HTTP, the game over UDP, `setup` of the rules from your own disc image, `check`, IPv6, port mapping (opt-in) |
+| `apps/avalanche-master` | the master server, `avalanche-master`: the list of public servers (authenticated heartbeats, a reachability check, expiry, blocklists), self-hostable |
+| `crates/ssx-core` | the foundations every other crate shares: the world's conventions and units, common identifiers, how text from outside the program is shown (no Bevy) |
+| `crates/ssx-files` | the files the programs write, replaced whole or not at all across a crash or a power cut: a partial file synced, renamed over the old one, the folder synced |
 | `crates/ssx-formats` | parsers for the disc's file formats |
 | `crates/ssx-assets` | the game data: extraction from the disc image and conversion |
 | `crates/ssx-physics` | the collision world and the rider's physics |
+| `crates/ssx-rules` | the game's rules data for the simulation and the dedicated server: the tracks' vault records, placements, locators and trigger volumes, the riders' tuning, the events and the trick table |
 | `crates/ssx-lua` | a Lua 5.1 implementation for the game's scripts |
 | `crates/ssx-ui` | the Scaleform player: the menus and the HUD |
 | `crates/ssx-bevy` | the game on Bevy: rendering, audio, the game shell |
+| `crates/ssx-content` | the content system for mods: content ids, the layered registry, package manifests (`resource.toml`), record patches, the packages' checks |
+| `crates/ssx-movie` | the mods' movies: AV1 pictures through rav1d in a child process inside the operating system's sandbox, Vorbis sound through symphonia, read by `ssx-content`'s WebM reader |
+| `crates/ssx-gameplay` | the multiplayer rules the server applies: instances and their rounds, the chat's and the poses' checks |
+| `crates/ssx-script` | the mods' Luau scripts: the sandboxed runtime on `mlua` (Luau), the budgets, the API, the client host the game runs |
+| `crates/ssx-net-proto` | the multiplayer wire: the pose sample, the join's sealed request and answer, the keys, the names |
+| `crates/ssx-net` | the multiplayer network layer on lightyear: the protocol, the server's sessions and guards, the client |
+| `crates/ssx-net-join` | the client's join: the player's identity key, the servers' keys trusted on first use, the join over HTTP |
+| `crates/ssx-net-ops` | the dedicated server's operation: the ban store and the operator's mutes (`bans.toml`), the access control list (`acl.toml`) with its groups and resources' permission requests, the console's command grammar; every file read strictly and written whole |
+| `crates/ssx-net-lan` | the machine's network interfaces for LAN discovery (broadcast addresses, on-link checks) |
+| `crates/ssx-net-portmap` | the dedicated server's port mapping on the router: UPnP IGD, PCP and NAT-PMP (opt-in), every answer bounded and checked |
+| `vendor/` | eight third-party crates (lightyear's, bevy_replicon) as published, with the fixes their files mark "Project Avalanche patch" (`vendor/PATCHES.md`); the workspace uses them through `[patch.crates-io]` |
 
 ## AI Disclaimer
 
@@ -218,12 +262,15 @@ The engine:
   `Engine/Cargo.lock`.
 - The launcher's font is Saira Condensed, under the SIL Open Font License
   (`Engine/apps/launcher/assets/fonts/OFL.txt`).
+- The fallback fonts the game and the launcher draw other scripts with are the Noto fonts (Noto Sans, Arabic,
+  Hebrew, Devanagari, Thai and Noto Sans CJK JP), under the SIL Open Font License (`Engine/assets/fonts/OFL.txt`,
+  their sources in `Engine/assets/fonts/fonts.toml`).
 
 ## License
 
 The port's own code is under the [MIT License](LICENSE). That covers our code only: SSX (2012) and everything on
 its disc belong to Electronic Arts and are not part of this repository or its builds; the launcher's font (Saira
-Condensed) is under the SIL Open Font License (`Engine/apps/launcher/assets/fonts/OFL.txt`); the Rust crates we
-build on keep their own licenses.
+Condensed) is under the SIL Open Font License (`Engine/apps/launcher/assets/fonts/OFL.txt`), and so are the Noto
+fallback fonts (`Engine/assets/fonts/OFL.txt`); the Rust crates we build on keep their own licenses.
 
 Unofficial project, not affiliated with Electronic Arts. SSX is a trademark of Electronic Arts.

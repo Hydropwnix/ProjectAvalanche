@@ -54,6 +54,9 @@ pub struct Localization {
     pub strings: LocStrings,
     settings: [u32; 14],
     pub missing: std::collections::BTreeSet<String>,
+    package_hashes: std::collections::HashSet<u32>,
+    port_hashes: std::collections::HashSet<u32>,
+    pub content: Option<std::sync::Arc<ssx_assets::content::GameContent>>,
 }
 
 impl Localization {
@@ -61,7 +64,36 @@ impl Localization {
         let path = format!("data/xenon/loc/{}.db", language.file());
         let data = files.read(&path).with_context(|| format!("{path} not found"))?;
         let strings = LocStrings::parse(&data).with_context(|| format!("parsing {path}"))?;
-        Ok(Localization { language, strings, settings: language.settings(), missing: Default::default() })
+        Ok(Localization {
+            language,
+            strings,
+            settings: language.settings(),
+            missing: Default::default(),
+            package_hashes: Default::default(),
+            port_hashes: Default::default(),
+            content: None,
+        })
+    }
+
+    pub fn content_lang(&self) -> ssx_content::strings::Lang {
+        ssx_content::strings::Lang::from_game_file(self.language.file()).unwrap_or(ssx_content::strings::Lang::En)
+    }
+
+    pub fn apply_package_strings(&mut self, strings: &[ssx_assets::content::m6::PackageString]) -> Vec<String> {
+        let mut refused = Vec::new();
+        for s in strings {
+            let hash = ssx_formats::t3db::loc_hash(&s.key);
+            match self.strings.by_hash.get_mut(&hash) {
+                Some((key, text)) if key.eq_ignore_ascii_case(&s.key) => *text = Some(s.text.clone()),
+                Some((key, _)) => {
+                    refused.push(format!("{} ({}): its key's hash {hash:#010x} is the key {key}'s", s.key, s.source));
+                    continue;
+                }
+                None => drop(self.strings.by_hash.insert(hash, (s.key.clone(), Some(s.text.clone())))),
+            }
+            self.package_hashes.insert(hash);
+        }
+        refused
     }
 
     #[cfg(test)]
@@ -71,6 +103,9 @@ impl Localization {
             strings: Default::default(),
             settings: language.settings(),
             missing: Default::default(),
+            package_hashes: Default::default(),
+            port_hashes: Default::default(),
+            content: None,
         }
     }
 
@@ -82,6 +117,19 @@ impl Localization {
                 key.to_string()
             }
         }
+    }
+
+    pub fn add_port_string(&mut self, key: &str, text: &str) -> Result<()> {
+        let hash = ssx_formats::t3db::loc_hash(key);
+        if self.package_hashes.contains(&hash) || self.port_hashes.contains(&hash) {
+            return Ok(());
+        }
+        if let Some((id, _)) = self.strings.by_hash.get(&hash) {
+            anyhow::bail!("the port's string {key} has the hash {hash:#010x} of the table's {id}");
+        }
+        self.strings.by_hash.insert(hash, (key.to_string(), Some(text.to_string())));
+        self.port_hashes.insert(hash);
+        Ok(())
     }
 
     pub fn find(&self, key: &str) -> Option<String> {
@@ -255,43 +303,7 @@ pub enum FormatArg<'a> {
     Str(&'a str),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Placeholder {
-    Arg { at: usize, len: usize, number: u8, spec: Option<String>, conversion: char },
-    Text { at: usize },
-}
-
-fn conversion(b: u8) -> Option<char> {
-    match b {
-        b'd' | b'D' => Some('d'),
-        b'u' | b'U' => Some('u'),
-        b'f' | b'F' => Some('f'),
-        b's' | b'S' => Some('s'),
-        b'c' | b'C' => Some('c'),
-        _ => None,
-    }
-}
-
-pub fn placeholders(text: &str) -> Vec<Placeholder> {
-    let b = text.as_bytes();
-    let mut out = Vec::new();
-    for at in (0..b.len()).filter(|&i| b[i] == b'%') {
-        let number = b.get(at + 1).map_or(0, |d| d.wrapping_sub(b'0'));
-        let arg = (1..=9).contains(&number).then(|| match b.get(at + 2) {
-            Some(b'[') => {
-                let close = b[at + 3..].iter().position(|&c| c == b']').map(|k| at + 3 + k)?;
-                let conversion = conversion(*b.get(close + 1)?)?;
-                let spec = text.get(at + 3..close)?.to_string();
-                let len = if spec.is_empty() { 3 } else { spec.len() + 5 };
-                Some(Placeholder::Arg { at, len, number, spec: Some(spec), conversion })
-            }
-            Some(&c) => conversion(c).map(|conversion| Placeholder::Arg { at, len: 3, number, spec: None, conversion }),
-            None => None,
-        });
-        out.push(arg.flatten().unwrap_or(Placeholder::Text { at }));
-    }
-    out
-}
+pub use ssx_formats::t3db::format::{Placeholder, placeholders};
 
 pub fn format_positional(text: &str, args: &[FormatArg]) -> String {
     let found: Vec<(usize, usize, u8, Option<String>, char)> = placeholders(text)
@@ -596,6 +608,9 @@ mod tests {
             strings: Default::default(),
             settings: language.settings(),
             missing: Default::default(),
+            package_hashes: Default::default(),
+            port_hashes: Default::default(),
+            content: None,
         }
     }
 

@@ -358,7 +358,8 @@ pub fn track_drop_scripts(big_root: &Path, track: &str) -> Result<Vec<(u32, Stri
     names.add_strings_from(&b);
     let vault = Vault::parse(&v, &b)?;
     let cols = collection::collections(&vault)?;
-    let decoded = cols.iter().map(|c| c.decode(&vault, &schema)).collect::<ssx_formats::Result<Vec<_>>>()?;
+    let mut decoded = cols.iter().map(|c| c.decode(&vault, &schema)).collect::<ssx_formats::Result<Vec<_>>>()?;
+    crate::content::data::events::route_ui_drops(big_root, &cols, &mut decoded);
     let index = collection::index(&cols);
     let mut out = Vec::new();
     for (i, c) in cols.iter().enumerate().filter(|(_, c)| c.class == fnv1("ui_drop")) {

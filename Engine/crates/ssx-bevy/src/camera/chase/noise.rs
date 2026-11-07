@@ -1,4 +1,4 @@
-use bevy::prelude::*;
+use bevy::prelude::{Quat, Resource, Vec3, info, warn};
 
 use super::{Chase, NoiseSignals, Wipeout};
 
@@ -38,11 +38,9 @@ struct EyeClip {
 impl CameraNoise {
     pub fn load(big_root: &std::path::Path) -> anyhow::Result<CameraNoise> {
         use anyhow::Context as _;
-        use ssx_formats::ant::{Stream, Value};
+        use ssx_formats::ant::Value;
         use ssx_formats::ant_anim::{Animation, ChannelToDof, dof_list, normalize};
-        let path = big_root.join(ssx_assets::rig_anim::ANIM_DIR).join("anim_all.cba");
-        let data = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-        let s = Stream::parse(&data)?;
+        let s = ssx_assets::content::data::tuning::anim_all(big_root)?;
         let idx = s.guid_index();
         let get = |o: &ssx_formats::ant::Object, f: &str| {
             o.get(&s.schema, f).and_then(Value::as_guid).and_then(|g| idx.get(&g)).map(|&i| &s.assets[i].object)

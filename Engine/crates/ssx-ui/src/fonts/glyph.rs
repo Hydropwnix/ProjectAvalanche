@@ -1,11 +1,10 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use ssx_formats::gfx::shape::ShapeRecord;
 use ssx_formats::gfx::text::Font;
 
+pub use super::glyph_cache::{AtlasRect, CachedGlyph, GlyphAtlas, GlyphCache, RasterGlyph};
 use crate::geom::Mat2d;
-use crate::tess::Mesh;
 
 pub const TEXTURE_SIZE: u32 = 1024;
 pub const MAX_SLOT_HEIGHT: u32 = 48;
@@ -36,14 +35,14 @@ pub fn snapped_size(screen: f32) -> u16 {
 type Point = (f32, f32);
 
 #[derive(Clone, Debug, Default)]
-struct Path {
+pub(crate) struct Path {
     fill0: u32,
     fill1: u32,
     start: Point,
     edges: Vec<(Option<Point>, Point)>,
 }
 
-fn paths(records: &[ShapeRecord]) -> Vec<Path> {
+pub(crate) fn paths(records: &[ShapeRecord]) -> Vec<Path> {
     let (mut out, mut cur, mut f0, mut f1) = (Vec::<Path>::new(), (0.0f32, 0.0f32), 0u32, 0u32);
     for r in records {
         match *r {
@@ -113,7 +112,7 @@ fn bounds(paths: &[Path]) -> Option<[f32; 4]> {
     (b[0] <= b[2] && b[1] <= b[3]).then_some(b)
 }
 
-fn table_bounds(paths: &[Path], units: f32) -> [f32; 4] {
+pub(crate) fn table_bounds(paths: &[Path], units: f32) -> [f32; 4] {
     let Some(b) = bounds(paths) else { return [0.0; 4] };
     let k = 1024.0 / units;
     let [x0, y0, x1, y1] = b.map(|v| v * k);
@@ -132,11 +131,11 @@ struct Cell {
 }
 
 #[derive(Default)]
-struct Rasterizer {
+pub(crate) struct Rasterizer {
     cells: Vec<Cell>,
     cur: Cell,
-    min: (i32, i32),
-    max: (i32, i32),
+    pub(crate) min: (i32, i32),
+    pub(crate) max: (i32, i32),
     start: (i32, i32),
     pos: (i32, i32),
     last: (f32, f32),
@@ -149,6 +148,10 @@ const MASK: i32 = SCALE - 1;
 impl Rasterizer {
     fn new() -> Self {
         Rasterizer { min: (i32::MAX, i32::MAX), max: (-i32::MAX, -i32::MAX), ..Default::default() }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.cells.is_empty()
     }
 
     fn fixed(v: f32) -> i32 {
@@ -455,6 +458,15 @@ pub fn rasterize_glyph(font: &Font, index: usize, size: u16) -> Rasterized {
     if h as u32 + 2 * SLOT_PADDING >= MAX_SLOT_HEIGHT {
         return Rasterized::TooTall;
     }
+    let ras = outline_cells(&paths, s);
+    if ras.cells.is_empty() {
+        return Rasterized::Empty;
+    }
+    let pad = SLOT_PADDING as i32;
+    Rasterized::Raster(Arc::new(Slot::new(&ras, (pad, pad)).quad_texels()))
+}
+
+pub(crate) fn outline_cells(paths: &[Path], s: f64) -> Rasterizer {
     let mut ras = Rasterizer::new();
     let sc = |p: (f32, f32)| ((f64::from(p.0) * s) as f32, (f64::from(p.1) * s) as f32);
     for p in paths.iter().filter(|p| p.fill0 != p.fill1 && !p.edges.is_empty()) {
@@ -470,139 +482,40 @@ pub fn rasterize_glyph(font: &Font, index: usize, size: u16) -> Rasterized {
         ras.close();
     }
     ras.finish();
-    if ras.cells.is_empty() {
-        return Rasterized::Empty;
-    }
-    let pad = SLOT_PADDING as i32;
-    let w = (ras.max.0 - ras.min.0 + 1 + 2 * pad) as u32;
-    let h = ((ras.max.1 - ras.min.1 + 1 + 2 * pad) as u32).min(MAX_SLOT_HEIGHT);
-    let mut slot = vec![0u8; (w * h) as usize];
-    for row in 0..=(ras.max.1 - ras.min.1) {
-        if h as i32 <= row + pad {
-            break;
+    ras
+}
+
+pub(crate) struct Slot {
+    pub(crate) x0: i32,
+    pub(crate) y0: i32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) texels: Vec<u8>,
+}
+
+impl Slot {
+    pub(crate) fn new(ras: &Rasterizer, pad: (i32, i32)) -> Slot {
+        let w = (ras.max.0 - ras.min.0 + 1 + 2 * pad.0) as u32;
+        let h = ((ras.max.1 - ras.min.1 + 1 + 2 * pad.1) as u32).min(MAX_SLOT_HEIGHT);
+        let mut texels = vec![0u8; (w * h) as usize];
+        for row in 0..=(ras.max.1 - ras.min.1) {
+            if h as i32 <= row + pad.1 {
+                break;
+            }
+            let at = ((row + pad.1) as u32 * w + pad.0 as u32) as usize;
+            ras.sweep(ras.min.1 + row, &mut texels[at..at + (w as usize - 2 * pad.0 as usize)]);
         }
-        let at = ((row + pad) as u32 * w + pad as u32) as usize;
-        ras.sweep(ras.min.1 + row, &mut slot[at..at + (w as usize - 2 * pad as usize)]);
+        Slot { x0: ras.min.0 - pad.0, y0: ras.min.1 - pad.1, width: w, height: h, texels }
     }
-    let (rw, rh) = (w - 2, h - 2);
-    let mut alpha = Vec::with_capacity((rw * rh) as usize);
-    for y in 1..h - 1 {
-        alpha.extend_from_slice(&slot[(y * w + 1) as usize..(y * w + w - 1) as usize]);
-    }
-    Rasterized::Raster(Arc::new(GlyphRaster { x0: ras.min.0 - 1, y0: ras.min.1 - 1, width: rw, height: rh, alpha }))
-}
 
-pub type AtlasRect = [u32; 4];
-
-// TODO(guess): one growing texture, never evicted (the game's is one 1024² texture 0x82726538; a full cache ends the glyph run, 0x82725070 returns 0); settle: the packer (0x826EEA88) and the eviction (0x826EF1D0).
-#[derive(Clone, Debug)]
-pub struct GlyphAtlas {
-    pub width: u32,
-    pub height: u32,
-    pub alpha: Vec<u8>,
-    pub generation: u64,
-    shelves: Vec<(u32, u32, u32)>,
-    used: u32,
-}
-
-impl Default for GlyphAtlas {
-    fn default() -> Self {
-        GlyphAtlas {
-            width: TEXTURE_SIZE,
-            height: TEXTURE_SIZE,
-            alpha: vec![0; (TEXTURE_SIZE * TEXTURE_SIZE) as usize],
-            generation: 0,
-            shelves: Vec::new(),
-            used: 0,
+    pub(crate) fn quad_texels(&self) -> GlyphRaster {
+        let (w, h) = (self.width, self.height);
+        let (rw, rh) = (w.saturating_sub(2), h.saturating_sub(2));
+        let mut alpha = Vec::with_capacity((rw * rh) as usize);
+        for y in 1..h.saturating_sub(1) {
+            alpha.extend_from_slice(&self.texels[(y * w + 1) as usize..(y * w + w - 1) as usize]);
         }
-    }
-}
-
-impl GlyphAtlas {
-    pub fn add(&mut self, r: &GlyphRaster) -> AtlasRect {
-        let (w, h) = (r.width + 1, r.height + 1);
-        let shelf = self.shelves.iter_mut().find(|s| s.1 >= h && s.1 <= h + h / 4 + 2 && s.2 + w <= self.width);
-        let (x, y) = match shelf {
-            Some(s) => {
-                s.2 += w;
-                (s.2 - w, s.0)
-            }
-            None => {
-                let top = self.used;
-                self.used += h;
-                while self.used > self.height {
-                    self.alpha.resize((self.width * self.height * 2) as usize, 0);
-                    self.height *= 2;
-                }
-                self.shelves.push((top, h, w));
-                (0, top)
-            }
-        };
-        for row in 0..r.height {
-            let at = ((y + row) * self.width + x) as usize;
-            let src = (row * r.width) as usize;
-            self.alpha[at..at + r.width as usize].copy_from_slice(&r.alpha[src..src + r.width as usize]);
-        }
-        self.generation += 1;
-        [x, y, x + r.width, y + r.height]
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct RasterGlyph {
-    pub raster: Arc<GlyphRaster>,
-    pub rect: AtlasRect,
-    pub quad: Arc<Mesh>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct GlyphCache {
-    glyphs: HashMap<(usize, usize, u16), Option<RasterGlyph>>,
-    pub atlas: GlyphAtlas,
-    pub rasterized: usize,
-    pub too_tall: usize,
-}
-
-pub enum CachedGlyph {
-    Raster(RasterGlyph),
-    Empty,
-    Vector,
-}
-
-impl GlyphCache {
-    pub fn glyph(&mut self, font: &Arc<Font>, index: usize, size: u16) -> CachedGlyph {
-        let key = (Arc::as_ptr(font) as usize, index, size);
-        if let Some(g) = self.glyphs.get(&key) {
-            return match g {
-                Some(r) if r.raster.width > 0 => CachedGlyph::Raster(r.clone()),
-                Some(_) => CachedGlyph::Empty,
-                None => CachedGlyph::Vector,
-            };
-        }
-        let entry = match rasterize_glyph(font, index, size) {
-            Rasterized::Raster(r) => {
-                self.rasterized += 1;
-                let rect = self.atlas.add(&r);
-                let (x0, y0, x1, y1) =
-                    (r.x0 as f32, r.y0 as f32, (r.x0 + r.width as i32) as f32, (r.y0 + r.height as i32) as f32);
-                let quad = Mesh {
-                    vertices: vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
-                    indices: vec![0, 1, 2, 0, 2, 3],
-                    paint: Vec::new(),
-                };
-                Some(RasterGlyph { raster: r, rect, quad: Arc::new(quad) })
-            }
-            Rasterized::Empty => {
-                let raster = Arc::new(GlyphRaster { x0: 0, y0: 0, width: 0, height: 0, alpha: Vec::new() });
-                Some(RasterGlyph { raster, rect: [0; 4], quad: Arc::new(Mesh::default()) })
-            }
-            Rasterized::TooTall => {
-                self.too_tall += 1;
-                None
-            }
-        };
-        self.glyphs.insert(key, entry);
-        self.glyph(font, index, size)
+        GlyphRaster { x0: self.x0 + 1, y0: self.y0 + 1, width: rw, height: rh, alpha }
     }
 }
 

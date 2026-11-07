@@ -1,4 +1,5 @@
 mod campaign;
+pub mod mod_state;
 mod results;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -183,6 +184,19 @@ impl Default for RiderStats {
 }
 
 impl RiderStats {
+    pub fn created_for(db: &crate::career::CareerDb, key: u32, exists: impl Fn(u32) -> bool) -> Self {
+        let Some(r) = db.riders.iter().find(|r| r.key == key) else { return Self::created("", exists) };
+        let name = match r.content.as_ref().filter(|c| c.added) {
+            Some(c) => db.riders.iter().find(|s| s.key == c.stand_in).map_or("", |s| s.name.as_str()),
+            None => r.name.as_str(),
+        };
+        let mut s = Self::created(name, &exists);
+        if let Some(b) = r.content.as_ref().and_then(|c| c.default_board).filter(|&b| exists(b)) {
+            s.last_board = (b, 0);
+        }
+        s
+    }
+
     pub fn created(name: &str, exists: impl Fn(u32) -> bool) -> Self {
         let mut s = RiderStats::default();
         let suit = fnv1(format!("suit_default_{}", name.to_lowercase()).as_bytes());
@@ -287,6 +301,9 @@ pub struct Profile {
     pub stats: PersistentStats,
     pub recent_badges: Vec<u32>,
     pub named_flags: BTreeSet<u32>,
+    pub mod_state: ssx_content::profile_state::ModState,
+    pub mod_keys: BTreeMap<u32, mod_state::ModKey>,
+    pub mod_disc_riders: BTreeMap<u32, String>,
 }
 
 pub const RECENT_BADGES: usize = 5;

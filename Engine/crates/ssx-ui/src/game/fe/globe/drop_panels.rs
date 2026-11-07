@@ -129,23 +129,17 @@ pub(super) fn write_explore_drop(fe: &FrontEnd, env: &mut FeEnv, drop: u32) {
     }
     v.set_str(0x7D, loc.text("TXT_LEADERBOARD_NEXT_PAGE"));
     v.set_str(0x7E, loc.text("TXT_LEADERBOARD_PREV_PAGE"));
-    let targets = fe.career.medal_targets(e);
-    if targets.len() >= 3 {
-        v.set_int(0x87, targets[0] as i32);
-        v.set_int(0x88, targets[0] as i32);
-        v.set_int(0x92, targets[1] as i32);
-        v.set_int(0x6E, targets[2] as i32);
+    let board = fe.career.ghost_board(e);
+    if let [gold, silver, bronze, ..] = board[..] {
+        v.set_int(0x87, gold.value as i32);
+        v.set_int(0x88, gold.value as i32);
+        v.set_int(0x92, silver.value as i32);
+        v.set_int(0x6E, bronze.value as i32);
     }
     let mut rows = Vec::new();
     let ascending = matches!(e.event_type, 5..=7);
-    let mut rivals: Vec<_> = fe.career.rivals(e.key).filter(|g| g.starting_idx == 0).collect();
-    if ascending {
-        rivals.sort_by_key(|g| g.value());
-    } else {
-        rivals.sort_by_key(|g| std::cmp::Reverse(g.value()));
-    }
-    for (i, g) in rivals.into_iter().enumerate() {
-        let value = g.value();
+    for (i, g) in board.into_iter().enumerate() {
+        let value = g.value;
         let score = if ascending { loc.race_time(value) } else { loc.int(i64::from(value)) };
         let rider = fe.career.riders.iter().find(|r| r.key == g.character);
         let name = rider.map(|r| crate::game::leaderboard::ghost_name(loc, &r.title)).unwrap_or_default();

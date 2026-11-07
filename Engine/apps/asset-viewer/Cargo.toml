@@ -10,9 +10,11 @@ publish.workspace = true
 [dependencies]
 ssx-bevy.workspace = true
 ssx-assets.workspace = true
+ssx-core.workspace = true
 bevy.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+ssx-physics.workspace = true
 
 [lints]
 workspace = true

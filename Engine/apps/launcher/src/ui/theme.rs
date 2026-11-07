@@ -52,7 +52,16 @@ impl Face {
 
 pub fn install(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
-    let fallback = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
+    let mut fallback = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
+    for (i, s) in ssx_content::font::shipped::SHIPPED.iter().enumerate() {
+        match ssx_content::font::shipped::read(i) {
+            Ok(bytes) => {
+                fonts.font_data.insert(s.id.into(), FontData::from_owned(bytes).into());
+                fallback.push(s.id.to_string());
+            }
+            Err(e) => ssx_core::eprintln!("fonts: {} unavailable: {e}", s.id),
+        }
+    }
     for (name, family, bytes) in [
         ("saira-medium", Face::Text, &include_bytes!("../../assets/fonts/SairaCondensed-Medium.ttf")[..]),
         ("saira-semibold", Face::Title, &include_bytes!("../../assets/fonts/SairaCondensed-SemiBold.ttf")[..]),

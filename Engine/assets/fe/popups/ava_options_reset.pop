@@ -1,0 +1,9 @@
+{
+	"title": "TXT_AVA_OPTIONS_RESET_TITLE",
+	"body": "TXT_AVA_OPTIONS_RESET_BODY",
+	"defaultButton": 1,
+	"buttons":	[
+					{"label": "TXT_YES", "event": "ava_options_reset_yes"},
+					{"label": "TXT_NO", "event": "ava_options_reset_no"}
+				]
+}

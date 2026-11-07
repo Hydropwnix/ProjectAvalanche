@@ -59,10 +59,15 @@ fn race(rivals: Vec<u32>) -> EventManager {
         event_type: Some(EventType::RaceGhosts),
         delayed_finish: false,
         rivals,
+        results: Some(ResultsFlow::Explore),
+        places: None,
+        goal: None,
         course: Some(Course { start_y: 0.0, end_y: -900.0 }),
         force_descent_in_air: false,
         objectives: None,
         message: Default::default(),
+        time_up_result: false,
+        loop_without_outro: false,
     };
     EventManager::new(setup)
 }
@@ -80,7 +85,7 @@ fn inputs(y: f32, end: bool, allow: bool) -> EventInputs {
 
 #[test]
 fn a_race_runs_its_clock_through_the_splits_to_the_finish_and_the_medal() {
-    let mut m = race(vec![61_000, 59_000, 70_000]);
+    let mut m = race(vec![59_000, 61_000, 70_000]);
     let mut timer = DeathTimer::default();
     assert_eq!(m.update(&mut timer, &inputs(0.0, true, false)), EventUpdate::default(), "idle before the start");
     m.on_trigger_race_start(&mut timer);
@@ -96,7 +101,7 @@ fn a_race_runs_its_clock_through_the_splits_to_the_finish_and_the_medal() {
     assert!(u.crossed && u.finished && m.track_finished && m.state == EventState::Finished);
     let t = m.finish_ms.expect("finish time");
     assert!((60_000..=60_034).contains(&t), "{t}");
-    for _ in 0..40 {
+    for _ in 0..70 {
         let u = m.update(&mut timer, &inputs(-900.0, false, true));
         if u.results {
             break;
@@ -117,7 +122,7 @@ fn the_results_keep_the_last_safe_ground_for_the_explore_scores_splits() {
     let at = [12.5f32, -900.25, 3.0];
     let end = EventInputs { last_safe_ground: at, ..inputs(-900.0, true, false) };
     assert!(m.update(&mut timer, &end).finished);
-    let posted = (0..40)
+    let posted = (0..70)
         .any(|_| m.update(&mut timer, &EventInputs { last_safe_ground: at, ..inputs(-900.0, false, true) }).results);
     assert!(posted);
     assert_eq!(m.explore_splits(), Some([0, at[0].to_bits(), at[1].to_bits(), at[2].to_bits()]));
@@ -139,8 +144,8 @@ fn a_pause_holds_the_clock_but_not_the_results_after_the_finish() {
     let u = m.update(&mut timer, &inputs(-900.0, true, false));
     assert!(u.finished);
     m.waiting = true;
-    let posted = (0..40).position(|_| m.update_paused(&mut timer, &inputs(-900.0, false, true)).results);
-    assert_eq!(posted, Some(29), "the finish message's second, then the results");
+    let posted = (0..70).position(|_| m.update_paused(&mut timer, &inputs(-900.0, false, true)).results);
+    assert_eq!(posted, Some(48), "the finish message's intro, second and outro, then the results");
     assert_eq!(m.state, EventState::Results);
 }
 
@@ -175,7 +180,7 @@ fn a_survive_to_death_event_loops_until_the_death() {
     m.on_trigger_race_start(&mut timer);
     assert!(m.update(&mut timer, &inputs(-900.0, true, false)).crossed && m.state == EventState::Finished);
     let mut i = inputs(-900.0, false, true);
-    for _ in 0..40 {
+    for _ in 0..70 {
         assert!(!m.update(&mut timer, &i).results, "no results at the finish");
     }
     assert!(m.allow_outro && m.state == EventState::Finished && m.loops == 0);
@@ -215,8 +220,91 @@ fn a_delayed_finish_builds_at_once_and_posts_after_the_race_end() {
     assert!(u.finished, "FinishTrack (0x1CC8ED4D) runs at the race end");
     assert!(m.track_finished && m.state == EventState::Finished && !m.rewind_disabled);
     let mut posted = false;
-    for _ in 0..40 {
+    for _ in 0..70 {
         posted |= m.update(&mut timer, &inputs(-900.0, false, true)).results;
     }
     assert!(posted && m.state == EventState::Results);
+}
+
+#[test]
+fn a_maps_time_limit_ends_by_the_rules() {
+    for (result, t) in
+        [(false, EventType::TrickScore), (true, EventType::TrickScore), (false, EventType::SurviveToDeath)]
+    {
+        let mut m = race(Vec::new());
+        m.setup.event_type = Some(t);
+        m.setup.time_up_result = result;
+        m.state = EventState::Running;
+        let mut timer = crate::death::DeathTimer::default();
+        m.time_up = true;
+        let u = m.update(&mut timer, &inputs(-10.0, false, false));
+        let r = m.result.as_ref().expect("a result");
+        assert!(u.results);
+        assert_eq!(r.failed, !result, "{t:?}");
+        assert_eq!(m.state, if result { EventState::Results } else { EventState::Idle });
+    }
+}
+
+#[test]
+fn a_maps_survive_to_death_loops_without_an_outro() {
+    let mut m = race(Vec::new());
+    m.setup.event_type = Some(EventType::SurviveToDeath);
+    m.setup.loop_without_outro = true;
+    m.state = EventState::Finished;
+    let mut timer = crate::death::DeathTimer::default();
+    let u = m.update(&mut timer, &inputs(-900.0, true, true));
+    assert!(u.looped && m.request_loop_to_top && m.waiting);
+    assert_eq!((m.state, m.loops), (EventState::LoopRestart, 1));
+    let mut disc = race(Vec::new());
+    disc.setup.event_type = Some(EventType::SurviveToDeath);
+    disc.state = EventState::Finished;
+    let u = disc.update(&mut timer, &inputs(-900.0, true, true));
+    assert!(!u.looped && disc.state == EventState::Finished, "a disc event waits for its outro");
+}
+
+#[test]
+fn a_rounds_end_ends_a_run_still_on_as_its_time_limit_would() {
+    let mut timer = crate::death::DeathTimer::default();
+    let mut m = race(Vec::new());
+    (m.setup.event_type, m.setup.loop_without_outro, m.setup.time_up_result) =
+        (Some(EventType::SurviveToDeath), true, true);
+    m.on_trigger_race_start(&mut timer);
+    for i in 0..300 {
+        m.update(&mut timer, &inputs(-(i as f32), false, false));
+    }
+    m.end_round(true);
+    let u = m.update(&mut timer, &inputs(-300.0, false, false));
+    let r = m.result.clone().expect("the round's end is the run's");
+    assert!(u.results && !r.failed && m.state == EventState::Results);
+    let u = m.update(&mut timer, &inputs(-900.0, true, true));
+    assert!(!u.looped && !u.crossed && !m.request_loop_to_top && m.loops == 0, "no finish, no loop after the round");
+    m.on_trigger_race_start(&mut timer);
+    assert_eq!((m.state, m.result.as_ref()), (EventState::Results, Some(&r)), "a race start starts nothing");
+    let mut m = race(Vec::new());
+    (m.setup.event_type, m.setup.loop_without_outro, m.setup.time_up_result) =
+        (Some(EventType::SurviveToDeath), true, true);
+    m.state = EventState::Finished;
+    assert!(m.update(&mut timer, &inputs(-900.0, true, true)).looped && m.request_loop_to_top);
+    m.end_round(true);
+    let u = m.update(&mut timer, &inputs(-900.0, false, true));
+    assert!(u.results && !m.request_loop_to_top && !m.waiting && m.state == EventState::Results);
+    assert_eq!(m.loops, 1, "the loop counted before the round's end stays counted");
+    for (t, failed) in [(EventType::SurviveToDeath, false), (EventType::RaceClock, true)] {
+        let mut m = race(Vec::new());
+        m.setup.event_type = Some(t);
+        m.on_trigger_race_start(&mut timer);
+        m.update(&mut timer, &inputs(-10.0, false, false));
+        m.end_round(false);
+        m.update(&mut timer, &inputs(-11.0, false, false));
+        assert_eq!(m.result.as_ref().map(|r| r.failed), Some(failed), "{t:?}");
+        assert_eq!(m.state, if failed { EventState::Idle } else { EventState::Results });
+    }
+    let mut m = race(Vec::new());
+    m.on_trigger_race_start(&mut timer);
+    assert!(m.update(&mut timer, &inputs(-900.0, true, false)).finished && m.state == EventState::Finished);
+    m.end_round(true);
+    let posted = (0..70).any(|_| m.update(&mut timer, &inputs(-900.0, false, true)).results);
+    assert!(posted && m.result.as_ref().is_some_and(|r| !r.failed), "the finish crossed before the round's end");
+    m.reset();
+    assert_eq!(m.round_over, None);
 }

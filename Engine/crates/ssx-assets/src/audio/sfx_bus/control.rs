@@ -39,6 +39,11 @@ impl Graph {
         }
     }
 
+    pub fn attr(&self, slot: usize, fourcc: &[u8; 4], attr: usize) -> Option<f64> {
+        let v = self.voices.get(slot)?.as_ref()?;
+        v.plugins.iter().find(|p| &p.fourcc == fourcc)?.attrs.get(attr).copied()
+    }
+
     pub fn fade_by_name(&mut self, voice: &str, to: f32, seconds: f32) {
         let Some(v) = self.voices.iter_mut().flatten().find(|v| v.name == voice) else { return };
         let Some(p) = v.plugins.iter_mut().find(|p| &p.fourcc == b"GaF0") else { return };

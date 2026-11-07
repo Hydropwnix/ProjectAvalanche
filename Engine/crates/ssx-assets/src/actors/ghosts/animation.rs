@@ -168,7 +168,7 @@ fn ghost_rigamate(big_root: &Path, rig: &GhostRig, bot: Option<&str>) -> Result<
         ssx_formats::ant::Stream::parse(&std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?)
             .with_context(|| format!("parsing {}", path.display()))
     };
-    let all = stream(crate::rig_anim::RIG_BUNDLE)?;
+    let all = crate::content::data::tuning::anim_all(big_root)?;
     let names = GhostSchemas::load(big_root)?;
     let own = bot.map(|c| stream(&format!("{}.cba", names.bot_actor(c)))).transpose()?;
     let config = bot.map_or(names.ghost_config(), |c| format!("{}_config", names.bot_actor(c)));
@@ -217,6 +217,7 @@ pub struct GhostAnimation {
     wipeout_weight: f32,
     legs: Option<LegRigOps>,
     rigamate: Option<(RigamateRig, Vec<Option<usize>>)>,
+    nis: Option<(String, Animator)>,
 }
 
 impl GhostAnimation {
@@ -272,7 +273,7 @@ impl GhostAnimation {
         if legs.is_none() {
             problems.push("leg rig ops: the rig lacks a leg or effector joint".into());
         }
-        Ok((Self { animator, idle, wipeout, wipeout_weight: 0.0, legs, rigamate }, problems))
+        Ok((Self { animator, idle, wipeout, wipeout_weight: 0.0, legs, rigamate, nis: None }, problems))
     }
 
     pub fn pose(&mut self, rig: &GhostRig, p: &GhostPose, dt_ticks: f32) -> RigPose {
@@ -356,7 +357,41 @@ impl GhostAnimation {
         let idle = self.idle.as_mut()?;
         idle.set("deltaTicks", dt_ticks);
         idle.update(dt_ticks);
-        let mut pose = idle.pose();
+        let pose = idle.pose();
+        Some(self.placed(rig, pose, offset, orientation))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn nis_pose(
+        &mut self,
+        db: &AssetDb,
+        rig: &GhostRig,
+        floats: &[String],
+        root: &str,
+        time: f32,
+        at: [f32; 3],
+        rotation: [f32; 4],
+    ) -> Option<(RigPose, [f32; 3])> {
+        if self.nis.as_ref().is_none_or(|(n, _)| n != root) {
+            self.nis = Animator::new(db, root, &rig.rig, rig.bind.clone(), floats).ok().map(|a| (root.to_string(), a));
+        }
+        let (_, a) = self.nis.as_mut()?;
+        a.set_time(time);
+        a.set("deltaTicks", 0.0);
+        a.update(0.0);
+        let mut pose = a.pose();
+        pose.nodes[rig.trajectory] = Srt { rotation, ..SRT_IDENTITY };
+        let (pose, _) = self.placed(rig, pose, [0.0; 3], [0.0, 0.0, 0.0, 1.0]);
+        Some((pose, at))
+    }
+
+    fn placed(
+        &mut self,
+        rig: &GhostRig,
+        mut pose: RigPose,
+        offset: [f32; 3],
+        orientation: [f32; 4],
+    ) -> (RigPose, [f32; 3]) {
         let clip = pose.nodes[rig.trajectory];
         let [x, y, z, _] =
             crate::rigamate::rotate(orientation, [clip.translation[0], clip.translation[1], clip.translation[2], 0.0]);
@@ -373,7 +408,7 @@ impl GhostAnimation {
             let floats: Vec<f32> = slots.iter().map(|s| s.map_or(0.0, |i| pose.floats[i])).collect();
             rm.apply(&mut pose.nodes, &floats);
         }
-        Some((pose, at))
+        (pose, at)
     }
 
     pub fn reset_idle(&mut self) {

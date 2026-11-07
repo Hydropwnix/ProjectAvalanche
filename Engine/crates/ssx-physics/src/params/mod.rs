@@ -1,4 +1,5 @@
 pub mod character;
-pub mod curve;
 pub mod gear;
 pub mod tuning;
+
+pub use ssx_rules::curve;

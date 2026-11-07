@@ -1,0 +1,441 @@
+{
+  "format": 1,
+  "states": [
+    {
+      "parent": "FrontEndGlobe",
+      "state": {
+        "name": "AvaHub",
+        "onEnter": [
+          ["loadView", ["avahub"]]
+        ],
+        "onExit": [
+          ["unloadView", ["avahub"]]
+        ],
+        "transitions": [
+          {
+            "event": "ava_exit",
+            "targets": [],
+            "actions": [
+              ["pushPopup", ["ava_exit"]]
+            ]
+          },
+          {
+            "event": "ava_exit_yes",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["ava_exit"]],
+              ["do_ava_exit", []]
+            ]
+          },
+          {
+            "event": "ava_exit_no",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["ava_exit"]]
+            ]
+          },
+          {
+            "event": "ava_net_message",
+            "targets": [],
+            "actions": [
+              ["pushPopup", ["ava_net_message"]]
+            ]
+          },
+          {
+            "event": "ava_net_message_ok",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["ava_net_message"]]
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "parent": "FrontEndGlobe",
+      "state": {
+        "name": "AvaMaps",
+        "onEnter": [
+          ["loadView", ["avamaps"]]
+        ],
+        "onExit": [
+          ["unloadView", ["avamaps"]]
+        ],
+        "transitions": [
+          {
+            "event": "ava_maps_message",
+            "targets": [],
+            "actions": [
+              ["pushPopup", ["ava_maps_message"]]
+            ]
+          },
+          {
+            "event": "ava_maps_message_ok",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["ava_maps_message"]],
+              ["do_ava_maps_message_ok", []]
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "parent": "ActivityFeed",
+      "state": {
+        "name": "AvaCredits",
+        "onEnter": [
+          ["push_dimmer_state", ["full"]],
+          ["loadView", ["avacredits"]]
+        ],
+        "onExit": [
+          ["pop_dimmer_state", []],
+          ["unloadView", ["avacredits"]]
+        ],
+        "transitions": [
+          {
+            "event": "go_to_activity_feed_home",
+            "targets": ["ActivityFeedClosed"]
+          }
+        ]
+      }
+    },
+    {
+      "parent": "ActivityFeed",
+      "state": {
+        "name": "AvaOptions",
+        "onEnter": [
+          ["loadView", ["avaoptions"]]
+        ],
+        "onExit": [
+          ["unloadView", ["avaoptions"]]
+        ],
+        "transitions": [
+          {
+            "event": "go_to_ava_options_page",
+            "targets": ["AvaOptionsPage"]
+          },
+          {
+            "event": "go_to_ava_options_game",
+            "targets": ["AvaOptionsGame"]
+          },
+          {
+            "event": "go_to_ava_options_calibration",
+            "targets": ["AvaOptionsCalibration"]
+          },
+          {
+            "event": "ava_options_close",
+            "targets": ["ActivityFeedClosed"],
+            "actions": [
+              ["pop_dimmer_state", []]
+            ]
+          },
+          {
+            "event": "ava_settings_broken",
+            "targets": [],
+            "actions": [
+              ["pushPopup", ["ava_settings_broken"]]
+            ]
+          },
+          {
+            "event": "ava_settings_broken_yes",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["ava_settings_broken"]],
+              ["do_ava_settings_replace", []]
+            ]
+          },
+          {
+            "event": "ava_settings_broken_no",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["ava_settings_broken"]],
+              ["do_ava_settings_keep", []]
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "parent": "ActivityFeed",
+      "state": {
+        "name": "AvaOptionsPage",
+        "onEnter": [
+          ["loadView", ["avaoptionspage"]]
+        ],
+        "onExit": [
+          ["unloadView", ["avaoptionspage"]]
+        ],
+        "transitions": [
+          {
+            "event": "ava_options_menu",
+            "targets": ["AvaOptions"]
+          },
+          {
+            "event": "go_to_exit_settings_without_save_popup",
+            "targets": [],
+            "actions": [
+              ["pushPopup", ["exit_settings_without_save"]]
+            ]
+          },
+          {
+            "event": "exit_settings_without_save_yes",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["exit_settings_without_save"]],
+              ["do_ava_options_discard", []]
+            ]
+          },
+          {
+            "event": "exit_settings_without_save_no",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["exit_settings_without_save"]]
+            ]
+          },
+          {
+            "event": "ava_options_reset",
+            "targets": [],
+            "actions": [
+              ["pushPopup", ["ava_options_reset"]]
+            ]
+          },
+          {
+            "event": "ava_options_reset_yes",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["ava_options_reset"]],
+              ["do_ava_options_reset", []]
+            ]
+          },
+          {
+            "event": "ava_options_reset_no",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["ava_options_reset"]]
+            ]
+          },
+          {
+            "event": "ava_settings_broken",
+            "targets": [],
+            "actions": [
+              ["pushPopup", ["ava_settings_broken"]]
+            ]
+          },
+          {
+            "event": "ava_settings_broken_yes",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["ava_settings_broken"]],
+              ["do_ava_settings_replace", []]
+            ]
+          },
+          {
+            "event": "ava_settings_broken_no",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["ava_settings_broken"]],
+              ["do_ava_settings_keep", []]
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "parent": "ActivityFeed",
+      "state": {
+        "name": "AvaOptionsGame",
+        "onEnter": [
+          ["loadView", ["avaoptionsgame"]]
+        ],
+        "onExit": [
+          ["unloadView", ["avaoptionsgame"]]
+        ],
+        "transitions": [
+          {
+            "event": "go_to_activity_feed_settings_menu",
+            "targets": ["AvaOptions"]
+          },
+          {
+            "event": "go_to_exit_settings_without_save_popup",
+            "targets": [],
+            "actions": [
+              ["pushPopup", ["exit_settings_without_save"]]
+            ]
+          },
+          {
+            "event": "exit_settings_without_save_yes",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["exit_settings_without_save"]],
+              ["do_exit_settings_without_save", ["exit_settings_without_save"]]
+            ]
+          },
+          {
+            "event": "exit_settings_without_save_no",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["exit_settings_without_save"]]
+            ]
+          },
+          {
+            "event": "go_to_reset_tutorial_messages_popup",
+            "targets": [],
+            "actions": [
+              ["pushPopup", ["reset_tutorial_messages"]]
+            ]
+          },
+          {
+            "event": "reset_tutorial_messages_yes",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["reset_tutorial_messages"]],
+              ["do_reset_tutorial_messages", ["reset_tutorial_messages"]]
+            ]
+          },
+          {
+            "event": "reset_tutorial_messages_no",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["reset_tutorial_messages"]]
+            ]
+          },
+          {
+            "event": "go_to_reset_gameplay_settings_popup",
+            "targets": [],
+            "actions": [
+              ["pushPopup", ["reset_gameplay_settings"]]
+            ]
+          },
+          {
+            "event": "reset_gameplay_settings_yes",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["reset_gameplay_settings"]],
+              ["do_reset_gameplay_settings", ["reset_gameplay_settings"]]
+            ]
+          },
+          {
+            "event": "reset_gameplay_settings_no",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["reset_gameplay_settings"]]
+            ]
+          },
+          {
+            "event": "go_to_reset_audio_settings_popup",
+            "targets": [],
+            "actions": [
+              ["pushPopup", ["reset_audio_settings"]]
+            ]
+          },
+          {
+            "event": "reset_audio_settings_yes",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["reset_audio_settings"]],
+              ["do_reset_audio_settings", ["reset_audio_settings"]]
+            ]
+          },
+          {
+            "event": "reset_audio_settings_no",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["reset_audio_settings"]]
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "parent": "ActivityFeed",
+      "state": {
+        "name": "AvaOptionsCalibration",
+        "onEnter": [
+          ["loadView", ["avaoptionscalibration"]]
+        ],
+        "onExit": [
+          ["unloadView", ["avaoptionscalibration"]]
+        ],
+        "transitions": [
+          {
+            "event": "go_to_activity_feed_settings_menu",
+            "targets": ["AvaOptions"]
+          }
+        ]
+      }
+    }
+  ],
+  "transitions": [
+    {
+      "state": "bootlogo",
+      "transition": {
+        "event": "go_to_ava_hub",
+        "targets": ["AvaHub"]
+      }
+    },
+    {
+      "state": "FrontEndGlobe",
+      "transition": {
+        "event": "go_to_ava_hub",
+        "targets": ["AvaHub"]
+      }
+    },
+    {
+      "state": "FrontEndGlobe",
+      "transition": {
+        "event": "go_to_ava_maps",
+        "targets": ["AvaMaps"]
+      }
+    },
+    {
+      "state": "Gameplay",
+      "transition": {
+        "event": "go_to_ava_maps",
+        "targets": ["AvaMaps"]
+      }
+    },
+    {
+      "state": "EquipmentLoading",
+      "transition": {
+        "event": "go_to_ava_maps",
+        "targets": ["AvaMaps"]
+      }
+    },
+    {
+      "state": "ActivityFeed",
+      "transition": {
+        "event": "go_to_ava_credits",
+        "targets": ["AvaCredits"]
+      }
+    },
+    {
+      "state": "ActivityFeed",
+      "transition": {
+        "event": "go_to_ava_options",
+        "targets": ["AvaOptions"],
+        "actions": [
+          ["push_dimmer_state", ["full"]]
+        ]
+      }
+    },
+    {
+      "state": "main",
+      "transition": {
+        "event": "ava_keyboard_open",
+        "actions": [
+          ["loadView", ["avakeyboard"]]
+        ]
+      }
+    },
+    {
+      "state": "main",
+      "transition": {
+        "event": "ava_keyboard_close",
+        "actions": [
+          ["unloadView", ["avakeyboard"]]
+        ]
+      }
+    }
+  ]
+}

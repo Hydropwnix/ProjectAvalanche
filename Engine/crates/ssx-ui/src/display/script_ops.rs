@@ -35,7 +35,16 @@ impl Player {
         self.init_done.retain(|&(m, _)| m != movie);
         let root = lib.movie(movie).root.clone();
         let next = self.tick + 1;
+        let Some(old_owner) = self.get(id).map(|i| i.owner) else { return };
+        let owner = lib.origin(movie).map(|_| movie).or(self.making_for).or(old_owner);
+        if owner != old_owner {
+            self.disown(old_owner);
+            if let Some(o) = owner {
+                *self.owned.entry(o).or_default() += 1;
+            }
+        }
         let Some(inst) = self.get_mut(id) else { return };
+        inst.owner = owner;
         let old = std::mem::replace(
             &mut inst.kind,
             InstanceKind::Sprite(SpriteState {
@@ -143,6 +152,10 @@ impl Player {
         let movie = self.get(parent)?.movie;
         self.get(parent)?.sprite()?;
         self.remove_at(parent, depth);
+        let owner = self.owner_for(Some(parent), None);
+        if !self.room_for(Some(parent), owner) {
+            return None;
+        }
         let timeline = Arc::new(TimelineDef { movie, id: 0xFFFF, frames: vec![Default::default()] });
         let inst = Instance {
             parent: Some(parent),
@@ -171,6 +184,7 @@ impl Player {
             }),
             scripted: false,
             created_tick: self.tick,
+            owner,
         };
         let id = self.alloc(inst);
         self.get_mut(parent)?.sprite_mut()?.children.insert(depth, id);

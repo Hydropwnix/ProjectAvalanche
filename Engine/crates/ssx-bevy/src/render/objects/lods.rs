@@ -1,11 +1,12 @@
 use bevy::asset::RenderAssetUsages;
+use bevy::ecs::system::SystemParam;
 use bevy::mesh::MeshTag;
 use bevy::prelude::*;
 use bevy::render::storage::ShaderBuffer;
 use ssx_assets::track_objects::Placement;
 
 use super::load::{ModelClass, ObjectLod};
-use super::{MaterialHandle, PendingObjects};
+use super::{LoadedObjects, MaterialHandle, PendingObjects, ReloadedObjects};
 use crate::render::lighting::game::GameLightAssets;
 use crate::render::objects::foreground::ForegroundMaterial;
 use crate::render::objects::material::{ObjectMaterial, PLACEMENT_BUFFER, placement_bytes};
@@ -24,6 +25,13 @@ pub struct ObjectLods {
     blend: Vec<Option<Handle<ObjectMaterial>>>,
     logged: (Vec<usize>, f32),
     by_position: std::collections::HashMap<[u32; 3], Vec<usize>>,
+    source: (std::path::PathBuf, super::ObjectsSource),
+}
+
+impl ObjectLods {
+    pub fn source(&self) -> &(std::path::PathBuf, super::ObjectsSource) {
+        &self.source
+    }
 }
 
 struct PlacementSlot {
@@ -92,19 +100,41 @@ pub fn placement_transform(p: &Placement) -> Transform {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn spawn_objects(
-    mut commands: Commands,
-    mut pending: ResMut<PendingObjects>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ObjectMaterial>>,
-    mut foreground_materials: ResMut<Assets<ForegroundMaterial>>,
-    mut images: ResMut<Assets<Image>>,
-    mut buffers: ResMut<Assets<ShaderBuffer>>,
-    light: Res<GameLightAssets>,
-    post: Option<Res<crate::render::post::PostSettings>>,
-) {
+#[derive(SystemParam)]
+pub(super) struct SpawnAssets<'w> {
+    meshes: ResMut<'w, Assets<Mesh>>,
+    materials: ResMut<'w, Assets<ObjectMaterial>>,
+    foreground_materials: ResMut<'w, Assets<ForegroundMaterial>>,
+    images: ResMut<'w, Assets<Image>>,
+    buffers: ResMut<'w, Assets<ShaderBuffer>>,
+    light: Res<'w, GameLightAssets>,
+    post: Option<Res<'w, crate::render::post::PostSettings>>,
+}
+
+pub(super) fn spawn_objects(mut commands: Commands, mut pending: ResMut<PendingObjects>, assets: SpawnAssets) {
     let Some(loaded) = pending.0.take() else { return };
+    spawn(&mut commands, loaded, assets);
+    commands.remove_resource::<PendingObjects>();
+}
+
+pub(super) fn respawn_objects(
+    mut commands: Commands,
+    mut reloaded: ResMut<ReloadedObjects>,
+    old: Option<Res<ObjectLods>>,
+    assets: SpawnAssets,
+) {
+    let Some(loaded) = reloaded.0.take() else { return };
+    for slot in old.iter().flat_map(|o| &o.slots) {
+        for &(entity, _) in slot.entities.iter().flatten() {
+            commands.entity(entity).despawn();
+        }
+    }
+    spawn(&mut commands, loaded, assets);
+    commands.remove_resource::<ReloadedObjects>();
+}
+
+fn spawn(commands: &mut Commands, loaded: LoadedObjects, mut a: SpawnAssets) {
+    let source = loaded.source.clone();
     let stats = &loaded.stats;
     info!(
         "Loaded track objects in {:.2}s: {} of {} game objects drawn, {} placements -> {} entities (all LODs), \
@@ -121,25 +151,35 @@ pub(super) fn spawn_objects(
     for problem in &stats.problems {
         warn!("{problem}");
     }
-    let image_handles: Vec<Handle<Image>> = loaded.images.into_iter().map(|i| images.add(i)).collect();
+    if let Some(d) = &stats.decision {
+        info!("track objects: {d}");
+    }
+    for p in &stats.package_objects {
+        info!("track objects: drawn from a package: {p}");
+    }
+    let image_handles: Vec<Handle<Image>> = loaded
+        .images
+        .into_iter()
+        .map(|(image, recipe)| crate::render::reload::add(&mut a.images, image, Some(recipe)))
+        .collect();
     let material_handles: Vec<MaterialHandle> = loaded
         .materials
         .iter()
-        .map(|m| m.add(&image_handles, &light, &mut materials, &mut foreground_materials))
+        .map(|m| m.add(&image_handles, &a.light, &mut a.materials, &mut a.foreground_materials))
         .collect();
     let blend: Vec<Option<Handle<ObjectMaterial>>> = loaded
         .materials
         .iter()
-        .map(|m| m.add_low(&image_handles, &light, &mut materials, true, post.is_some()))
+        .map(|m| m.add_low(&image_handles, &a.light, &mut a.materials, true, a.post.is_some()))
         .collect();
     let low: Vec<Option<Handle<ObjectMaterial>>> =
-        loaded.materials.iter().map(|m| m.add_low(&image_handles, &light, &mut materials, false, false)).collect();
+        loaded.materials.iter().map(|m| m.add_low(&image_handles, &a.light, &mut a.materials, false, false)).collect();
     let opaque: Vec<Option<Handle<ObjectMaterial>>> = material_handles
         .iter()
         .map(|h| if let MaterialHandle::Object(m) = h { Some(m.clone()) } else { None })
         .collect();
     let mesh_handles: Vec<(Name, Handle<Mesh>)> =
-        loaded.meshes.into_iter().map(|(label, mesh)| (Name::new(label), meshes.add(mesh))).collect();
+        loaded.meshes.into_iter().map(|(label, mesh)| (Name::new(label), a.meshes.add(mesh))).collect();
 
     let mut buffer = vec![[1.0, 1.0]];
     let mut slots = Vec::with_capacity(loaded.placements.len());
@@ -151,7 +191,7 @@ pub(super) fn spawn_objects(
         let transform = placement_transform(placement);
         let slot = buffer.len();
         buffer.push([placement.unk[2].max(0.0), 1.0]);
-        let tag = MeshTag(slot as u32);
+        let tag = MeshTag::new(slot as u32);
         let mut entities = Vec::with_capacity(lods.len());
         for lod in lods {
             let mut lod_entities = Vec::with_capacity(lod.len());
@@ -180,12 +220,21 @@ pub(super) fn spawn_objects(
             state: None,
         });
     }
+    let pairs: std::collections::BTreeSet<(usize, usize)> =
+        loaded.parts.iter().flatten().flatten().map(|&(mesh, material)| (mesh, material)).collect();
+    let warm = super::warm_up::spawn(
+        commands,
+        pairs.into_iter().map(|(mesh, m)| {
+            (mesh_handles[mesh].1.clone(), material_handles[m].clone(), [low[m].clone(), blend[m].clone()])
+        }),
+    );
+    info!("object pipelines warmed up by {warm} draws of {} meshes", mesh_handles.len());
     let mut by_position: std::collections::HashMap<[u32; 3], Vec<usize>> = std::collections::HashMap::new();
     for (i, slot) in slots.iter().enumerate() {
         by_position.entry(slot.placement.position.map(f32::to_bits)).or_default().push(i);
     }
-    let data = ShaderBuffer::new(&placement_bytes(&buffer), RenderAssetUsages::default());
-    if let Err(e) = buffers.insert(PLACEMENT_BUFFER.id(), data) {
+    let data = ShaderBuffer::new(placement_bytes(&buffer), RenderAssetUsages::default());
+    if let Err(e) = a.buffers.insert(PLACEMENT_BUFFER.id(), data) {
         error!("placement buffer: {e}");
     }
     let logged = (Vec::new(), f32::NEG_INFINITY);
@@ -204,8 +253,8 @@ pub(super) fn spawn_objects(
         blend,
         logged,
         by_position,
+        source,
     });
-    commands.remove_resource::<PendingObjects>();
 }
 
 fn choose_lod(thresholds: &[f32], metric: f32) -> (Option<usize>, f32) {
@@ -295,7 +344,8 @@ pub(super) fn update_object_lods(
         slot.state = state;
     }
     if buffer_changed && let Some(mut b) = buffers.get_mut(&PLACEMENT_BUFFER) {
-        b.data = Some(placement_bytes(&lods.buffer));
+        b.clear();
+        b.extend_from_slice(&placement_bytes(&lods.buffer));
     }
     let now = time.elapsed_secs();
     if counts != lods.logged.0 && now - lods.logged.1 >= 1.0 {

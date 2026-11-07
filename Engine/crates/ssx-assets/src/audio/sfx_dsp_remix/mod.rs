@@ -2,79 +2,13 @@ mod beat;
 mod delay;
 mod reverb;
 
+use ssx_formats::vmx;
+
 use crate::sfx_dsp::{BLOCK, Coefs, RATE, biquad};
 
 pub use beat::*;
 pub use delay::*;
 pub use reverb::*;
-
-pub fn vec_sin(x: f32) -> f32 {
-    const C: [u32; 11] = [
-        0xBE2A_AAAB,
-        0x3C08_8889,
-        0xB950_0D01,
-        0x3638_EF1D,
-        0xB2D7_322B,
-        0x2F30_9231,
-        0xAB57_3F9F,
-        0x274A_963C,
-        0xA317_A4DA,
-        0x1EB8_DC78,
-        0x9A3B_0DA1,
-    ];
-    let c = C.map(f32::from_bits);
-    let n = (x * f32::from_bits(0x3E22_F983)).round_ties_even();
-    let v = (-f32::from_bits(0x40C9_0FDB)).mul_add(n, x);
-    let v2 = v * v;
-    let mut p = v2 * v;
-    let mut acc = c[0].mul_add(p, v);
-    for &k in &c[1..] {
-        p *= v2;
-        acc = k.mul_add(p, acc);
-    }
-    acc
-}
-
-pub fn vec_cos(x: f32) -> f32 {
-    const C: [u32; 11] = [
-        0xBF00_0000,
-        0x3D2A_AAAB,
-        0xBAB6_0B61,
-        0x37D0_0D01,
-        0xB493_F27E,
-        0x310F_76C8,
-        0xAD49_CBA5,
-        0x2957_3F9F,
-        0xA534_13C3,
-        0x20F2_A15D,
-        0x9C86_71CB,
-    ];
-    let c = C.map(f32::from_bits);
-    let n = (x * f32::from_bits(0x3E22_F983)).round_ties_even();
-    let v = (-f32::from_bits(0x40C9_0FDB)).mul_add(n, x);
-    let x2 = v * v;
-    let x4 = x2 * x2;
-    let x6 = x4 * x2;
-    let x8 = x4 * x4;
-    let x10 = x6 * x4;
-    let x12 = x6 * x6;
-    let x14 = x8 * x6;
-    let x16 = x8 * x8;
-    let x18 = x10 * x8;
-    let x22 = x12 * x10;
-    let x20 = x10 * x10;
-    let mut a = c[0].mul_add(x2, 1.0);
-    a = c[1].mul_add(x4, a);
-    a = c[2].mul_add(x6, a);
-    a = c[3].mul_add(x8, a);
-    a = c[4].mul_add(x10, a);
-    a = c[5].mul_add(x12, a);
-    a = c[6].mul_add(x14, a);
-    a = c[7].mul_add(x16, a);
-    a = c[8].mul_add(x18, a);
-    a = c[9].mul_add(x20, a);
-    c[10].mul_add(x22, a)
-}
 
 pub const FIR_HALF: usize = 33;
 
@@ -86,12 +20,12 @@ pub fn design_band_pass(w: f32, bw: f32) -> [f32; FIR_HALF] {
     for (n, v) in h.iter_mut().enumerate().take(32) {
         let k = n as f32 - 32.0;
         let inv = 1.0 / (std::f32::consts::PI * k);
-        *v = (vec_sin(w2 * k) - vec_sin(w1 * k)) * inv;
+        *v = (vmx::sin(w2 * k) - vmx::sin(w1 * k)) * inv;
     }
     h[32] = (w2 - w1) * f32::from_bits(0x3EA2_F983);
     let step = 6.283_185_5f32 / 64.0;
     for (n, v) in h.iter_mut().enumerate() {
-        let c = if n < 32 { vec_cos(n as f32 * step) } else { (f64::from(n as f32 * step)).cos() as f32 };
+        let c = if n < 32 { vmx::cos(n as f32 * step) } else { (f64::from(n as f32 * step)).cos() as f32 };
         let win = if n < 32 { 0.54f32 - c * 0.46 } else { (-c).mul_add(0.46, 0.54) };
         *v *= win;
     }
@@ -218,7 +152,7 @@ impl FrequencyShift {
         let step = d * 4.0;
         for k in (0..BLOCK).step_by(4) {
             for l in 0..4 {
-                chans[0][k + l] = i_path[k + l] * vec_cos(ph[l]) - q_path[k + l] * vec_sin(ph[l]);
+                chans[0][k + l] = i_path[k + l] * vmx::cos(ph[l]) - q_path[k + l] * vmx::sin(ph[l]);
                 ph[l] += step;
             }
         }
@@ -244,15 +178,6 @@ mod tests {
             im += f64::from(v) * a.sin();
         }
         (2.0 * (re * re + im * im).sqrt() / x.len() as f64) as f32
-    }
-
-    #[test]
-    fn vmx_sine_and_cosine_match_libm() {
-        for k in -2000..2000 {
-            let x = k as f32 * 0.005;
-            assert!((vec_sin(x) - x.sin()).abs() < 8e-7, "sin {x}");
-            assert!((vec_cos(x) - x.cos()).abs() < 8e-7, "cos {x}");
-        }
     }
 
     #[test]

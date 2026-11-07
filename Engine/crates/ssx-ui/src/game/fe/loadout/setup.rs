@@ -58,16 +58,54 @@ pub struct GameSetup {
     pub character: u32,
     pub gear: [GearItem; GEAR_TYPES],
     pub sources: [Option<Source>; GEAR_TYPES],
+    pub presentation: Option<Box<GameSetup>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SimFields {
+    Packages,
+    Disc,
 }
 
 pub fn commit(inv: &Inventory, db: &CareerDb, profile: &Profile, loc: &mut Localization) -> GameSetup {
+    let mut setup = commit_with(inv, db, profile, loc, SimFields::Packages);
+    let disc = commit_with(inv, db, profile, loc, SimFields::Disc);
+    if disc.gear != setup.gear {
+        setup.presentation = Some(Box::new(disc));
+    }
+    setup
+}
+
+fn rider_record(db: &CareerDb, key: u32) -> Option<&ssx_assets::career::Rider> {
+    db.riders.iter().find(|r| r.key == key)
+}
+
+fn commit_with(
+    inv: &Inventory,
+    db: &CareerDb,
+    profile: &Profile,
+    loc: &mut Localization,
+    fields: SimFields,
+) -> GameSetup {
     let mut setup = GameSetup::default();
     let rider = if inv.rider != 0 { inv.record(db, profile, loc, inv.rider, 0) } else { None };
     setup.character = rider.as_ref().filter(|r| r.kind == RIDER).map_or(0, |r| r.descriptions[0]);
-    let bonus = |stat: i64| -> Option<u32> {
-        let r = db.riders.iter().find(|r| r.key == setup.character)?;
-        r.stat_bonuses.iter().find(|&&(s, _)| i64::from(s) == stat).map(|&(_, b)| u32::from(b))
+    let looks = rider_record(db, setup.character)
+        .and_then(|r| r.content.as_ref())
+        .filter(|c| c.added)
+        .map_or(setup.character, |c| c.stand_in);
+    let bonuses: Vec<(i32, u8)> = match rider_record(db, setup.character) {
+        Some(r) => match (fields, &r.content) {
+            (SimFields::Disc, Some(c)) if c.added => {
+                rider_record(db, c.stand_in).map(|s| s.stat_bonuses.clone()).unwrap_or_default()
+            }
+            (SimFields::Disc, Some(c)) => c.disc_stat_bonuses.clone().unwrap_or_else(|| r.stat_bonuses.clone()),
+            _ => r.stat_bonuses.clone(),
+        },
+        None => Vec::new(),
     };
+    let bonus =
+        |stat: i64| -> Option<u32> { bonuses.iter().find(|&&(s, _)| i64::from(s) == stat).map(|&(_, b)| u32::from(b)) };
     let mut gear = setup.gear;
     let mut sources = setup.sources;
     for kind in 0..4usize {
@@ -78,7 +116,19 @@ pub fn commit(inv: &Inventory, db: &CareerDb, profile: &Profile, loc: &mut Local
             if key == u32::MAX || Inventory::is_empty_item(kind as i64, key, src) {
                 continue;
             }
-            let Some(rec) = inv.record(db, profile, loc, key, src) else { continue };
+            let Some(mut rec) = inv.record(db, profile, loc, key, src) else { continue };
+            if fields == SimFields::Disc
+                && src == 0
+                && let Some(c) = db.items.iter().find(|i| i.key == key).and_then(|i| i.content.as_ref())
+            {
+                let disc = if c.added { &[][..] } else { c.disc_attributes.as_deref().unwrap_or(&[]) };
+                if c.added || c.disc_attributes.is_some() {
+                    rec.stats = [(-1, 0); 6];
+                    for (s, &(t, v)) in rec.stats.iter_mut().zip(disc) {
+                        *s = (i64::from(t), v);
+                    }
+                }
+            }
             let mut slot = rec.slot;
             if slot == BOOST_TYPE {
                 slot = BOOST_TYPE + boosts;
@@ -89,7 +139,7 @@ pub fn commit(inv: &Inventory, db: &CareerDb, profile: &Profile, loc: &mut Local
                 let mut item = GearItem::CLEARED;
                 item.set_slot(slot as i32);
                 item.description = if rec.rider != 0 && rec.rider != setup.character {
-                    rider_description(db, setup.character, rec.descriptions[0], slot)
+                    rider_description(db, looks, rec.descriptions[0], slot)
                 } else {
                     rec.descriptions[0]
                 };
@@ -199,6 +249,7 @@ mod tests {
             attributes: attributes.to_vec(),
             unk_b6ef00c6: 0,
             descriptions: descriptions.to_vec(),
+            content: None,
         }
     }
 
@@ -210,13 +261,14 @@ mod tests {
             display_name: String::new(),
             cost: 0,
             locked: false,
-            unk_349e965b: false,
+            default: false,
             unk_940b9b22: 0,
             stat_bonuses: stat_bonuses.to_vec(),
             portrait: String::new(),
             description: String::new(),
             round_icon: String::new(),
             icon: String::new(),
+            content: None,
         }
     }
 

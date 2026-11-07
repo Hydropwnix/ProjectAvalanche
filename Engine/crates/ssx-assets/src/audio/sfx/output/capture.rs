@@ -80,7 +80,7 @@ fn sync(wav: &mut BufWriter<File>, log: &mut BufWriter<File>, rate: u32, channel
         Ok(())
     };
     if let Err(e) = patch(wav).and_then(|()| log.flush()) {
-        eprintln!("warning: audio capture: {e}");
+        ssx_core::eprintln!("warning: audio capture: {e}");
     }
 }
 

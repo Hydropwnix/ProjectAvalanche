@@ -1,20 +1,22 @@
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::Indices;
-use bevy::prelude::*;
+use bevy::prelude::{Mesh, Vec3, info, warn};
 use bevy::render::render_resource::PrimitiveTopology;
-use ssx_assets::object_mesh::{self, ObjectMesh};
-use ssx_assets::track_objects::{Placement, asset_file, load_track_objects};
-use ssx_assets::vault_db::Material as VaultMaterial;
-use ssx_formats::geom::GeomFile;
+use ssx_assets::content::GameContent;
+use ssx_assets::content::resolve::Found;
+use ssx_assets::content::track_packages::{MeshPass, Usage};
+use ssx_assets::object_mesh::ObjectMesh;
+use ssx_assets::track_objects::{Placement, load_track_objects};
+use ssx_content::map::Map;
 
-use super::specs::prepare_materials;
-use super::{LoadedObjects, ObjectStats, SHADOW_EFFECT};
+use super::gather::{Gather, MeshJob};
+use super::specs::{MaterialInput, prepare_materials};
+use super::{LoadedObjects, ObjectStats};
 
 #[derive(Clone, Debug)]
 pub(super) struct ObjectLod {
@@ -66,87 +68,108 @@ impl ObjectLod {
     }
 }
 
-pub fn load(big_root: &Path, track: &str) -> Result<LoadedObjects> {
-    let start = Instant::now();
-    let vault = load_track_objects(big_root, track)
-        .with_context(|| format!("loading the objects of {track} from {}", big_root.display()))?;
-    let mut stats = ObjectStats { objects: vault.objects.len(), ..default() };
+#[derive(Clone)]
+pub enum ObjectsSource {
+    Track(String),
+    Map { base: Option<String>, map: Found<Map>, terrain: Usage },
+}
 
-    let mut geoms: Vec<(String, PathBuf)> = Vec::new();
-    let mut geom_ids: HashMap<String, usize> = HashMap::new();
-    let mut vault_materials: Vec<&VaultMaterial> = Vec::new();
-    let mut material_ids: HashMap<&str, usize> = HashMap::new();
-    let mut parts = Vec::with_capacity(vault.objects.len());
-    for object in &vault.objects {
-        let mut object_lods = Vec::with_capacity(object.lods.len());
-        for lod in &object.lods {
-            let mut lod_parts = Vec::new();
-            for mesh in lod {
-                let effect = mesh.material.effect.as_deref().unwrap_or("");
-                if effect == SHADOW_EFFECT {
-                    stats.shadow_proxies += 1;
-                }
-                let geom = match geom_ids.get(&mesh.geometry) {
-                    Some(&g) => g,
-                    None => {
-                        let Some(path) = asset_file(big_root, &mesh.geometry) else {
-                            stats.problems.push(format!("missing {}", mesh.geometry));
-                            continue;
-                        };
-                        let stem = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-                        geoms.push((stem, path));
-                        geom_ids.insert(mesh.geometry.clone(), geoms.len() - 1);
-                        geoms.len() - 1
-                    }
-                };
-                let material = *material_ids.entry(mesh.material.name.as_str()).or_insert_with(|| {
-                    vault_materials.push(&mesh.material);
-                    vault_materials.len() - 1
-                });
-                lod_parts.push((geom, material));
-            }
-            object_lods.push(lod_parts);
+pub fn load(big_root: &Path, track: &str) -> Result<LoadedObjects> {
+    load_from(big_root, &ObjectsSource::Track(track.to_string()))
+}
+
+pub fn load_from(big_root: &Path, source: &ObjectsSource) -> Result<LoadedObjects> {
+    let start = Instant::now();
+    let content = GameContent::of(big_root);
+    let mut stats = ObjectStats::default();
+    let mut gather = Gather::default();
+    let (mut parts, mut thresholds_of, mut placements) = (Vec::new(), Vec::new(), Vec::new());
+    let track = match source {
+        ObjectsSource::Track(t) => Some(t.as_str()),
+        ObjectsSource::Map { base, .. } => base.as_deref(),
+    };
+    let mut disc = None;
+    if let Some(track) = track {
+        let vault = load_track_objects(big_root, track)
+            .with_context(|| format!("loading the objects of {track} from {}", big_root.display()))?;
+        stats.objects = vault.objects.len();
+        let packages = content.track_packages(track);
+        if packages.world_triangles.is_some() {
+            stats.decision = Some(packages.summary());
         }
-        stats.objects_drawn += usize::from(object_lods.iter().any(|l| !l.is_empty()));
-        parts.push(object_lods);
+        let meshes_pass = packages.meshes(&content, &vault);
+        for object in &vault.objects {
+            let package =
+                packages.object(object.key).and_then(|f| gather.package_object(&content, &packages, f, &mut stats));
+            let o = package.unwrap_or_else(|| gather.disc_object(&content, meshes_pass, object, &mut stats));
+            stats.objects_drawn += usize::from(o.lods.iter().any(|l| !l.is_empty()));
+            parts.push(o.lods);
+            thresholds_of.push(o.thresholds);
+        }
+        placements.extend(vault.instances.iter().flat_map(|(object, list)| list.iter().map(move |p| (*object, *p))));
+        let used = meshes_pass.used;
+        disc = Some((packages, vault, used));
+    }
+    let mut beside = Usage::default();
+    if let ObjectsSource::Map { map, terrain, .. } = source {
+        let none = MeshPass::default();
+        let base = match &disc {
+            Some((packages, vault, used)) => (packages.meshes(&content, vault), *used),
+            None => (&none, Usage::default()),
+        };
+        let m = super::map::gather(&mut gather, &content, map, base, *terrain, &mut stats)?;
+        let offset = parts.len();
+        stats.objects += m.objects.len();
+        for o in m.objects {
+            stats.objects_drawn += usize::from(o.lods.iter().any(|l| !l.is_empty()));
+            parts.push(o.lods);
+            thresholds_of.push(o.thresholds);
+        }
+        placements.extend(m.placements.into_iter().map(|(o, p)| (o + offset, p)));
+        info!("{}", m.summary);
+        stats.map_drawn = Some(m.used);
+        beside = m.used;
     }
 
-    let loaded: Vec<(String, Mesh, (Vec3, Vec3))> =
-        parallel_map(&geoms, |(stem, path)| -> Result<(String, Mesh, (Vec3, Vec3))> {
-            let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-            let geom = GeomFile::parse(&data).with_context(|| format!("parsing {}", path.display()))?;
-            let bounds = geom
-                .meshes
-                .first()
-                .map_or((Vec3::ZERO, Vec3::ZERO), |m| (Vec3::from_array(m.bbox_min), Vec3::from_array(m.bbox_max)));
-            let mesh = object_mesh::object_mesh(&geom).with_context(|| format!("converting {}", path.display()))?;
-            Ok((stem.clone(), to_bevy_mesh(mesh, stem), bounds))
-        })
-        .into_iter()
-        .collect::<Result<_>>()?;
+    let loaded: Vec<(String, Mesh, (Vec3, Vec3))> = parallel_map(&gather.meshes, |job| -> Result<_> {
+        let (mesh, label) = match job {
+            MeshJob::Disc { id, label } => {
+                let found = content.base_model(id)?;
+                let mesh = found.value.lods.first().and_then(|l| l.parts.first()).map(|p| (*p.mesh).clone());
+                (mesh.with_context(|| format!("{id}: no mesh"))?, label)
+            }
+            MeshJob::Ready { mesh, label } => ((**mesh).clone(), label),
+        };
+        let (lo, hi) = mesh.bounds.unwrap_or(([0.0; 3], [0.0; 3]));
+        Ok((label.clone(), to_bevy_mesh(mesh, label), (Vec3::from_array(lo), Vec3::from_array(hi))))
+    })
+    .into_iter()
+    .collect::<Result<_>>()?;
     let geom_bounds: Vec<(Vec3, Vec3)> = loaded.iter().map(|(_, _, b)| *b).collect();
     let meshes: Vec<(String, Mesh)> = loaded.into_iter().map(|(s, m, _)| (s, m)).collect();
-    let lods: Vec<ObjectLod> = vault
-        .objects
+    let lods: Vec<ObjectLod> = thresholds_of
         .iter()
         .zip(&parts)
-        .map(|(object, object_parts)| {
+        .map(|(object_thresholds, object_parts)| {
             let thresholds =
-                (0..object.lods.len()).map(|k| object.lod_thresholds.get(k).copied().unwrap_or(0.0)).collect();
+                (0..object_parts.len()).map(|k| object_thresholds.get(k).copied().unwrap_or(0.0)).collect();
             let lod0 = object_parts.first().map(Vec::as_slice).unwrap_or_default();
             let union = lod0.iter().map(|&(g, _)| geom_bounds[g]).reduce(|(lo, hi), (l, h)| (lo.min(l), hi.max(h)));
-            let techniques = object_parts.iter().flatten().map(|&(_, m)| vault_materials[m].technique.as_deref());
+            let techniques = object_parts.iter().flatten().map(|&(_, m)| gather.materials[m].0.technique.as_deref());
             ObjectLod::from_box(thresholds, union, ModelClass::of(techniques))
         })
         .collect();
 
-    let (images, materials) = prepare_materials(big_root, &vault_materials, &mut stats.problems)?;
+    let inputs: Vec<MaterialInput<'_>> =
+        gather.materials.iter().map(|(def, tangent_sign)| MaterialInput { def, tangent_sign: *tangent_sign }).collect();
+    let track_pass = disc.as_ref().map(|(packages, vault, _)| (&**packages, vault, beside));
+    let (images, materials) = prepare_materials(big_root, &inputs, track_pass, &mut stats.problems)?;
 
-    let placements: Vec<(usize, Placement)> =
-        vault.instances.iter().flat_map(|(object, list)| list.iter().map(move |p| (*object, *p))).collect();
+    let placements: Vec<(usize, Placement)> = placements;
     for (object, _) in &placements {
         for &(_, material) in parts[*object].iter().flatten() {
-            let effect = vault_materials[material].effect.clone().unwrap_or_else(|| "(no effect)".into());
+            let effect = &gather.materials[material].0.effect;
+            let effect = if effect.is_empty() { "(no effect)".to_string() } else { effect.clone() };
             *stats.effects.entry(effect).or_default() += 1;
             stats.entities += 1;
         }
@@ -156,7 +179,8 @@ pub fn load(big_root: &Path, track: &str) -> Result<LoadedObjects> {
     stats.materials = materials.len();
     stats.textures = images.len();
     stats.load_secs = start.elapsed().as_secs_f32();
-    Ok(LoadedObjects { stats, meshes, images, materials, parts, lods, placements })
+    let source = (big_root.to_path_buf(), source.clone());
+    Ok(LoadedObjects { stats, meshes, images, materials, parts, lods, placements, source })
 }
 
 pub(super) fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
@@ -206,7 +230,12 @@ pub(super) fn to_bevy_mesh(mesh: ObjectMesh, label: &str) -> Mesh {
     }
     match mesh.tangents {
         Some(tangents) => {
-            let tangents: Vec<[f32; 4]> = tangents.into_iter().map(|[x, y, z]| [x, y, z, 1.0]).collect();
+            let signs = mesh.tangent_signs.unwrap_or_default();
+            let tangents: Vec<[f32; 4]> = tangents
+                .into_iter()
+                .enumerate()
+                .map(|(i, [x, y, z])| [x, y, z, signs.get(i).copied().unwrap_or(1.0)])
+                .collect();
             out.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents);
         }
         None if out.contains_attribute(Mesh::ATTRIBUTE_UV_0) => warn!("{label}: no g0; drawn without its normal map"),

@@ -1,0 +1,11 @@
+shape = "ring"
+size = 6.0
+color = "#40C8FFD0"
+glow = 1.5
+facing = "world"
+draw_distance = 600.0
+
+[animation]
+spin = 0.0
+pulse = 0.06
+pulse_period = 1.2

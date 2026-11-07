@@ -58,7 +58,7 @@ fn catch_up(
     rig: Option<&mut RiderRig>,
     clip: Option<&CameraNoise>,
     view: impl FnOnce() -> Snapshot,
-    restore: Option<i32>,
+    (restore, spectate): (Option<i32>, Option<&super::SpectateTarget>),
 ) {
     if let (Some(saved), Some(c)) = (restore, camera.0.as_mut()) {
         c.restore_fallback(saved);
@@ -66,6 +66,27 @@ fn catch_up(
     let fresh = camera.0.as_ref().and_then(|c| ride.steps.checked_sub(c.steps));
     if fresh == Some(0) {
         return;
+    }
+    let target = spectate.and_then(|t| t.rider.zip(t.inputs));
+    if let Some((rider, i)) = target {
+        match camera.0.as_mut() {
+            Some(c) if c.spectating == Some(rider) && fresh == Some(1) => {
+                let s = c.update(ride, &i, ride.step().1, clip);
+                (c.prev, c.curr, c.steps) = (c.curr, s, ride.steps);
+            }
+            _ => {
+                info!("chase camera: the spectator's camera on rider {rider} at step {}", ride.steps);
+                let mut c = Chase::new(ride, &i, view(), clip);
+                c.spectating = Some(rider);
+                camera.0 = Some(c);
+            }
+        }
+        return;
+    }
+    if camera.0.as_ref().is_some_and(|c| c.spectating.is_some()) {
+        info!("chase camera: the spectator's camera ends at step {}: the player's own", ride.steps);
+        camera.0 = None;
+        return catch_up(camera, ride, rig, clip, view, (None, None));
     }
     let i = inputs(ride, rig);
     if let Some((v, nis_rig)) = nis_view(ride) {
@@ -123,12 +144,13 @@ pub(super) fn step(
     mut rig: Option<ResMut<RiderRig>>,
     mut camera: ResMut<ChaseCamera>,
     cameras: Query<(&Transform, &Projection), With<FlyCam>>,
-    clip: Option<Res<CameraNoise>>,
+    (clip, spectate): (Option<Res<CameraNoise>>, Option<Res<super::SpectateTarget>>),
     mut link: Option<ResMut<crate::shell::game_level::CameraTypeLink>>,
 ) {
     if *mode == CameraMode::Chase {
         let restore = link.as_mut().and_then(|l| l.restore.take());
-        catch_up(&mut camera, &ride, rig.as_deref_mut(), clip.as_deref(), || current_view(cameras.iter()), restore);
+        let view = || current_view(cameras.iter());
+        catch_up(&mut camera, &ride, rig.as_deref_mut(), clip.as_deref(), view, (restore, spectate.as_deref()));
     }
     report_type(&camera, link);
 }
@@ -147,14 +169,15 @@ pub fn follow(
     mut rig: Option<ResMut<RiderRig>>,
     mut camera: ResMut<ChaseCamera>,
     mut cameras: Query<(&mut Transform, &mut Projection), With<FlyCam>>,
-    clip: Option<Res<CameraNoise>>,
+    (clip, spectate): (Option<Res<CameraNoise>>, Option<Res<super::SpectateTarget>>),
     mut link: Option<ResMut<crate::shell::game_level::CameraTypeLink>>,
 ) {
     if *mode != CameraMode::Chase {
         return;
     }
     let restore = link.as_mut().and_then(|l| l.restore.take());
-    catch_up(&mut camera, &ride, rig.as_deref_mut(), clip.as_deref(), || current_view(cameras.iter()), restore);
+    let view = || current_view(cameras.iter());
+    catch_up(&mut camera, &ride, rig.as_deref_mut(), clip.as_deref(), view, (restore, spectate.as_deref()));
     report_type(&camera, link);
     let Some(c) = camera.0.as_ref() else { return };
     let t = (ride.render_time * SIM_HZ - (c.steps as f32 - 1.0)).clamp(0.0, 1.0);

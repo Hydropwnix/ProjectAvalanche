@@ -54,7 +54,8 @@ pub fn ui_drop_warning(big_root: &std::path::Path, ui_drop: u32) -> anyhow::Resu
     let (v, b) = read("attribdb")?;
     let vault = Vault::parse(&v, &b)?;
     let cols = collection::collections(&vault)?;
-    let decoded = cols.iter().map(|c| c.decode(&vault, &schema)).collect::<ssx_formats::Result<Vec<_>>>()?;
+    let mut decoded = cols.iter().map(|c| c.decode(&vault, &schema)).collect::<ssx_formats::Result<Vec<_>>>()?;
+    crate::content::data::events::route_ui_drops(big_root, &cols, &mut decoded);
     let index = collection::index(&cols);
     let class = crate::vault_db::fnv1("ui_drop");
     let i = *index.get(&(class, ui_drop)).with_context(|| format!("no ui_drop {ui_drop:#010x}"))?;

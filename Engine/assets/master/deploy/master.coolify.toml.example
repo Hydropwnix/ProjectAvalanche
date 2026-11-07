@@ -1,0 +1,34 @@
+# master.toml for the master behind Coolify's proxy (round net4c; server-procedure.md, "The master on Coolify"): the
+# proxy (Traefik or Caddy) holds 80 and 443, gets the Let's Encrypt certificate and terminates TLS; the master serves
+# plain HTTP on 8443 inside the proxy's Docker network and takes each client's address from the proxy's
+# X-Forwarded-For. Coolify mounts this file at /srv/avalanche-master/master.toml (Persistent Storage, a file mount).
+# `avalanche-master check --config master.toml` says what is wrong and which mode it sees.
+
+[master]
+# every address of the container (dual stack); "0.0.0.0" where the container has no IPv6 at all
+bind = "::"
+# Coolify's "Ports Exposes": the port the proxy forwards to inside the container. No "Ports Mappings": Docker hands a
+# published port's loopback and IPv6 connections to the master from the network's gateway, an address inside the
+# trusted network below, so such a client could name any address in X-Forwarded-For
+port = 8443
+max_servers = 4096
+max_servers_per_address = 16
+# list public addresses only: the clients the proxy names are on the Internet
+allow_private_addresses = false
+
+# no [tls]: the proxy terminates TLS
+
+[proxy]
+# the addresses the proxy's Docker network gives its containers, and nothing wider: a request from them names its
+# client in the right-most X-Forwarded-For entry (the one the proxy appended); any other peer is its own client. Make
+# the master's network on the server first, with a range that leaves its gateway (the host) out:
+#   docker network create --subnet 10.0.9.0/24 --ip-range 10.0.9.128/25 avalanche-master
+# and add it as the master's destination, which Coolify connects its proxy to; trust the range. Every container in it
+# is trusted: the network is the master's own. `check`, run on that network, warns when the default gateway lies in a
+# trusted network, and the master's log says so at its start. At most 64 networks, IPv4 and IPv6, no /0.
+trusted = ["10.0.9.128/25"]
+
+[blocklists]
+# server keys taken off the list and resource hashes published, one per line (read again on the console's `reload`)
+# server_keys = "blocked-servers.txt"
+# resources = "blocked-resources.txt"

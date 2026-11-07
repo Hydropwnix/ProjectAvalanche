@@ -182,7 +182,6 @@ pub fn rasterize(lib: &Library, list: &RenderList, background: [f32; 3]) -> Canv
                 masks.pop();
                 mode = Mode::Draw;
             }
-            Command::FilterBegin { .. } | Command::FilterEnd => {}
             Command::Draw(item) => match &mut mode {
                 Mode::Erase => {}
                 Mode::Write(m) => {

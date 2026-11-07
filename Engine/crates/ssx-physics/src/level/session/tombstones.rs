@@ -217,6 +217,8 @@ mod tests {
             loadout: None,
             objectives: None,
             message: Default::default(),
+            places: None,
+            goal: None,
         }
     }
 

@@ -317,3 +317,18 @@ pub const AIR_TRICKS: [TableEntry; 13] = {
         e(map(&BTN_G_DOWN, InAir), map_matcher(held(RS_DOWN)), 2, Truckdriver, Truckdriver),
     ]
 };
+
+// TODO(guess): an added trick's input is the air doubles' shape (a press, its release within 10 ticks, the second press within 10, then held) with one direction twice; the disc has no air same-direction double (TrickSceneOp's ButtonGrabUpUp/LeftLeft/RightRight fields name BLN_Pad_Grab_Button_UpUp…, whose mappings take the Pad_Grab_Button_UpDown/LeftDown/RightDown gestures), its only same-button doubles are the grind double taps (Pad_Grind_Button_UpUp: press, release within 4, held within 4); settle: none on this disc — a port choice for added content.
+pub(super) const BTN_G_UP_UP: [Step; 4] = double!(held(BTN_Y), BTN_Y, held(BTN_Y), BTN_Y);
+pub(super) const BTN_G_LEFT_LEFT: [Step; 4] = double!(held(BTN_X), BTN_X, held(BTN_X), BTN_X);
+pub(super) const BTN_G_RIGHT_RIGHT: [Step; 4] = double!(held(BTN_B), BTN_B, held(BTN_B), BTN_B);
+pub(super) const RS_G_UP_UP: [Step; 4] = double!(on_enter(RS_UP), RS_UP, on_enter(RS_UP), RS_UP);
+pub(super) const RS_G_LEFT_LEFT: [Step; 4] = double!(on_enter(RS_LEFT), RS_LEFT, on_enter(RS_LEFT), RS_LEFT);
+pub(super) const RS_G_RIGHT_RIGHT: [Step; 4] = double!(on_enter(RS_RIGHT), RS_RIGHT, on_enter(RS_RIGHT), RS_RIGHT);
+
+pub const ADDED_INPUTS: [(GrabMapping, GrabMapping); 3] = [
+    (map(&BTN_G_UP_UP, Enable::UpStart), map(&RS_G_UP_UP, Enable::InAir)),
+    (map(&BTN_G_LEFT_LEFT, Enable::LeftStart), map(&RS_G_LEFT_LEFT, Enable::InAir)),
+    (map(&BTN_G_RIGHT_RIGHT, Enable::RightStart), map(&RS_G_RIGHT_RIGHT, Enable::InAir)),
+];
+pub const ADDED_LEN: i32 = 2;

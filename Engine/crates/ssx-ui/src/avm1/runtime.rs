@@ -20,7 +20,10 @@ pub struct LoadRequest {
     pub url: String,
     pub target: LoadTarget,
     pub loader: Option<ObjId>,
+    pub by: Option<MovieId>,
 }
+
+pub const MAX_QUEUED_LOADS: usize = 256;
 
 const GC_THRESHOLD: usize = 200_000;
 
@@ -43,6 +46,7 @@ impl Vm {
         player.no_invisible_advance = self.global_flag("noInvisibleAdvance");
         self.time += dt.max(0.0);
         let mut ctx = self.ctx(lib, player);
+        ctx.run_pointer();
         ctx.run_intervals();
         let n = ctx.player.frames_due(ctx.lib, dt, 2);
         for _ in 0..n {
@@ -81,12 +85,35 @@ impl Vm {
 
 impl Ctx<'_> {
     fn run_frame(&mut self) {
+        self.vm.sandbox.new_frame();
+        self.vm.pointer.meshes.new_frame();
+        let before = self.vm.diag.actions;
         self.serve_loads();
         self.player.advance_frame(self.lib);
         self.run_queue();
+        self.settle_stops();
         self.vm.diag.frames += 1;
-        if self.vm.heap.since_gc > GC_THRESHOLD {
+        let peaks = &mut self.vm.sandbox.peaks;
+        peaks.frame_actions = peaks.frame_actions.max(self.vm.diag.actions - before);
+        let made = self.vm.heap.since_gc as u64 * super::sandbox::OBJECT_BYTES;
+        if self.vm.heap.since_gc > GC_THRESHOLD
+            || self.vm.sandbox.heap_bytes.saturating_add(made) > super::sandbox::caps::HEAP_BYTES / 2
+        {
             self.collect();
+        }
+    }
+
+    fn settle_stops(&mut self) {
+        for m in std::mem::take(&mut self.player.over_cap) {
+            let cap = crate::display::MAX_OWNED_INSTANCES;
+            self.vm.sandbox.stop(m, format!("more than {cap} clips of its own on the display list"));
+        }
+        let owning: Vec<MovieId> =
+            self.vm.sandbox.stopped.keys().copied().filter(|&m| self.player.owned_by(m) > 0).collect();
+        for m in owning {
+            let n = self.player.unload_owned(m);
+            let path = self.lib.movie(m).path.clone();
+            self.vm.diag.note("package movie unloaded", &format!("{path}: {n} instances off the display list"));
         }
     }
 
@@ -111,6 +138,11 @@ impl Ctx<'_> {
                 self.vm.diag.note("uncaught exception", &s);
             }
             Fault::Abort(m) => self.vm.diag.note("abort", m),
+            Fault::Stopped(m) => {
+                let why = self.vm.sandbox.stopped.get(&m).cloned().unwrap_or_default();
+                let path = self.lib.movie(m).path.clone();
+                self.vm.diag.note("package movie stopped", &format!("{path}: {why}"));
+            }
         }
     }
 
@@ -139,6 +171,8 @@ impl Ctx<'_> {
         if let Err(e) = self.run(&mut f, 0, end) {
             self.note_fault(e);
         }
+        let peaks = &mut self.vm.sandbox.peaks;
+        peaks.block_actions = peaks.block_actions.max(ACTION_BUDGET - self.vm.budget);
         self.vm.stack.truncate(height);
         (self.vm.cur_version, self.vm.cur_movie) = saved;
     }
@@ -334,63 +368,96 @@ impl Ctx<'_> {
 
     fn serve_loads(&mut self) {
         for req in std::mem::take(&mut self.vm.loads) {
-            let target = match req.target {
-                LoadTarget::Clip(o) => self.display_of(&Value::Object(o)),
-                LoadTarget::Level(_) => None,
-            };
-            if req.url.is_empty() {
-                if let Some(id) = target {
-                    for (_, c) in self.player.children(id) {
-                        self.player.remove(c);
-                    }
-                    self.player.stop(id);
-                }
-                continue;
+            let making = std::mem::replace(&mut self.player.making_for, req.by);
+            self.serve_load(req);
+            self.player.making_for = making;
+        }
+    }
+
+    pub(crate) fn queue_load(&mut self, url: String, target: LoadTarget, loader: Option<ObjId>) -> Result<(), Fault> {
+        if self.vm.loads.len() >= MAX_QUEUED_LOADS {
+            if let Some(m) = self.vm.sandbox.charged {
+                self.vm.sandbox.stop(m, format!("more than {MAX_QUEUED_LOADS} movie loads asked for in one frame"));
+                return Err(Fault::Stopped(m));
             }
-            let loaded = self.lib.load_movie(&req.url);
-            let id = match (&loaded, &req.target, target) {
-                (Ok(m), LoadTarget::Level(n), _) => {
-                    let id = self.player.load_level(self.lib, *m, *n);
-                    self.player.skip_next_advance(id);
-                    Some(id)
+            self.vm
+                .diag
+                .note("load refused", &format!("{}: the load queue holds {MAX_QUEUED_LOADS}", super::cut(&url, 64)));
+            return Ok(());
+        }
+        let by = self.vm.sandbox.charged;
+        self.vm.loads.push(LoadRequest { url, target, loader, by });
+        let peaks = &mut self.vm.sandbox.peaks;
+        peaks.loads_queued = peaks.loads_queued.max(self.vm.loads.len());
+        Ok(())
+    }
+
+    fn serve_load(&mut self, req: LoadRequest) {
+        let target = match req.target {
+            LoadTarget::Clip(o) => self.display_of(&Value::Object(o)),
+            LoadTarget::Level(_) => None,
+        };
+        if req.url.is_empty() {
+            if let Some(id) = target {
+                for (_, c) in self.player.children(id) {
+                    self.player.remove(c);
                 }
-                (Ok(m), LoadTarget::Clip(_), Some(id)) => {
-                    // TODO(guess): a movie loaded into a clip again runs its init actions (and its imports') again, as a new SWF instance in Flash; settle: Scaleform's init-action bookkeeping per loaded movie (not located).
-                    let mut closure = std::collections::HashSet::from([*m]);
-                    let mut order = Vec::new();
-                    self.import_order(*m, &mut closure, &mut order);
-                    self.vm.init_ran.retain(|(mm, _)| !closure.contains(mm));
-                    self.player.load_into(self.lib, id, *m);
-                    if let Some(&o) = self.vm.display_objs.get(&id) {
-                        let proto = Value::Object(self.vm.protos.movieclip);
-                        if let Some(obj) = self.vm.heap.get_mut(o) {
-                            obj.props.clear();
-                            obj.proto = proto;
-                        }
+                self.player.stop(id);
+            }
+            return;
+        }
+        let mut loaded = self.lib.load_movie(&req.url);
+        if let (Ok(m), LoadTarget::Level(n)) = (&loaded, &req.target)
+            && !self.player.levels.contains_key(n)
+            && !self.player.room_for(None, self.lib.origin(*m).map(|_| *m).or(req.by))
+        {
+            loaded = Err(anyhow::anyhow!("the display list is full"));
+        }
+        let id = match (&loaded, &req.target, target) {
+            (Ok(m), LoadTarget::Level(n), _) => {
+                let id = self.player.load_level(self.lib, *m, *n);
+                self.player.skip_next_advance(id);
+                Some(id)
+            }
+            (Ok(m), LoadTarget::Clip(_), Some(id)) => {
+                // TODO(guess): a movie loaded into a clip again runs its init actions (and its imports') again, as a new SWF instance in Flash; settle: Scaleform's init-action bookkeeping per loaded movie (not located).
+                let mut closure = std::collections::HashSet::from([*m]);
+                let mut order = Vec::new();
+                self.import_order(*m, &mut closure, &mut order);
+                self.vm.init_ran.retain(|(mm, _)| !closure.contains(mm));
+                self.player.load_into(self.lib, id, *m);
+                if let Some(&o) = self.vm.display_objs.get(&id) {
+                    let proto = Value::Object(self.vm.protos.movieclip);
+                    if let Some(obj) = self.vm.heap.get_mut(o) {
+                        obj.props.clear();
+                        obj.proto = proto;
                     }
-                    Some(id)
                 }
-                _ => None,
-            };
-            match (loaded, id) {
-                (Ok(m), Some(id)) => {
-                    self.vm.loaded.push(req.url.clone());
-                    self.queue_import_inits(m, id);
-                    if let Some(l) = req.loader {
-                        let t = Value::Object(self.object_for(id));
-                        self.notify_loader(l, "onLoadStart", vec![t.clone()]);
-                        self.notify_loader(l, "onLoadComplete", vec![t.clone()]);
-                        self.drain_player();
-                        self.notify_loader(l, "onLoadInit", vec![t]);
-                    }
+                Some(id)
+            }
+            _ => None,
+        };
+        match (loaded, id) {
+            (Ok(m), Some(id)) => {
+                if self.lib.origin(m).is_some() {
+                    self.vm.package_loads.insert(m, req.clone());
                 }
-                (r, _) => {
-                    let why = r.err().map_or_else(|| "target clip gone".to_string(), |e| format!("{e:#}"));
-                    self.vm.diag.note("load failed", &format!("{}: {why}", req.url));
-                    if let Some(l) = req.loader {
-                        let t = req.target_value();
-                        self.notify_loader(l, "onLoadError", vec![t, Value::str("URLNotFound")]);
-                    }
+                self.vm.loaded.push(req.url.clone());
+                self.queue_import_inits(m, id);
+                if let Some(l) = req.loader {
+                    let t = Value::Object(self.object_for(id));
+                    self.notify_loader(l, "onLoadStart", vec![t.clone()]);
+                    self.notify_loader(l, "onLoadComplete", vec![t.clone()]);
+                    self.drain_player();
+                    self.notify_loader(l, "onLoadInit", vec![t]);
+                }
+            }
+            (r, _) => {
+                let why = r.err().map_or_else(|| "target clip gone".to_string(), |e| format!("{e:#}"));
+                self.vm.diag.note("load failed", &format!("{}: {why}", req.url));
+                if let Some(l) = req.loader {
+                    let t = req.target_value();
+                    self.notify_loader(l, "onLoadError", vec![t, Value::str("URLNotFound")]);
                 }
             }
         }
@@ -434,6 +501,7 @@ impl Ctx<'_> {
         let player = &*self.player;
         self.vm.display_objs.retain(|id, _| player.get(*id).is_some());
         let mut roots: Vec<ObjId> = vec![self.vm.global];
+        roots.extend(self.vm.class_data.keys().copied());
         let p = self.vm.protos;
         roots.extend([
             p.object,
@@ -476,7 +544,7 @@ impl Ctx<'_> {
                 }
             }
         }
-        for l in &self.vm.loads {
+        for l in self.vm.loads.iter().chain(self.vm.package_loads.values()) {
             if let LoadTarget::Clip(o) = l.target {
                 roots.push(o);
             }
@@ -484,7 +552,12 @@ impl Ctx<'_> {
         }
         vals.extend(self.vm.natives.roots());
         roots.extend(vals.iter().filter_map(Value::as_object));
-        self.vm.heap.collect(roots)
+        let freed = self.vm.heap.collect(roots);
+        let live = self.vm.heap.live();
+        let peaks = &mut self.vm.sandbox.peaks;
+        peaks.objects = peaks.objects.max(live);
+        self.vm.sandbox.heap_bytes = self.vm.heap.script_bytes();
+        freed
     }
 }
 
@@ -555,10 +628,7 @@ impl Vm {
     }
 
     pub fn framework_handler(&self) -> Option<String> {
-        self.natives.of("Dispatcher", "DispatchEvent").iter().rev().find_map(|a| match (a.first(), a.get(1)) {
-            (Some(Value::Number(e)), Some(Value::String(p))) if *e == f64::from(nav::VIEW_READY) => Some(p.to_string()),
-            _ => None,
-        })
+        self.natives.view_ready.clone()
     }
 
     pub fn game_event(&mut self, lib: &mut Library, player: &mut Player, event: i32, data: Value) -> bool {

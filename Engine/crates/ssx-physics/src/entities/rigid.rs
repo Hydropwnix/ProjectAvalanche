@@ -4,10 +4,10 @@ pub mod cylcyl;
 pub mod features;
 pub mod fixup;
 pub mod narrow;
+pub mod setup;
 pub mod solver;
 
 use glam::{Quat, Vec3};
-use ssx_formats::pob::{ObjectData, PobFile, VolumeKind};
 
 use crate::collision::CollisionWorld;
 use narrow::{CylinderGp, TriangleGp};
@@ -37,39 +37,22 @@ pub struct RigidBodyDef {
     pub material: [f32; 3],
 }
 
-impl RigidBodyDef {
-    pub fn from_pob(pob: &PobFile) -> Option<Self> {
-        let def = pob.objects.iter().find_map(|o| match &o.data {
-            ObjectData::AssemblyDefinition(d) => d.parts.first().cloned(),
-            _ => None,
-        })?;
-        let outer = match &pob.object_at(def.volume)?.data {
-            ObjectData::Volume(v) => v.clone(),
-            _ => return None,
-        };
-        let sma = match &pob.object_at(outer.aggregate?)?.data {
-            ObjectData::SimpleMappedArray(s) => s.clone(),
-            _ => return None,
-        };
-        let child = sma.volumes.iter().find(|v| v.kind == VolumeKind::Cylinder)?;
-        let (half_height, radius) = child.cylinder()?;
-        let m = child.transform;
-        let [d0, d1, d2] = def.diagonal_terms;
-        let [inv_mass, max_speed, max_angular_speed, linear_damping, angular_damping] = def.mass_params;
-        Some(RigidBodyDef {
-            offset: Vec3::from_array(m[3]),
-            axis: Vec3::from_array(m[2]),
-            half_height,
-            radius,
-            fat: child.radius,
-            inv_mass,
-            inv_inertia: Vec3::new(d0, d1, d2) / inv_mass,
-            max_speed,
-            max_angular_speed,
-            linear_damping,
-            angular_damping,
-            material: def.material,
-        })
+impl From<&ssx_content::object::RigidBody> for RigidBodyDef {
+    fn from(b: &ssx_content::object::RigidBody) -> Self {
+        RigidBodyDef {
+            offset: Vec3::from_array(b.offset),
+            axis: Vec3::from_array(b.axis),
+            half_height: b.half_height,
+            radius: b.radius,
+            fat: b.fat,
+            inv_mass: b.inv_mass,
+            inv_inertia: Vec3::from_array(b.inv_inertia),
+            max_speed: b.max_speed,
+            max_angular_speed: b.max_angular_speed,
+            linear_damping: b.linear_damping,
+            angular_damping: b.angular_damping,
+            material: b.material,
+        }
     }
 }
 
@@ -199,6 +182,11 @@ impl RigidWorld {
                 let [ms_i, md_i, e_i] = self.bodies[*pi].def.material;
                 let [ms_j, md_j, e_j] = self.bodies[*pj].def.material;
                 let (oi, oj) = (self.bodies[*pi].motion.position, self.bodies[*pj].motion.position);
+                let static_frame = match (si, sj) {
+                    (None, _) => self.bodies[*pi].motion.orientation,
+                    (_, None) => self.bodies[*pj].motion.orientation,
+                    _ => Quat::IDENTITY,
+                };
                 for &(pa, pb) in &m.points {
                     let contact = solver::Contact {
                         mu_s: ms_i.max(ms_j),
@@ -207,6 +195,7 @@ impl RigidWorld {
                         normal: m.normal,
                         r_a: if si.is_some() { pa - oi } else { pa },
                         r_b: if sj.is_some() { pb - oj } else { pb },
+                        static_frame,
                     };
                     links.push(solver::Link { a: si, b: sj, contact });
                 }
@@ -305,6 +294,7 @@ pub fn contacts(b: &Body, geo: &CollisionWorld, tolerance: f32) -> Vec<Contact> 
         let cl = &geo.clusters[ci as usize];
         let [gs, gd, ge] =
             geo.cluster_material.get(ci as usize).copied().unwrap_or(crate::collision::DEFAULT_PART_MATERIAL);
+        let static_frame = geo.cluster_frame.get(ci as usize).copied().unwrap_or(Quat::IDENTITY);
         let widen = Vec3::splat(if cl.terrain { TERRAIN_QUERY_WIDENING } else { 0.0 });
         let (qmin, qmax) = (min - widen, max + widen);
         for local in geo.query_order(ci) {
@@ -325,6 +315,7 @@ pub fn contacts(b: &Body, geo: &CollisionWorld, tolerance: f32) -> Vec<Contact> 
                     normal: m.normal,
                     r_a: tp,
                     r_b: cp - b.motion.position,
+                    static_frame,
                 });
             }
         }

@@ -3,6 +3,11 @@ use super::*;
 impl GameUi {
     pub fn fe_call(&mut self, f: impl FnOnce(&mut fe::FrontEnd, &mut fe::FeEnv)) {
         let Some(front) = self.fe.as_mut() else { return };
+        for (key, text) in std::mem::take(&mut front.pending_strings) {
+            if let Err(e) = self.loc.add_port_string(&key, &text) {
+                front.note(format!("content: the string {key:?} is not shown: {e:#}"));
+            }
+        }
         let mut nav_events = Vec::new();
         let mut env = fe::FeEnv { values: &mut self.values, loc: &mut self.loc, nav_events: &mut nav_events };
         f(front, &mut env);
@@ -193,6 +198,14 @@ impl GameUi {
         }
     }
 
+    fn resource_text(&mut self, tag: &str) -> String {
+        #[cfg(feature = "net")]
+        if tag == "TXT_LE_RESULTS_ADVANCE" && self.fe.as_ref().is_some_and(|f| f.ava.session.rounds.is_some()) {
+            return self.loc.text("TXT_AVA_RESULTS_PLAYERS");
+        }
+        self.loc.text(tag)
+    }
+
     pub(super) fn answer_resources(&mut self, cx: &mut Ctx) {
         for r in std::mem::take(&mut self.resources) {
             if r.kind != 0 {
@@ -200,7 +213,7 @@ impl GameUi {
                 self.stats.resources.insert(r.tag, format!("type {} not answered", r.kind));
                 continue;
             }
-            let text = self.loc.text(&r.tag);
+            let text = self.resource_text(&r.tag);
             self.stats.resources.insert(r.tag.clone(), text.clone());
             let obj = Value::Object(cx.new_object());
             let _ = cx.set_member(&obj, "locString", Value::str(&text));

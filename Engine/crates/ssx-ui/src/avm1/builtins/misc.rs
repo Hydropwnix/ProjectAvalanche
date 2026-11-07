@@ -9,8 +9,8 @@ pub(crate) fn install(b: &mut Builder, global: ObjId) {
     b.methods(
         mouse,
         &[
-            ("hide", |_, _, _| Ok(Value::Number(1.0))),
-            ("show", |_, _, _| Ok(Value::Number(0.0))),
+            ("hide", |cx, _, _| Ok(mouse_visibility(cx, true))),
+            ("show", |cx, _, _| Ok(mouse_visibility(cx, false))),
             ("addListener", add_listener),
             ("removeListener", remove_listener),
         ],
@@ -57,6 +57,13 @@ pub(crate) fn install(b: &mut Builder, global: ObjId) {
     b.value(stage, "height", Value::Number(720.0));
     b.value(stage, "showMenu", Value::Bool(false));
     b.methods(stage, &[("addListener", add_listener), ("removeListener", remove_listener)]);
+}
+
+// TODO(guess): Flash's return value and no call to the game; Scaleform's `Mouse` natives (the AS2 library's) and the user event they would raise (`DoHideMouse` / `DoShowMouse`) were not read; settle: the `Mouse` object's method table in the AS2 library.
+fn mouse_visibility(cx: &mut Ctx, hide: bool) -> Value {
+    let was_shown = !cx.vm.pointer.hidden;
+    cx.vm.pointer.hidden = hide;
+    Value::Number(if was_shown { 1.0 } else { 0.0 })
 }
 
 pub(crate) fn add_listener(cx: &mut Ctx, this: Value, a: &[Value]) -> R {

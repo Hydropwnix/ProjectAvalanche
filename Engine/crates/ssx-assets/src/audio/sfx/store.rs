@@ -138,7 +138,8 @@ impl AudioStore {
 }
 
 pub fn in_game_music(songs: &[crate::musicbox::Song]) -> Vec<(u32, u32)> {
-    let mut v: Vec<&crate::musicbox::Song> = songs.iter().filter(|s| s.get("Index").is_some()).collect();
+    let disc = |s: &&crate::musicbox::Song| s.id < crate::musicbox::FIRST_PACKAGE_SONG;
+    let mut v: Vec<&crate::musicbox::Song> = songs.iter().filter(disc).filter(|s| s.get("Index").is_some()).collect();
     v.sort_by(|a, b| a.get("Index").cmp(&b.get("Index")));
     v.iter().take(IN_GAME_MUSIC).map(|s| (s.id, u32::from(s.unk[2] != 0))).collect()
 }

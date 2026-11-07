@@ -1,11 +1,14 @@
 pub mod avalanche;
 pub mod fx_states;
 pub mod geotags;
+pub mod hooks;
 pub mod lighting;
 pub mod objects;
 pub mod post;
+pub mod reload;
 pub mod scene;
 pub mod shadows;
 pub mod sky;
 pub mod snow_tracks;
 pub mod terrain;
+pub mod warm_up;

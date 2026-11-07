@@ -1,0 +1,390 @@
+{
+  "format": 1,
+  "states": [
+    {
+      "parent": "FrontEndGlobe",
+      "state": {
+        "name": "AvaServerBrowser",
+        "onEnter": [
+          ["loadView", ["avaserverbrowser"]]
+        ],
+        "onExit": [
+          ["unloadView", ["avaserverbrowser"]]
+        ],
+        "transitions": [
+          {
+            "event": "ava_connecting",
+            "targets": [],
+            "actions": [
+              ["pushPopup", ["ava_connecting"]]
+            ]
+          },
+          {
+            "event": "ava_connecting_cancel",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["ava_connecting"]],
+              ["do_ava_connect_cancel", []]
+            ]
+          },
+          {
+            "event": "ava_connecting_close",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["ava_connecting"]]
+            ]
+          },
+          {
+            "event": "ava_downloading",
+            "targets": [],
+            "actions": [
+              ["pushPopup", ["ava_downloading"]]
+            ]
+          },
+          {
+            "event": "ava_downloading_cancel",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["ava_downloading"]],
+              ["do_ava_connect_cancel", []]
+            ]
+          },
+          {
+            "event": "ava_downloading_close",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["ava_downloading"]]
+            ]
+          },
+          {
+            "event": "ava_browser_message",
+            "targets": [],
+            "actions": [
+              ["pushPopup", ["ava_browser_message"]]
+            ]
+          },
+          {
+            "event": "ava_browser_message_ok",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["ava_browser_message"]],
+              ["do_ava_browser_message_ok", []]
+            ]
+          },
+          {
+            "event": "ava_link_confirm",
+            "targets": [],
+            "actions": [
+              ["pushPopup", ["ava_link_confirm"]]
+            ]
+          },
+          {
+            "event": "ava_link_yes",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["ava_link_confirm"]],
+              ["do_ava_link_yes", []]
+            ]
+          },
+          {
+            "event": "ava_link_no",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["ava_link_confirm"]],
+              ["do_ava_link_no", []]
+            ]
+          },
+          {
+            "event": "ava_net_message",
+            "targets": [],
+            "actions": [
+              ["pushPopup", ["ava_net_message"]]
+            ]
+          },
+          {
+            "event": "ava_net_message_ok",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["ava_net_message"]]
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "parent": "ActivityFeed",
+      "state": {
+        "name": "AvaBrowserFilters",
+        "onEnter": [
+          ["loadView", ["avabrowserfilters"]]
+        ],
+        "onExit": [
+          ["unloadView", ["avabrowserfilters"]]
+        ],
+        "transitions": [
+          {
+            "event": "ava_browser_filters_close",
+            "targets": ["ActivityFeedClosed"],
+            "actions": [
+              ["pop_dimmer_state", []]
+            ]
+          },
+          {
+            "event": "go_to_exit_settings_without_save_popup",
+            "targets": [],
+            "actions": [
+              ["pushPopup", ["exit_settings_without_save"]]
+            ]
+          },
+          {
+            "event": "exit_settings_without_save_yes",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["exit_settings_without_save"]],
+              ["do_ava_browser_filters_discard", []]
+            ]
+          },
+          {
+            "event": "exit_settings_without_save_no",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["exit_settings_without_save"]]
+            ]
+          },
+          {
+            "event": "ava_options_reset",
+            "targets": [],
+            "actions": [
+              ["pushPopup", ["ava_options_reset"]]
+            ]
+          },
+          {
+            "event": "ava_options_reset_yes",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["ava_options_reset"]],
+              ["do_ava_browser_filters_reset", []]
+            ]
+          },
+          {
+            "event": "ava_options_reset_no",
+            "targets": [],
+            "actions": [
+              ["popPopup", ["ava_options_reset"]]
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "parent": "HUDLoaded",
+      "state": {
+        "name": "AvaPlayers",
+        "type": "state",
+        "onEnter": [
+          ["set_dimmer_state", ["full"]],
+          ["loadView", ["avaplayers"]]
+        ],
+        "onExit": [
+          ["unloadView", ["avaplayers"]],
+          ["set_dimmer_state", ["none"]]
+        ],
+        "transitions": [
+          {
+            "event": "go_to_pause",
+            "targets": ["PauseMenu"]
+          }
+        ]
+      }
+    },
+    {
+      "parent": "root",
+      "state": {
+        "name": "avachat",
+        "initial": {"targets": ["avachat_off"]},
+        "type": "state",
+        "states": [
+          {
+            "name": "avachat_on",
+            "type": "state",
+            "onEnter": [
+              ["loadView", ["avachat"]]
+            ],
+            "onExit": [
+              ["unloadView", ["avachat"]]
+            ],
+            "transitions": [
+              {
+                "event": "ava_chat_disable",
+                "targets": ["avachat_off"]
+              }
+            ]
+          },
+          {
+            "name": "avachat_off",
+            "type": "state",
+            "transitions": [
+              {
+                "event": "ava_chat_enable",
+                "targets": ["avachat_on"]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "parent": "HUDUnloaded",
+      "state": {
+        "name": "AvaResultsPlayers",
+        "type": "state",
+        "onEnter": [
+          ["set_dimmer_state", ["full"]],
+          ["loadView", ["avaplayers"]]
+        ],
+        "onExit": [
+          ["unloadView", ["avaplayers"]],
+          ["set_dimmer_state", ["none"]]
+        ],
+        "transitions": [
+          {
+            "event": "ava_results_players_close",
+            "targets": ["ExploreResults"]
+          }
+        ]
+      }
+    }
+  ],
+  "transitions": [
+    {
+      "state": "PauseMenu",
+      "transition": {
+        "event": "go_to_ava_players",
+        "targets": ["AvaPlayers"]
+      }
+    },
+    {
+      "state": "PauseMenu",
+      "transition": {
+        "event": "ava_leave_server",
+        "targets": [],
+        "actions": [
+          ["pushPopup", ["ava_leave_server"]]
+        ]
+      }
+    },
+    {
+      "state": "PauseMenu",
+      "transition": {
+        "event": "ava_leave_server_yes",
+        "targets": [],
+        "actions": [
+          ["popPopup", ["ava_leave_server"]],
+          ["do_event_quit", []]
+        ]
+      }
+    },
+    {
+      "state": "PauseMenu",
+      "transition": {
+        "event": "ava_leave_server_no",
+        "targets": [],
+        "actions": [
+          ["popPopup", ["ava_leave_server"]],
+          ["do_close_popup", []]
+        ]
+      }
+    },
+    {
+      "state": "HUDLoaded",
+      "transition": {
+        "event": "go_to_quit_stage",
+        "targets": ["QuitStaging"]
+      }
+    },
+    {
+      "state": "main",
+      "transition": {
+        "event": "ava_quickchat_open",
+        "targets": [],
+        "actions": [
+          ["loadView", ["avaquickchat"]]
+        ]
+      }
+    },
+    {
+      "state": "main",
+      "transition": {
+        "event": "ava_quickchat_close",
+        "targets": [],
+        "actions": [
+          ["unloadView", ["avaquickchat"]]
+        ]
+      }
+    },
+    {
+      "state": "ActivityFeed",
+      "transition": {
+        "event": "go_to_ava_browser_filters",
+        "targets": ["AvaBrowserFilters"],
+        "actions": [
+          ["push_dimmer_state", ["full"]]
+        ]
+      }
+    },
+    {
+      "state": "FrontEndGlobe",
+      "transition": {
+        "event": "go_to_ava_browser",
+        "targets": ["AvaServerBrowser"]
+      }
+    },
+    {
+      "state": "AvaOptions",
+      "transition": {
+        "event": "ava_options_message",
+        "targets": [],
+        "actions": [
+          ["pushPopup", ["ava_options_message"]]
+        ]
+      }
+    },
+    {
+      "state": "AvaOptions",
+      "transition": {
+        "event": "ava_options_message_ok",
+        "targets": [],
+        "actions": [
+          ["popPopup", ["ava_options_message"]]
+        ]
+      }
+    },
+    {
+      "state": "AvaOptionsPage",
+      "transition": {
+        "event": "ava_options_message",
+        "targets": [],
+        "actions": [
+          ["pushPopup", ["ava_options_message"]]
+        ]
+      }
+    },
+    {
+      "state": "AvaOptionsPage",
+      "transition": {
+        "event": "ava_options_message_ok",
+        "targets": [],
+        "actions": [
+          ["popPopup", ["ava_options_message"]]
+        ]
+      }
+    },
+    {
+      "state": "ExploreResults",
+      "transition": {
+        "event": "ava_results_players",
+        "targets": ["AvaResultsPlayers"]
+      }
+    }
+  ]
+}

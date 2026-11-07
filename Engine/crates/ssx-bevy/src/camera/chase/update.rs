@@ -49,7 +49,6 @@ impl Chase {
         self.shared.update_skews(i.lean, dt);
         let safe =
             self.camera_pos.map(|cam| physics_queries(ride, &mut self.queries, cam, i.target_pos, self.shared.up, dt));
-        // TODO(guess): the noise layers read the previous update's signals; settle: `LayersController` 0x82B6DAA0's weight read against the job of the subject's modifiers.
         let shake_weight = self.shared.avalanche_shake;
         let sh = &self.shared;
         let layers = NoiseSignals {

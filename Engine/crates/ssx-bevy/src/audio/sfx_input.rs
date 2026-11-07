@@ -406,14 +406,12 @@ pub fn drive_speech(
     // TODO(guess): the results request completes in the frame it is sent; settle: the results flow's job queue's runner (`FUN_8241BAE8`) and the job's latency (`FUN_8251DA90` → `FUN_824B23C0`).
     let finished = session.event_ended;
     if finished && !track.finished {
-        let result = session.event.result.as_ref();
-        let success = result.is_some_and(|r| !r.failed);
-        let medal = result.and_then(|r| r.medal).map_or(0, |m| match m {
-            ssx_physics::event::Medal::Gold => 1,
-            ssx_physics::event::Medal::Silver => 2,
-            ssx_physics::event::Medal::Bronze => 3,
-        });
-        sp.run_end(success, medal);
+        let scores = session.bots.as_ref().map_or(&[][..], |b| &b.scores[..]);
+        let end = session.event.result.as_ref().and_then(|r| r.run_end(&session.event.setup, scores));
+        bevy::log::info!("speech: RUN_END {end:?}");
+        if let Some(end) = end {
+            sp.run_end(&end, bots);
+        }
     }
     track.finished = finished;
     let sv = &s.survival;
@@ -461,6 +459,11 @@ pub fn speech_pilot(big_root: &std::path::Path, heli: u32) -> anyhow::Result<(i3
     ssx_assets::sfx::speech::helicopter_pilot(big_root, heli)
 }
 
+pub fn speech_lang() -> String {
+    let lang = std::env::var("SSX_SPEECH_LANG").ok().filter(|l| matches!(l.as_str(), "eng" | "fre" | "ger"));
+    lang.unwrap_or_else(|| "eng".into())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn speech_setup(
     big_root: &std::path::Path,
@@ -473,14 +476,14 @@ pub fn speech_setup(
     deadly_descent: bool,
     seed: u32,
 ) -> ssx_assets::sfx::speech::SpeechSetup {
-    let bank = match character {
+    let voice = ssx_assets::content::GameContent::of(big_root).voice_of(character);
+    let bank = match voice.as_str() {
         "travisrice" => "travis",
         "ty" => "tyler",
         n => n,
     };
-    let lang = std::env::var("SSX_SPEECH_LANG").ok().filter(|l| matches!(l.as_str(), "eng" | "fre" | "ger"));
     ssx_assets::sfx::speech::SpeechSetup {
-        lang: lang.unwrap_or_else(|| "eng".into()),
+        lang: speech_lang(),
         rider: bank.to_string(),
         rider_id: rider.speech_id,
         pilot_id: pilot.0,

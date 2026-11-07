@@ -150,7 +150,9 @@ fn this_primitive(cx: &Ctx, this: &Value) -> Value {
 
 fn this_string(cx: &mut Ctx, this: &Value) -> Result<Vec<char>, crate::avm1::Fault> {
     let p = this_primitive(cx, this);
-    Ok(cx.to_string(&p)?.chars().collect())
+    let s = cx.to_string(&p)?;
+    cx.walked(s.len() / 64)?;
+    Ok(s.chars().collect())
 }
 
 fn string_ctor(cx: &mut Ctx, this: Value, args: &[Value]) -> R {
@@ -174,6 +176,7 @@ fn boxed_value(cx: &mut Ctx, this: Value, _: &[Value]) -> R {
 }
 
 fn from_char_code(cx: &mut Ctx, _: Value, a: &[Value]) -> R {
+    cx.made_string(a.len() * 3)?;
     let mut s = String::new();
     for v in a {
         if let Some(c) = char::from_u32(to_int32(cx.to_number(v)) as u32 & 0xFFFF) {
@@ -205,6 +208,7 @@ fn find(hay: &[char], needle: &[char], from: usize) -> Option<usize> {
 fn index_of(cx: &mut Ctx, this: Value, a: &[Value]) -> R {
     let s = this_string(cx, &this)?;
     let n: Vec<char> = cx.to_string(&arg(a, 0))?.chars().collect();
+    cx.walked(s.len().saturating_mul(n.len().max(1)) / 64)?;
     let from = if a.len() > 1 { to_int32(cx.to_number(&a[1])).max(0) as usize } else { 0 };
     Ok(Value::Number(find(&s, &n, from).map_or(-1.0, |i| i as f64)))
 }
@@ -212,6 +216,7 @@ fn index_of(cx: &mut Ctx, this: Value, a: &[Value]) -> R {
 fn last_index_of(cx: &mut Ctx, this: Value, a: &[Value]) -> R {
     let s = this_string(cx, &this)?;
     let n: Vec<char> = cx.to_string(&arg(a, 0))?.chars().collect();
+    cx.walked(s.len().saturating_mul(n.len().max(1)) / 64)?;
     let max = if a.len() > 1 { to_int32(cx.to_number(&a[1])).max(0) as usize } else { s.len() };
     let r = (0..=max.min(s.len())).rev().find(|&i| s[i..].starts_with(&n));
     Ok(Value::Number(r.map_or(-1.0, |i| i as f64)))
@@ -254,6 +259,8 @@ fn slice(cx: &mut Ctx, this: Value, a: &[Value]) -> R {
 
 fn split(cx: &mut Ctx, this: Value, a: &[Value]) -> R {
     let s: String = this_string(cx, &this)?.into_iter().collect();
+    cx.made_string(s.len())?;
+    cx.grew_array(s.chars().count().max(1), s.chars().count().max(1))?;
     let parts: Vec<Value> = match arg(a, 0) {
         Value::Undefined => vec![s.into()],
         d => {
@@ -271,17 +278,23 @@ fn split(cx: &mut Ctx, this: Value, a: &[Value]) -> R {
 }
 
 fn to_lower(cx: &mut Ctx, this: Value, _: &[Value]) -> R {
-    Ok(this_string(cx, &this)?.into_iter().collect::<String>().to_lowercase().into())
+    let s = this_string(cx, &this)?.into_iter().collect::<String>().to_lowercase();
+    cx.made_string(s.len())?;
+    Ok(s.into())
 }
 
 fn to_upper(cx: &mut Ctx, this: Value, _: &[Value]) -> R {
-    Ok(this_string(cx, &this)?.into_iter().collect::<String>().to_uppercase().into())
+    let s = this_string(cx, &this)?.into_iter().collect::<String>().to_uppercase();
+    cx.made_string(s.len())?;
+    Ok(s.into())
 }
 
 fn concat(cx: &mut Ctx, this: Value, a: &[Value]) -> R {
     let mut s: String = this_string(cx, &this)?.into_iter().collect();
     for v in a {
-        s.push_str(&cx.to_string(v)?);
+        let x = cx.to_string(v)?;
+        cx.made_string(s.len() + x.len())?;
+        s.push_str(&x);
     }
     Ok(s.into())
 }

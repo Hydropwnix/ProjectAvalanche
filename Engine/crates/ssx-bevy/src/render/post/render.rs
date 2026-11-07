@@ -15,10 +15,11 @@ use bevy::render::render_resource::*;
 use bevy::render::renderer::{RenderContext, RenderDevice, RenderQueue, ViewQuery};
 use bevy::render::storage::GpuShaderBuffer;
 use bevy::render::texture::GpuImage;
-use bevy::render::view::{ExtractedView, RetainedViewEntity, ViewDepthTexture, ViewTarget};
+use bevy::render::view::{ExtractedView, RetainedViewEntity, ViewDepthStencilTexture, ViewTarget};
 use bevy::render::{Render, RenderApp, RenderStartup, RenderSystems};
 use bevy::shader::Shader;
 
+use super::adapt::{AdaptMode, HdrAdaptation};
 use super::overlay::{OverlayUniform, PostOverlay};
 use super::{GamePostCamera, PostSettings, PostUniform};
 use crate::render::objects::material::{LDR_PIPELINE_LABEL, LDR_TONEMAP_BUFFER, LDR_TONEMAP_EXPOSURE_OFFSET};
@@ -40,6 +41,7 @@ pub(super) fn build(app: &mut App) {
     };
     render_app
         .init_resource::<PostTargets>()
+        .init_resource::<HdrAdaptation>()
         .init_resource::<LdrTranslucents>()
         .add_systems(RenderStartup, init_pipelines)
         .add_systems(Render, prepare_targets.in_set(RenderSystems::PrepareResources))
@@ -82,7 +84,7 @@ fn init_pipelines(
     fullscreen: Res<FullscreenShader>,
     cache: Res<PipelineCache>,
 ) {
-    let shader = |name: &str| assets.load::<Shader>(format!("{SHADER_DIR}{name}.wgsl"));
+    let shader = |name: &str| assets.load::<Shader>(format!("{SHADER_DIR}{name}.wesl"));
     let float = TextureSampleType::Float { filterable: true };
     let frag = ShaderStages::FRAGMENT;
     let downsample_layout = BindGroupLayoutDescriptor::new(
@@ -197,6 +199,7 @@ struct ViewTargets {
     uniform: UniformBuffer<PostUniform>,
     overlay: UniformBuffer<OverlayUniform>,
     fresh: bool,
+    complete: bool,
 }
 
 #[derive(Resource, Default)]
@@ -227,7 +230,7 @@ fn create_targets(device: &RenderDevice, size: UVec2) -> ViewTargets {
         device.create_buffer(&BufferDescriptor {
             label: Some(label),
             size,
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         })
     };
@@ -243,6 +246,7 @@ fn create_targets(device: &RenderDevice, size: UVec2) -> ViewTargets {
         uniform: UniformBuffer::default(),
         overlay: UniformBuffer::default(),
         fresh: true,
+        complete: false,
     }
 }
 
@@ -256,6 +260,7 @@ fn prepare_targets(
     cache: Res<PipelineCache>,
     shader_buffers: Res<RenderAssets<GpuShaderBuffer>>,
     mut targets: ResMut<PostTargets>,
+    mut adapt: ResMut<HdrAdaptation>,
 ) {
     let Some(settings) = settings else {
         return;
@@ -279,13 +284,19 @@ fn prepare_targets(
         let q = quarter_size(size);
         let mut u = settings.uniform;
         u.sizes = UVec4::new(size.x, size.y, q.x, q.y);
-        u.bloom.w = if settings.converge && (t.fresh || loading) {
-            1.0
-        } else if t.fresh || loading {
-            2.0
+        let base = adapt.begin(&device, &queue, q, &t.adapted, t.fresh);
+        // TODO(guess): the port's view counts as "sky not ready" until it first draws a complete scene (no pipeline compiling, meshes spawned): the adaptation runs toward black (L = 1) as main.scrape's `ifnot skyrenderobj ready` draws black, later it adapts every frame (until 2026-10-21 the port cleared it on every frame with a pipeline compiling: a bright second mid-ride); settle: the sky render object's ready test and how long a level's loading frames run the scrape.
+        let starting = loading && !t.complete;
+        t.complete |= !loading;
+        let mode = if settings.converge && (t.fresh || starting || u.exposure.w == 0.0) {
+            AdaptMode::Current
+        } else if starting && base == AdaptMode::Adapt {
+            AdaptMode::Black
         } else {
-            0.0
+            base
         };
+        adapt.ran();
+        u.bloom.w = mode.code();
         t.fresh = false;
         t.uniform.set(u);
         t.uniform.write_buffer(&device, &queue);
@@ -322,7 +333,7 @@ fn fullscreen_pass(
 #[allow(clippy::too_many_arguments)]
 fn post_chain(
     world: &World,
-    view: ViewQuery<(&ViewTarget, &ViewDepthTexture), With<GamePostCamera>>,
+    view: ViewQuery<(&ViewTarget, &ViewDepthStencilTexture), With<GamePostCamera>>,
     pipelines: Option<Res<PostPipelines>>,
     targets: Res<PostTargets>,
     settings: Option<Res<PostSettings>>,
@@ -331,6 +342,7 @@ fn post_chain(
     shader_buffers: Res<RenderAssets<GpuShaderBuffer>>,
     ldr: Res<LdrTranslucents>,
     cache: Res<PipelineCache>,
+    session: Res<HdrAdaptation>,
     mut ctx: RenderContext,
 ) {
     let (Some(p), Some(settings)) = (pipelines, settings) else {
@@ -402,6 +414,7 @@ fn post_chain(
         pass.set_pipeline(reduce);
         pass.dispatch_workgroups(1, 1, 1);
     }
+    session.store(ctx.command_encoder(), quarter_size(t.size), &t.adapted);
 
     if settings.uniform.bloom.z != 0.0 {
         fullscreen_pass(
@@ -565,7 +578,7 @@ fn draw_ldr_translucents(
     ctx: &mut RenderContext,
     ldr: &LdrTranslucents,
     view_entity: Entity,
-    depth: &ViewDepthTexture,
+    depth: &ViewDepthStencilTexture,
     frame: &TextureView,
     exposure: &Buffer,
     tonemap: &Buffer,

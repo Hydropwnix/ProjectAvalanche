@@ -252,6 +252,6 @@ pub const TRICK_NAMES: [&str; 32] = [
     "Grind_6_SUber",
 ];
 
-pub(super) fn trick_name(trick: crate::tricks::TrickType) -> &'static str {
-    TRICK_NAMES[trick as usize]
+pub(super) fn trick_name(trick: crate::tricks::TrickType) -> Option<&'static str> {
+    TRICK_NAMES.get(usize::from(trick.value())).copied()
 }

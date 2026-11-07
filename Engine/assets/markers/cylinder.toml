@@ -1,0 +1,10 @@
+shape = "cylinder"
+size = 4.0
+color = "#FFD04080"
+glow = 1.0
+facing = "world"
+draw_distance = 600.0
+
+[animation]
+pulse = 0.05
+pulse_period = 1.5

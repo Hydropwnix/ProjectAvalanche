@@ -1,14 +1,15 @@
 pub mod fade;
 pub mod game;
 pub mod local;
+mod map;
+pub use map::NEW_TRACK_LIGHTING;
 pub mod service;
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use bevy::prelude::*;
+use bevy::prelude::{Resource, Vec3, Vec4, warn};
 use ssx_assets::track_lighting::{LightingPreset, load_track_drops};
-use ssx_assets::track_objects::asset_file;
 
 #[derive(Resource, Clone, Debug)]
 pub struct BigRoot(pub std::path::PathBuf);
@@ -33,11 +34,14 @@ pub struct GameLighting {
     pub bounce: Vec3,
     pub fill: Vec3,
     pub rim_offset_dir: Vec3,
-    pub reflect_cube: Option<PathBuf>,
+    pub reflect_cube: Option<(PathBuf, ssx_content::ContentId)>,
     pub presets: service::Presets,
     pub service: service::LightingService,
     pub fade: ssx_ui::game::fe::globe_look::LightFade,
     driver: fade::Driver,
+    pub level: std::sync::Arc<ssx_assets::content::level::LevelPackages>,
+    pub on_disc_track: bool,
+    pub midground: Option<String>,
 }
 
 fn preset_key(name: &str) -> u32 {
@@ -46,12 +50,44 @@ fn preset_key(name: &str) -> u32 {
 }
 
 impl GameLighting {
+    pub fn disc_track(&self) -> Option<&str> {
+        self.on_disc_track.then_some(self.track.as_str())
+    }
+
     pub fn f(&self, name: &str) -> f32 {
         self.preset.float(name).unwrap_or(0.0)
     }
 
     pub fn v(&self, name: &str) -> Vec4 {
         self.preset.vector(name).map_or(Vec4::ZERO, Vec4::from_array)
+    }
+
+    pub fn replace_presets(&mut self, new: GameLighting) {
+        let condition = self.service.condition;
+        self.presets = new.presets;
+        self.preset = new.preset;
+        (self.sun, self.sun_offset, self.bounce, self.fill, self.rim_offset_dir) =
+            (new.sun, new.sun_offset, new.bounce, new.fill, new.rim_offset_dir);
+        self.postfx = new.postfx;
+        self.reflect_cube = new.reflect_cube;
+        self.level = new.level;
+        if let Some(p) = self.service.collection(&self.presets) {
+            let state = light_state(condition, &p);
+            self.fade.prev = state.clone();
+            self.fade.target = state;
+            self.preset = p;
+            let d = Directions::of(&self.preset);
+            (self.sun, self.sun_offset, self.bounce, self.fill, self.rim_offset_dir) =
+                (d.sun, d.sun_offset, d.bounce, d.fill, d.rim_offset_dir);
+        }
+    }
+
+    pub fn sky(&self) -> Option<&ssx_content::sky::SkyDef> {
+        self.level.sky.def()
+    }
+
+    pub fn sun_drawn(&self) -> bool {
+        self.sky().is_none_or(|s| s.sun)
     }
 
     pub fn label(&self) -> String {
@@ -130,14 +166,19 @@ pub fn load(big_root: &Path, track: &str, select: &DropSelect) -> Result<GameLig
     let preset = drop.lighting.clone();
     preset.vector("dirLight_Direction").context("preset has no dirLight_Direction")?;
     let Directions { sun, sun_offset, bounce, fill, rim_offset_dir } = Directions::of(&preset);
-    let reflect_cube =
-        preset.textures.get("reflectCubeTexture").and_then(|rel| asset_file(big_root, &format!("{rel}.xpr")));
+    let reflect_cube = preset
+        .textures
+        .get("reflectCubeTexture")
+        .and_then(|rel| ssx_assets::content::textures::texture_id(rel))
+        .filter(|id| ssx_assets::content::GameContent::of(big_root).has(id))
+        .map(|id| (big_root.to_path_buf(), id));
     let mut presets = ssx_assets::career::globe::lighting_presets(big_root, track)
         .inspect_err(|e| warn!("{track}: the lighting collections: {e:#}"))
         .unwrap_or_default();
     let key = preset_key(&preset.name);
     presets.insert(key, preset.clone());
     let service = service::LightingService::new(key, &presets);
+    let level = ssx_assets::content::GameContent::of(big_root).level_packages(track, &preset);
     let fade = ssx_ui::game::fe::globe_look::LightFade { target: light_state(key, &preset), ..Default::default() };
     Ok(GameLighting {
         track: track.to_string(),
@@ -157,5 +198,8 @@ pub fn load(big_root: &Path, track: &str, select: &DropSelect) -> Result<GameLig
         service,
         fade,
         driver: fade::Driver::new(),
+        level,
+        on_disc_track: true,
+        midground: Some(track.to_string()),
     })
 }

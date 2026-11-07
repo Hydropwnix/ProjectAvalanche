@@ -1,0 +1,10 @@
+{
+	"title": "TXT_AVA_SETTINGS_BROKEN_TITLE",
+	"body": "",
+	"useoverride": true,
+	"defaultButton": 1,
+	"buttons":	[
+					{"label": "TXT_YES", "event": "ava_settings_broken_yes"},
+					{"label": "TXT_NO", "event": "ava_settings_broken_no"}
+				]
+}

@@ -257,6 +257,22 @@ impl Heap {
         self.slots.len() - self.free.len()
     }
 
+    pub fn script_bytes(&self) -> u64 {
+        use super::sandbox::{ELEMENT_BYTES, OBJECT_BYTES, PROPERTY_BYTES};
+        let string = |v: &Value| if let Value::String(s) = v { s.len() as u64 } else { 0 };
+        let mut total = 0u64;
+        for o in self.slots.iter().flatten() {
+            total += OBJECT_BYTES;
+            for (k, p) in o.props.iter() {
+                total += PROPERTY_BYTES + k.len() as u64 + string(&p.value);
+            }
+            if let Kind::Array(a) = &o.kind {
+                total += a.iter().map(|v| ELEMENT_BYTES + string(v)).sum::<u64>();
+            }
+        }
+        total
+    }
+
     pub fn collect(&mut self, roots: impl IntoIterator<Item = ObjId>) -> usize {
         let mut stack: Vec<ObjId> = roots.into_iter().collect();
         let mut children = Vec::new();

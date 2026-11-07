@@ -261,6 +261,7 @@ pub(super) fn ride(s: &mut RiderState, w: &World, input: &Input, flags: (bool, b
     } else {
         update_riding_height(c, s.carving.riding_height, kin30, floor, !s.carving.initialized, dt)
     };
+    s.depth_below_snow = ((s.surface.snow_depth - comp) + f210) - s.carving.riding_height;
     s.carving.chatter_height = s.surface.board_chatter_height;
     if s.carving.use_leg_spring {
         s.carving.distance_carved += Vec2::new(dpl.x, dpl.z).length();

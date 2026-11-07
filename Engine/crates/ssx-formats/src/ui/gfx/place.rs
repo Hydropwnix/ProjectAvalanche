@@ -1,5 +1,6 @@
 use super::avm1::{self, Action};
 use super::bits::SwfReader;
+use super::limits::Budget;
 use super::types::{ColorTransform, Matrix, Rgba};
 use crate::{Error, Result};
 
@@ -29,6 +30,10 @@ impl PlaceObject {
     pub const HAS_CHARACTER: u8 = 0x02;
 
     pub fn read(data: &[u8], version: u8, swf_version: u8) -> Result<Self> {
+        Self::read_in(data, version, swf_version, &Budget::unlimited())
+    }
+
+    pub fn read_in(data: &[u8], version: u8, swf_version: u8, budget: &Budget) -> Result<Self> {
         let mut r = SwfReader::new(data);
         let flags = r.u8()?;
         let flags3 = if version >= 3 { r.u8()? } else { 0 };
@@ -52,7 +57,7 @@ impl PlaceObject {
         let cache_as_bitmap = if flags3 & 0x04 != 0 { Some(r.u8()?) } else { None };
         let visible = if flags3 & 0x20 != 0 { Some(r.u8()?) } else { None };
         let background = if flags3 & 0x40 != 0 { Some(Rgba::read_rgba(&mut r)?) } else { None };
-        let clip_actions = if flags & 0x80 != 0 { Some(ClipActions::read(&mut r, swf_version)?) } else { None };
+        let clip_actions = if flags & 0x80 != 0 { Some(ClipActions::read(&mut r, swf_version, budget)?) } else { None };
         super::expect_end(&r, "PlaceObject")?;
         Ok(PlaceObject {
             version,
@@ -213,7 +218,7 @@ pub struct ClipActionRecord {
 }
 
 impl ClipActions {
-    fn read(r: &mut SwfReader, swf_version: u8) -> Result<Self> {
+    fn read(r: &mut SwfReader, swf_version: u8, budget: &Budget) -> Result<Self> {
         let reserved = r.u16()?;
         if reserved != 0 {
             return Err(Error::invalid(format!("clip actions reserved word {reserved:#x}")));
@@ -233,7 +238,9 @@ impl ClipActions {
             } else {
                 (None, body)
             };
-            records.push(ClipActionRecord { events, key_code, actions: avm1::decode(code)? });
+            let actions = avm1::decode_in(code, budget)?;
+            avm1::validate(&actions, code.len() as u32)?;
+            records.push(ClipActionRecord { events, key_code, actions });
         }
         Ok(ClipActions { all_events, records })
     }

@@ -8,7 +8,7 @@ use bevy::shader::ShaderRef;
 use crate::render::lighting::game::GameLightUniform;
 use crate::render::shadows::{ShadowPassKey, specialize_shadow_pass};
 
-const SHADER_PATH: &str = "embedded://ssx_bevy/render/objects/foreground.wgsl";
+const SHADER_PATH: &str = "embedded://ssx_bevy/render/objects/foreground.wesl";
 
 pub type ForegroundMaterial = ExtendedMaterial<StandardMaterial, ForegroundExtension>;
 
@@ -16,7 +16,7 @@ pub struct ForegroundMaterialPlugin;
 
 impl Plugin for ForegroundMaterialPlugin {
     fn build(&self, app: &mut App) {
-        embedded_asset!(app, "foreground.wgsl");
+        embedded_asset!(app, "foreground.wesl");
         app.add_plugins(MaterialPlugin::<ForegroundMaterial>::default());
     }
 }

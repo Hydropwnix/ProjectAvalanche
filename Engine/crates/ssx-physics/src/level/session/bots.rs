@@ -114,21 +114,20 @@ pub fn bot_requests(
 pub const EXPLORE_RACER_TYPE: u32 = 2;
 
 pub fn explore_requests(def: &crate::event::EventDef) -> Vec<BotRequest> {
-    let mut rows: Vec<&Rival> = def.rivals.iter().collect();
-    rows.sort_by_key(|r| r.value());
-    if !def.event_type.is_some_and(crate::event::EventType::ranks_ascending) {
-        rows.reverse();
-    }
-    rows.into_iter()
-        .map(|r| BotRequest {
-            ghost_id: r.ghost_id,
-            start_slot: r.starting_idx,
-            character: r.character,
-            catchup: r.catchup,
-            racer_type: EXPLORE_RACER_TYPE,
-            collision: false,
-            tint: BOT_TINT,
-            score: r.score,
+    def.ghost_board()
+        .into_iter()
+        .map(|g| {
+            let row = g.row.and_then(|i| def.rivals.get(i));
+            BotRequest {
+                ghost_id: row.map_or(-1, |r| r.ghost_id),
+                start_slot: row.map_or(0, |r| r.starting_idx),
+                character: g.character,
+                catchup: row.map_or(0, |r| r.catchup),
+                racer_type: EXPLORE_RACER_TYPE,
+                collision: false,
+                tint: BOT_TINT,
+                score: row.map_or(0, |r| r.score),
+            }
         })
         .collect()
 }
@@ -205,7 +204,8 @@ impl BotData {
         let schema = Schema::from_vault(&Vault::parse(&svlt, &sbin)?).context("reading the schema")?;
         let vault = Vault::parse(&vlt, &bin).context("parsing attribdb.vlt")?;
         let cols = collection::collections(&vault)?;
-        let decoded = cols.iter().map(|c| c.decode(&vault, &schema)).collect::<ssx_formats::Result<Vec<_>>>()?;
+        let mut decoded = cols.iter().map(|c| c.decode(&vault, &schema)).collect::<ssx_formats::Result<Vec<_>>>()?;
+        ssx_assets::content::data::events::route_ui_drops(big_root, &cols, &mut decoded);
         let index = collection::index(&cols);
         let mut out = Self::default();
         for (i, c) in cols.iter().enumerate() {
@@ -331,6 +331,8 @@ pub struct BotRace {
     pub running: bool,
     pub forced_wipeout: Option<usize>,
     pub scores: Vec<u32>,
+    pub live: Vec<live::LiveRacer>,
+    pub live_slots: live::LiveSlots,
 }
 
 impl BotRace {
@@ -411,7 +413,9 @@ impl BotRace {
                 Err(e) => problems.push(format!("bot ghost {}: {e:#}", r.ghost_id)),
             }
         }
-        (Self { bots, wipeout: flow, course, running: false, forced_wipeout: None, scores }, problems)
+        let race =
+            Self { bots, wipeout: flow, course, running: false, forced_wipeout: None, scores, ..Self::default() };
+        (race, problems)
     }
 
     pub fn step(&mut self, s: &mut crate::rider::RiderState, race_start: bool, dt_s: f32) {
@@ -492,12 +496,24 @@ impl BotRace {
 
     pub fn racers(&self, w: &crate::rider::World) -> [Option<crate::event::RacerInput>; crate::event::MAX_RACERS] {
         let mut out = [None; crate::event::MAX_RACERS];
+        let set = &w.triggers;
+        let touches_end = |p: Vec3| {
+            set.touching(p, crate::triggers::PLAYER_TOUCH_RADIUS, crate::triggers::IG_GHOST)
+                .any(|i| set.volumes[i].name == "end")
+        };
+        for (k, id) in self.live_slots.occupants() {
+            if let Some(r) = self.live.iter().find(|r| r.id == id) {
+                out[k] = Some(crate::event::RacerInput {
+                    y: r.position.y,
+                    touching_end: touches_end(r.position),
+                    points: 0.0,
+                    trigger_wipeout: false,
+                    in_air: r.in_air,
+                });
+            }
+        }
         for (k, b) in self.bots.iter().take(crate::event::MAX_RACERS).enumerate() {
-            let set = &w.triggers;
-            let touching_end = !b.removed
-                && set
-                    .touching(b.position, crate::triggers::PLAYER_TOUCH_RADIUS, crate::triggers::IG_GHOST)
-                    .any(|i| set.volumes[i].name == "end");
+            let touching_end = !b.removed && touches_end(b.position);
             out[k] = Some(crate::event::RacerInput {
                 y: b.position.y,
                 touching_end,
@@ -510,6 +526,7 @@ impl BotRace {
     }
 }
 
+pub mod live;
 pub mod wipeout;
 
 #[cfg(test)]

@@ -9,7 +9,7 @@ use ssx_formats::gfx::text::{EditText, Font, StaticText};
 use ssx_formats::gfx::types::Rgba;
 use ssx_formats::gfx::{Movie, Tag, TagRecord};
 
-use crate::fs::{FE_ROOT, FileSource, normalise};
+use crate::fs::{FE_ROOT, FileSource, PackageOrigin, normalise};
 use crate::geom::RectF;
 use crate::image::{self, ImageData};
 
@@ -149,15 +149,28 @@ pub struct MovieDef {
     pub scaling_grids: HashMap<u16, RectF>,
 }
 
+pub type MovieBuilder = Arc<dyn Fn(&mut Library) -> Result<MovieId> + Send + Sync>;
+
 pub struct Library {
     fs: Box<dyn FileSource>,
     movies: Vec<MovieDef>,
     by_path: HashMap<String, MovieId>,
+    builders: HashMap<String, MovieBuilder>,
     images: Vec<Arc<ImageData>>,
     image_by_path: HashMap<String, ImageId>,
     font_lib: HashMap<String, Arc<Font>>,
     pub log: Vec<String>,
+    package_movies: HashMap<MovieId, PackageOrigin>,
+    fallback: Vec<Arc<Font>>,
+    disc_fallback: Vec<Arc<Font>>,
+    disc_glyphs: HashMap<u16, (usize, usize)>,
+    package_ot: Vec<Arc<crate::ot::OtFont>>,
+    text_budget: crate::ot::Budget,
+    import_depth: usize,
 }
+
+pub const MAX_IMPORT_DEPTH: usize = 16;
+pub const MAX_MOVIES: usize = 8192;
 
 pub fn movie_key(rel: &str) -> String {
     let mut k = normalise(rel);
@@ -170,17 +183,78 @@ pub fn movie_key(rel: &str) -> String {
     k
 }
 
+pub(crate) fn first_glyphs(fonts: &[Arc<Font>]) -> HashMap<u16, (usize, usize)> {
+    let mut out = HashMap::new();
+    for (i, f) in fonts.iter().enumerate() {
+        for &code in &f.codes {
+            let Some(c) = char::from_u32(u32::from(code)) else { continue };
+            if !out.contains_key(&code)
+                && let Some(glyph) = crate::text::glyph_index(f, c)
+            {
+                out.insert(code, (i, glyph));
+            }
+        }
+    }
+    out
+}
+
 impl Library {
     pub fn new(fs: Box<dyn FileSource>) -> Self {
         Library {
             fs,
             movies: Vec::new(),
             by_path: HashMap::new(),
+            builders: HashMap::new(),
             images: Vec::new(),
             image_by_path: HashMap::new(),
             font_lib: HashMap::new(),
             log: Vec::new(),
+            package_movies: HashMap::new(),
+            fallback: Vec::new(),
+            disc_fallback: Vec::new(),
+            disc_glyphs: HashMap::new(),
+            package_ot: Vec::new(),
+            text_budget: crate::ot::Budget::default(),
+            import_depth: 0,
         }
+    }
+
+    pub fn origin(&self, movie: MovieId) -> Option<&PackageOrigin> {
+        self.package_movies.get(&movie)
+    }
+
+    pub fn has_package_movies(&self) -> bool {
+        !self.package_movies.is_empty()
+    }
+
+    pub fn forget_movies(&mut self, changed: impl Fn(&str) -> bool) -> usize {
+        let keys: Vec<String> = self.by_path.keys().filter(|k| changed(&format!("{FE_ROOT}{k}"))).cloned().collect();
+        for k in &keys {
+            self.by_path.remove(k);
+        }
+        keys.len()
+    }
+
+    pub fn fallback_fonts(&self) -> &[Arc<Font>] {
+        &self.fallback
+    }
+
+    pub fn disc_fallback(&self) -> &[Arc<Font>] {
+        &self.disc_fallback
+    }
+
+    pub fn disc_glyph(&self, c: char) -> Option<(&Arc<Font>, usize)> {
+        let code = u16::try_from(u32::from(c)).ok()?;
+        let &(font, glyph) = self.disc_glyphs.get(&code)?;
+        Some((&self.disc_fallback[font], glyph))
+    }
+
+    pub fn package_ot(&self) -> &[Arc<crate::ot::OtFont>] {
+        &self.package_ot
+    }
+
+    pub fn text_budget(&self) -> &crate::ot::Budget {
+        &self.text_budget
     }
 
     pub fn files(&self) -> &dyn FileSource {
@@ -219,9 +293,27 @@ impl Library {
         self.images.len() - 1
     }
 
+    pub fn reload_images(&mut self, changed: impl Fn(&str) -> bool) -> usize {
+        let mut n = 0;
+        for i in 0..self.images.len() {
+            let source = self.images[i].source.clone();
+            if !changed(&source) {
+                continue;
+            }
+            match image::load(self.fs.as_ref(), &source) {
+                Ok(img) => {
+                    self.images[i] = Arc::new(img);
+                    n += 1;
+                }
+                Err(e) => self.log.push(format!("reloading {source}: {e:#}")),
+            }
+        }
+        n
+    }
+
     pub fn load_font_library(&mut self, region: &str) -> Result<MovieId> {
         let id = self.load_movie(&format!("gfxfontlib/{region}/gfxfontlib.gfx"))?;
-        let fonts: Vec<Arc<Font>> = self.movies[id]
+        let mut fonts: Vec<Arc<Font>> = self.movies[id]
             .chars
             .values()
             .filter_map(|c| match c {
@@ -229,10 +321,46 @@ impl Library {
                 _ => None,
             })
             .collect();
+        fonts.sort_by_key(|f| f.id);
+        self.disc_fallback = fonts.clone();
         for f in fonts {
             self.font_lib.insert(f.name.clone(), f);
         }
+        let other = if region == "jp" { "na" } else { "jp" };
+        let file = format!("{FE_ROOT}gfxfontlib/{other}/gfxfontlib.gfx");
+        match self.fs.read(&file).map(|d| Movie::parse(&d)) {
+            Some(Ok(m)) => self.disc_fallback.extend(m.tags.iter().filter_map(|t| match &t.tag {
+                Tag::Font(f) if !f.glyphs.is_empty() => Some(Arc::new(f.clone())),
+                _ => None,
+            })),
+            Some(Err(e)) => self.log.push(format!("{file}: the other region's fonts not read: {e}")),
+            None => self.log.push(format!("{file}: not found (the other region's fonts)")),
+        }
+        self.disc_glyphs = first_glyphs(&self.disc_fallback);
+        self.apply_package_fonts(region);
         Ok(id)
+    }
+
+    pub fn apply_package_fonts(&mut self, region: &str) {
+        let Some(content) = self.fs.content() else { return };
+        self.fallback.clear();
+        self.package_ot.clear();
+        for pf in content.package_fonts() {
+            let mut font = pf.font.font.clone();
+            match &pf.replaces {
+                Some(lib) if lib.region == region => font.name = lib.name.clone(),
+                Some(_) => continue,
+                None => font.name = pf.id.as_str().to_string(),
+            }
+            let font = Arc::new(font);
+            self.font_lib.insert(font.name.clone(), font.clone());
+            self.fallback.push(font);
+            let bytes = ssx_content::font::lazy::Bytes(pf.font.bytes.clone());
+            match crate::ot::OtFont::open(pf.id.as_str(), bytes, &ssx_content::font::Limits::default()) {
+                Ok(f) => self.package_ot.push(Arc::new(f)),
+                Err(e) => self.log.push(format!("font {}: not shaped: {e}", pf.id.as_str())),
+            }
+        }
     }
 
     pub fn font_library(&self) -> &HashMap<String, Arc<Font>> {
@@ -317,9 +445,30 @@ impl Library {
         }
     }
 
-    // TODO(guess): the image movie's layout (one frame, the bitmap at depth 1 at 0, 0, the stage the image's size, 30 fps) follows Flash's loadMovie of a bitmap; settle: Scaleform's load-queue image branch.
     fn load_image_movie(&mut self, key: &str, file: &str) -> Result<MovieId> {
         let img = image::load(self.fs.as_ref(), file).with_context(|| format!("loading {file} as an image"))?;
+        self.image_movie(key, file, img)
+    }
+
+    pub fn add_image_movie(&mut self, rel: &str, img: ImageData) -> Result<MovieId> {
+        let key = movie_key(rel);
+        if self.builders.contains_key(&key) || self.fs.exists(&format!("{FE_ROOT}{key}")) {
+            anyhow::bail!("{key}: a movie of that path exists");
+        }
+        if let Some(&id) = self.by_path.get(&key) {
+            return Ok(id);
+        }
+        if self.movies.len() >= MAX_MOVIES {
+            anyhow::bail!("{key}: the library holds {MAX_MOVIES} movies already");
+        }
+        if img.rgba.len() as u64 != u64::from(img.width) * u64::from(img.height) * 4 {
+            anyhow::bail!("{key}: {} bytes of RGBA for {} x {} pixels", img.rgba.len(), img.width, img.height);
+        }
+        self.image_movie(&key, &key, img)
+    }
+
+    // TODO(guess): the image movie's layout (one frame, the bitmap at depth 1 at 0, 0, the stage the image's size, 30 fps) follows Flash's loadMovie of a bitmap; settle: Scaleform's load-queue image branch.
+    fn image_movie(&mut self, key: &str, file: &str, img: ImageData) -> Result<MovieId> {
         let (w, h) = (img.width, img.height);
         let image = self.insert_image(img);
         let id = self.movies.len();
@@ -364,17 +513,56 @@ impl Library {
         Ok(id)
     }
 
+    pub fn add_builder(&mut self, rel: &str, builder: MovieBuilder) -> Result<()> {
+        let key = movie_key(rel);
+        if self.by_path.contains_key(&key)
+            || self.builders.contains_key(&key)
+            || self.fs.exists(&format!("{FE_ROOT}{key}"))
+        {
+            anyhow::bail!("the movie {key} exists already");
+        }
+        self.builders.insert(key, builder);
+        Ok(())
+    }
+
     pub fn load_movie(&mut self, rel: &str) -> Result<MovieId> {
         let key = movie_key(rel);
         if let Some(&id) = self.by_path.get(&key) {
             return Ok(id);
         }
+        if self.movies.len() >= MAX_MOVIES {
+            anyhow::bail!("{key}: the library holds {MAX_MOVIES} movies already");
+        }
+        if self.import_depth >= MAX_IMPORT_DEPTH {
+            anyhow::bail!("{key}: imports nested deeper than {MAX_IMPORT_DEPTH}");
+        }
+        if self.builders.contains_key(&key)
+            && let Some((data, origin)) = self.fs.port_override(&key)
+        {
+            return self.parse_movie(&key, &format!("{FE_ROOT}{key}"), &data, Some(origin));
+        }
+        if let Some(build) = self.builders.get(&key).cloned() {
+            let id = build(self).with_context(|| format!("building {key}"))?;
+            if self.movies.get(id).is_none_or(|m| m.path != key) {
+                anyhow::bail!("the builder of {key} added no movie of that path");
+            }
+            return Ok(id);
+        }
         let file = format!("{FE_ROOT}{key}");
+        if self.fs.is_content_image(&file) {
+            return self.load_image_movie(&key, &file);
+        }
         let data = self.fs.read(&file).with_context(|| format!("movie {file} not found"))?;
         if !matches!(data.get(..3), Some(b"CFX" | b"GFX" | b"FWS" | b"CWS")) {
             return self.load_image_movie(&key, &file);
         }
-        let parsed = Movie::parse(&data).with_context(|| format!("parsing {file}"))?;
+        let origin = self.fs.package_origin(&file);
+        self.parse_movie(&key, &file, &data, origin)
+    }
+
+    fn parse_movie(&mut self, key: &str, file: &str, data: &[u8], origin: Option<PackageOrigin>) -> Result<MovieId> {
+        let key = key.to_string();
+        let parsed = Movie::parse(data).with_context(|| format!("parsing {file}"))?;
         let id = self.movies.len();
         let dir = file.rsplit_once('/').map_or(String::new(), |(d, _)| format!("{d}/"));
         let mut m = MovieDef {
@@ -451,11 +639,17 @@ impl Library {
         }
         self.movies.push(m);
         self.by_path.insert(key.clone(), id);
+        if let Some(o) = origin {
+            self.package_movies.insert(id, o);
+        }
         let mut imports: Vec<(u16, String, String)> =
             self.movies[id].imports.iter().map(|(cid, i)| (*cid, i.url.clone(), i.name.clone())).collect();
         imports.sort();
         for (cid, url, name) in imports {
-            let target = match self.load_movie(&url) {
+            self.import_depth += 1;
+            let loaded = self.load_movie(&url);
+            self.import_depth -= 1;
+            let target = match loaded {
                 Ok(other) => match self.movies[other].exports.get(&name) {
                     Some(&oid) => Some(CharRef { movie: other, id: oid }),
                     None => {

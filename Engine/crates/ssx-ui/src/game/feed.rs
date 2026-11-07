@@ -23,7 +23,7 @@ pub const RACER_PRESENT: bool = true;
 pub fn record_view(r: &TrickRecord) -> TrickRecordView {
     TrickRecordView {
         kind: r.kind as i32,
-        trick: r.trick_id as u32,
+        trick: u32::from(r.trick_id.value()),
         flips_fwd: r.flips_fwd,
         flips_bwd: r.flips_bwd,
         interaction: r.interaction,
@@ -56,6 +56,7 @@ pub struct HudFeed {
     pub ghost_racers: Vec<RaceEntrant>,
     pub rider_titles: std::collections::BTreeMap<u32, String>,
     pub trick: TrickStandings,
+    pub session: Option<super::session_board::SessionHud>,
 }
 
 impl HudFeed {
@@ -142,10 +143,17 @@ impl HudFeed {
             }
         }
         let lb = matches!(x.event.state, EventState::Running | EventState::Finished) && !x.event.waiting;
-        if lb && x.event.setup.event_type == Some(EventType::TrickBots) {
+        if let Some(hud) = self.session.as_ref() {
+            if lb && let Some(t) = x.event.setup.event_type {
+                let entrants = self.session_entrants(ui, s, x, hud);
+                let course = x.event.setup.course.map(|c| (c.start_y, c.end_y));
+                super::session_board::update(&mut ui.values, &mut ui.loc, t, hud, &entrants, course);
+            }
+        } else if lb && x.event.setup.event_type == Some(EventType::TrickBots) {
             self.trick_standings(ui, s, x, world);
         }
         if lb
+            && self.session.is_none()
             && let Some(t @ (EventType::RaceGhosts | EventType::RaceBots)) = x.event.setup.event_type
             && let Some(c) = x.event.setup.course
         {
@@ -154,7 +162,7 @@ impl HudFeed {
                 picture: ui.values.str(USER_GAMERPIC).to_string(),
                 active: true,
                 finish_ms: x.event.finish_ms,
-                y: s.position.y,
+                y: Some(s.position.y),
             };
             let racers = self.racers(ui, x, world);
             race_update(&mut ui.values, &mut ui.loc, t, &player, &racers, c.start_y, c.end_y);
@@ -225,6 +233,42 @@ impl HudFeed {
         );
     }
 
+    fn session_entrants(
+        &self,
+        ui: &GameUi,
+        s: &RiderState,
+        x: &Session,
+        hud: &super::session_board::SessionHud,
+    ) -> Vec<super::session_board::Entrant> {
+        let mut out = vec![super::session_board::Entrant {
+            name: self.player_name(ui),
+            picture: ui.values.str(USER_GAMERPIC).to_string(),
+            player: true,
+            finish_ms: x.event.finish_ms,
+            out: x.event.result.as_ref().is_some_and(|r| r.failed),
+            y: s.position.y,
+            points: s.score.score.max(0.0) as u32,
+            descent_mm: x.event.descent_mm(s.score.descent),
+            place: hud.player_place,
+        }];
+        let Some(b) = x.bots.as_ref() else { return out };
+        for (_, id) in b.live_slots.occupants() {
+            let (Some(racer), Some(r)) = (b.live.iter().find(|r| r.id == id), hud.riders.get(&id)) else { continue };
+            out.push(super::session_board::Entrant {
+                name: r.name.clone(),
+                picture: r.picture.clone(),
+                player: false,
+                finish_ms: r.finish_ms,
+                out: r.out,
+                y: racer.position.y,
+                points: r.points,
+                descent_mm: r.descent_mm,
+                place: r.place,
+            });
+        }
+        out
+    }
+
     fn racers(&self, ui: &mut GameUi, x: &Session, world: &World) -> Vec<RaceEntrant> {
         let Some(b) = x.bots.as_ref() else { return self.ghost_racers.clone() };
         let inputs = b.racers(world);
@@ -239,7 +283,7 @@ impl HudFeed {
                     name,
                     active: RACER_PRESENT,
                     finish_ms: x.event.racers.get(k).and_then(|r| r.finish_ms),
-                    y: inputs.get(k).copied().flatten().map_or(bot.position.y, |r| r.y),
+                    y: Some(inputs.get(k).copied().flatten().map_or(bot.position.y, |r| r.y)),
                 }
             })
             .collect()
@@ -361,13 +405,15 @@ impl HudFeed {
     fn split_callout(&mut self, ui: &mut GameUi, s: &RiderState, x: &Session, world: &World) {
         let Some(course) = x.event.setup.course else { return };
         let racers = self.racers(ui, x, world);
-        let Some(low) = racers.iter().fold(None::<&RaceEntrant>, |a, r| match a {
-            Some(b) if b.y <= r.y => Some(b),
-            _ => Some(r),
-        }) else {
+        let Some((low, y)) =
+            racers.iter().filter_map(|r| r.y.map(|y| (r, y))).fold(None::<(&RaceEntrant, f32)>, |a, (r, y)| match a {
+                Some((b, by)) if by <= y => Some((b, by)),
+                _ => Some((r, y)),
+            })
+        else {
             return;
         };
-        let (me, y, start) = (s.position.y, low.y, course.start_y);
+        let (me, start) = (s.position.y, course.start_y);
         let clock = x.event.clock.ms() as f32;
         let ahead = y > me;
         let gap = if ahead { clock / (start - me) * (y - me) } else { clock / (start - y) * (me - y) };

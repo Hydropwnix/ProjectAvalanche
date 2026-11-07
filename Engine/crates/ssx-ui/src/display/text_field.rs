@@ -20,6 +20,37 @@ pub(super) fn new_text_state(lib: &Library, movie: MovieId, e: &Arc<EditText>) -
     t
 }
 
+impl Player {
+    pub fn relayout_texts(&mut self, lib: &Library) -> usize {
+        let mut n = 0;
+        for slot in self.slots.iter_mut() {
+            let Some(inst) = slot.instance.as_mut() else { continue };
+            let movie = inst.movie;
+            if let InstanceKind::EditText(t) = &mut inst.kind {
+                relayout(lib, movie, t);
+                n += 1;
+            }
+        }
+        n
+    }
+
+    pub fn relayout_pending(&mut self, lib: &Library) -> usize {
+        lib.text_budget().refill();
+        let mut n = 0;
+        for slot in self.slots.iter_mut() {
+            let Some(inst) = slot.instance.as_mut() else { continue };
+            let movie = inst.movie;
+            if let InstanceKind::EditText(t) = &mut inst.kind
+                && t.layout.pending
+            {
+                relayout(lib, movie, t);
+                n += 1;
+            }
+        }
+        n
+    }
+}
+
 pub(super) fn relayout(lib: &Library, movie: MovieId, t: &mut TextState) {
     t.paragraphs = if t.html {
         text::parse_html(&t.source, &t.default_char, &t.default_para)

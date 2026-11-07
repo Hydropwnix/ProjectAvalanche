@@ -2,6 +2,9 @@ pub mod look;
 pub mod material;
 pub mod textures;
 
+mod map;
+pub use map::{MapTerrain, map_textured};
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -9,7 +12,10 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::Indices;
-use bevy::prelude::*;
+use bevy::prelude::{
+    App, Assets, Color, ColorToComponents, Commands, Handle, Image, IntoScheduleConfigs, Mesh, Mesh3d, MeshMaterial3d,
+    Mix, Name, Res, ResMut, Resource, StandardMaterial, Vec3, World, default, info, resource_exists, warn,
+};
 use bevy::render::render_resource::PrimitiveTopology;
 use ssx_assets::subdiv::{GAME_LEVELS, SubdLevel};
 use ssx_assets::terrain::{TriMesh, cage_trimesh, is_hidden_face, load_track};
@@ -116,19 +122,20 @@ pub fn load_textured(track_dir: &Path, track: &str, big_root: Option<PathBuf>) -
         .context("no extracted archive root (Game-Data/Extracted/big with cache1/data/xenon/attribdb) found")?;
     let looks = TrackLooks::load(&big_root, track)
         .with_context(|| format!("loading the terrain materials of {track} from {}", big_root.display()))?;
-    let prepared = PreparedLooks::decode(&looks.looks)?;
+    let prepared = PreparedLooks::decode(&big_root, &looks.looks)?;
     let noise = load_snow_noise(&big_root)?;
     let summary =
         format!("textured (materials + textures loaded in {:.2}s)\n{}", start.elapsed().as_secs_f32(), looks.summary());
     Ok(TexturedTerrain { prepared, by_file: looks.by_file, summary, noise })
 }
 
-fn load_snow_noise(big_root: &Path) -> Result<Noise> {
-    let path = big_root.join("cache3/data/xenon/gameexplorer/worlds/textures/snow_noise_displace.xpr");
-    let chain = crate::render::terrain::textures::decode_xpr(&path)?;
+pub(crate) fn load_snow_noise(big_root: &Path) -> Result<Noise> {
+    let id =
+        ssx_assets::content::textures::texture_id("worlds/textures/snow_noise_displace").context("the noise's id")?;
+    let chain = crate::render::terrain::textures::rgba_chain(big_root, &id, &ssx_content::texture::Want::PLANE)?;
     let level = &chain.levels[0];
     let size = level.width as usize;
-    anyhow::ensure!(level.width == level.height, "{}: not square", path.display());
+    anyhow::ensure!(level.width == level.height, "{id}: not square");
     Ok(Noise { size, texels: level.rgba.as_chunks::<4>().0.iter().map(|p| f32::from(p[0]) / 255.0).collect() })
 }
 
@@ -300,6 +307,7 @@ fn spawn_terrain(
                 .map(|set| set.map(|m| terrain_materials.add(m)))
                 .collect();
             let fallback = materials.add(StandardMaterial { base_color: Color::srgb(0.5, 0.5, 0.5), ..default() });
+            let mut warm = std::collections::HashSet::new();
             for piece in pieces {
                 let set = textured.by_file.get(&piece.label);
                 if set.is_none() {
@@ -310,9 +318,21 @@ fn spawn_terrain(
                 for (k, (mesh, layers, groups)) in per_mesh(piece).into_iter().enumerate() {
                     for (group, (part, part_layers)) in split_by_group(&mesh, &layers, &groups) {
                         let name = Name::new(format!("{label} mesh {k} group {group}"));
-                        let part = meshes.add(textured_mesh(part, &part_layers));
+                        let mesh = textured_mesh(part, &part_layers);
+                        let attributes: Vec<_> = mesh.attributes().map(|(a, _)| a.id).collect();
+                        let part = meshes.add(mesh);
                         match set {
-                            Some(&i) => commands.spawn((name, Mesh3d(part), MeshMaterial3d(handles[i][group].clone()))),
+                            Some(&i) => {
+                                let handle = handles[i][group].clone();
+                                if warm.insert((handle.id(), attributes)) {
+                                    commands.spawn((
+                                        Mesh3d(part.clone()),
+                                        MeshMaterial3d(handle.clone()),
+                                        crate::render::warm_up::draw(),
+                                    ));
+                                }
+                                commands.spawn((name, Mesh3d(part), MeshMaterial3d(handle)))
+                            }
                             None => commands.spawn((name, Mesh3d(part), MeshMaterial3d(fallback.clone()))),
                         };
                     }

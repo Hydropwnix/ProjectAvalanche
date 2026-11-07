@@ -184,6 +184,7 @@ pub struct Pathfinder {
     next_id: u64,
     pub names: Vec<(u32, String)>,
     pub log: Vec<LogLine>,
+    pub score: Option<crate::score::ScoreInbox>,
 }
 
 const RNG_STATE: [u32; 6] = [0xF22D_0E56, 0x8831_26E9, 0xC624_DD2F, 0x0702_C49C, 0x9E35_3F7D, 0x6FDF_3B64];
@@ -205,6 +206,7 @@ impl Pathfinder {
             next_id: 0,
             names: Vec::new(),
             log: Vec::new(),
+            score: None,
         }
     }
 
@@ -236,12 +238,20 @@ impl Pathfinder {
         let id = value & 0xFF_FFFF;
         let Some(e) = self.mpf.event_by_id(id) else { return false };
         let name = self.event_name(id);
+        if let Some(inbox) = self.score.as_mut() {
+            inbox.posts.push((value, name.clone()));
+            self.logf(format!("post {name} → the package's score"));
+            return true;
+        }
         self.logf(format!("post {name}"));
         self.instantiate(e)
     }
 
     // TODO(guess): the disc's latency is not modelled — a stream never reports 2 (its segments are in memory) and the front-end module's map load (0x830D0BC8: states 1 → 2 → 3) completes at its next update; settle: none needed unless the port streams from a slow medium.
     pub fn stream_state(&self, i: usize) -> u8 {
+        if let Some(inbox) = &self.score {
+            return if self.players.get(i).and_then(Option::as_ref).is_some() { inbox.state } else { 0 };
+        }
         let Some(p) = self.players.get(i).and_then(Option::as_ref) else { return 0 };
         if p.paused {
             return 3;
@@ -260,6 +270,11 @@ impl Pathfinder {
     }
 
     pub fn set_control_level(&mut self, level: u32) {
+        if level < 0x80
+            && let Some(inbox) = self.score.as_mut()
+        {
+            inbox.control = Some(level);
+        }
         if level < 0x80 {
             for p in self.players.iter_mut().flatten() {
                 p.level = level as u8;
@@ -286,6 +301,9 @@ impl Pathfinder {
     }
 
     pub fn set_master_volume(&mut self, v: i32) {
+        if let Some(inbox) = self.score.as_mut() {
+            inbox.volume = Some(v);
+        }
         let v = v.clamp(0, 100) as u8;
         for p in self.players.iter_mut().flatten() {
             p.master_volume = v;
@@ -304,10 +322,16 @@ impl Pathfinder {
             p.beat = -1;
         }
         self.events.clear();
+        if let Some(inbox) = self.score.as_mut() {
+            inbox.stop = true;
+        }
         self.logf("stop".into());
     }
 
     pub fn set_paused(&mut self, paused: bool) {
+        if let Some(inbox) = self.score.as_mut() {
+            inbox.paused = Some(paused);
+        }
         for p in self.players.iter_mut().flatten() {
             p.paused = paused;
         }

@@ -232,6 +232,19 @@ pub struct Renderer {
     listener: Option<Listener>,
     listener_pos: V3,
     memory: Vec<(&'static str, Memory)>,
+    script_listener: Option<Listener>,
+    script_listener_pos: V3,
+}
+
+fn hear(listener: &mut Option<Listener>, last: &mut V3, camera: Option<(V3, V3)>) -> (Option<Listener>, bool) {
+    let mut jumped = false;
+    if let Some((eye, look)) = camera {
+        let l = Listener::from_camera(eye, look);
+        jumped = moved(l.pos, *last);
+        *last = l.pos;
+        *listener = Some(l);
+    }
+    (*listener, jumped)
 }
 
 fn moved(a: V3, b: V3) -> bool {
@@ -241,14 +254,23 @@ fn moved(a: V3, b: V3) -> bool {
 
 impl Renderer {
     pub fn frame(&mut self, camera: Option<(V3, V3)>, emitters: &[Emitter], dt: f32) -> Vec<(&'static str, Packet)> {
-        let mut jumped = false;
-        if let Some((eye, look)) = camera {
-            let l = Listener::from_camera(eye, look);
-            jumped = moved(l.pos, self.listener_pos);
-            self.listener_pos = l.pos;
-            self.listener = Some(l);
-        }
-        let Some(l) = self.listener else { return Vec::new() };
+        let (listener, jumped) = hear(&mut self.listener, &mut self.listener_pos, camera);
+        let Some(l) = listener else { return Vec::new() };
+        self.packets(&l, jumped, emitters, dt)
+    }
+
+    pub fn frame_scripts(
+        &mut self,
+        camera: Option<(V3, V3)>,
+        emitters: &[Emitter],
+        dt: f32,
+    ) -> Vec<(&'static str, Packet)> {
+        let (listener, jumped) = hear(&mut self.script_listener, &mut self.script_listener_pos, camera);
+        let Some(l) = listener else { return Vec::new() };
+        self.packets(&l, jumped, emitters, dt)
+    }
+
+    fn packets(&mut self, l: &Listener, jumped: bool, emitters: &[Emitter], dt: f32) -> Vec<(&'static str, Packet)> {
         let mut out = Vec::with_capacity(emitters.len());
         for e in emitters {
             let pos = audio_frame(emitter_position(e.base, e.rotation, e.settings.offset));
@@ -260,7 +282,7 @@ impl Renderer {
                 }
             };
             let m = &mut self.memory[k].1;
-            let mut p = direct_path(&l, pos, audio_frame(e.velocity), &e.settings);
+            let mut p = direct_path(l, pos, audio_frame(e.velocity), &e.settings);
             p.interval = dt;
             p.active = true;
             p.reset = jumped || moved(pos, m.pos) || ((p.gain == 0.0) != (m.gain == 0.0));
@@ -391,5 +413,27 @@ mod tests {
         assert!(!r.frame(cam, &[e], 1.0 / 30.0)[0].1.reset);
         let far = Emitter { base: [20.0, 1.0, -5.0], ..e };
         assert!(r.frame(cam, &[far], 1.0 / 30.0)[0].1.reset, "a jump of more than 10 m");
+    }
+
+    #[test]
+    fn script_frames_leave_the_game_listener_alone() {
+        let board = Emitter {
+            bus: "Board_Center_BUS",
+            settings: BOARD_CENTER,
+            base: [0.0, 0.0, -5.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            velocity: [0.0; 3],
+        };
+        let script = Emitter { bus: "Script_3D_0_BUS", base: [3.0, 0.0, -2.0], ..board };
+        let look = [0.0, 0.0, -1.0];
+        let cams = [([0.0; 3], look), ([0.0, 0.0, -50.0], look), ([0.0, 0.0, -51.0], look)];
+        let (mut alone, mut shared) = (Renderer::default(), Renderer::default());
+        for (k, cam) in cams.into_iter().enumerate() {
+            let a = alone.frame(Some(cam), &[board], 1.0 / 60.0);
+            let s = shared.frame_scripts(Some(([100.0, 0.0, 0.0], look)), &[script], 1.0 / 60.0);
+            assert_eq!(s.len(), 1);
+            let b = shared.frame(Some(cam), &[board], 1.0 / 60.0);
+            assert_eq!(a, b, "the game's frame {k}");
+        }
     }
 }

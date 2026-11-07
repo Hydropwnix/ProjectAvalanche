@@ -4,6 +4,10 @@ pub type CsisHandle = usize;
 
 impl Aems {
     pub fn call(&mut self, function: u32, params: &[i32]) -> CsisHandle {
+        self.call_from(function, params, None)
+    }
+
+    pub fn call_from(&mut self, function: u32, params: &[i32], origin: Option<u32>) -> CsisHandle {
         let key = match self.csis.iter().skip(1).position(Option::is_none) {
             Some(i) => i + 1,
             None => {
@@ -14,7 +18,7 @@ impl Aems {
                 self.csis.len() - 1
             }
         };
-        self.csis[key] = Some(CsisInstance { function, modules: Vec::new() });
+        self.csis[key] = Some(CsisInstance { function, modules: Vec::new(), origin });
         let mut created = 0;
         for b in (0..self.banks.len()).rev() {
             for m in (0..self.banks[b].links.len()).rev() {
@@ -68,7 +72,9 @@ impl Aems {
         if key == self.instances.len() {
             self.instances.push(None);
         }
-        self.instances[key] = Some(Instance { bank: b, module: m, state, csis });
+        let script = self.csis[csis].as_ref().and_then(|c| c.origin).filter(|o| self.script_routes.contains_key(o));
+        self.instances[key] =
+            Some(Instance { bank: b, module: m, state, csis, received: Vec::new(), started: HashMap::new(), script });
         self.order.insert(0, key);
         if let Some(c) = self.csis[csis].as_mut() {
             c.modules.push(key);

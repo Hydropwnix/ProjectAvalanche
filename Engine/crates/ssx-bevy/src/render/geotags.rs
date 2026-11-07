@@ -6,7 +6,11 @@ use bevy::asset::{RenderAssetUsages, embedded_asset};
 use bevy::light::NotShadowCaster;
 use bevy::mesh::{Indices, MeshVertexBufferLayoutRef, PrimitiveTopology};
 use bevy::pbr::{Material, MaterialPipeline, MaterialPipelineKey, MaterialPlugin};
-use bevy::prelude::*;
+use bevy::prelude::{
+    AlphaMode, App, Asset, Assets, Camera, Camera3d, Commands, Entity, GlobalTransform, Handle, Image,
+    IntoScheduleConfigs, Mesh, Mesh3d, MeshMaterial3d, Name, PostUpdate, Quat, Query, Reflect, Res, ResMut, Resource,
+    Time, Transform, Vec3, Vec4, Visibility, With, World, debug, default, info, resource_exists, warn,
+};
 use bevy::render::render_resource::{
     AsBindGroup, BlendComponent, BlendFactor, BlendOperation, BlendState, RenderPipelineDescriptor, ShaderType,
     SpecializedMeshPipelineError,
@@ -17,9 +21,9 @@ use ssx_assets::track_objects::geotags::{DistanceScale, GeotagAssets, distance_s
 use ssx_physics::session::geotags::{GeotagData, GeotagRun};
 
 use crate::render::objects::material::{LDR_FRAME_FORMAT, LDR_PIPELINE_LABEL};
-use crate::render::terrain::textures::{Texels, decode_xpr, texture_2d};
+use crate::render::terrain::textures::{Texels, load_chain, texture_2d};
 
-const SHADER_PATH: &str = "embedded://ssx_bevy/render/geotag.wgsl";
+const SHADER_PATH: &str = "embedded://ssx_bevy/render/geotag.wesl";
 
 #[derive(Clone, Copy, Debug, Default, Reflect, ShaderType)]
 pub struct GeotagParams {
@@ -116,6 +120,8 @@ pub struct Loaded {
     assets: GeotagAssets,
     meshes: Vec<Mesh>,
     diffuse: Image,
+    diffuse_id: ssx_content::ContentId,
+    root: std::path::PathBuf,
     scale: DistanceScale,
     track_key: u32,
     fly: Option<GeotagRun>,
@@ -170,24 +176,29 @@ fn load_all(root: &Path, track: &str, riding: bool) -> Result<Option<Loaded>> {
     let meshes = assets
         .objects
         .iter()
-        .map(|o| {
-            let file = ssx_assets::track_objects::asset_file(root, &o.geometry)
-                .with_context(|| format!("{} not extracted", o.geometry))?;
-            Ok(to_mesh(ssx_assets::object_mesh::load(&file)?))
-        })
+        .map(|o| Ok(to_mesh(crate::render::sky::midground::static_mesh(root, &o.geometry)?)))
         .collect::<Result<Vec<_>>>()?;
     let tex = assets.objects[0].material.textures.get("diffuseTexture").context("no diffuseTexture")?;
-    let file = ssx_assets::track_objects::asset_file(root, &format!("{tex}.xpr"))
-        .with_context(|| format!("{tex}.xpr not extracted"))?;
-    let diffuse = texture_2d(&decode_xpr(&file)?, Texels::Linear, default());
+    let id = ssx_assets::content::textures::texture_id(tex).with_context(|| format!("{tex:?}: not a texture id"))?;
+    let diffuse = texture_2d(&load_chain(root, &id, &ssx_content::texture::Want::PLANE)?, Texels::Linear, default());
     let track_key = data.track_key;
     let fly = (!riding)
         .then(|| GeotagRun::new(Arc::new(data), |_| false, &mut ssx_physics::session::bots::Mt19937::seeded(seed())));
-    Ok(Some(Loaded { assets, meshes, diffuse, scale: distance_scale(root)?, track_key, fly }))
+    let (diffuse_id, root_dir) = (id, root.to_path_buf());
+    Ok(Some(Loaded {
+        assets,
+        meshes,
+        diffuse,
+        diffuse_id,
+        root: root_dir,
+        scale: distance_scale(root)?,
+        track_key,
+        fly,
+    }))
 }
 
 pub fn register(app: &mut App) {
-    embedded_asset!(app, "geotag.wgsl");
+    embedded_asset!(app, "geotag.wesl");
     app.add_plugins(MaterialPlugin::<GeotagMaterial>::default())
         .init_resource::<GeotagBursts>()
         .add_systems(crate::shell::level::LevelStartup, spawn.run_if(resource_exists::<PendingGeotags>))
@@ -254,10 +265,17 @@ fn spawn(
         Ok(s) => diffuse.sampler = s,
         Err(e) => warn!("geotag diffuse sampler: {e:#}"),
     }
-    let diffuse = images.add(diffuse);
+    let recipe = crate::render::terrain::textures::plane_recipe(
+        &loaded.root,
+        &loaded.diffuse_id,
+        ssx_content::texture::Want::PLANE,
+        Texels::Linear,
+        diffuse.sampler.clone(),
+    );
+    let diffuse = crate::render::reload::add(&mut images, diffuse, Some(recipe));
     let light = lighting.map_or(Vec3::Y, |l| l.sun_offset).extend(0.0);
     let ldr = post.is_some();
-    let tiers = loaded
+    let tiers: Vec<(Handle<Mesh>, Handle<GeotagMaterial>)> = loaded
         .assets
         .objects
         .iter()
@@ -284,6 +302,10 @@ fn spawn(
             (meshes.add(mesh), materials.add(GeotagMaterial { params, diffuse: diffuse.clone(), ldr }))
         })
         .collect();
+    for (mesh, material) in &tiers {
+        let warm = crate::render::warm_up::draw();
+        commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), NotShadowCaster, warm));
+    }
     let bursts = loaded.assets.objects.iter().map(|o| o.burst.clone()).collect();
     commands.insert_resource(Geotags {
         tiers,

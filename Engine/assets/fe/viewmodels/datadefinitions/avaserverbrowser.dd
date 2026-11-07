@@ -1,0 +1,24 @@
+{
+	"actions":
+		[
+			{ "viewname": "A_AvaBrowserSetup", "actionname": "A_AvaBrowserSetup", "argumenttype": "object" },
+			{ "viewname": "A_AvaBrowserRequestData", "actionname": "A_AvaBrowserRequestData", "argumenttype": "float" },
+			{ "viewname": "A_AvaBrowserPage", "actionname": "A_AvaBrowserPage", "argumenttype": "float" },
+			{ "viewname": "A_AvaBrowserTab", "actionname": "A_AvaBrowserTab", "argumenttype": "float" },
+			{ "viewname": "A_AvaBrowserConnect", "actionname": "A_AvaBrowserConnect" },
+			{ "viewname": "A_AvaBrowserFavourite", "actionname": "A_AvaBrowserFavourite" },
+			{ "viewname": "A_AvaBrowserSearch", "actionname": "A_AvaBrowserSearch" },
+			{ "viewname": "A_AvaBrowserRefresh", "actionname": "A_AvaBrowserRefresh" },
+			{ "viewname": "A_AvaBrowserFilters", "actionname": "A_AvaBrowserFilters" },
+			{ "viewname": "A_AvaBrowserDirect", "actionname": "A_AvaBrowserDirect" },
+			{ "viewname": "A_AvaBrowserBack", "actionname": "A_AvaBrowserBack" }
+		],
+	"data":
+		[
+			{ "viewname": "ava_browser", "type": "object", "dpname": "dp_ava_browser" },
+			{ "viewname": "ava_browser_rows", "type": "array", "dpname": "dp_ava_browser_rows" },
+			{ "viewname": "ava_browser_rows_index", "type": "int", "dpname": "dp_ava_browser_rows_index" },
+			{ "viewname": "ava_browser_details", "type": "object", "dpname": "dp_ava_browser_details" },
+			{ "viewname": "ava_browser_drop", "type": "object", "dpname": "dp_ava_browser_drop" }
+		]
+}

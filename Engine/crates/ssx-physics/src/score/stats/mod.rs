@@ -56,6 +56,7 @@ pub struct StatsStore {
     pub badge_progress: BTreeMap<u32, f32>,
     pub tracker: Tracker,
     pub rider: Option<String>,
+    pub added_tricks: BTreeMap<std::sync::Arc<str>, [u32; 3]>,
 }
 
 impl Default for StatsStore {
@@ -69,6 +70,7 @@ impl Default for StatsStore {
             badge_progress: BTreeMap::new(),
             tracker: Tracker::default(),
             rider: None,
+            added_tricks: BTreeMap::new(),
         };
         for (name, kind, scopes) in STATS {
             let h = s.register(name, kind, scopes);

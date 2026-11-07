@@ -98,20 +98,20 @@ impl TrickState {
         }
     }
 
-    pub fn update_reset(&mut self, inp: &TrickInput, ctx: &TrickContext, dt: f32) {
-        self.scene_op_reset(inp, ctx, dt);
+    pub fn update_reset(&mut self, t: &TrickTuning, inp: &TrickInput, ctx: &TrickContext, dt: f32) {
+        self.scene_op_reset(t, inp, ctx, dt);
         if ctx.in_air {
             self.flow(ctx, dt);
         }
     }
 
     pub fn scene_op(&mut self, t: &TrickTuning, inp: &TrickInput, ctx: &TrickContext, dt: f32) {
-        let pad = self.gesture_ticks(inp, ctx, dt);
+        let pad = self.gesture_ticks(t, inp, ctx, dt);
         self.trick_scene_op(t, inp, &pad, ctx, dt);
     }
 
-    pub fn scene_op_reset(&mut self, inp: &TrickInput, ctx: &TrickContext, dt: f32) {
-        self.gesture_ticks(inp, ctx, dt);
+    pub fn scene_op_reset(&mut self, t: &TrickTuning, inp: &TrickInput, ctx: &TrickContext, dt: f32) {
+        self.gesture_ticks(t, inp, ctx, dt);
         self.reset_trick_state();
     }
 
@@ -129,7 +129,13 @@ impl TrickState {
         (g.group, g.group_locked, g.index, g.starting, g.enabled) = (-1, -1, -1, false, true);
     }
 
-    pub(super) fn gesture_ticks(&mut self, inp: &TrickInput, ctx: &TrickContext, _dt: f32) -> PadSample {
+    pub(super) fn gesture_ticks(
+        &mut self,
+        t: &TrickTuning,
+        inp: &TrickInput,
+        ctx: &TrickContext,
+        _dt: f32,
+    ) -> PadSample {
         let pad = PadSample::new(inp);
         let gates = Gates {
             in_air: ctx.in_air,
@@ -137,7 +143,7 @@ impl TrickState {
             left_start: self.valid_left_start,
             right_start: self.valid_right_start,
         };
-        self.gestures.tick(pad, &gates);
+        self.gestures.tick(pad, &gates, &t.added);
         let (prev, cur) = (self.gestures.prev, self.gestures.cur);
         self.grind.tick_gestures(&prev, &cur, ctx.is_grinding);
         self.press.tick(&prev, &cur);
@@ -173,7 +179,7 @@ impl TrickState {
             } else if in_loop {
                 self.update_tweak_and_lock(pad, rs_mag, t, false);
             }
-            let (valid, idx) = self.valid_air_trick_input();
+            let (valid, idx) = self.valid_air_trick_input(&t.added, ctx.goofy);
             self.has_valid_input = valid;
             if valid {
                 self.input_index = idx;
@@ -242,7 +248,7 @@ impl TrickState {
         }
     }
 
-    pub(super) fn valid_air_trick_input(&self) -> (bool, i32) {
+    pub(super) fn valid_air_trick_input(&self, added: &AddedAirTricks, goofy: bool) -> (bool, i32) {
         let g = &self.gestures;
         for i in 0..AIR_TRICKS.len() {
             if g.button[i] {
@@ -250,6 +256,16 @@ impl TrickState {
             }
             if g.stick[i] {
                 return (true, -1);
+            }
+        }
+        for i in 0..added.by_input.len() {
+            if added.trick_for(i, goofy).is_some() {
+                if g.added.button[i] {
+                    return (true, (AIR_TRICKS.len() + i) as i32);
+                }
+                if g.added.stick[i] {
+                    return (true, -1);
+                }
             }
         }
         (false, -1)
@@ -278,6 +294,20 @@ impl TrickState {
                 }
                 found = true;
                 break;
+            }
+        }
+        if !found {
+            for i in 0..t.added.by_input.len() {
+                let Some(trick) = t.added.trick_for(i, ctx.goofy) else { continue };
+                let button = self.gestures.added.button[i];
+                if ADDED_LEN > self.gesture_len && (button || self.gestures.added.stick[i]) {
+                    (self.trick_type, self.gesture_len, self.hand) = (trick, ADDED_LEN, trick.hand());
+                    if button {
+                        self.update_virtual_stick(t, inp, dt);
+                    }
+                    found = true;
+                    break;
+                }
             }
         }
         if found && ctx.super_awesome && self.gestures.signature {

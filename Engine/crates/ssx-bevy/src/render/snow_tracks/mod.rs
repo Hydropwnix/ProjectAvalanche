@@ -47,6 +47,7 @@ enum Upload {
 }
 
 #[derive(Resource, Clone, ExtractResource)]
+#[extract_app(RenderApp)]
 pub struct SnowTrackGpu {
     lookup: Handle<Image>,
     tiles: Handle<Image>,
@@ -83,6 +84,10 @@ pub fn drop_world_box<'a>(files: impl IntoIterator<Item = &'a SubdFile>) -> (Vec
 }
 
 impl SnowTracks {
+    pub fn set_noise(&mut self, noise: Noise) {
+        self.noise = noise.tile_sum();
+    }
+
     pub fn new(min: Vec3, max: Vec3, noise: Noise, images: &mut Assets<Image>) -> (SnowTracks, SnowTrackTextures) {
         let tiles = TileSystem::new(min, max);
         let (w, h) = (tiles.size.x as u32, tiles.size.y as u32);

@@ -48,7 +48,7 @@ impl DeviceFeed {
         }
         let capture = capture.and_then(|p| {
             Capture::create(p, format.rate, format.channels)
-                .inspect_err(|e| eprintln!("warning: audio capture {}: {e}", p.display()))
+                .inspect_err(|e| ssx_core::eprintln!("warning: audio capture {}: {e}", p.display()))
                 .ok()
         });
         let profile = std::env::var("SSX_SFX_PROFILE").is_ok_and(|v| v == "1").then(Vec::new);
@@ -151,7 +151,7 @@ impl DeviceFeed {
             if v.len() == 400 {
                 v.sort_unstable();
                 let q = |f: f32| v[((v.len() - 1) as f32 * f) as usize];
-                eprintln!(
+                ssx_core::eprintln!(
                     "audio pulls (frames): min {} p10 {} p50 {} p90 {} max {}",
                     v[0],
                     q(0.1),

@@ -1,6 +1,8 @@
 mod about;
 mod game_data;
+mod host;
 mod mods;
+mod mods_report;
 mod options;
 mod output;
 mod play;
@@ -23,6 +25,7 @@ impl Launcher {
             SettingsTab::Graphics => self.graphics_section(ui),
             SettingsTab::Audio => self.audio_section(ui),
             SettingsTab::Controls => self.controls_section(ui),
+            SettingsTab::Multiplayer => self.multiplayer_section(ui),
         });
     }
 

@@ -264,6 +264,14 @@ impl Animation {
         }
     }
 
+    pub fn stored_key(&self, k: usize) -> Result<Pose> {
+        match self {
+            Animation::Vbr(a) => a.stored_key(k),
+            Animation::Dct(a) => a.stored_key(k),
+            _ => self.key(k),
+        }
+    }
+
     pub fn key(&self, k: usize) -> Result<Pose> {
         match self {
             Animation::Vbr(a) => a.key(k),

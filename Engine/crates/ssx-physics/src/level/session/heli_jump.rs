@@ -178,8 +178,6 @@ impl HeliJump {
             .any(|(_, e)| matches!(e, Effect::PlayNis(r) if r.name == ssx_assets::nis::HELI_GRAB_OUTRO_BINDING));
         if grab && self.outro.is_none() {
             use crate::outro::{game_mode, track_end_reaction};
-            // TODO(guess): the DD Lhotse's grab binds the ghost Griff (`entitySet` "ghost"), not drawn by the port's outro; settle: bind the event's ghost racer to the binding's `Ghost1` role.
-            crate::guess_hit!();
             let reaction = ev.result.as_ref().and_then(|r| track_end_reaction(game_mode(&self.event), r));
             let assets = crate::outro::prepare_heli_grab(&self.big_root, &self.event, &self.character, reaction)?;
             let mut r = crate::outro::start_at(w, assets.clone(), END_LOCATION, s.level_start)?;

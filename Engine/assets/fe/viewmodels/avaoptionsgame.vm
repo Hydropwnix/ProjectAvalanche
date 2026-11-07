@@ -1,0 +1,7 @@
+{
+	"view": "activityfeedsettings",
+	"dataproviders":
+	[
+		"settings"
+	]
+}

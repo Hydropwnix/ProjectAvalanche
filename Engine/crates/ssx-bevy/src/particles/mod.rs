@@ -1,7 +1,9 @@
 pub mod geotag;
 pub mod inputs;
 pub mod light;
+mod live_spray;
 mod load;
+pub(crate) use load::reload_textures;
 pub mod render;
 pub mod rider;
 pub mod shadow_query;
@@ -15,6 +17,7 @@ pub mod weather;
 use std::sync::Arc;
 
 use bevy::prelude::*;
+use bevy::render::RenderApp;
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use ssx_assets::particles::ParticleNode;
 use ssx_formats::lynx::Behaviour;
@@ -55,6 +58,7 @@ pub struct ParticleTexture {
 }
 
 #[derive(Resource, Clone, ExtractResource)]
+#[extract_app(RenderApp)]
 pub struct ParticleFrame {
     pub draws: Arc<Vec<Draw>>,
     pub textures: Arc<Vec<ParticleTexture>>,
@@ -124,9 +128,10 @@ struct SunSlot {
 const SUN_DISTANCE: f32 = 500.0;
 
 #[derive(Resource)]
-struct ParticleWorld {
+pub(crate) struct ParticleWorld {
     spray: Option<Spray>,
     bot_sprays: Vec<Spray>,
+    live_sprays: live_spray::LiveSprays,
     sun: Option<SunSlot>,
     rider: Option<rider::RiderEffects>,
     rider_tried: bool,
@@ -151,6 +156,7 @@ struct ParticleWorld {
     registry: std::collections::BTreeMap<String, Vec4>,
     registry_snapshot: Option<Arc<Vec<(String, Vec4)>>>,
     light: Option<crate::particles::light::NearestLight>,
+    level: Option<Arc<ssx_assets::content::level::LevelPackages>>,
 }
 
 pub struct LoadedParticles(ParticleWorld);
@@ -171,6 +177,21 @@ pub fn load_level(
         return None;
     }
     Some(LoadedParticles(build(root, ride, lighting, avalanche)))
+}
+
+pub fn reload_world(world: &mut World) {
+    if crate::render::post::env_is("SSX_PARTICLES", "off") || !world.contains_resource::<ParticleWorld>() {
+        return;
+    }
+    let Some(root) = world.get_resource::<crate::render::lighting::BigRoot>().map(|r| r.0.clone()) else { return };
+    let built = build(
+        &root,
+        world.get_resource::<Ride>(),
+        world.get_resource::<crate::render::lighting::GameLighting>(),
+        world.get_resource::<crate::render::avalanche::AvalancheScene>(),
+    );
+    world.insert_resource(built);
+    info!("mod-dev: the particle world built again");
 }
 
 fn sample_depth(mut cameras: Query<&mut Camera3d, With<GamePostCamera>>) {

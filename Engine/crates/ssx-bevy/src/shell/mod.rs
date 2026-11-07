@@ -1,6 +1,11 @@
 pub mod game_level;
 pub mod game_mode;
 pub mod level;
+pub mod live;
 pub mod perf;
 pub mod screenshot;
+#[cfg(feature = "net")]
+pub mod session_content;
+#[cfg(feature = "net")]
+pub mod session_follow;
 pub mod viewer_hud;

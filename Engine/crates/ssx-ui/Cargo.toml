@@ -9,11 +9,23 @@ publish.workspace = true
 
 [dependencies]
 ssx-formats.workspace = true
+ssx-files.workspace = true
+ssx-core.workspace = true
 ssx-assets.workspace = true
+ssx-content.workspace = true
 ssx-physics.workspace = true
 ssx-lua.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
+harfrust.workspace = true
+icu_properties.workspace = true
+icu_segmenter.workspace = true
+ssx-net-join = { workspace = true, optional = true }
+ssx-net-proto = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
+
+[features]
+net = ["dep:ssx-net-join", "dep:ssx-net-proto", "dep:zeroize"]
 
 [lints]
 workspace = true

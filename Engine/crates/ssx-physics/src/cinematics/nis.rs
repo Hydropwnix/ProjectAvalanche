@@ -69,11 +69,16 @@ pub fn intro_of_scripts(big_root: &Path, scripts: &[String]) -> Result<Option<In
     Ok(intro_of_probe(&crate::objectives::Probe::run(&d.batch(), None, slots)))
 }
 
+mod pose;
+mod side;
+
+pub use side::{SceneFade, SceneRef, Side, random_pick};
+
 use std::sync::Arc;
 
 use glam::{Quat, Vec3};
 pub use ssx_assets::nis::IntroPath;
-use ssx_assets::nis::{IntroNis, NisActor, NisScene, ROLE_CAMERA1, ROLE_CHARACTER1, ROLE_HELICOPTER1};
+use ssx_assets::nis::{IntroNis, NisActor, NisScene, ROLE_CHARACTER1};
 
 use crate::tags::{TagEvent, TagTracker, TagWindow};
 
@@ -82,6 +87,7 @@ pub struct IntroAssets {
     pub choice: IntroChoice,
     pub nis: IntroNis,
     pub jump_clip: usize,
+    pub jump_clips: Vec<usize>,
     pub event: String,
     pub heli: Result<ssx_assets::helicopter::HeliChoice, String>,
 }
@@ -92,13 +98,6 @@ impl IntroAssets {
             Scene::Ready { .. } => &self.nis.ready,
             Scene::Jump { .. } => &self.nis.jump,
         }
-    }
-
-    pub fn cabin_view(&self, index: usize) -> Option<IntroNis> {
-        let c = self.nis.cabin.get(index)?;
-        let mut ready = c.scene.clone();
-        ready.loop_end = None;
-        Some(IntroNis { ready, cabin: Vec::new(), ..self.nis.clone() })
     }
 
     pub fn sequence_time(&self, s: Scene) -> f32 {
@@ -137,11 +136,20 @@ pub fn prepare_path(
     let mut nis = ssx_assets::nis::load_drop_intro(big_root, &choice.binding, character, h, snow, path, reverse)?;
     snow_picks(&mut nis)?;
     let rider = nis.jump.actor(ROLE_CHARACTER1).context("the go scene has no Character1 actor")?;
-    let jump_clip = match rider.clip.delta_trajectory {
-        true => world.tuning.root_motion.push_go(crate::rootmotion::RootClip::from_nis(&rider.clip)?),
-        false => usize::MAX,
+    let clips: Vec<&ssx_assets::nis::NisClip> = match rider.choices.len() > 1 {
+        true => rider.choices.iter().map(|c| &c.0).collect(),
+        false => vec![&rider.clip],
     };
-    Ok(Some(Arc::new(IntroAssets { choice, nis, jump_clip, event: event.name.clone(), heli })))
+    let mut jump_clips = Vec::with_capacity(clips.len());
+    for c in &clips {
+        jump_clips.push(match c.delta_trajectory {
+            true => world.tuning.root_motion.push_go(crate::rootmotion::RootClip::from_nis(c)?),
+            false => usize::MAX,
+        });
+    }
+    let first = clips.iter().position(|c| c.name == rider.clip.name).unwrap_or(0);
+    let jump_clip = jump_clips[first];
+    Ok(Some(Arc::new(IntroAssets { choice, nis, jump_clip, jump_clips, event: event.name.clone(), heli })))
 }
 
 pub fn profile_path(
@@ -155,20 +163,7 @@ pub fn profile_path(
     Ok(IntroPath::decide(false, false, requires, wingsuit_enabled, visits))
 }
 
-fn random_pick(state: &mut u32, weights: &[f32]) -> usize {
-    *state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
-    let total: f32 = weights.iter().sum();
-    let mut r = total * f32::from((*state >> 16) as u16) * 1.525_902_2e-5;
-    weights
-        .iter()
-        .position(|w| {
-            r -= w;
-            r <= 0.0
-        })
-        .unwrap_or(weights.len().saturating_sub(1))
-}
-
-// TODO(guess): the random value is fresh (seeded) at the NIS's start, as `levelstart::go_pick` takes it; settle: the actor's draws from its creation to the NIS (the gameloop's choosers before `state_gameloop_playnis`).
+// TODO(guess): the rider's random value is fresh (seeded) at every intro, as `levelstart::go_pick` takes it (on a level's first start nothing draws on it before: its users are the 151 random choosers of the disc, all in NIS / level-start graphs, and the camera's `CameraRandomVector3`); a restart or the survive loop's next intro may continue the run before's draws; settle: whether the rider actor's `RandomValue` state is rebuilt at a restart and at the survive loop's next intro.
 pub fn snow_picks(nis: &mut IntroNis) -> Result<()> {
     let Some(seed) = nis.ready.actor(ROLE_CHARACTER1).filter(|a| !a.sequences.is_empty()).and_then(|a| a.seed) else {
         return Ok(());
@@ -181,10 +176,6 @@ pub fn snow_picks(nis: &mut IntroNis) -> Result<()> {
     ready.clip = ready.choices[k].0.clone();
     ready.length = ready.sequences[k].1;
     nis.ready.sequence = ready.sequences[k].0.clone();
-    // TODO(guess): the ready loop repeats its first pick (the game's `chooser_intro_snow_scene5` draws again at each end and blends into it: a `RandomChooserPolicy` — `Looping`, `ChooseOnLoop`, `BezierBlend` 20 ticks — over `proxy_nis_intro_snow_sc05a_1` / `_2` / `_3`, weight 0.15 each, and `proxy_nis_intro_snow_sc05`, 1.0;
-    // `graph::IntroGraph` plays one sequence: the rider's graph cannot resolve the NIS banks' proxies); settle: the chooser in `IntroGraph` with the NIS banks.
-    crate::guess_hit!();
-    nis.ready.loop_end = Some(ready.length);
     if let Some(go) = nis.jump.actors.iter_mut().find(|a| a.role == ROLE_CHARACTER1 && a.choices.len() > 1) {
         let k = pick(&mut state, go);
         go.clip = go.choices[k].0.clone();
@@ -197,6 +188,16 @@ pub fn snow_picks(nis: &mut IntroNis) -> Result<()> {
 pub enum Scene {
     Ready { ticks: f32 },
     Jump { ticks: f32 },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RoundHold {
+    #[default]
+    Off,
+    Armed,
+    Held {
+        go: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -244,13 +245,20 @@ pub struct IntroState {
     stop: TagTracker,
     game: TagTracker,
     game_events: Vec<(usize, TagEvent)>,
+    pub rider_pick: usize,
+    pub camera_pick: usize,
+    rider_random: u32,
+    fades: Vec<SceneFade>,
+    ghost_root: Option<(Rt, SceneRef, f32)>,
+    hold: RoundHold,
+    fresh: bool,
 }
 
 impl PartialEq for IntroState {
     fn eq(&self, o: &Self) -> bool {
         Arc::ptr_eq(&self.assets, &o.assets)
-            && (self.position, self.orientation, self.scene, self.dt, self.attached)
-                == (o.position, o.orientation, o.scene, o.dt, o.attached)
+            && (self.position, self.orientation, self.scene, self.dt, self.attached, self.hold)
+                == (o.position, o.orientation, o.scene, o.dt, o.attached, o.hold)
     }
 }
 
@@ -289,6 +297,13 @@ impl IntroState {
         };
         let stop = TagTracker::new(&windows(rider.tags.stop.into_iter().filter(|_| direct)));
         let game = Self::game_tracker(rider);
+        let seed = assets.nis.ready.actor(ROLE_CHARACTER1).and_then(|a| a.seed);
+        let mut rider_random =
+            seed.or_else(|| assets.nis.jump.actor(ROLE_CHARACTER1).and_then(|a| a.seed)).unwrap_or(0);
+        let mut rider_pick = 0;
+        if let Some(a) = assets.nis.ready.actor(ROLE_CHARACTER1).filter(|a| a.choices.len() > 1 && seed.is_some()) {
+            rider_pick = random_pick(&mut rider_random, &a.choices.iter().map(|c| c.1).collect::<Vec<_>>());
+        }
         Some(Self {
             scene: if direct { Scene::Jump { ticks: 0.0 } } else { Scene::Ready { ticks: 0.0 } },
             assets,
@@ -303,6 +318,17 @@ impl IntroState {
             stop,
             game,
             game_events: Vec::new(),
+            rider_pick,
+            camera_pick: 0,
+            rider_random,
+            fades: Vec::new(),
+            ghost_root: None,
+            hold: RoundHold::Off,
+            fresh: true,
+        })
+        .map(|mut x| {
+            x.update_ghost();
+            x
         })
     }
 
@@ -317,6 +343,46 @@ impl IntroState {
 
     pub fn in_ready_loop(&self) -> bool {
         self.cabin.is_none() && matches!(self.scene, Scene::Ready { .. })
+    }
+
+    pub fn waits_for_go(&self) -> bool {
+        self.in_ready_loop() || matches!(self.hold, RoundHold::Held { .. })
+    }
+
+    pub fn hold_for_round(&mut self) -> bool {
+        if self.assets.nis.ready_loop {
+            return true;
+        }
+        let started = self.cabin.is_none() && !self.fresh;
+        if self.hold == RoundHold::Off && !started {
+            self.hold = RoundHold::Armed;
+        }
+        self.hold != RoundHold::Off
+    }
+
+    fn hold_at_entry(&mut self) {
+        // TODO(guess): a round holds a way without a ready loop at its last scene's entry, the whole ride standing (no
+        // execution: the rider attached in the helicopter at the scene's first frame, the NIS camera and the helicopter
+        // still) until the round's GO, which plays the scene from its start; the game has no round start (single
+        // player's last scene runs on from the cabin scenes and hands over by its stop tag, 40 to 510 ticks; no GO,
+        // `BLN_IsNisReadyLoop` never set) and the scene no loop to wait in; settle: the user's choice of the wait's
+        // picture (this frozen entry, or another of the scene's frames).
+        crate::guess_hit!();
+        self.hold = RoundHold::Held { go: false };
+    }
+
+    pub fn held(&self) -> bool {
+        self.hold == RoundHold::Held { go: false }
+    }
+
+    pub fn round_go(&mut self) {
+        if let RoundHold::Held { go } = &mut self.hold {
+            *go = true;
+        }
+    }
+
+    pub fn round_hold(&self) -> RoundHold {
+        self.hold
     }
 
     pub fn signals(&self) -> &[String] {
@@ -369,12 +435,15 @@ impl IntroState {
         if self.cabin.is_none()
             && let Scene::Ready { .. } = self.scene
         {
+            let blend = self.assets.nis.transition_blend.clone();
+            self.push_fade(&blend);
             self.enter_jump(0.0);
         }
     }
 
     fn enter_jump(&mut self, ticks: f32) {
         self.scene = Scene::Jump { ticks };
+        self.go_pick();
         let jump = &self.assets.nis.jump;
         if let Some(t) = jump.node_tags.tuning_offset {
             self.tuning = Vec3::from_array(t);
@@ -387,24 +456,49 @@ impl IntroState {
     }
 
     pub fn advance(&mut self, dt: f32) {
+        self.fresh = false;
+        match self.hold {
+            RoundHold::Held { go: false } => return,
+            RoundHold::Held { go: true } => self.hold = RoundHold::Off,
+            RoundHold::Armed if self.cabin.is_none() && matches!(self.scene, Scene::Jump { .. }) => {
+                self.hold_at_entry();
+                self.update_tags(0.0);
+                return;
+            }
+            RoundHold::Armed | RoundHold::Off => {}
+        }
         if self.cabin.is_some() {
             self.advance_cabin(dt);
         } else {
-            match &mut self.scene {
-                Scene::Ready { ticks } | Scene::Jump { ticks } => *ticks += dt,
+            match (self.scene, self.ready_pick_length()) {
+                (Scene::Ready { ticks }, Some(len)) if len - ticks <= dt => {
+                    self.update_fades((len - ticks).max(0.0));
+                    let rest = dt - (len - ticks).max(0.0);
+                    self.ready_rechoose(rest);
+                    self.update_fades(rest);
+                }
+                _ => {
+                    match &mut self.scene {
+                        Scene::Ready { ticks } | Scene::Jump { ticks } => *ticks += dt,
+                    }
+                    self.update_fades(dt);
+                }
             }
         }
+        self.update_tags(dt);
+    }
+
+    fn update_tags(&mut self, dt: f32) {
         self.dt = dt;
+        self.update_ghost();
         let t = self.sequence_time(self.ticks());
         self.drivers.update(t);
         self.attached = self.drivers.process().iter().any(|(_, e)| matches!(e, TagEvent::Apply(_)));
         self.game_events = if self.game.update(t) { self.game.process() } else { Vec::new() };
     }
 
-    // TODO(guess): the chain's transitions are cuts (the Red Bull scene 4 blends 5 ticks into the ready loop); settle: the cabin chain as one state flow in the rider's graph.
     fn advance_cabin(&mut self, dt: f32) {
         let Some(mut c) = self.cabin else { return };
-        crate::guess_hit!();
         let mut rest = dt;
         let assets = self.assets.clone();
         let cabin = &assets.nis.cabin;
@@ -414,19 +508,31 @@ impl IntroState {
             if rest <= left {
                 c.ticks += rest;
                 self.cabin = Some(c);
+                self.update_fades(rest);
                 return;
             }
             rest -= left;
+            c.ticks += left;
+            self.cabin = Some(c);
+            self.update_fades(left);
+            self.push_fade(&sc.blend);
             if c.index + 1 < cabin.len() {
                 self.enter_cabin(c.index + 1);
                 c = CabinClock { index: c.index + 1, ticks: 0.0 };
             } else {
                 self.cabin = None;
+                if !self.assets.nis.ready_loop && self.hold == RoundHold::Armed {
+                    self.hold_at_entry();
+                    self.enter_jump(0.0);
+                    self.update_fades(0.0);
+                    return;
+                }
                 if !self.assets.nis.ready_loop {
                     self.enter_jump(rest);
                 } else {
                     self.enter_ready(rest);
                 }
+                self.update_fades(rest);
                 return;
             }
         }
@@ -472,10 +578,10 @@ impl IntroState {
 
     pub fn skip(&mut self) -> bool {
         let Some(c) = self.cabin else { return false };
-        let Some((to, _blend)) = self.assets.nis.cabin[c.index].skip else { return false };
-        crate::guess_hit!();
-        // TODO(guess): the skip's blend is a cut (all but the Red Bull scene 4's have `BlendTime` 0); settle: the chain as one state flow in the rider's graph.
-        match to {
+        let assets = self.assets.clone();
+        let Some((to, blend)) = &assets.nis.cabin[c.index].skip else { return false };
+        self.push_fade(blend);
+        match *to {
             ssx_assets::nis::SkipTo::Cabin(i) => self.enter_cabin(i),
             ssx_assets::nis::SkipTo::ReadyLoop => self.enter_ready(0.0),
             ssx_assets::nis::SkipTo::Jump => {
@@ -509,101 +615,6 @@ impl IntroState {
         self.drivers =
             TagTracker::new(&windows(rider.into_iter().flat_map(|a| a.tags.drivers.iter().map(|d| d.window))));
         self.game = rider.map_or_else(|| TagTracker::new(&[]), Self::game_tracker);
-    }
-}
-
-impl IntroState {
-    fn pose(&self, role: i64, ticks: f32) -> Option<(&NisActor, ssx_formats::ant_anim::Pose)> {
-        let a = self.actor(role)?;
-        Some((a, a.clip.sample(self.sequence_time(ticks)).ok()?))
-    }
-
-    fn joint(&self, a: &NisActor, p: &ssx_formats::ant_anim::Pose, joint: &str) -> Rt {
-        let (q, t) = a.clip.joint(p, self.assets.nis.rig(a.role), joint);
-        rt(q, t)
-    }
-
-    pub fn heli(&self, ticks: f32) -> Option<Rt> {
-        let (a, p) = self.pose(ROLE_HELICOPTER1, ticks)?;
-        let traj = self.joint(a, &p, "AITrajectory");
-        Some(compose(self.toc_frame(a), traj))
-    }
-
-    pub fn toc_frame(&self, a: &NisActor) -> Rt {
-        let (t, r) = a.offset.as_ref().map_or(("", ""), |(t, r)| (t.as_str(), r.as_str()));
-        let p = if t == "VEC_NisPositionAlternate" { self.alternate.1 } else { self.position + self.tuning };
-        let q = if r == "QUAT_NisOrientationAlternate" { self.alternate.0 } else { self.orientation };
-        (q, p)
-    }
-
-    pub fn heli_joint(&self, ticks: f32, joint: &str) -> Option<Rt> {
-        let (a, p) = self.pose(ROLE_HELICOPTER1, ticks)?;
-        let chain = self.assets.nis.heli.chain(joint, "AITrajectory")?;
-        let mut m = self.heli(ticks)?;
-        for j in chain.iter().rev() {
-            m = compose(m, self.joint(a, &p, j));
-        }
-        Some(m)
-    }
-
-    pub fn attached_root(&self, ticks: f32) -> Option<Rt> {
-        let (a, p) = self.pose(ROLE_CHARACTER1, ticks)?;
-        let d = a.tags.drivers.first()?;
-        let target = compose(self.heli_joint(ticks, &d.target_joint)?, rt(d.offset_q, d.offset_t));
-        let chain = self.assets.nis.rider.chain(&d.source_joint, "AITrajectory")?;
-        let mut src = (Quat::IDENTITY, Vec3::ZERO);
-        for j in chain.iter().rev() {
-            src = compose(src, self.joint(a, &p, j));
-        }
-        Some(compose(target, inverse(src)))
-    }
-
-    pub fn placed_root(&self) -> Option<Rt> {
-        let (a, p) = self.pose(ROLE_CHARACTER1, self.ticks())?;
-        let driven = !a.tags.drivers.is_empty() && (self.attached || a.offset.is_none() || a.clip.delta_trajectory);
-        if !driven && a.offset.is_some() && !a.clip.delta_trajectory {
-            let traj = self.joint(a, &p, "AITrajectory");
-            return Some(compose(self.toc_frame(a), traj));
-        }
-        if !driven && !a.clip.delta_trajectory {
-            // TODO(guess): the clip's trajectory is taken as the world's (no reader of the params' interface 0x307A58D6 places an actor: of its 13 uses the loader 0x83522130 fills X, Y, Z, `LaunchAngle`, `Scale`, `Mirror`, `StartTick`, the actor inits 0x83535B78 / 0x835002D0 read `StartTick` only, the tracks `Mirror`, 0x8350C840 `Scale`,
-            // the camera controller keeps them at +0x98 (its update is the actor's); a read of the embedded `DefaultInitParam` is not ruled out — if X, Y, Z, `LaunchAngle` placed the actor, the scene would sit 3 m off and turned a quarter); settle: the game's picture of this NIS or the sequence container's creation of its actors.
-            crate::guess_hit!();
-            return Some(self.joint(a, &p, "AITrajectory"));
-        }
-        self.attached_root(self.ticks())
-    }
-
-    pub fn camera(&self, rider: Rt) -> Option<NisView> {
-        let t = self.ticks();
-        let (a, p) = self.pose(ROLE_CAMERA1, t)?;
-        crate::guess_hit!();
-        // TODO(guess): a random camera chooser (the survive intro's go, the heli-pickup outro's, cabin scenes 1 / 2a / 2) shows its first item; settle: the camera animatable's draws before the NIS (`Seed` 1876900708).
-        let traj = match a.tags.attachments.first() {
-            Some(att) if att.target == "ID_NisTargetHelicopter" => {
-                let target = self.heli_joint(t, &att.target_joint).or_else(|| self.heli(t))?;
-                let arm = self.joint(a, &p, &att.source_joint);
-                compose(compose(target, rt(att.offset_q, att.offset_t)), inverse(arm))
-            }
-            Some(att) => {
-                let mut target = rider;
-                if let Some((ra, rp)) = self.pose(ROLE_CHARACTER1, t)
-                    && let Some(chain) = self.assets.nis.rider.chain(&att.target_joint, "AITrajectory")
-                {
-                    for j in chain.iter().rev() {
-                        target = compose(target, self.joint(ra, &rp, j));
-                    }
-                }
-                let arm = self.joint(a, &p, &att.source_joint);
-                compose(compose(target, rt(att.offset_q, att.offset_t)), inverse(arm))
-            }
-            None if a.offset.is_some() => compose((self.orientation, self.position), self.joint(a, &p, "Trajectory")),
-            None => return None,
-        };
-        let local = self.joint(a, &p, "CameraEye");
-        let eye = compose(traj, local);
-        let hfov = a.clip.float(&p, "FieldOfView")?;
-        Some(NisView { position: eye.1, rotation: eye.0, hfov_deg: hfov, trajectory: traj, eye: local })
     }
 }
 

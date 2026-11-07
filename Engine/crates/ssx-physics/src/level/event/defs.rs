@@ -1,56 +1,11 @@
 use super::*;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum EventType {
-    TrickScore = 0,
-    TrickBots = 1,
-    TrickGhosts = 2,
-    SurviveToBottom = 3,
-    SurviveToDeath = 4,
-    RaceClock = 5,
-    RaceGhosts = 6,
-    RaceBots = 7,
-    FreeRide = 8,
-}
-
-impl EventType {
-    pub fn from_raw(v: u32) -> Option<Self> {
-        use EventType::*;
-        [TrickScore, TrickBots, TrickGhosts, SurviveToBottom, SurviveToDeath, RaceClock, RaceGhosts, RaceBots, FreeRide]
-            .get(v as usize)
-            .copied()
-    }
-
-    pub fn name(self) -> &'static str {
-        [
-            "EventType_TrickScore",
-            "EventType_TrickBots",
-            "EventType_TrickGhosts",
-            "EventType_SurviveToBottom",
-            "EventType_SurviveToDeath",
-            "EventType_RaceClock",
-            "EventType_RaceGhosts",
-            "EventType_RaceBots",
-            "EventType_FreeRide",
-        ][self as usize]
-    }
-
-    pub fn is_race(self) -> bool {
-        matches!(self, EventType::RaceClock | EventType::RaceGhosts | EventType::RaceBots)
-    }
-
-    pub fn is_trick(self) -> bool {
-        matches!(self, EventType::TrickScore | EventType::TrickBots | EventType::TrickGhosts)
-    }
-
-    pub fn is_survive(self) -> bool {
-        matches!(self, EventType::SurviveToBottom | EventType::SurviveToDeath)
-    }
-
-    pub fn ranks_ascending(self) -> bool {
-        self.is_race()
-    }
-}
+pub use ssx_rules::events::{
+    CLASS_UI_DROP, EventType, FIELD_UI_DROP_AVALANCHE_SCRIPTS, FIELD_UI_DROP_EVENT_TYPE, FIELD_UI_DROP_FORCED_LOADOUT,
+    FIELD_UI_DROP_GE_DROP, FIELD_UI_DROP_HUD_BODY, FIELD_UI_DROP_HUD_TITLE, FIELD_UI_DROP_MESSAGE_PARAMETER,
+    FIELD_UI_DROP_NAME, FIELD_UI_DROP_REQ_EQUIPMENT, FIELD_UI_DROP_SCRIPTS, FIELD_UI_DROP_SLOT_COUNTS,
+    FIELD_UI_DROP_TYPE, read_pair, values,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rival {
@@ -114,6 +69,8 @@ pub struct EventDef {
     pub loadout: Option<crate::character::GearStats>,
     pub objectives: Option<std::sync::Arc<crate::objectives::EventObjectives>>,
     pub message: crate::objectives::DropMessage,
+    pub places: Option<i64>,
+    pub goal: Option<i64>,
 }
 
 impl EventDef {
@@ -133,37 +90,12 @@ impl EventDef {
         self.probe().is_some_and(|p| p.set_true("Player1", "BLN_ForceDescentInAir"))
     }
 
-    pub fn ranked_rivals(&self) -> Vec<u32> {
-        self.rivals.iter().filter(|r| r.starting_idx == 0).map(Rival::value).collect()
+    pub fn ghost_board(&self) -> Vec<ssx_rules::results::GhostEntry> {
+        ssx_rules::results::ghost_board(self.rivals.iter().map(|r| (r.value(), r.character)), self.event_type)
     }
-}
 
-pub(super) const CLASS_UI_DROP: u32 = fnv1(b"ui_drop");
-pub(super) const FIELD_UI_DROP_GE_DROP: u32 = 0xB9C2_CFC5;
-pub(super) const FIELD_UI_DROP_EVENT_TYPE: u32 = 0x146B_5937;
-pub(super) const FIELD_UI_DROP_SCRIPTS: u32 = 0x0E24_143E;
-pub(super) const FIELD_UI_DROP_NAME: u32 = 0xAF27_A974;
-pub(super) const FIELD_UI_DROP_REQ_EQUIPMENT: u32 = 0xD4D5_8427;
-pub(super) const FIELD_UI_DROP_AVALANCHE_SCRIPTS: u32 = 0xB1C0_1F64;
-pub(super) const FIELD_UI_DROP_FORCED_LOADOUT: u32 = 0x7E5E_ED53;
-pub(super) const FIELD_UI_DROP_SLOT_COUNTS: u32 = 0x98E9_EBCC;
-pub(super) const FIELD_UI_DROP_HUD_TITLE: u32 = 0xAFD5_EF64;
-pub(super) const FIELD_UI_DROP_HUD_BODY: u32 = 0x4375_DFCA;
-pub(super) const FIELD_UI_DROP_MESSAGE_PARAMETER: u32 = 0x0B03_FC19;
-pub(super) const FIELD_UI_DROP_TYPE: u32 = 0x555E_EBD2;
-
-pub(crate) fn read_pair(vlt: &Path) -> Result<(Vec<u8>, Vec<u8>)> {
-    let bin = vlt.with_extension("bin");
-    Ok((
-        std::fs::read(vlt).with_context(|| format!("reading {}", vlt.display()))?,
-        std::fs::read(&bin).with_context(|| format!("reading {}", bin.display()))?,
-    ))
-}
-
-pub(crate) fn values(d: &FieldData) -> Vec<&Value> {
-    match d {
-        FieldData::Single(v) => vec![v],
-        FieldData::Array(vs) => vs.iter().collect(),
+    pub fn ranked_rivals(&self) -> Vec<u32> {
+        self.ghost_board().iter().map(|g| g.value).collect()
     }
 }
 
@@ -208,7 +140,8 @@ pub(super) fn read_attribdb(
     let schema = Schema::from_vault(&schema_vault).context("reading the schema")?;
     let vault = Vault::parse(&vlt, &bin).context("parsing attribdb.vlt")?;
     let cols = collection::collections(&vault)?;
-    let decoded = cols.iter().map(|c| c.decode(&vault, &schema)).collect::<ssx_formats::Result<Vec<_>>>()?;
+    let mut decoded = cols.iter().map(|c| c.decode(&vault, &schema)).collect::<ssx_formats::Result<Vec<_>>>()?;
+    ssx_assets::content::data::events::route_ui_drops(big_root, &cols, &mut decoded);
     let index = collection::index(&cols);
     let mut gear = GearDb::from_vault(&cols, &decoded, &index)?;
     if let Ok((gv, gb)) = read_pair(&dir.join("ge_attribdb.vlt")) {
@@ -226,103 +159,37 @@ pub fn load_gear_db(big_root: &Path) -> Result<GearDb> {
 
 pub fn load_events(big_root: &Path) -> Result<Vec<EventDef>> {
     let (cols, decoded, index, gear) = read_attribdb(big_root)?;
-    let ghosts = std::fs::read_to_string(big_root.join("bootcache/data/common/ghosts/ghostdb.csv"))
-        .map(|t| parse_ghost_db(&t))
-        .unwrap_or_default();
+    let ghosts =
+        ssx_assets::content::data::events::ghost_db_text(big_root).map(|t| parse_ghost_db(&t)).unwrap_or_default();
     let mut out = Vec::new();
-    for (i, c) in cols.iter().enumerate().filter(|(_, c)| c.class == CLASS_UI_DROP) {
-        let fields = collection::with_inherited(&cols, &decoded, &index, i)?;
-        let field = |k: u32| fields.iter().find(|(_, f)| f.key == k).map(|(_, f)| &f.data);
-        let drop_key = field(FIELD_UI_DROP_GE_DROP)
-            .and_then(|d| {
-                values(d).into_iter().find_map(|v| if let Value::Ref(r) = v { Some(r.collection) } else { None })
-            })
-            .unwrap_or(0);
-        let event_type = field(FIELD_UI_DROP_EVENT_TYPE).and_then(|d| match values(d).first() {
-            Some(Value::Raw { bytes, .. }) if bytes.len() >= 4 => {
-                EventType::from_raw(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-            }
-            _ => None,
-        });
-        let texts = |k: u32| -> Vec<String> {
-            field(k).map_or_else(Vec::new, |d| {
-                values(d)
-                    .into_iter()
-                    .filter_map(|v| if let Value::Text(Some(t)) = v { Some(t.clone()) } else { None })
-                    .collect()
-            })
-        };
-        let name = texts(FIELD_UI_DROP_NAME).into_iter().next().unwrap_or_else(|| format!("{:08x}", c.key));
-        let rivals = ghosts.iter().filter(|(id, _)| *id == c.key).map(|(_, r)| *r).collect();
-        let required_equipment = field(FIELD_UI_DROP_REQ_EQUIPMENT).map_or_else(Vec::new, |d| {
-            values(d)
-                .into_iter()
-                .filter_map(|v| match v {
-                    Value::Raw { bytes, .. } if bytes.len() >= 4 => {
-                        Some(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-                    }
-                    _ => None,
-                })
-                .collect()
-        });
-        let forced = |k: usize| {
-            field(FIELD_UI_DROP_FORCED_LOADOUT).map_or(0, |d| match values(d).get(k).copied() {
-                Some(Value::Ref(r)) => r.collection,
-                _ => 0,
-            })
-        };
-        let forced_rider = forced(5);
-        let forced_items: crate::gear::ForcedItems = std::array::from_fn(forced);
-        let slot_counts = field(FIELD_UI_DROP_SLOT_COUNTS).map(|d| {
-            let mut out = [0u32; 5];
-            for (o, v) in out.iter_mut().zip(values(d)) {
-                *o = match v {
-                    Value::UInt8(b) => u32::from(*b).min(4),
-                    Value::UInt32(w) => (*w & 0xFF).min(4),
-                    _ => 0,
-                };
-            }
-            out
-        });
-        let loadout = match (c.key == crate::gear::FINAL_DROP, slot_counts) {
+    for r in ssx_rules::events::ui_drop_records(&cols, &decoded, &index)? {
+        let rivals = ghosts.iter().filter(|(id, _)| *id == r.key).map(|(_, rival)| *rival).collect();
+        let forced_rider = r.forced[5];
+        let forced_items: crate::gear::ForcedItems = std::array::from_fn(|k| r.forced[k]);
+        let loadout = match (r.key == crate::gear::FINAL_DROP, r.slot_counts) {
             (true, Some(slots)) => gear.equipped_loadout(forced_rider, &crate::gear::FINAL_DROP_EQUIPS, slots),
             _ => (forced_rider != 0)
-                .then(|| gear.fresh_profile_loadout(forced_rider, &forced_items, &required_equipment))
+                .then(|| gear.fresh_profile_loadout(forced_rider, &forced_items, &r.required_equipment))
                 .flatten(),
         };
-        let scripts = texts(FIELD_UI_DROP_SCRIPTS);
-        let avalanche_scripts = texts(FIELD_UI_DROP_AVALANCHE_SCRIPTS);
-        let word = |k: u32| {
-            field(k).and_then(|d| match values(d).first().copied() {
-                Some(Value::UInt32(v)) => Some(*v as i32),
-                Some(Value::Int32(v)) => Some(*v),
-                Some(Value::Raw { bytes, .. }) if bytes.len() >= 4 => {
-                    Some(i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-                }
-                _ => None,
-            })
-        };
-        let text = |k: u32| texts(k).into_iter().next().filter(|t| !t.is_empty());
-        let message = crate::objectives::DropMessage {
-            title: text(FIELD_UI_DROP_HUD_TITLE),
-            body: text(FIELD_UI_DROP_HUD_BODY),
-            parameter: word(FIELD_UI_DROP_MESSAGE_PARAMETER).unwrap_or(0),
-            kind: word(FIELD_UI_DROP_TYPE).unwrap_or(0),
-        };
+        let message =
+            crate::objectives::DropMessage { title: r.title, body: r.body, parameter: r.parameter, kind: r.kind };
         out.push(EventDef {
-            name,
-            key: c.key,
-            drop_key,
-            event_type,
-            scripts,
+            name: r.name,
+            key: r.key,
+            drop_key: r.drop_key,
+            event_type: r.event_type,
+            scripts: r.scripts,
             rivals,
-            required_equipment,
-            avalanche_scripts,
+            required_equipment: r.required_equipment,
+            avalanche_scripts: r.avalanche_scripts,
             forced_rider,
             forced_items,
             loadout,
             objectives: None,
             message,
+            places: r.places,
+            goal: r.goal,
         });
     }
     Ok(out)
@@ -333,7 +200,7 @@ pub fn pick_event<'a>(events: &'a [EventDef], drop_key: u32, want: &str) -> Opti
 }
 
 pub fn choose_event<'a>(events: impl Iterator<Item = &'a EventDef>, want: &str) -> Option<&'a EventDef> {
-    // TODO(guess): which of a drop's events plays without a front end (by type, ranked rivals first) is a port choice; settle: the front end's selection once ported (the player picks a `ui_drop`).
+    // TODO(guess): which of a drop's events plays without a front end (by type, one with `ghostdb.csv` rows of starting index 0 first: the Explore events') is a port choice; settle: the front end's selection once ported (the player picks a `ui_drop`).
     let fits = |e: &EventDef| match (want, e.event_type) {
         (_, None) => false,
         ("race", Some(t)) => t.is_race(),
@@ -346,5 +213,5 @@ pub fn choose_event<'a>(events: impl Iterator<Item = &'a EventDef>, want: &str) 
         return Some(e);
     }
     crate::guess_hit!();
-    list.iter().find(|e| !e.ranked_rivals().is_empty()).or(list.first()).copied()
+    list.iter().find(|e| e.rivals.iter().any(|r| r.starting_idx == 0)).or(list.first()).copied()
 }

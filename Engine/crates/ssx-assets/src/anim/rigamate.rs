@@ -550,7 +550,7 @@ impl RigamateRig {
             let data = std::fs::read(&p).with_context(|| format!("reading {}", p.display()))?;
             Stream::parse(&data).with_context(|| format!("parsing {}", p.display()))
         };
-        let all = read(crate::rig_anim::RIG_BUNDLE)?;
+        let all = crate::content::data::tuning::anim_all(big_root)?;
         let mut problems = Vec::new();
         let own = read(&format!("{character}.cba"));
         let streams: Vec<&Stream> = match &own {

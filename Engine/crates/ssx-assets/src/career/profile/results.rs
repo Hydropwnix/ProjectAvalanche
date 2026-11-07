@@ -1,5 +1,7 @@
 use super::*;
 
+pub const SIM_ID_FIELD: &str = "best_sim_content_id";
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EventOutcome {
     pub event: u32,
@@ -14,6 +16,8 @@ pub struct EventOutcome {
     pub track_bonuses: Vec<String>,
     pub places_passed: u32,
     pub geotag_credits: i64,
+    pub event_id: Option<ssx_content::ContentId>,
+    pub sim_content_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -26,26 +30,22 @@ pub struct ResultReport {
     pub total: i64,
     pub level: (i64, i64),
     pub notices: Vec<Notice>,
+    pub best_not_kept: Option<BestNotKept>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BestNotKept {
+    NoEventId,
+    ModStateFull,
 }
 
 pub fn campaign_success(rule: &EventRule, o: &EventOutcome) -> bool {
-    if o.failed && rule.event_type != 4 {
-        return false;
-    }
-    let allowed = rule.places.filter(|&n| n > 0).map_or(0, |n| n - 1);
-    match rule.event_type {
-        0 => rule.goal.unwrap_or(0) < i64::from(o.value),
-        1 => o.bot_scores.iter().filter(|&&s| s > o.value).count() as i64 <= allowed,
-        2..=6 => true,
-        7 => i64::from(o.place) <= allowed,
-        _ => false,
-    }
+    let wt = ssx_rules::results::WorldTourRule { event_type: rule.event_type, places: rule.places, goal: rule.goal };
+    wt.won(o.value, o.place, o.failed, &o.bot_scores)
 }
 
 pub fn leaderboard_rank(ascending: bool, value: u32, rows: &[u32]) -> usize {
-    rows.iter()
-        .position(|&row| row == u32::MAX || (value != u32::MAX && if ascending { value <= row } else { row <= value }))
-        .unwrap_or(rows.len())
+    ssx_rules::results::explore_rank(ascending, value, rows)
 }
 
 pub fn is_better(ascending: bool, new: u32, old: u32) -> bool {
@@ -133,14 +133,42 @@ impl Profile {
         if r.level.0 > before {
             r.notices.push(Notice::LevelUp { rider: o.rider, level: r.level.0 });
         }
-        self.record_score(&rule, o);
+        r.best_not_kept = self.record_score(&rule, o);
         r
     }
 
-    fn record_score(&mut self, rule: &EventRule, o: &EventOutcome) {
-        let row = self.explore_scores.entry(o.event).or_insert(ExploreScore { score: u32::MAX, ..Default::default() });
+    fn record_sim_id(&mut self, o: &EventOutcome) -> Result<(), BestNotKept> {
+        use ssx_content::profile_state::StateValue;
+        match (&o.event_id, &o.sim_content_id) {
+            (Some(id), Some(hex)) => {
+                if self.mod_state.set(id, SIM_ID_FIELD, StateValue::Text(hex.clone())) {
+                    Ok(())
+                } else {
+                    Err(BestNotKept::ModStateFull)
+                }
+            }
+            (None, Some(_)) => Err(BestNotKept::NoEventId),
+            (Some(id), None) => {
+                if let Some(e) = self.mod_state.entries.get_mut(id) {
+                    e.remove(SIM_ID_FIELD);
+                    if e.is_empty() {
+                        self.mod_state.entries.remove(id);
+                    }
+                }
+                Ok(())
+            }
+            (None, None) => Ok(()),
+        }
+    }
+
+    fn record_score(&mut self, rule: &EventRule, o: &EventOutcome) -> Option<BestNotKept> {
+        let best = self.explore_scores.get(&o.event).map_or(u32::MAX, |r| r.score);
         let survive = matches!(rule.event_type, 3 | 4);
-        if is_better(rule.ascending(), o.value, row.score) && (survive || !o.failed) {
+        let better = is_better(rule.ascending(), o.value, best) && (survive || !o.failed);
+        let refused = if better { self.record_sim_id(o).err() } else { None };
+        let kept = better && refused.is_none();
+        let row = self.explore_scores.entry(o.event).or_insert(ExploreScore { score: u32::MAX, ..Default::default() });
+        if kept {
             row.score = o.value;
             row.splits = o.splits;
         }
@@ -149,5 +177,6 @@ impl Profile {
         }
         row.attempts += 1;
         row.deaths += u32::from(o.failed);
+        refused
     }
 }

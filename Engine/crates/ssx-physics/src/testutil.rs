@@ -308,7 +308,12 @@ pub fn tuning() -> Tuning {
         surfaces: SurfaceTable { records: [snow(); 12], chatter: [Default::default(); 12] },
         aerial: aerial(),
         balance: balance(),
-        tricks: TrickTuning { tweak_switch_threshold: FRAC_PI_4, virtual_stick_persist_time: 15.0 },
+        tricks: TrickTuning {
+            tweak_switch_threshold: FRAC_PI_4,
+            virtual_stick_persist_time: 15.0,
+            added: Default::default(),
+        },
+        added_trick_ids: Default::default(),
         scoring: ScoringTuning {
             max_boost: 150.0,
             points_per_boost: 100.0,

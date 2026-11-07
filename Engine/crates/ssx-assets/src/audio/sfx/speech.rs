@@ -1,5 +1,6 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use ssx_formats::speech::{ctx::Contexts, evt::EventSystem, gas::GasFile, kwd::Keywords, rep::RepetitionPools, spc};
@@ -217,8 +218,14 @@ const FREE_TIME: f32 = 0.5;
 
 #[derive(Default)]
 struct Voice {
-    queue: VecDeque<(usize, u32, f32)>,
+    queue: VecDeque<(Queued, f32)>,
     busy: bool,
+}
+
+#[derive(Clone, Debug)]
+enum Queued {
+    Disc { bank: usize, sample: u32 },
+    Package { draw: crate::sfx_override::Draw, gain: f32, id: String },
 }
 
 pub struct Speech {
@@ -235,6 +242,8 @@ pub struct Speech {
     pub log: Vec<String>,
     time: f32,
     paused: bool,
+    lang: String,
+    overrides: HashMap<String, Arc<crate::sfx_override::OverrideSound>>,
 }
 
 impl Speech {
@@ -303,6 +312,8 @@ impl Speech {
             log,
             time: 0.0,
             paused: false,
+            lang: lang.to_string(),
+            overrides: HashMap::new(),
         })
     }
 
@@ -358,8 +369,8 @@ impl Speech {
             let mut left = self.handles[v].and_then(|h| mixer.pcm_remaining(h));
             if left.is_none() {
                 self.handles[v] = None;
-                if let Some((b, s, _)) = self.voices[v].queue.pop_front() {
-                    self.start_sample(v, b, s, mixer);
+                if let Some((q, _)) = self.voices[v].queue.pop_front() {
+                    self.start_sample(v, q, mixer);
                     left = self.handles[v].and_then(|h| mixer.pcm_remaining(h));
                 }
             }
@@ -370,7 +381,7 @@ impl Speech {
                 self.log.push(format!("{:.3} {} free", f.time, VOICES[v].0));
             }
             if v < 2 {
-                let queued: f32 = self.voices[v].queue.iter().map(|q| q.2).sum();
+                let queued: f32 = self.voices[v].queue.iter().map(|q| q.1).sum();
                 remaining[v] = ((left.unwrap_or(0.0) + queued) * 1000.0) as i32;
             }
         }
@@ -379,11 +390,18 @@ impl Speech {
         self.game.frame(&mut self.vars, f, (remaining[0], remaining[1]), random, &mut trig);
         self.triggers(trig);
         let now = self.now_ms();
-        let (mut refire, mut lines) = (Vec::new(), Vec::new());
+        let (mut refire, mut lines, mut package) = (Vec::new(), Vec::new(), Vec::new());
         let module = &self.module;
+        let overrides = &self.overrides;
         let fired = self.contexts.update(now, &self.vars, &mut self.rng, &mut |fire: &Fire, rng: &mut Lcg| {
             if let Some(&name) = TRIGGERS.iter().find(|n| **n == fire.event) {
                 refire.push(Trigger { name, params: fire.params.clone() });
+                return true;
+            }
+            if let Some(sound) = overrides.get(&fire.event.to_ascii_lowercase())
+                && let Some(draw) = sound.draw()
+            {
+                package.push((fire.event.clone(), fire.params.first().copied().unwrap_or(0), sound.clone(), draw));
                 return true;
             }
             match module.choose(&fire.event, &fire.params, rng) {
@@ -399,6 +417,14 @@ impl Speech {
         }
         for line in lines {
             self.play(line, mixer);
+        }
+        for (event, voice, sound, draw) in package {
+            let file = draw.sample.file.clone();
+            let gain = sound.volume;
+            let queued = Queued::Package { draw, gain, id: sound.id.clone() };
+            self.log
+                .push(format!("{:.3} {event}: the package line {} ({}) plays {file}", f.time, sound.id, sound.package));
+            self.say(voice, vec![queued], mixer);
         }
         self.triggers(refire);
         self.reap(mixer);
@@ -453,8 +479,8 @@ impl Speech {
         self.game.trick_message(&mut self.vars, time, m);
     }
 
-    pub fn run_end(&mut self, success: bool, medal: u8) {
-        self.game.run_end(&mut self.vars, success, medal, &mut self.events);
+    pub fn run_end(&mut self, end: &ssx_rules::results::RunEnd, bots: i32) {
+        self.game.run_end(&mut self.vars, end, bots, &mut self.events);
     }
 
     pub fn set_game_var(&mut self, var: i32, value: i32) {
@@ -485,20 +511,39 @@ impl Speech {
         out
     }
 
-    fn start_sample(&mut self, v: usize, b: usize, s: u32, mixer: &mut crate::sfx_mixer::Mixer) {
-        let bank = &self.module.banks[b];
-        match bank.stream(s) {
-            Ok(sound) => {
-                let label = format!("{} sample {s:#x}", bank.name);
-                self.handles[v] = mixer.start_stream(VOICES[v].1, VOICES[v].0, sound, label);
-                if self.paused
-                    && let Some(h) = self.handles[v]
-                {
-                    mixer.pause_pcm(h, true);
+    fn start_sample(&mut self, v: usize, q: Queued, mixer: &mut crate::sfx_mixer::Mixer) {
+        match q {
+            Queued::Disc { bank: b, sample: s } => {
+                let bank = &self.module.banks[b];
+                match bank.stream(s) {
+                    Ok(sound) => {
+                        let label = format!("{} sample {s:#x}", bank.name);
+                        self.handles[v] = mixer.start_stream(VOICES[v].1, VOICES[v].0, sound, label);
+                    }
+                    Err(e) => self.log.push(format!("{:.3} {} sample {s:#x}: {e:#}", self.time, bank.name)),
                 }
             }
-            Err(e) => self.log.push(format!("{:.3} {} sample {s:#x}: {e:#}", self.time, bank.name)),
+            Queued::Package { draw, gain, id } => {
+                let label = format!("{id} {}", draw.sample.file);
+                self.handles[v] = mixer.start_package(VOICES[v].1, VOICES[v].0, draw.sample, draw.pitch, gain, label);
+            }
         }
+        if self.paused
+            && let Some(h) = self.handles[v]
+        {
+            mixer.pause_pcm(h, true);
+        }
+    }
+
+    pub fn set_overrides(
+        &mut self,
+        all: &std::collections::HashMap<(String, String), Arc<crate::sfx_override::OverrideSound>>,
+    ) {
+        self.overrides = all
+            .iter()
+            .filter(|((lang, _), _)| *lang == self.lang)
+            .map(|((_, event), s)| (event.to_ascii_lowercase(), s.clone()))
+            .collect();
     }
 
     fn play(&mut self, line: Line, mixer: &mut crate::sfx_mixer::Mixer) {
@@ -507,6 +552,12 @@ impl Speech {
         let names: Vec<String> =
             line.samples.iter().map(|&(b, s, _)| format!("{}:{s:#x}", self.module.banks[b].name)).collect();
         self.log.push(format!("{:.3} {} line {} [{}]", self.time, VOICES[v].0, line.event, names.join(", ")));
+        let samples = line.samples.iter().map(|&(bank, sample, _)| Queued::Disc { bank, sample }).collect();
+        self.say(line.voice, samples, mixer);
+    }
+
+    fn say(&mut self, voice: i32, samples: Vec<Queued>, mixer: &mut crate::sfx_mixer::Mixer) {
+        let v = usize::try_from(voice).unwrap_or(0).min(self.voices.len() - 1);
         let current = self.handles[v].and_then(|h| mixer.pcm_remaining(h));
         if current.is_none() {
             self.handles[v] = None;
@@ -518,11 +569,23 @@ impl Speech {
             self.fading.push(h);
         }
         let banks = &self.module.banks;
-        self.voices[v].queue = line.samples.iter().map(|&(b, s, _)| (b, s, banks[b].seconds(s))).collect();
+        self.voices[v].queue = samples
+            .into_iter()
+            .map(|q| {
+                let secs = match &q {
+                    Queued::Disc { bank, sample } => banks[*bank].seconds(*sample),
+                    Queued::Package { draw, .. } if draw.sample.frames() > 100 => {
+                        draw.sample.frames() as f32 / crate::sfx_aems::MIXER_RATE as f32
+                    }
+                    Queued::Package { .. } => 0.0,
+                };
+                (q, secs)
+            })
+            .collect();
         if self.handles[v].is_none()
-            && let Some((b, s, _)) = self.voices[v].queue.pop_front()
+            && let Some((q, _)) = self.voices[v].queue.pop_front()
         {
-            self.start_sample(v, b, s, mixer);
+            self.start_sample(v, q, mixer);
         }
         if !self.voices[v].busy {
             self.voices[v].busy = true;

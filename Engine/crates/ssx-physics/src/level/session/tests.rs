@@ -176,3 +176,29 @@ fn badge_progress_is_kept() {
     }
     assert_eq!(stats.badge_progress.get(&42), Some(&0.25));
 }
+
+#[test]
+fn the_actors_run_after_the_step_once_per_execution() {
+    let w = world(plane(400.0, 0.3));
+    let mut s = RiderState::spawn(&w, Vec3::new(0.0, 50.0, 0.0), Vec3::Z).expect("ground");
+    s.velocity = Vec3::Z * 0.4;
+    let mut x = Session::default();
+    let input = Input { tuck: 1.0, ..Input::default() };
+    for _ in 0..3 {
+        let before = s.traj;
+        let mut calls = Vec::new();
+        let e = x.execute_with(
+            &mut s,
+            &w,
+            &input,
+            &TrickInput::default(),
+            0.0,
+            &RewindPad::default(),
+            None,
+            &mut |_, st, dt| calls.push((st.traj, dt)),
+        );
+        assert_eq!(calls.len(), 1);
+        let (traj, dt) = calls[0];
+        assert!(traj != before && traj == s.traj && dt == e.dt, "{before} → {traj} (now {}), dt {dt}", s.traj);
+    }
+}

@@ -53,6 +53,48 @@ impl HeliPose {
         self.write_clip(clip, tick, |_| true);
     }
 
+    pub fn write_trick(&mut self, clip: &NisClip, tick: f32, mirror: bool) {
+        let names: Vec<String> = self.q.keys().cloned().collect();
+        self.write_trick_on(&names, clip, tick, mirror);
+    }
+
+    pub fn trick_dofs(rig: &Rig, clip: &NisClip, tick: f32, mirror: bool) -> Self {
+        let names: Vec<String> = rig.skeleton.joints.iter().map(|j| j.name.clone()).collect();
+        let mut p = Self::default();
+        p.write_trick_on(&names, clip, tick, mirror);
+        p
+    }
+
+    fn write_trick_on(&mut self, joints: &[String], clip: &NisClip, tick: f32, mirror: bool) {
+        if !mirror {
+            self.write_nis(clip, tick);
+            return;
+        }
+        let Ok(p) = clip.sample(tick) else { return };
+        let lower: std::collections::HashMap<String, String> =
+            joints.iter().map(|k| (k.to_ascii_lowercase(), k.clone())).collect();
+        let partner = |j: &str| {
+            crate::anim_pose::mirror_name(j).and_then(|m| lower.get(&m).cloned()).unwrap_or_else(|| j.to_string())
+        };
+        for dof in clip.channels.keys() {
+            let Some((joint, comp)) = dof.rsplit_once('.') else { continue };
+            let to = partner(joint);
+            match comp {
+                "q" => {
+                    if let Some(q) = clip.quat(&p, dof) {
+                        self.q.insert(to, [-q[0], -q[1], q[2], q[3]]);
+                    }
+                }
+                "t" => {
+                    if let Some(t) = clip.vec3(&p, dof) {
+                        self.t.insert(to, [t[0], t[1], -t[2]]);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn write_clip(&mut self, clip: &NisClip, tick: f32, keep: impl Fn(&str) -> bool) {
         let Ok(p) = clip.sample(tick) else { return };
         for (dof, _) in clip.channels.iter().filter(|(d, _)| keep(d)) {
@@ -71,6 +113,16 @@ impl HeliPose {
                 _ => {}
             }
         }
+    }
+
+    pub fn blend_valid(&self, new: &HeliPose, w: f32) -> HeliPose {
+        let mut out = self.clone();
+        out.blend_from(new, |j, c| match c {
+            'q' if self.q.contains_key(j) => w,
+            't' if self.t.contains_key(j) => w,
+            _ => 1.0,
+        });
+        out
     }
 
     pub fn blend_from(&mut self, other: &HeliPose, weight: impl Fn(&str, char) -> f32) {
@@ -499,4 +551,30 @@ pub fn trick_sequences(big_root: &Path, chooser: &str, rig: &str) -> Result<Vec<
         });
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn side(q: &[(&str, [f32; 4])], t: &[(&str, [f32; 3])]) -> HeliPose {
+        let mut p = HeliPose::default();
+        p.q.extend(q.iter().map(|(j, v)| (j.to_string(), *v)));
+        p.t.extend(t.iter().map(|(j, v)| (j.to_string(), *v)));
+        p
+    }
+
+    #[test]
+    fn blend_valid_takes_the_holding_side() {
+        let id = [0.0, 0.0, 0.0, 1.0];
+        let old = side(&[("Root", id)], &[("Roll", [0.0, 2.0, 0.0])]);
+        let new =
+            side(&[("Floor", [0.0, 1.0, 0.0, 0.0])], &[("Roll", [0.0, 4.0, 0.0]), ("AITrajectory", [9.0, 0.0, 0.0])]);
+        let b = old.blend_valid(&new, 0.25);
+        assert_eq!(b.t["Roll"], [0.0, 2.5, 0.0]);
+        assert_eq!(b.t["AITrajectory"], [9.0, 0.0, 0.0]);
+        assert_eq!(b.q["Root"], id);
+        let f = b.q["Floor"];
+        assert!((f[1].abs() - 1.0).abs() < 1e-6 && f[3].abs() < 1e-6);
+    }
 }

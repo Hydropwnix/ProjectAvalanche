@@ -132,6 +132,7 @@ pub struct CareerResults {
     pub success: bool,
     pub medal: Option<ssx_assets::career::profile::Medal>,
     pub notices: Vec<ssx_assets::career::profile::Notice>,
+    pub best_not_kept: Option<ssx_assets::career::profile::BestNotKept>,
 }
 
 pub fn bonus_lines(
@@ -192,6 +193,10 @@ pub fn value_text(loc: &mut Localization, event_type: i32, v: u32) -> String {
 }
 
 pub fn post_results(values: &mut UiValues, loc: &mut Localization, r: &ResultsInput) {
+    post_results_with(values, loc, r, r.game_mode == 0);
+}
+
+pub fn post_results_with(values: &mut UiValues, loc: &mut Localization, r: &ResultsInput, explore: bool) {
     values.set_int(id::RESULT_POINTS, r.points as i32);
     values.set_int(id::RESULT_TIME, r.time_ms as i32);
     values.set_int(id::RESULT_DESCENDED, r.descent_mm as i32);
@@ -214,7 +219,6 @@ pub fn post_results(values: &mut UiValues, loc: &mut Localization, r: &ResultsIn
         _ => r.points,
     };
     let score = value_text(loc, r.event_type, value);
-    let explore = r.game_mode == 0;
     let complete = if explore { !r.failed && r.medal >= 0 } else { r.career.success };
     let success = if explore {
         match r.medal {

@@ -1,58 +1,9 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+pub use ssx_content::texture::bc::{decode_bc1_block, decode_bc2_alpha, decode_bc4_block};
 use ssx_formats::xenos::TextureFormat;
 use ssx_formats::xpr::{Swizzle, XprFile, XprResource};
-
-fn rgb565(c: u16) -> [u8; 3] {
-    let (r, g, b) = ((c >> 11) & 31, (c >> 5) & 63, c & 31);
-    [((r << 3) | (r >> 2)) as u8, ((g << 2) | (g >> 4)) as u8, ((b << 3) | (b >> 2)) as u8]
-}
-
-fn mix(a: u8, b: u8, wa: u32, wb: u32) -> u8 {
-    ((a as u32 * wa + b as u32 * wb) / (wa + wb)) as u8
-}
-
-pub fn decode_bc1_block(block: &[u8], three_colour: bool) -> [[u8; 4]; 16] {
-    let c0 = u16::from_le_bytes([block[0], block[1]]);
-    let c1 = u16::from_le_bytes([block[2], block[3]]);
-    let (a, b) = (rgb565(c0), rgb565(c1));
-    let lerp = |wa, wb| [mix(a[0], b[0], wa, wb), mix(a[1], b[1], wa, wb), mix(a[2], b[2], wa, wb), 255];
-    let palette = if c0 > c1 || !three_colour {
-        [[a[0], a[1], a[2], 255], [b[0], b[1], b[2], 255], lerp(2, 1), lerp(1, 2)]
-    } else {
-        [[a[0], a[1], a[2], 255], [b[0], b[1], b[2], 255], lerp(1, 1), [0, 0, 0, 0]]
-    };
-    let indices = u32::from_le_bytes([block[4], block[5], block[6], block[7]]);
-    std::array::from_fn(|i| palette[(indices >> (2 * i) & 3) as usize])
-}
-
-pub fn decode_bc4_block(block: &[u8]) -> [u8; 16] {
-    let (e0, e1) = (block[0], block[1]);
-    let palette: [u8; 8] = if e0 > e1 {
-        std::array::from_fn(|i| match i {
-            0 => e0,
-            1 => e1,
-            _ => mix(e0, e1, 8 - i as u32, i as u32 - 1),
-        })
-    } else {
-        std::array::from_fn(|i| match i {
-            0 => e0,
-            1 => e1,
-            6 => 0,
-            7 => 255,
-            _ => mix(e0, e1, 6 - i as u32, i as u32 - 1),
-        })
-    };
-    let mut bits = [0u8; 8];
-    bits[..6].copy_from_slice(&block[2..8]);
-    let indices = u64::from_le_bytes(bits);
-    std::array::from_fn(|i| palette[(indices >> (3 * i) & 7) as usize])
-}
-
-pub fn decode_bc2_alpha(block: &[u8]) -> [u8; 16] {
-    std::array::from_fn(|i| ((block[i / 2] >> (4 * (i % 2))) & 15) * 17)
-}
 
 pub fn decode_texel(format: TextureFormat, texel: &[u8]) -> [u8; 4] {
     match format {
@@ -68,15 +19,16 @@ pub fn decode_block(format: TextureFormat, block: &[u8]) -> [[u8; 4]; 16] {
         colour.iter_mut().zip(alpha).for_each(|(t, a)| t[3] = a);
         colour
     };
+    let halves = block.as_chunks::<8>().0;
     match format {
-        TextureFormat::Dxt1 => decode_bc1_block(block, true),
-        TextureFormat::Dxt23 => with_alpha(decode_bc1_block(&block[8..], false), decode_bc2_alpha(&block[..8])),
-        TextureFormat::Dxt45 => with_alpha(decode_bc1_block(&block[8..], false), decode_bc4_block(&block[..8])),
+        TextureFormat::Dxt1 => decode_bc1_block(&halves[0], true),
+        TextureFormat::Dxt23 => with_alpha(decode_bc1_block(&halves[1], false), decode_bc2_alpha(&halves[0])),
+        TextureFormat::Dxt45 => with_alpha(decode_bc1_block(&halves[1], false), decode_bc4_block(&halves[0])),
         TextureFormat::Dxn => {
-            let (x, y) = (decode_bc4_block(&block[..8]), decode_bc4_block(&block[8..]));
+            let (x, y) = (decode_bc4_block(&halves[0]), decode_bc4_block(&halves[1]));
             std::array::from_fn(|i| [x[i], y[i], y[i], y[i]])
         }
-        TextureFormat::Dxt5a => decode_bc4_block(block).map(|v| [v; 4]),
+        TextureFormat::Dxt5a => decode_bc4_block(&halves[0]).map(|v| [v; 4]),
         TextureFormat::K8 | TextureFormat::K88 | TextureFormat::K8888 => [decode_texel(format, block); 16],
     }
 }
@@ -258,27 +210,6 @@ pub fn write_png(path: &Path, image: &Image) -> Result<()> {
 mod tests {
     use super::*;
     use ssx_formats::xenos::tile_2d;
-
-    #[test]
-    fn bc1_four_and_three_colour_modes() {
-        let four = decode_bc1_block(&[0x00, 0xf8, 0x1f, 0x00, 0xe4, 0, 0, 0], true);
-        assert_eq!(&four[..4], &[[255, 0, 0, 255], [0, 0, 255, 255], [170, 0, 85, 255], [85, 0, 170, 255]]);
-        assert_eq!(four[4], [255, 0, 0, 255]);
-        let three = decode_bc1_block(&[0x1f, 0x00, 0x00, 0xf8, 0xe4, 0, 0, 0], true);
-        assert_eq!(&three[2..4], &[[127, 0, 127, 255], [0, 0, 0, 0]]);
-        let forced = decode_bc1_block(&[0x1f, 0x00, 0x00, 0xf8, 0xe4, 0, 0, 0], false);
-        assert_eq!(forced[3], [170, 0, 85, 255]);
-    }
-
-    #[test]
-    fn bc4_eight_and_six_value_modes() {
-        let eight = decode_bc4_block(&[255, 0, 0x92, 0x24, 0x49, 0x92, 0x24, 0x49]);
-        assert_eq!(eight, [218; 16]);
-        let idx: u64 = 6 | 7 << 3 | 2 << 6 | 1 << 9;
-        let mut block = [0u8, 255, 0, 0, 0, 0, 0, 0];
-        block[2..].copy_from_slice(&idx.to_le_bytes()[..6]);
-        assert_eq!(&decode_bc4_block(&block)[..4], &[0, 255, 51, 255]);
-    }
 
     #[test]
     fn bc2_alpha_nibbles_and_component_replication() {

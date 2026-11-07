@@ -1,0 +1,9 @@
+{
+	"actions":
+		[
+		],
+	"data":
+		[
+			{ "viewname": "credits_data", "type": "object", "dpname": "dp_ava_credits_data" }
+		]
+}

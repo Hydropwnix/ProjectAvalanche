@@ -163,7 +163,6 @@ impl TimePanel {
             let left = (start - end) - env.values.float(id::PLAYER_DESCENT);
             let left = if left > 0.0 { left } else { 0.0 } as i32;
             if left != self.last_int {
-                // TODO(guess): the decimals passed to 0x8256B148 are the caller's r7 (not set visibly before the call), taken as 0 (the placeholder `1024m` has none); settle: r7 at that call.
                 let text = env.loc.distance(f64::from(left));
                 if event_type == 4 {
                     place_after(cx, self.secondary.as_mut(), self.secondary_label.as_mut(), &text);

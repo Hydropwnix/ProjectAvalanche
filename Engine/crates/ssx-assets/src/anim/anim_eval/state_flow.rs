@@ -215,19 +215,6 @@ impl NodeInst {
     }
 }
 
-fn default_blend() -> Blend {
-    Blend {
-        dof_curves: None,
-        class: "BlendCurveAsset".into(),
-        blend_time: 8.0,
-        launch_angle: 0.0,
-        curve: 0,
-        sync_phase: false,
-        weight: None,
-        samples: Vec::new(),
-    }
-}
-
 impl SfInst {
     pub fn new(env: &Env, gs: &GameState, ctrl: CtrlId) -> Self {
         let sf = flow(env, ctrl);
@@ -248,7 +235,11 @@ impl SfInst {
         if !self.exited {
             self.current.exit(env, gs);
         }
-        let blend = tr.override_blend.or(window_blend).map(|b| env.g.blends[b].clone()).unwrap_or_else(default_blend);
+        let blend = tr
+            .override_blend
+            .or(window_blend)
+            .map(|b| env.g.blends[b].clone())
+            .unwrap_or_else(Blend::default_transition);
         let mut next = NodeInst::new(env, gs, sf, tr.to);
         let old_time = self.current.time();
         if let Some(s) = &mut next.subject {

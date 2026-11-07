@@ -16,12 +16,38 @@ pub enum Step {
     TutorialPopup(String),
     Pad(bool),
     Focus(bool),
+    Text(String),
+    TextKey(super::ava::keyboard::TextInput),
+    Chat(bool),
+    PointerMove(f32, f32),
+    WindowMove(f32, f32),
+    Click(crate::game::pointer::MouseButton),
+    Wheel(i32),
+}
+
+const MAX_POINTER_COORD: f32 = 16_384.0;
+
+fn pointer_point(x: &str, y: &str) -> Result<(f32, f32)> {
+    let p = |v: &str| -> Result<f32> {
+        let n: f32 = v.trim().parse().with_context(|| format!("pointer coordinate {v:?}"))?;
+        anyhow::ensure!(n.is_finite() && n.abs() <= MAX_POINTER_COORD, "pointer coordinate {v:?} out of range");
+        Ok(n)
+    };
+    Ok((p(x)?, p(y)?))
 }
 
 pub fn parse_script(s: &str) -> Result<Vec<(f64, Step)>> {
     let mut out = Vec::new();
-    for item in s.split(',').map(str::trim).filter(|x| !x.is_empty()) {
+    let mut pieces = s.split(',').map(str::trim).filter(|x| !x.is_empty());
+    while let Some(item) = pieces.next() {
         let (t, what) = item.split_once(':').with_context(|| format!("script item {item:?}: <seconds>:<step>"))?;
+        if let Some(x) = what.strip_prefix("move:").or_else(|| what.strip_prefix("wmove:")) {
+            let t: f64 = t.parse().with_context(|| format!("script time {t:?}"))?;
+            let y = pieces.next().with_context(|| format!("script step {what:?}: <x>,<y>"))?;
+            let (x, y) = pointer_point(x, y)?;
+            out.push((t, if what.starts_with('w') { Step::WindowMove(x, y) } else { Step::PointerMove(x, y) }));
+            continue;
+        }
         let t: f64 = t.parse().with_context(|| format!("script time {t:?}"))?;
         let step = match what {
             "start" => Step::Press(Button::Start),
@@ -38,14 +64,39 @@ pub fn parse_script(s: &str) -> Result<Vec<(f64, Step)>> {
             "lt" => Step::Press(Button::LeftTrigger),
             "rt" => Step::Press(Button::RightTrigger),
             "back" => Step::Press(Button::Select),
+            "rs" => Step::Press(Button::Ras),
             "skip" => Step::SkipMovie,
             "pad_off" => Step::Pad(false),
             "pad_on" => Step::Pad(true),
             "focus_off" => Step::Focus(false),
             "focus_on" => Step::Focus(true),
+            "chat" => Step::Chat(false),
+            "quickchat" => Step::Chat(true),
+            "click" => Step::Click(crate::game::pointer::MouseButton::Left),
+            "rclick" => Step::Click(crate::game::pointer::MouseButton::Right),
+            w if w.starts_with("wheel:") => {
+                let n: i32 = w[6..].parse().with_context(|| format!("script step {w:?}: wheel:<notches>"))?;
+                anyhow::ensure!((-64..=64).contains(&n), "script step {w:?}: at most 64 notches");
+                Step::Wheel(n)
+            }
             w if w.starts_with("shot=") => Step::Shot(w[5..].to_string()),
             w if w.starts_with("nav=") => Step::Nav(w[4..].to_string()),
             w if w.starts_with("popup=") => Step::TutorialPopup(w[6..].to_string()),
+            w if w.starts_with("text=") => Step::Text(w[5..].to_string()),
+            w if w.starts_with("key=") => {
+                use super::ava::keyboard::TextInput as T;
+                Step::TextKey(match &w[4..] {
+                    "backspace" => T::Backspace,
+                    "delete" => T::Delete,
+                    "left" => T::Left,
+                    "right" => T::Right,
+                    "home" => T::Home,
+                    "end" => T::End,
+                    "enter" => T::Enter,
+                    "escape" => T::Escape,
+                    k => anyhow::bail!("script step key={k}: backspace, delete, left, right, home, end, enter, escape"),
+                })
+            }
             w if w.starts_with("stick=") => {
                 let (x, y) = w[6..].split_once('/').with_context(|| format!("script step {w:?}: stick=<x>/<y>"))?;
                 Step::Stick(x.parse()?, y.parse()?)
@@ -109,15 +160,19 @@ pub struct Host {
     movie_played: f64,
     pub viewer_movie_frame: Option<i32>,
     release: Vec<(Button, u8)>,
+    pointer_release: Vec<crate::game::pointer::MouseButton>,
+    pub window_moves: Vec<(f32, f32)>,
+    pub script_pointer: bool,
+    pub script_pad: bool,
     pub paused: bool,
     pub log: Vec<String>,
     pub ride_win: Option<f32>,
     ride_rows: Vec<u32>,
+    pub exit_asked: bool,
 }
 
 pub fn ghost_values(big_root: &Path, drop: u32) -> Vec<u32> {
-    let path = big_root.join("bootcache/data/common/ghosts/ghostdb.csv");
-    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let text = ssx_assets::content::data::events::ghost_db_text(big_root).unwrap_or_default();
     ssx_physics::event::parse_ghost_db(&text)
         .into_iter()
         .filter(|(id, _)| *id == drop)
@@ -130,17 +185,13 @@ pub fn forced_win(event: &ssx_physics::event::EventManager, rows: &[u32]) -> ssx
     let clock_ms = event.clock.ms();
     let race = t.is_some_and(|t| t.is_race());
     let trick = t.is_some_and(|t| t.is_trick());
+    let beaten = || rows.iter().chain(&event.setup.rivals).copied().filter(|&v| v != u32::MAX);
     let value = if race {
-        rows.iter().min().map_or(clock_ms, |&m| m.saturating_sub(1)).max(1)
+        beaten().min().map_or(clock_ms, |m| m.saturating_sub(1)).max(1)
     } else {
-        rows.iter().max().map_or(1, |&m| m.saturating_add(1))
+        beaten().max().map_or(1, |m| m.saturating_add(1))
     };
-    let mut rivals = rows.to_vec();
-    if race {
-        rivals.sort_unstable();
-    } else {
-        rivals.sort_unstable_by(|a, b| b.cmp(a));
-    }
+    let s = event.setup.rank(value, false, Vec::new());
     ssx_physics::event::EventResult {
         event_type: t,
         points: if trick { value } else { 0 },
@@ -150,33 +201,29 @@ pub fn forced_win(event: &ssx_physics::event::EventManager, rows: &[u32]) -> ssx
         loops: 0,
         failed: false,
         value,
-        medal: (!rivals.is_empty()).then_some(ssx_physics::event::Medal::Gold),
-        rank: (!rivals.is_empty()).then_some(0),
-        rivals,
+        rivals: s.rivals,
+        rank: s.rank,
+        medal: s.medal,
+        place: s.place,
         geotag_credits: 0,
         geotag_count: 0,
     }
 }
 
 pub fn movie_info(big_root: &Path, name: &str) -> Option<(u32, f64)> {
-    use std::io::Read;
-    for p in movie_paths(big_root, name) {
-        let Ok(mut f) = std::fs::File::open(&p) else { continue };
-        let mut head = [0u8; 32];
-        f.read_exact(&mut head).ok()?;
-        let v = ssx_formats::ea_movie::VideoHeader::parse(&head[8..]).ok()?;
-        return Some((v.frame_count, v.fps()));
+    let id = ssx_assets::content::fmv::movie_id(name)?;
+    let fmv = ssx_assets::content::GameContent::of(big_root).fmv(&id)?;
+    match &fmv {
+        ssx_assets::content::fmv::Fmv::Disc(path) => ssx_assets::content::fmv::disc_info(path),
+        _ => {
+            let (seconds, fps) = (fmv.seconds()?, fmv.fps()?);
+            Some(((seconds * fps).round() as u32, fps))
+        }
     }
-    None
 }
 
 pub fn movie_seconds(big_root: &Path, name: &str) -> Option<f64> {
     movie_info(big_root, name).map(|(frames, fps)| f64::from(frames) / fps)
-}
-
-pub fn movie_paths(big_root: &Path, name: &str) -> Vec<PathBuf> {
-    let file = format!("{name}.vp6");
-    vec![big_root.join("../disc/data/common/fmv").join(&file), big_root.join("bootcache/data/common/fmv").join(&file)]
 }
 
 impl Host {
@@ -197,10 +244,15 @@ impl Host {
             movie_played: 0.0,
             viewer_movie_frame: None,
             release: Vec::new(),
+            pointer_release: Vec::new(),
+            window_moves: Vec::new(),
+            script_pointer: false,
+            script_pad: false,
             paused: false,
             log: Vec::new(),
             ride_win: None,
             ride_rows: Vec::new(),
+            exit_asked: false,
         }
     }
 
@@ -223,12 +275,16 @@ impl Host {
         for (b, device) in std::mem::take(&mut self.release) {
             ui.input.push_from(Input::Button { button: b, down: false }, device);
         }
+        for b in std::mem::take(&mut self.pointer_release) {
+            ui.pointer_button(b, false);
+        }
         while self.script.first().is_some_and(|(t, _)| *t <= self.time) {
             let (_, step) = self.script.remove(0);
             match step {
                 Step::Press(b) => {
                     self.note(format!("press {b:?}"));
                     self.press(ui, b);
+                    self.script_pad = true;
                 }
                 Step::SkipMovie => {
                     if ui.fe.as_ref().is_some_and(|f| f.movie.is_some()) {
@@ -252,6 +308,38 @@ impl Host {
                 step @ (Step::Pad(_) | Step::Focus(_)) => {
                     self.note(format!("{step:?} (script)"));
                     script_interrupt(ui, &step);
+                }
+                Step::Text(t) => {
+                    self.note(format!("type {t:?} (script)"));
+                    for c in t.chars() {
+                        ui.text_input(super::ava::keyboard::TextInput::Char(c));
+                    }
+                }
+                Step::TextKey(k) => {
+                    self.note(format!("key {k:?} (script)"));
+                    ui.text_input(k);
+                }
+                Step::Chat(quick) => self.note(format!("chat key (quick {quick}) outside a level: nothing (script)")),
+                Step::PointerMove(x, y) => {
+                    self.note(format!("pointer at ({x}, {y}) (script)"));
+                    ui.pointer_move(x, y);
+                    self.script_pointer = true;
+                }
+                Step::WindowMove(x, y) => {
+                    self.note(format!("pointer at window ({x}, {y}) (script)"));
+                    self.window_moves.push((x, y));
+                    self.script_pointer = true;
+                }
+                Step::Click(b) => {
+                    self.note(format!("pointer {b:?} click (script)"));
+                    ui.pointer_button(b, true);
+                    self.pointer_release.push(b);
+                    self.script_pointer = true;
+                }
+                Step::Wheel(n) => {
+                    self.note(format!("pointer wheel {n} (script)"));
+                    ui.pointer_wheel(n);
+                    self.script_pointer = true;
                 }
             }
         }
@@ -344,6 +432,10 @@ impl Host {
                     }
                 }
                 GameRequest::SaveSettings | GameRequest::Save => {}
+                GameRequest::ExitGame => {
+                    self.note("Exit: the session ends".into());
+                    self.exit_asked = true;
+                }
                 GameRequest::Quit => {
                     self.paused = false;
                     if self.phase == Phase::Riding || matches!(self.phase, Phase::Loading(_)) {
@@ -485,14 +577,49 @@ mod tests {
     }
 
     #[test]
+    fn pointer_steps() {
+        use crate::game::pointer::MouseButton;
+        let s = parse_script("6.5:move:1000,335.5,7:click,7.5:rclick,8:wheel:-3,9:wmove:-20,16384").unwrap();
+        assert_eq!(s[0], (6.5, Step::PointerMove(1000.0, 335.5)));
+        assert_eq!(s[1], (7.0, Step::Click(MouseButton::Left)));
+        assert_eq!(s[2], (7.5, Step::Click(MouseButton::Right)));
+        assert_eq!(s[3], (8.0, Step::Wheel(-3)));
+        assert_eq!(s[4], (9.0, Step::WindowMove(-20.0, 16_384.0)));
+        for bad in [
+            "1:move:10",
+            "1:move:10,",
+            "1:move:NaN,5",
+            "1:move:inf,5",
+            "1:move:16385,5",
+            "1:wmove:5,-16385",
+            "1:move:x,5",
+            "1:wheel:65",
+            "1:wheel:-65",
+            "1:wheel:two",
+            "1:wheel:",
+        ] {
+            assert!(parse_script(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
     fn forced_win_beats_the_rows() {
-        use ssx_physics::event::{EventManager, EventSetup, EventType};
+        use ssx_physics::event::{EventManager, EventSetup, EventType, Medal, ResultsFlow};
         let rows = [146_034, 151_000, 120_500];
-        let race = EventManager::new(EventSetup { event_type: Some(EventType::RaceBots), ..Default::default() });
+        let tour = |t| EventSetup { event_type: Some(t), results: Some(ResultsFlow::WorldTour), ..Default::default() };
+        let race = EventManager::new(tour(EventType::RaceBots));
         let r = forced_win(&race, &rows);
-        assert_eq!((r.value, r.time_ms, r.rank, r.failed), (120_499, 120_499, Some(0), false));
-        assert_eq!(r.rivals, vec![120_500, 146_034, 151_000]);
-        let trick = EventManager::new(EventSetup { event_type: Some(EventType::TrickBots), ..Default::default() });
+        assert_eq!((r.value, r.time_ms, r.rank, r.place, r.failed), (120_499, 120_499, Some(0), 0, false));
+        assert_eq!((r.rivals.len(), r.medal), (0, None));
+        let explore = EventManager::new(EventSetup {
+            event_type: Some(EventType::RaceGhosts),
+            rivals: vec![77_532, 92_631, 120_965],
+            results: Some(ResultsFlow::Explore),
+            ..Default::default()
+        });
+        let e = forced_win(&explore, &rows);
+        assert_eq!((e.value, e.rank, e.medal), (77_531, Some(0), Some(Medal::Gold)));
+        let trick = EventManager::new(tour(EventType::TrickBots));
         let t = forced_win(&trick, &rows);
         assert_eq!((t.value, t.points, t.rank), (151_001, 151_001, Some(0)));
         let rule = ssx_assets::career::profile::EventRule {

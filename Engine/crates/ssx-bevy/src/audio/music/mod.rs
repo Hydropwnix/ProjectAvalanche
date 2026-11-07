@@ -2,10 +2,11 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
+use ssx_assets::content::audio::AudioScope;
 use ssx_assets::music_script::{
     DdMusic, GameMusicState, ObjectiveScript, ScriptRunner, dd_script_name, track_drop_scripts,
 };
-use ssx_assets::musicbox::{LicensedMusic, MusicBox, Playlist, RaceType};
+use ssx_assets::musicbox::{LicensedMusic, MusicBox, Playlist, RaceType, SongSwitches};
 use ssx_assets::sfx::output::Output;
 pub use ssx_assets::sfx::output::{GameTurn, stats};
 use ssx_assets::sfx::{MusicSource, OutputMix};
@@ -14,6 +15,7 @@ use crate::ride::Ride;
 
 pub mod device;
 pub mod frontend;
+pub mod map;
 
 const RATE: u32 = ssx_assets::pathfinder::SAMPLE_RATE;
 
@@ -25,6 +27,8 @@ enum Engine {
 struct Shared {
     engine: Engine,
     volume: f32,
+    #[cfg(feature = "scripts")]
+    level: Option<Engine>,
 }
 
 struct MusicBus(Arc<Mutex<Shared>>);
@@ -44,10 +48,19 @@ impl MusicSource for MusicBus {
     }
 
     fn finished(&self) -> bool {
-        self.0.lock().map_or(true, |s| match &s.engine {
+        let Ok(s) = self.0.lock() else { return true };
+        #[cfg(feature = "scripts")]
+        let mut s = s;
+        let done = match &s.engine {
             Engine::Dd(_) => true,
             Engine::Licensed(lm) => lm.finished(),
-        })
+        };
+        #[cfg(feature = "scripts")]
+        if done && let Some(level) = s.level.take() {
+            s.engine = level;
+            return false;
+        }
+        done
     }
 }
 
@@ -109,6 +122,37 @@ pub struct Music {
     restart_in: Option<f32>,
     log_from: usize,
     verbose: bool,
+    scope: AudioScope,
+    race: Option<RaceType>,
+}
+
+#[cfg(feature = "scripts")]
+impl Music {
+    pub(crate) fn play_script_song(&self, song: LicensedMusic) -> Result<(), &'static str> {
+        if self.dd {
+            return Err("a Deadly Descent's music is its Pathfinder score");
+        }
+        let _turn = GameTurn::take();
+        let mut shared = self.shared.lock().map_err(|_| "the music's lock is poisoned")?;
+        let old = std::mem::replace(&mut shared.engine, Engine::Licensed(Box::new(song)));
+        if shared.level.is_none() {
+            shared.level = Some(old);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn end_script_song(&self) {
+        let _turn = GameTurn::take();
+        if let Ok(mut shared) = self.shared.lock()
+            && let Some(level) = shared.level.take()
+        {
+            shared.engine = level;
+        }
+    }
+
+    pub(crate) fn scope(&self) -> &AudioScope {
+        &self.scope
+    }
 }
 
 #[derive(Resource, Clone, Copy)]
@@ -121,7 +165,11 @@ pub struct MusicLevel {
     remix_type: i32,
     volume: f32,
     verbose: bool,
+    scope: AudioScope,
+    race: Option<RaceType>,
 }
+
+type Loaded = (Engine, Option<ObjectiveScript>, String, i32, AudioScope, Option<RaceType>);
 
 pub fn register(app: &mut App) {
     output(app);
@@ -135,7 +183,7 @@ pub fn register(app: &mut App) {
 struct MusicRegistered;
 
 pub fn load_level(big_root: Option<&Path>, track: &str, drop_key: Option<u32>, screenshot: bool) -> Option<MusicLevel> {
-    load_level_event(big_root, track, drop_key, None, &[], screenshot)
+    load_level_event(big_root, track, drop_key, None, &SongSwitches::default(), screenshot)
 }
 
 pub fn load_level_event(
@@ -143,7 +191,7 @@ pub fn load_level_event(
     track: &str,
     drop_key: Option<u32>,
     event_key: Option<u32>,
-    song_flags: &[(u32, bool)],
+    song_flags: &SongSwitches,
     screenshot: bool,
 ) -> Option<MusicLevel> {
     let mode = std::env::var("SSX_MUSIC").unwrap_or_default().to_ascii_lowercase();
@@ -151,17 +199,17 @@ pub fn load_level_event(
         return None;
     }
     let Some(big_root) = big_root else {
-        eprintln!("warning: music unavailable: no extracted archive root");
+        ssx_core::eprintln!("warning: music unavailable: no extracted archive root");
         return None;
     };
     let volume = std::env::var("SSX_MUSIC_VOLUME").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0f32).clamp(0.0, 1.0);
     match load(big_root, track, drop_key, event_key, song_flags, &mode) {
-        Ok((engine, script, label, remix_type)) => {
+        Ok((engine, script, label, remix_type, scope, race)) => {
             let verbose = std::env::var("SSX_MUSIC_LOG").is_ok_and(|v| v == "1");
-            Some(MusicLevel { engine, script, label, remix_type, volume, verbose })
+            Some(MusicLevel { engine, script, label, remix_type, volume, verbose, scope, race })
         }
         Err(e) => {
-            eprintln!("warning: music unavailable: {e:#}");
+            ssx_core::eprintln!("warning: music unavailable: {e:#}");
             None
         }
     }
@@ -170,9 +218,14 @@ pub fn load_level_event(
 pub fn start_level(world: &mut World, level: Option<MusicLevel>, drop_key: Option<u32>) {
     world.insert_resource(AudioDrop(drop_key));
     let Some(l) = level else { return };
-    eprintln!("music: {}", l.label);
+    ssx_core::eprintln!("music: {}", l.label);
     let dd = matches!(l.engine, Engine::Dd(_));
-    let shared = Arc::new(Mutex::new(Shared { engine: l.engine, volume: l.volume }));
+    let shared = Arc::new(Mutex::new(Shared {
+        engine: l.engine,
+        volume: l.volume,
+        #[cfg(feature = "scripts")]
+        level: None,
+    }));
     if let Some(g) = world.get_resource::<GameAudio>()
         && let Ok(mut m) = g.out.lock()
     {
@@ -187,6 +240,8 @@ pub fn start_level(world: &mut World, level: Option<MusicLevel>, drop_key: Optio
         restart_in: None,
         log_from: 0,
         verbose: l.verbose,
+        scope: l.scope,
+        race: l.race,
     });
 }
 
@@ -224,9 +279,9 @@ fn load(
     track: &str,
     drop_key: Option<u32>,
     event_key: Option<u32>,
-    song_flags: &[(u32, bool)],
+    song_flags: &SongSwitches,
     mode: &str,
-) -> anyhow::Result<(Engine, Option<ObjectiveScript>, String, i32)> {
+) -> anyhow::Result<Loaded> {
     let drops = track_drop_scripts(big_root, track).unwrap_or_default();
     let events = drop_key.and_then(|k| ssx_physics::spawn::load_drop_events(big_root, track, k).ok()).map(|e| e.0);
     let launched = event_key.and_then(|k| events.as_ref()?.iter().find(|e| e.key == k).cloned());
@@ -245,12 +300,19 @@ fn load(
         "dd" => dd.or_else(|| dd_script_name(&drops, None)),
         _ => dd,
     };
+    let scope = AudioScope::Level { drop: launched.as_ref().map(|d| d.name.to_ascii_lowercase()) };
+    let plan = ssx_assets::content::GameContent::of(big_root).music_plan(&scope);
     if let Some((name, chapter)) = dd {
         let script = ObjectiveScript::load(big_root, &name)?;
         let label =
             format!("Deadly Descent ({name}, song {:?}, chapter {chapter:?}) — Pathfinder ssxdd", script.song());
-        let engine = Engine::Dd(Box::new(DdMusic::load(big_root, script.clone(), chapter)?));
-        return Ok((engine, Some(script), label, 3));
+        let mut dd = DdMusic::load(big_root, script.clone(), chapter)?;
+        if !plan.music.is_empty() {
+            let mut log = Vec::new();
+            ssx_assets::content::audio::apply::apply_project(&mut dd.music, "ssxdd", &plan.music, &mut log);
+            log.iter().for_each(|l| ssx_core::eprintln!("{l}"));
+        }
+        return Ok((Engine::Dd(Box::new(dd)), Some(script), label, 3, scope, None));
     }
     let want = std::env::var("SSX_RIDE_EVENT").unwrap_or_else(|_| "race".into());
     let def =
@@ -266,8 +328,11 @@ fn load(
         Some(RaceType::Menu) | None => -1,
     };
     let mut mb = MusicBox::load(big_root)?;
-    mb.apply_song_flags(song_flags);
-    let off = song_flags.iter().filter(|(_, on)| !on).count();
+    mb.apply_switches(song_flags);
+    if !plan.music.is_empty() {
+        mb.add_packages(&plan.music);
+    }
+    let off = song_flags.off();
     let (engine, label) = match race {
         Some(r) => {
             let lm = LicensedMusic::game(mb, r);
@@ -283,7 +348,58 @@ fn load(
             format!("no music ({event}: songs mask 8, no song; no custom playlist)"),
         ),
     };
-    Ok((Engine::Licensed(Box::new(engine)), None, label, remix_type))
+    Ok((Engine::Licensed(Box::new(engine)), None, label, remix_type, scope, race))
+}
+
+pub struct MusicReload {
+    plan: Arc<ssx_assets::content::audio::MusicDecision>,
+    score: Option<anyhow::Result<ssx_assets::score::ScorePlayer>>,
+    tracks: Vec<(usize, anyhow::Result<ssx_assets::track_override::TrackOverride>)>,
+}
+
+impl Music {
+    pub fn reload_inputs(&self) -> (AudioScope, bool) {
+        (self.scope.clone(), self.dd)
+    }
+
+    pub fn prepare_reload(big_root: &Path, scope: &AudioScope, dd: bool) -> MusicReload {
+        let plan = ssx_assets::content::GameContent::of(big_root).music_plan(scope);
+        let (mut score, mut tracks) = (None, Vec::new());
+        if dd {
+            use ssx_assets::content::audio::apply;
+            score = plan.music.scores.get("ssxdd").map(|t| apply::score(t).map_err(anyhow::Error::msg));
+            for ((p, track), t) in &plan.music.tracks {
+                if p == "ssxdd" {
+                    tracks.push((*track, apply::track_override(t).map_err(anyhow::Error::msg)));
+                }
+            }
+        }
+        MusicReload { plan, score, tracks }
+    }
+
+    pub fn apply_reload(&self, r: MusicReload) {
+        let _turn = GameTurn::take();
+        let Ok(mut shared) = self.shared.lock() else { return };
+        match &mut shared.engine {
+            Engine::Dd(dd) => {
+                dd.music.clear_packages();
+                match r.score {
+                    Some(Ok(s)) => dd.music.set_score(s, "the package's score (reloaded)"),
+                    Some(Err(e)) => warn!("mod-dev: the score not used: {e:#}; the project's own plays"),
+                    None => {}
+                }
+                for (track, o) in r.tracks {
+                    match o {
+                        Ok(o) if dd.music.rt.score.is_none() => dd.music.set_track_override(track, o),
+                        Ok(_) => {}
+                        Err(e) => warn!("mod-dev: track {track} not replaced: {e:#}; the project's own plays"),
+                    }
+                }
+            }
+            Engine::Licensed(lm) => lm.replace_packages(&r.plan.music, self.race),
+        }
+        info!("mod-dev: the level's music re-applied ({})", r.plan.summary(&self.scope));
+    }
 }
 
 fn game_state(ride: Option<&Ride>) -> GameMusicState {

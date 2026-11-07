@@ -98,7 +98,7 @@ impl LevelStart {
             intro.advance(dt);
             let ticks = intro.ticks();
             self.phase = match intro.root_motion() {
-                true => Phase::Go { ticks: intro.sequence_time(ticks), clip: intro.assets.jump_clip },
+                true => Phase::Go { ticks: intro.sequence_time(ticks), clip: intro.jump_clip() },
                 false => Phase::Idle { ticks },
             };
             if intro.attached

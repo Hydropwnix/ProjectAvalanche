@@ -23,6 +23,23 @@ pub mod speech;
 pub mod store;
 pub mod tricky;
 
+pub const SCRIPT_BUSES: [&str; 8] = [
+    "Script_3D_0_BUS",
+    "Script_3D_1_BUS",
+    "Script_3D_2_BUS",
+    "Script_3D_3_BUS",
+    "Script_3D_4_BUS",
+    "Script_3D_5_BUS",
+    "Script_3D_6_BUS",
+    "Script_3D_7_BUS",
+];
+pub const SCRIPT_ORIGIN: u32 = 0xFFFF_FF00;
+// TODO(guess): a script's positioned sound is heard with the board centre's 3-D rules (`boarder_board_center`: rolloff
+// 0.0115, 1–200 m, cut at 200 m, centre level 0.5) at the script's point (its offset 0): the game has no script sounds;
+// settle: an `audio_3d_settings` collection a package names (M8's gamemodes), or measured with real packages.
+pub const SCRIPT_EMITTER: crate::sfx_dsp::sound3d::EmitterSettings =
+    crate::sfx_dsp::sound3d::EmitterSettings { offset: [0.0; 3], ..crate::sfx_dsp::sound3d::BOARD_CENTER };
+
 pub struct SfxEngine {
     pub aems: Aems,
     pub mixer: Mixer,
@@ -55,6 +72,7 @@ pub struct SfxEngine {
     pub game_state: i32,
     pub game_result: u8,
     pub tutorial: bool,
+    speech_overrides: std::collections::HashMap<(String, String), std::sync::Arc<crate::sfx_override::OverrideSound>>,
 }
 
 pub const UPDATE_PERIOD: f32 = 1.0 / 60.0;
@@ -86,7 +104,7 @@ impl SfxEngine {
                 Some(r)
             }
             Err(e) => {
-                eprintln!("warning: music remix unavailable: {e:#}");
+                ssx_core::eprintln!("warning: music remix unavailable: {e:#}");
                 None
             }
         };
@@ -132,6 +150,7 @@ impl SfxEngine {
             game_state: 0,
             game_result: 0,
             tutorial: false,
+            speech_overrides: std::collections::HashMap::new(),
         })
     }
 
@@ -207,6 +226,9 @@ impl SfxEngine {
         if let Some(b) = &self.launch_block {
             speech.set_launch(b);
         }
+        if !self.speech_overrides.is_empty() {
+            speech.set_overrides(&self.speech_overrides);
+        }
         self.speech = Some(speech);
     }
 
@@ -227,6 +249,17 @@ impl SfxEngine {
         }
     }
 
+    pub fn sound3d_frame_scripts(
+        &mut self,
+        camera: Option<([f32; 3], [f32; 3])>,
+        emitters: &[crate::sfx_dsp::sound3d::Emitter],
+        dt: f32,
+    ) {
+        for (bus, p) in self.sound3d.frame_scripts(camera, emitters, dt) {
+            self.mixer.graph.pan3d_send(bus, Some(&p));
+        }
+    }
+
     pub fn start_reverb(&mut self, big_root: &Path, info: &TrackAudioInfo) -> Result<()> {
         for (slot, name) in [(0, &info.reverb_small), (1, &info.reverb_large)] {
             let rel = format!("data/xenon/audio/reverb/{name}.irf");
@@ -240,6 +273,28 @@ impl SfxEngine {
         self.reverb = true;
         Ok(())
     }
+    pub fn set_overrides(&mut self, o: &crate::sfx_override::SoundOverrides) -> Vec<String> {
+        if self.aems.voice_names.is_empty() {
+            self.aems.voice_names = self.mixer.voice_table().clone();
+        }
+        let mut by_key = std::collections::HashMap::new();
+        let mut missing = Vec::new();
+        for ((file, name), sound) in &o.effects {
+            match self.aems.key_in(file, name) {
+                Some(k) => {
+                    by_key.insert(k, sound.clone());
+                }
+                None => missing.push(sound.id.clone()),
+            }
+        }
+        self.aems.set_overrides(by_key);
+        self.speech_overrides = o.speech.clone();
+        if let Some(sp) = self.speech.as_mut() {
+            sp.set_overrides(&self.speech_overrides);
+        }
+        missing
+    }
+
     pub fn set_verbose(&mut self, on: bool) {
         self.aems.verbose = on;
         self.mixer.verbose = on;
@@ -275,7 +330,27 @@ impl SfxEngine {
     }
 
     pub fn fire(&mut self, key: u32, params: &[i32]) {
-        self.aems.fire_event(key, params);
+        self.fire_with(key, params, None);
+    }
+
+    pub fn fire_from(&mut self, key: u32, params: &[i32], origin: u32) {
+        self.fire_with(key, params, Some(origin));
+    }
+
+    pub fn script_buses(&mut self) -> usize {
+        let n = self.mixer.graph.add_bus_copies("Board_Center_BUS", &SCRIPT_BUSES);
+        for (k, bus) in SCRIPT_BUSES.iter().enumerate().take(n) {
+            self.aems.script_routes.insert(SCRIPT_ORIGIN + k as u32, (*bus).to_string());
+        }
+        n
+    }
+
+    pub fn bus_senders(&self, bus: &str) -> usize {
+        self.mixer.graph.submix_input(bus).map_or(0, |i| self.mixer.graph.senders_into(i))
+    }
+
+    fn fire_with(&mut self, key: u32, params: &[i32], origin: Option<u32>) {
+        self.aems.fire_event_from(key, params, origin);
         let Some(routes) = self.tuna.routes.get(&key).cloned() else { return };
         let name = self.aems.name(key);
         self.aems.log.push(crate::sfx_aems::LogLine { ms: self.aems.now_ms, text: format!("tuna {name} {params:?}") });
@@ -284,10 +359,10 @@ impl SfxEngine {
             let p = r.params(params);
             match r.kind {
                 CallKind::Function => {
-                    let h = self.aems.call(t, &p);
+                    let h = self.aems.call_from(t, &p, Some(origin.unwrap_or(key)));
                     self.aems.stop(h);
                 }
-                CallKind::Event => self.aems.fire_event(t, &p),
+                CallKind::Event => self.aems.fire_event_from(t, &p, Some(origin.unwrap_or(key))),
                 CallKind::Global => {
                     let v = p.first().copied().unwrap_or(0);
                     self.aems.set_global(t, v);
@@ -355,7 +430,7 @@ impl SfxEngine {
                 if let Some(routes) = self.tuna.routes.get(&key).cloned() {
                     for r in routes.into_iter().filter(|r| r.kind == CallKind::Event) {
                         if let Some(t) = r.target {
-                            self.aems.fire_event(t, &r.params(&params));
+                            self.aems.fire_event_from(t, &r.params(&params), Some(key));
                         }
                     }
                 }
@@ -391,6 +466,7 @@ impl SfxEngine {
         if let Some(t) = prof {
             self.mixer.graph.profile_add("(updates)", t.elapsed().as_nanos() as u64);
         }
+        self.mixer.release_ended();
         self.mixer.process_block_dac(&mut self.block6);
         self.block.fill(0.0);
         crate::sfx_bus::fold_interleaved(&self.block6, &mut self.block);

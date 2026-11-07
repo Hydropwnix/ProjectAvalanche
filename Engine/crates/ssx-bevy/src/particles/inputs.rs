@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use ssx_physics::graph::LandingRumble;
 use ssx_physics::surface::{ICE, POWDER, ROCK, SNOW_COVERAGE};
 
 use crate::particles::spray::SprayInputs;
@@ -6,28 +7,13 @@ use crate::ride::Ride;
 
 #[derive(Default)]
 pub struct Trackers {
-    prev_in_air: bool,
-    velocities: [Vec3; 2],
+    rumble: LandingRumble,
     landing_impact: f32,
-    depth: f32,
 }
 
 impl Trackers {
     pub fn step(&mut self, ride: &Ride) {
-        let s = &ride.state;
-        let in_air = s.in_air();
-        let prev_velocity = self.velocities[1];
-        self.landing_impact = if !in_air && self.prev_in_air && s.contact.is_some() && prev_velocity != Vec3::ZERO {
-            (-prev_velocity.dot(s.ground_normal)).max(0.0)
-        } else {
-            0.0
-        };
-        self.prev_in_air = in_air;
-        self.velocities = [s.traj_velocity, self.velocities[0]];
-        if s.on_ground {
-            let h = -s.contact.as_ref().map_or(0.0, |g| g.distance);
-            self.depth = s.surface.snow_depth + h - s.carving.riding_height;
-        }
+        self.landing_impact = self.rumble.step(&ride.state);
     }
 
     pub fn inputs(&self, ride: &Ride) -> SprayInputs {
@@ -42,7 +28,7 @@ impl Trackers {
             landing_impact: self.landing_impact,
             ground_contact: s.contact.is_some(),
             in_air: s.in_air(),
-            depth_below_snow: self.depth,
+            depth_below_snow: s.depth_below_snow,
             grinding: s.grind.is_grinding(),
             powder: w[POWDER],
             packed: [w[0], w[1], w[2], w[3], w[4]],

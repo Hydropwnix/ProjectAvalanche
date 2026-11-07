@@ -93,16 +93,17 @@ impl Picture {
     }
 
     pub fn write_png(&self, path: &Path) -> Result<()> {
-        let partial = path.with_extension("png.partial");
-        let file = std::fs::File::create(&partial).with_context(|| format!("creating {}", partial.display()))?;
-        let mut encoder = png::Encoder::new(BufWriter::new(file), self.width as u32, self.height as u32);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        encoder.set_compression(png::Compression::Fast);
-        let mut writer = encoder.write_header()?;
-        writer.write_image_data(&self.rgba)?;
-        writer.finish()?;
-        std::fs::rename(&partial, path).with_context(|| format!("renaming to {}", path.display()))
+        ssx_files::replace_with(path, &ssx_files::Options::new(), |file| -> Result<()> {
+            let mut out = BufWriter::new(file);
+            let mut encoder = png::Encoder::new(&mut out, self.width as u32, self.height as u32);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder.set_compression(png::Compression::Fast);
+            let mut writer = encoder.write_header()?;
+            writer.write_image_data(&self.rgba)?;
+            writer.finish()?;
+            std::io::Write::flush(&mut out).with_context(|| format!("writing {}", path.display()))
+        })
     }
 
     pub fn to_egui(&self) -> ColorImage {

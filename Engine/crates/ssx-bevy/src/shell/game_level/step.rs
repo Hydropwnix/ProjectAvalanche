@@ -50,7 +50,7 @@ pub(super) fn feed_step(
     mut ui: ResMut<GameUiRes>,
     cams: Query<(&Camera, &GlobalTransform), With<FlyCam>>,
     mut audio: Option<ResMut<FrontEndAudio>>,
-    link: Option<ResMut<CameraTypeLink>>,
+    (link, bots): (Option<ResMut<CameraTypeLink>>, Option<Res<crate::ride::bots::Bots>>),
 ) {
     let l = &mut *level;
     if ride.steps <= l.fed {
@@ -66,6 +66,9 @@ pub(super) fn feed_step(
     let clock = &ride.session.event.clock;
     let (ghosts, racers) = l.ghosts.step(clock.seconds, clock.ms(), &ride.world().triggers, &mut ui.loc);
     l.feed.ghosts = ghosts;
+    if let Some(b) = bots.as_deref() {
+        l.feed.ghosts.extend(b.live.billboards());
+    }
     l.feed.ghost_racers = racers;
     l.feed.camera = cams.iter().next().map(|(c, t)| hud_camera(c, t));
     l.feed.feed(ui, &ride.state, &ride.session, ride.world(), Some(&e));
@@ -117,6 +120,9 @@ pub(super) fn feed_step(
     let events = ride.session.tutorial.as_mut().map_or_else(Vec::new, |t| t.take_events());
     let rider = l.feed.rider.clone();
     let popups = ui.tutorial_step(&ride.state, &ride.session, &events, &rider);
+    for key in ui.fe.as_mut().map(|fe| std::mem::take(&mut fe.withheld_popups)).unwrap_or_default() {
+        info!("level: a network session: the tutorial popup {key:?} is not shown");
+    }
     if events.iter().any(|e| matches!(e, ssx_physics::session::tutorial::TutorialEvent::Message { .. })) {
         use ssx_ui::game::values::id;
         let v = &ui.values;

@@ -1,0 +1,48 @@
+# An example server.toml for a dedicated server (every key is optional; a missing file is the defaults). `avalanche-server
+# check --config server.toml --data <data folder>` says what is wrong, with the line and column.
+
+[server]
+name = "My Avalanche Server"
+description = ""
+# "::" listens on IPv6 and IPv4 (dual stack); "0.0.0.0" on IPv4 only; an address on that address alone
+bind = "::"
+# UDP for the game, TCP for the join; the UDP query takes the next port
+port = 27450
+max_players = 16
+password = ""
+# a 96 x 96 PNG of at most 64 KiB beside this file (a path relative to this file's folder), shown in the game's browser
+# icon = "icon.png"
+
+[game]
+drop = "exp_alps_vorassay_drop_3"
+
+[chat]
+enabled = true
+
+[discovery]
+# answer the game's LAN tab and the UDP query (the masters need the query)
+query = true
+lan = true
+# announce to master servers (each "https://host[:port]"); the project's own is https://masterlist.liamrbsn.com
+public = false
+masters = ["https://masterlist.liamrbsn.com"]
+
+[port_mapping]
+# map the game's and the query's ports on the router: UPnP IGD, PCP and NAT-PMP, tried in this order; off by default
+enabled = false
+methods = ["upnp", "pcp", "natpmp"]
+# "" = the default route's gateway
+gateway = ""
+# seconds asked for (120 to 86400), renewed at half
+lifetime = 7200
+
+[metrics]
+# GET /metrics (Prometheus' text format) on the game port's TCP; off by default; only from these addresses or
+# ranges (an address, a CIDR range, or an IPv4 wildcard such as "10.0.*.*")
+enabled = false
+allow = ["127.0.0.1", "::1"]
+
+[stop]
+# the graceful stop (stop, the first signal): a round under way may run this many seconds (0 to 600) before its
+# results are posted and the riders are told
+round_end = 60

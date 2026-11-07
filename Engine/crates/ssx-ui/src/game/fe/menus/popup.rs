@@ -1,4 +1,4 @@
-use std::path::Path;
+use anyhow::{Result, bail};
 
 use crate::avm1::Ctx;
 use crate::avm1::value::Value;
@@ -28,22 +28,29 @@ pub struct Popups {
     pub stack: Vec<String>,
 }
 
+pub const DIR: &str = "data/common/fe/popups/";
+
 impl Popups {
-    pub fn load(big_root: &Path) -> Self {
+    pub fn load(files: &dyn crate::fs::FileSource) -> Self {
         let mut defs = Vec::new();
-        let dir = big_root.join("fecache/data/common/fe/popups");
-        if let Ok(rd) = std::fs::read_dir(&dir) {
-            for e in rd.flatten() {
-                let name = e.file_name().to_string_lossy().into_owned();
-                let Some(stem) = name.strip_suffix(".pop") else { continue };
-                let Ok(text) = std::fs::read_to_string(e.path()) else { continue };
-                if let Some(d) = parse(stem, &text) {
-                    defs.push(d);
-                }
+        for path in files.list(DIR, "pop") {
+            let Some(stem) = path.rsplit('/').next().and_then(|f| f.strip_suffix(".pop")) else { continue };
+            let Some(text) = files.read(&path).and_then(|b| String::from_utf8(b).ok()) else { continue };
+            if let Some(d) = parse(stem, &text) {
+                defs.push(d);
             }
         }
         defs.sort_by(|a, b| a.name.cmp(&b.name));
         Popups { defs, stack: Vec::new() }
+    }
+
+    pub fn add(&mut self, def: PopupDef) -> Result<()> {
+        if self.def(&def.name).is_some() {
+            bail!("the popup {} exists", def.name);
+        }
+        self.defs.push(def);
+        self.defs.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(())
     }
 
     pub fn def(&self, name: &str) -> Option<&PopupDef> {
@@ -163,6 +170,9 @@ mod tests {
         assert_eq!(d.buttons[1].1, "event_quit_no");
         assert_eq!(d.default_button, 1);
         let mut p = Popups::default();
+        p.add(d.clone()).unwrap();
+        assert!(p.add(d.clone()).is_err(), "a popup's name is taken once");
+        assert_eq!(p.def("event_quit").map(|x| x.buttons.len()), Some(2));
         assert!(p.push("a", ""));
         assert!(!p.push("b", ""));
         assert!(!p.pop("b"));

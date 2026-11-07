@@ -1,3 +1,4 @@
+mod gear;
 mod outfit;
 
 use std::collections::{HashMap, HashSet};
@@ -8,10 +9,11 @@ use ssx_formats::ant_anim::euler_xyz_to_quat;
 use ssx_formats::attrib::{Schema, Value, Vault, collection};
 use ssx_formats::crsf::{CrsfFile, Mat4, SceneGraph};
 
-use crate::object_mesh::{self, ObjectMesh};
+use crate::object_mesh::ObjectMesh;
 use crate::track_objects::asset_file;
 use crate::vault_db::{Db, Material, fnv1, refs, single, single_text, with_track_db};
 
+pub use gear::{SlotParts, equipped_parts, mesh_part};
 pub(crate) use outfit::*;
 
 pub const DEFAULT_CHARACTER: &str = "alex";
@@ -146,14 +148,35 @@ pub struct Skin {
 }
 
 #[derive(Clone, Debug)]
+pub enum PartMaterial {
+    Disc(Material),
+    Def(Box<ssx_content::material::MaterialDef>),
+}
+
+impl PartMaterial {
+    pub fn effect(&self) -> Option<&str> {
+        match self {
+            PartMaterial::Disc(m) => m.effect.as_deref(),
+            PartMaterial::Def(d) => Some(d.effect.as_str()),
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            PartMaterial::Disc(m) => &m.name,
+            PartMaterial::Def(d) => &d.name,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct CharacterPart {
     pub slot: String,
     pub mesh_name: String,
-    pub geom: PathBuf,
-    pub crsf: PathBuf,
+    pub source: String,
     pub mesh: ObjectMesh,
     pub skin: Skin,
-    pub material: Material,
+    pub material: PartMaterial,
     pub face_offsets: bool,
     pub bind_error: f32,
 }
@@ -238,6 +261,16 @@ impl Character {
     }
 }
 
+pub fn bind_pose_of(rig: &SceneGraph, face_offsets: &HashMap<String, [f32; 3]>) -> Vec<Srt> {
+    bind_pose(rig, face_offsets)
+}
+
+pub fn outfit_crsf_files(big_root: &Path, name: &str) -> Result<Vec<String>> {
+    crate::vault_db::with_attribdb(big_root, |db| {
+        Ok(outfit(db, name, &EquippedRefs::new())?.meshes.into_iter().map(|m| m.crsf).collect())
+    })
+}
+
 fn bind_pose(rig: &SceneGraph, face_offsets: &HashMap<String, [f32; 3]>) -> Vec<Srt> {
     rig.nodes
         .iter()
@@ -261,20 +294,25 @@ pub fn load_character(big_root: &Path, track: &str, name: &str) -> Result<Charac
 
 pub fn load_character_with(big_root: &Path, track: &str, name: &str, loadout: &Loadout) -> Result<Character> {
     let (equipped, lamp_accessory) = equipment_refs(big_root, name, loadout)?;
-    let mut outfit = with_track_db(big_root, track, |db| outfit(db, name, &equipped))?;
+    let outfit = with_track_db(big_root, track, |db| outfit(db, name, &equipped))?;
+    dressed(big_root, name, loadout, outfit, lamp_accessory)
+}
+
+pub fn load_character_untracked(big_root: &Path, name: &str, loadout: &Loadout) -> Result<Character> {
+    let (equipped, lamp_accessory) = equipment_refs(big_root, name, loadout)?;
+    let outfit = crate::vault_db::with_attribdb(big_root, |db| outfit(db, name, &equipped))?;
+    dressed(big_root, name, loadout, outfit, lamp_accessory)
+}
+
+fn dressed(
+    big_root: &Path,
+    name: &str,
+    loadout: &Loadout,
+    mut outfit: Outfit,
+    lamp_accessory: bool,
+) -> Result<Character> {
     if lamp_accessory {
-        let (cone, length) = head_lamp_scale(loadout.head_lamp_stats);
-        for g in outfit.light_nodes.iter_mut().filter(|g| g.slot == "headlamp") {
-            if let Some(crate::track_lights::SceneLight {
-                shape:
-                    crate::track_lights::LightShape::Spot { cone_angle, penumbra_angle, outer_length, inner_length, .. },
-                ..
-            }) = g.node.light.as_mut()
-            {
-                (*cone_angle, *penumbra_angle) = (*cone_angle * cone, *penumbra_angle * cone);
-                (*outer_length, *inner_length) = (*outer_length * length, *inner_length * length);
-            }
-        }
+        gear::scale_head_lamp(&mut outfit.light_nodes, loadout.head_lamp_stats);
     }
     let mut items: Vec<String> = loadout.items.iter().map(|(item, id)| format!("{item:?} {id}")).collect();
     items.extend(loadout.descriptions.iter().map(|(item, key)| format!("{item:?} {key:#010x}")));
@@ -307,37 +345,9 @@ pub fn load_character_with(big_root: &Path, track: &str, name: &str, loadout: &L
             Err(e) => problems.push(format!("{} ({}): {e:#}", m.mesh_name, m.slot)),
         }
     }
-    let mut face_offsets = HashMap::new();
-    for (_, _, _, _, file) in &loaded {
-        for o in file.face_offsets.iter().flatten() {
-            face_offsets.insert(o.joint.clone(), o.translate);
-        }
-    }
-    let plain = model_matrices(&rig, &bind_pose(&rig, &HashMap::new()));
-    let offset = model_matrices(&rig, &bind_pose(&rig, &face_offsets));
-    let mut parts = Vec::new();
-    for (m, geom, crsf, mesh, file) in loaded {
-        let has_fpof = file.face_offsets.is_some();
-        let skin = match skin_of(&file, &rig, mesh.positions.len()) {
-            Ok(s) => s,
-            Err(e) => {
-                problems.push(format!("{} ({}): {e:#}", m.mesh_name, m.slot));
-                continue;
-            }
-        };
-        let bind_error = bind_error(&mesh, &skin, if has_fpof { &offset } else { &plain });
-        parts.push(CharacterPart {
-            slot: m.slot,
-            mesh_name: m.mesh_name,
-            geom,
-            crsf,
-            mesh,
-            skin,
-            material: m.material,
-            face_offsets: has_fpof,
-            bind_error,
-        });
-    }
+    let parts = disc_parts(&rig, loaded, &mut problems)?;
+    let face_offsets = parts.1;
+    let parts = parts.0;
     Ok(Character {
         name: name.to_string(),
         chain: outfit.chain,
@@ -352,10 +362,52 @@ pub fn load_character_with(big_root: &Path, track: &str, name: &str, loadout: &L
     })
 }
 
+type LoadedMesh = (MeshRef, PathBuf, PathBuf, ObjectMesh, CrsfFile);
+
+type FaceOffsets = HashMap<String, [f32; 3]>;
+
+fn disc_parts(
+    rig: &SceneGraph,
+    loaded: Vec<LoadedMesh>,
+    problems: &mut Vec<String>,
+) -> Result<(Vec<CharacterPart>, FaceOffsets)> {
+    let mut face_offsets = HashMap::new();
+    for (_, _, _, _, file) in &loaded {
+        for o in file.face_offsets.iter().flatten() {
+            face_offsets.insert(o.joint.clone(), o.translate);
+        }
+    }
+    let plain = model_matrices(rig, &bind_pose(rig, &HashMap::new()));
+    let offset = model_matrices(rig, &bind_pose(rig, &face_offsets));
+    let mut parts = Vec::new();
+    for (m, geom, crsf, mesh, file) in loaded {
+        let has_fpof = file.face_offsets.is_some();
+        let skin = match skin_of(&file, rig, mesh.positions.len()) {
+            Ok(s) => s,
+            Err(e) => {
+                problems.push(format!("{} ({}): {e:#}", m.mesh_name, m.slot));
+                continue;
+            }
+        };
+        let bind_error = bind_error(&mesh, &skin, if has_fpof { &offset } else { &plain });
+        parts.push(CharacterPart {
+            slot: m.slot,
+            mesh_name: m.mesh_name,
+            source: format!("{} + {}", geom.display(), crsf.display()),
+            mesh,
+            skin,
+            material: PartMaterial::Disc(m.material),
+            face_offsets: has_fpof,
+            bind_error,
+        });
+    }
+    Ok((parts, face_offsets))
+}
+
 fn load_mesh_files(big_root: &Path, m: &MeshRef) -> Result<(PathBuf, PathBuf, ObjectMesh, CrsfFile)> {
     let geom = asset_file(big_root, &m.geom).with_context(|| format!("{} not found", m.geom))?;
     let crsf = asset_file(big_root, &m.crsf).with_context(|| format!("{} not found", m.crsf))?;
-    let mesh = object_mesh::load(&geom)?;
+    let mesh = crate::content::models::rider_mesh(big_root, &m.geom)?;
     let file = CrsfFile::parse(&std::fs::read(&crsf).with_context(|| format!("reading {}", crsf.display()))?)
         .with_context(|| format!("parsing {}", crsf.display()))?;
     Ok((geom, crsf, mesh, file))
@@ -394,7 +446,7 @@ fn skin_of(file: &CrsfFile, rig: &SceneGraph, vertex_count: usize) -> Result<Ski
     Ok(skin)
 }
 
-fn bind_error(mesh: &ObjectMesh, skin: &Skin, model: &[Mat4]) -> f32 {
+pub fn bind_error(mesh: &ObjectMesh, skin: &Skin, model: &[Mat4]) -> f32 {
     let matrices: Vec<Mat4> = skin.palette.iter().map(|j| mat_mul(&j.inverse_bind, &model[j.node])).collect();
     let mut worst = 0.0f32;
     for ((p, joints), weights) in mesh.positions.iter().zip(&skin.joints).zip(&skin.weights) {

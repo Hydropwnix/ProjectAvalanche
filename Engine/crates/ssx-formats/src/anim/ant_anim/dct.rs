@@ -212,6 +212,15 @@ impl DctAnimation {
         Ok(self.pose_from(&rows[k % 8], &rows[k % 8], 0.0))
     }
 
+    pub fn stored_key(&self, k: usize) -> Result<Pose> {
+        let mut pose = self.key(k)?;
+        let rows = self.decode_block(k / 8)?;
+        for (i, q) in pose.quats.iter_mut().enumerate() {
+            *q = rows[k % 8][i];
+        }
+        Ok(pose)
+    }
+
     pub fn sample(&self, frame: f32) -> Result<Pose> {
         let (k0, k1, t) = interval(&self.key_times, frame);
         let (r0, r1) = (self.decode_block(k0 / 8)?, self.decode_block(k1 / 8)?);

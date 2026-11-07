@@ -4,7 +4,9 @@ use std::path::{Component, Path};
 use flate2::read::GzDecoder;
 use tar::EntryType;
 
-use super::install::allowed_files;
+#[cfg(unix)]
+use super::install::is_program;
+use super::install::{FONTS, allowed_files, folder_of, path_of};
 
 const MAX_FILE: u64 = 256 * 1024 * 1024;
 const MAX_UNPACKED: u64 = 512 * 1024 * 1024;
@@ -14,6 +16,7 @@ pub fn extract(archive: &Path, dir: &Path) -> Result<Vec<String>, String> {
     let file = std::fs::File::open(archive).map_err(|e| format!("cannot read the update archive: {e}"))?;
     let mut tar = tar::Archive::new(GzDecoder::new(file).take(MAX_STREAM));
     let mut written = Vec::new();
+    let mut made: Vec<String> = Vec::new();
     let mut total = 0u64;
     let entries = tar.entries().map_err(|e| format!("the update archive does not read: {e}"))?;
     for entry in entries {
@@ -23,7 +26,7 @@ pub fn extract(archive: &Path, dir: &Path) -> Result<Vec<String>, String> {
             continue;
         }
         let path = entry.path().map_err(|e| format!("an entry of the update archive has no readable path: {e}"))?;
-        let Some(name) = entry_name(&path)?.map(str::to_owned) else {
+        let Some(name) = entry_name(&path)? else {
             continue;
         };
         let size = entry.header().size().map_err(|e| format!("an entry of the update archive has no size: {e}"))?;
@@ -40,12 +43,19 @@ pub fn extract(archive: &Path, dir: &Path) -> Result<Vec<String>, String> {
         if kind != EntryType::Regular && kind != EntryType::Continuous {
             return Err(format!("the update archive holds {name} as something other than a plain file"));
         }
-        let target = dir.join(&name);
-        let mut out = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&target)
-            .map_err(|e| format!("cannot write {}: {e}", target.display()))?;
+        if let Some(folder) = folder_of(&name)
+            && !made.iter().any(|m| m == folder)
+        {
+            let sub = dir.join(folder);
+            std::fs::create_dir(&sub).map_err(|e| format!("cannot make {}: {e}", sub.display()))?;
+            made.push(folder.to_string());
+        }
+        let target = path_of(dir, &name);
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, if is_program(&name) { 0o755 } else { 0o666 });
+        let mut out = options.open(&target).map_err(|e| format!("cannot write {}: {e}", target.display()))?;
         let copied =
             std::io::copy(&mut entry, &mut out).map_err(|e| format!("cannot write {}: {e}", target.display()))?;
         if copied != size {
@@ -54,28 +64,23 @@ pub fn extract(archive: &Path, dir: &Path) -> Result<Vec<String>, String> {
         out.sync_all().map_err(|e| format!("cannot finish {}: {e}", target.display()))?;
         written.push(name);
     }
-    #[cfg(unix)]
-    for name in &written {
-        if matches!(name.as_str(), "project-avalanche" | "avalanche-game" | "avalanche-server") {
-            set_exec(&dir.join(name));
-        }
-    }
     Ok(written)
 }
 
-fn entry_name(path: &Path) -> Result<Option<&str>, String> {
+fn entry_name(path: &Path) -> Result<Option<String>, String> {
     let components: Vec<Component<'_>> = path.components().filter(|c| !matches!(c, Component::CurDir)).collect();
+    let font = |file: &std::ffi::OsStr| file.to_str().map(|f| format!("{FONTS}/{f}"));
     match components.as_slice() {
-        [Component::Normal(name)] => Ok(name.to_str()),
-        [Component::Normal(_), Component::Normal(name)] => Ok(name.to_str()),
+        [Component::Normal(name)] => Ok(name.to_str().map(str::to_owned)),
+        [Component::Normal(first), Component::Normal(name)] => {
+            match font(name).filter(|f| *first == FONTS && allowed_files().contains(&f.as_str())) {
+                Some(f) => Ok(Some(f)),
+                None => Ok(name.to_str().map(str::to_owned)),
+            }
+        }
+        [Component::Normal(_), Component::Normal(sub), Component::Normal(name)] if *sub == FONTS => Ok(font(name)),
         _ => Err(format!("the update archive holds an unsafe path: {}", path.display())),
     }
-}
-
-#[cfg(unix)]
-fn set_exec(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
 }
 
 #[cfg(test)]
@@ -140,6 +145,43 @@ mod tests {
         let written = extract(&path, &out).unwrap();
         assert_eq!(written, ["project-avalanche", "avalanche-game", "README.txt"]);
         assert_eq!(std::fs::read(out.join("avalanche-game")).unwrap(), b"game");
+        #[cfg(unix)]
+        for (name, exec) in [("project-avalanche", true), ("avalanche-game", true), ("README.txt", false)] {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(out.join(name)).unwrap().permissions().mode();
+            assert_eq!(mode & 0o100 != 0, exec, "{name}: {mode:o}");
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_fonts_are_written_in_their_folder() {
+        let root = temp_dir("fonts");
+        let game = super::super::install::game_name();
+        for (tag, prefix) in [("bare", "./"), ("folder", "ProjectAvalanche/")] {
+            let path = archive(&root, |b| {
+                raw(b, &format!("{prefix}{game}"), b'0', None, b"game");
+                raw(b, &format!("{prefix}fonts/NotoSans-Regular.ttf"), b'0', None, b"font");
+                raw(b, &format!("{prefix}fonts/OFL.txt"), b'0', None, b"license");
+                raw(b, &format!("{prefix}fonts/Other.ttf"), b'0', None, b"not ours");
+            });
+            let out = root.join(tag);
+            std::fs::create_dir(&out).unwrap();
+            let written = extract(&path, &out).unwrap();
+            assert_eq!(written, [game, "fonts/NotoSans-Regular.ttf", "fonts/OFL.txt"], "{tag}");
+            assert_eq!(std::fs::read(out.join("fonts").join("NotoSans-Regular.ttf")).unwrap(), b"font");
+            assert!(!out.join("fonts").join("Other.ttf").exists());
+        }
+        let path = archive(&root, |b| raw(b, &format!("fonts/{game}"), b'0', None, b"game"));
+        let out = root.join("named-fonts");
+        std::fs::create_dir(&out).unwrap();
+        assert_eq!(extract(&path, &out).unwrap(), [game]);
+        for bad in ["ProjectAvalanche/other/NotoSans-Regular.ttf", "a/b/fonts/NotoSans-Regular.ttf", "fonts/../x"] {
+            let path = archive(&root, |b| raw(b, bad, b'0', None, b"x"));
+            let out = root.join(format!("bad-{}", bad.len()));
+            std::fs::create_dir(&out).unwrap();
+            assert!(extract(&path, &out).is_err(), "{bad}");
+        }
         std::fs::remove_dir_all(&root).unwrap();
     }
 

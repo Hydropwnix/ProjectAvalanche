@@ -1,0 +1,123 @@
+{
+  "format": 1,
+  "view": "ava_players",
+  "layer": "screen",
+  "stage": [1280, 720],
+  "frame_rate": 30,
+  "imports": [
+    {"name": "Panel", "url": "components/Panel.swf", "symbol": "components.Panel"},
+    {"name": "ListMenu", "url": "components/ListMenu.swf", "symbol": "components.ListMenu"},
+    {"name": "Highlight", "url": "components/Highlight.swf", "symbol": "components.Highlight"},
+    {"name": "ImageLoader", "url": "components/ImageLoader.swf", "symbol": "components.ImageLoader"},
+    {"name": "Callouts", "url": "components/ButtonCalloutBar.swf", "symbol": "components.ButtonCalloutBar"}
+  ],
+  "symbols": [
+    {"name": "AvaPlayersRow", "export": true,
+      "cell": {"texts": [
+          {"text": "txtPlace", "field": "strPlace"},
+          {"text": "txtName", "field": "strName", "fit": "shrink"},
+          {"text": "txtRider", "field": "strRider", "fit": "shrink"},
+          {"text": "txtStatus", "field": "strStatus", "fit": "shrink"},
+          {"text": "txtResult", "field": "strResult", "fit": "shrink"},
+          {"text": "txtPing", "field": "strPing"},
+          {"text": "txtChat", "field": "strChat", "fit": "shrink"}],
+        "images": [{"loader": "mcIcon", "field": "strIcon"}],
+        "highlight": "mcHighlight", "width": 900, "height": 34},
+      "children": [
+        {"instance": "mcHighlight", "symbol": "Highlight"},
+        {"instance": "mcIcon", "symbol": "ImageLoader", "x": 6, "y": 3, "scale_x": 0.4375, "scale_y": 0.4375},
+        {"instance": "txtPlace", "x": 38, "y": 4, "text": {"font": "DIN Mittelschrift Std", "size": 18,
+          "color": "#b8f3ff", "align": "right", "width": 36, "height": 26}},
+        {"instance": "txtName", "x": 82, "y": 4, "text": {"font": "DIN Mittelschrift Std", "size": 18,
+          "color": "#ffffff", "width": 206, "height": 26}},
+        {"instance": "txtRider", "x": 294, "y": 4, "text": {"font": "DIN Mittelschrift Std", "size": 18,
+          "color": "#c3fdf9", "width": 120, "height": 26}},
+        {"instance": "txtStatus", "x": 420, "y": 4, "text": {"font": "DIN Mittelschrift Std", "size": 18,
+          "color": "#c3fdf9", "width": 150, "height": 26}},
+        {"instance": "txtResult", "x": 576, "y": 4, "text": {"font": "DIN Mittelschrift Std", "size": 18,
+          "color": "#ffffff", "align": "right", "width": 140, "height": 26}},
+        {"instance": "txtPing", "x": 722, "y": 4, "text": {"font": "DIN Mittelschrift Std", "size": 18,
+          "color": "#ffffff", "align": "right", "width": 80, "height": 26}},
+        {"instance": "txtChat", "x": 808, "y": 4, "text": {"font": "DIN Mittelschrift Std", "size": 18,
+          "color": "#6eb7c6", "align": "right", "width": 84, "height": 26}}
+      ]},
+    {"name": "AvaPlayers", "export": true, "children": [
+      {"instance": "txtTitle", "x": 190, "y": 198, "text": {"font": "DIN Engschrift Std", "size": 34,
+        "color": "#b8f3ff", "width": 560, "height": 42}},
+      {"instance": "txtServer", "x": 190, "y": 240, "text": {"font": "DIN Mittelschrift Std", "size": 18,
+        "color": "#6eb7c6", "width": 640, "height": 26}},
+      {"instance": "txtCount", "x": 830, "y": 240, "text": {"font": "DIN Mittelschrift Std", "size": 18,
+        "color": "#ffffff", "align": "right", "width": 260, "height": 26}},
+      {"instance": "mcTablePanel", "symbol": "Panel", "x": 182, "y": 268},
+      {"instance": "txtColPlace", "x": 228, "y": 274, "text": {"font": "DIN Mittelschrift Std", "size": 15,
+        "color": "#6eb7c6", "align": "right", "width": 36, "height": 22}},
+      {"instance": "txtColName", "x": 272, "y": 274, "text": {"font": "DIN Mittelschrift Std", "size": 15,
+        "color": "#6eb7c6", "width": 206, "height": 22}},
+      {"instance": "txtColRider", "x": 484, "y": 274, "text": {"font": "DIN Mittelschrift Std", "size": 15,
+        "color": "#6eb7c6", "width": 120, "height": 22}},
+      {"instance": "txtColStatus", "x": 610, "y": 274, "text": {"font": "DIN Mittelschrift Std", "size": 15,
+        "color": "#6eb7c6", "width": 150, "height": 22}},
+      {"instance": "txtColResult", "x": 766, "y": 274, "text": {"font": "DIN Mittelschrift Std", "size": 15,
+        "color": "#6eb7c6", "align": "right", "width": 140, "height": 22}},
+      {"instance": "txtColPing", "x": 912, "y": 274, "text": {"font": "DIN Mittelschrift Std", "size": 15,
+        "color": "#6eb7c6", "align": "right", "width": 80, "height": 22}},
+      {"instance": "txtColChat", "x": 998, "y": 274, "text": {"font": "DIN Mittelschrift Std", "size": 15,
+        "color": "#6eb7c6", "align": "right", "width": 84, "height": 22}},
+      {"instance": "mcRows", "symbol": "ListMenu", "x": 190, "y": 298},
+      {"instance": "txtNote", "x": 190, "y": 634, "text": {"font": "DIN Mittelschrift Std", "size": 15,
+        "color": "#c3fdf9", "width": 900, "height": 22}},
+      {"instance": "txtPingHelp", "x": 190, "y": 654, "text": {"font": "DIN Mittelschrift Std", "size": 12,
+        "color": "#6eb7c6", "width": 900, "height": 18}},
+      {"instance": "mcCallouts", "symbol": "Callouts", "x": 182, "y": 676}
+    ]}
+  ],
+  "view_symbol": {"symbol": "AvaPlayers"},
+  "logic": {
+    "input_priority": "popup",
+    "consume_unmapped": true,
+    "data": ["ava_players", "ava_players_rows", "ava_players_rows_index"],
+    "texts": [
+      {"target": "txtTitle", "data": "ava_players", "field": "title"},
+      {"target": "txtServer", "data": "ava_players", "field": "server", "fit": "shrink"},
+      {"target": "txtCount", "data": "ava_players", "field": "count"},
+      {"target": "txtColPlace", "data": "ava_players", "field": "colPlace"},
+      {"target": "txtColName", "data": "ava_players", "field": "colName"},
+      {"target": "txtColRider", "data": "ava_players", "field": "colRider"},
+      {"target": "txtColStatus", "data": "ava_players", "field": "colStatus"},
+      {"target": "txtColResult", "data": "ava_players", "field": "colResult"},
+      {"target": "txtColPing", "data": "ava_players", "field": "colPing"},
+      {"target": "txtColChat", "data": "ava_players", "field": "colChat"},
+      {"target": "txtNote", "data": "ava_players", "field": "note", "fit": "shrink"},
+      {"target": "txtPingHelp", "data": "ava_players", "field": "pingHelp", "fit": "shrink"}
+    ],
+    "menus": [
+      {"target": "mcRows", "rows": 9, "cell_width": 900, "cell_height": 34, "spacing": 2, "wrap": false,
+        "data": "ava_players_rows", "index": "ava_players_rows_index", "cell": "AvaPlayersRow"}
+    ],
+    "paging": {"menu": "mcRows", "setup": "A_AvaPlayersSetup"},
+    "panels": [
+      {"target": "mcTablePanel", "width": 916, "height": 360, "dimmer": 60}
+    ],
+    "callouts": {"target": "mcCallouts", "buttons": [
+      {"icon": "CALLOUT_BACK", "label": "TXT_AVA_PLAYERS_BACK"},
+      {"icon": "CALLOUT_FACE_BUTTON_TERTIARY", "label": "TXT_AVA_PLAYERS_MUTE"},
+      {"icon": "CALLOUT_L2", "label": "TXT_AVA_PLAYERS_PAGE"}
+    ]},
+    "inputs": [
+      {"key": "DPAD_UP", "action": "A_AvaPlayersRequestData", "param": -1},
+      {"key": "LAS_UP", "action": "A_AvaPlayersRequestData", "param": -1},
+      {"key": "DPAD_DOWN", "action": "A_AvaPlayersRequestData", "param": 1},
+      {"key": "LAS_DOWN", "action": "A_AvaPlayersRequestData", "param": 1},
+      {"key": "LEFT_TRIGGER", "action": "A_AvaPlayersPage", "param": -1, "sound": "menu_highlight"},
+      {"key": "RIGHT_TRIGGER", "action": "A_AvaPlayersPage", "param": 1, "sound": "menu_highlight"},
+      {"key": "DIGITAL_FOUR", "action": "A_AvaPlayersMute", "sound": "button_press_select"},
+      {"key": "BACK", "action": "A_AvaPlayersBack", "sound": "menu_back"},
+      {"key": "ADVANCE", "take": true},
+      {"key": "START", "take": true},
+      {"key": "DPAD_LEFT", "take": true},
+      {"key": "DPAD_RIGHT", "take": true},
+      {"key": "LAS_LEFT", "take": true},
+      {"key": "LAS_RIGHT", "take": true}
+    ]
+  }
+}

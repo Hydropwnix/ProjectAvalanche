@@ -1,0 +1,340 @@
+use core::mem;
+
+use bevy::{
+    ecs::{
+        archetype::{Archetype, ArchetypeGeneration, ArchetypeId, Archetypes},
+        component::{ComponentId, StorageType},
+    },
+    platform::collections::HashMap,
+    prelude::*,
+};
+use log::trace;
+
+use crate::{
+    prelude::*,
+    server::replication_query::{ComponentStorage, ReplicationQuery},
+    shared::replication::{
+        receive_markers::ReceiveMarkers,
+        registry::{ComponentIndex, ReplicationRegistry},
+        rules::{ReplicationRules, component::ComponentRule},
+    },
+};
+
+#[derive(Resource)]
+pub(super) struct ReplicatedArchetypes {
+    /// ID of [`Replicated`] component.
+    marker_id: ComponentId,
+
+    /// Highest processed archetype ID.
+    generation: ArchetypeGeneration,
+
+    /// Maps a Bevy archetype ID to an index in [`Self::list`].
+    ids_map: HashMap<ArchetypeId, usize>,
+
+    /// Archetypes marked as replicated.
+    list: Vec<ReplicatedArchetype>,
+}
+
+impl ReplicatedArchetypes {
+    pub(super) fn update(
+        &mut self,
+        archetypes: &Archetypes,
+        rules: &ReplicationRules,
+        receive_markers: &ReceiveMarkers,
+    ) {
+        let old_generation = mem::replace(&mut self.generation, archetypes.generation());
+
+        for archetype in archetypes[old_generation..]
+            .iter()
+            .filter(|archetype| archetype.contains(self.marker_id))
+        {
+            trace!("marking `{:?}` as replicated", archetype.id());
+            let mut replicated_archetype = ReplicatedArchetype::new(archetype.id());
+            for rule in rules.iter().filter(|rule| rule.matches(archetype)) {
+                for &component in &rule.components {
+                    // Since rules are sorted by priority,
+                    // we are inserting only new components that aren't present.
+                    if replicated_archetype
+                        .components
+                        .iter()
+                        .any(|(existing, _)| existing.id == component.id)
+                    {
+                        continue;
+                    }
+
+                    // SAFETY: archetype matches the rule, so the component is present.
+                    let storage =
+                        unsafe { archetype.get_storage_type(component.id).unwrap_unchecked() };
+                    replicated_archetype.components.push((component, storage));
+                }
+            }
+
+            // Incoming receive markers that take effect in the same update should be processed first.
+            replicated_archetype.components.sort_by_key(|(rule, _)| {
+                receive_markers
+                    .same_update_marker_index(rule.id)
+                    .unwrap_or(usize::MAX)
+            });
+
+            self.ids_map.insert(archetype.id(), self.list.len());
+            self.list.push(replicated_archetype);
+        }
+    }
+
+    pub(super) fn marker_id(&self) -> ComponentId {
+        self.marker_id
+    }
+
+    pub(super) fn get(&self, id: ArchetypeId) -> Option<&ReplicatedArchetype> {
+        let index = *self.ids_map.get(&id)?;
+        self.list.get(index)
+    }
+
+    pub(super) fn iter_mut(&mut self) -> impl Iterator<Item = &mut ReplicatedArchetype> {
+        self.list.iter_mut()
+    }
+}
+
+impl FromWorld for ReplicatedArchetypes {
+    fn from_world(world: &mut World) -> Self {
+        Self {
+            marker_id: world.register_component::<Replicated>(),
+            generation: ArchetypeGeneration::initial(),
+            ids_map: Default::default(),
+            list: Default::default(),
+        }
+    }
+}
+
+/// An archetype that can be stored in [`ReplicatedArchetypes`].
+pub(super) struct ReplicatedArchetype {
+    /// Associated archetype ID.
+    pub(super) id: ArchetypeId,
+
+    /// Components marked as replicated.
+    pub(super) components: Vec<(ComponentRule, StorageType)>,
+
+    /// Keeps the normal pass active until mutations are acknowledged or no longer needed.
+    pub(super) has_pending_replication: bool,
+}
+
+impl ReplicatedArchetype {
+    fn new(id: ArchetypeId) -> Self {
+        Self {
+            id,
+            components: Default::default(),
+            has_pending_replication: true,
+        }
+    }
+
+    /// Returns an iterator over metadata for this archetype's replicated components.
+    pub(super) fn iter_components<'a, 'w>(
+        &'a self,
+        archetype: &Archetype,
+        query: &'a ReplicationQuery<'w, '_>,
+        registry: &'a ReplicationRegistry,
+    ) -> impl Iterator<Item = ComponentMetadata<'w>> + 'a {
+        debug_assert_eq!(self.id, archetype.id());
+        let table_id = archetype.table_id();
+
+        self.components.iter().map(move |&(rule, storage)| {
+            let (component_index, component_id, _) = registry.get(rule.fns_id);
+
+            // SAFETY: component and storage were obtained from this archetype.
+            let storage = unsafe { query.component_storage(table_id, storage, component_id) };
+
+            ComponentMetadata {
+                rule,
+                component_index,
+                component_id,
+                storage,
+            }
+        })
+    }
+
+    pub(super) fn find_rule(&self, id: ComponentId) -> Option<&ComponentRule> {
+        self.components.iter().map(|(r, _)| r).find(|r| r.id == id)
+    }
+}
+
+/// Replication metadata and storage for a component in an archetype.
+pub(super) struct ComponentMetadata<'w> {
+    pub(super) rule: ComponentRule,
+    pub(super) component_index: ComponentIndex,
+    pub(super) component_id: ComponentId,
+    pub(super) storage: ComponentStorage<'w>,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::{Deserialize, Serialize};
+    use test_log::test;
+
+    use super::*;
+
+    #[test]
+    fn empty() {
+        let mut app = App::new();
+        app.init_resource::<ReplicatedArchetypes>()
+            .init_resource::<ReplicationRules>()
+            .init_resource::<ReceiveMarkers>();
+
+        app.world_mut().spawn_empty();
+        update_archetypes(&mut app);
+
+        let archetypes = app.world().resource::<ReplicatedArchetypes>();
+        assert!(archetypes.list.is_empty());
+    }
+
+    #[test]
+    fn no_components() {
+        let mut app = App::new();
+        app.init_resource::<ReplicatedArchetypes>()
+            .init_resource::<ReplicationRules>()
+            .init_resource::<ReceiveMarkers>();
+
+        app.world_mut().spawn(Replicated);
+        update_archetypes(&mut app);
+
+        let archetypes = app.world().resource::<ReplicatedArchetypes>();
+        assert_eq!(archetypes.list.len(), 1);
+        let archetype = archetypes.list.first().unwrap();
+        assert!(archetype.components.is_empty());
+    }
+
+    #[test]
+    fn component() {
+        let mut app = App::new();
+        app.init_resource::<ReplicatedArchetypes>()
+            .init_resource::<ReplicationRules>()
+            .init_resource::<ProtocolHasher>()
+            .init_resource::<ReplicationRegistry>()
+            .init_resource::<ReceiveMarkers>()
+            .replicate::<A>();
+
+        app.world_mut().spawn((Replicated, A));
+        update_archetypes(&mut app);
+
+        let archetypes = app.world().resource::<ReplicatedArchetypes>();
+        assert_eq!(archetypes.list.len(), 1);
+        let archetype = archetypes.list.first().unwrap();
+        assert_eq!(archetype.components.len(), 1);
+    }
+
+    #[test]
+    fn bundle() {
+        let mut app = App::new();
+        app.init_resource::<ReplicatedArchetypes>()
+            .init_resource::<ReplicationRules>()
+            .init_resource::<ProtocolHasher>()
+            .init_resource::<ReplicationRegistry>()
+            .init_resource::<ReceiveMarkers>()
+            .replicate_bundle::<(A, B)>();
+
+        app.world_mut().spawn((Replicated, A, B));
+        update_archetypes(&mut app);
+
+        let archetypes = app.world().resource::<ReplicatedArchetypes>();
+        assert_eq!(archetypes.list.len(), 1);
+        let archetype = archetypes.list.first().unwrap();
+        assert_eq!(archetype.components.len(), 2);
+    }
+
+    #[test]
+    fn part_of_bundle() {
+        let mut app = App::new();
+        app.init_resource::<ReplicatedArchetypes>()
+            .init_resource::<ReplicationRules>()
+            .init_resource::<ProtocolHasher>()
+            .init_resource::<ReplicationRegistry>()
+            .init_resource::<ReceiveMarkers>()
+            .replicate_bundle::<(A, B)>();
+
+        app.world_mut().spawn((Replicated, A));
+        update_archetypes(&mut app);
+
+        let archetypes = app.world().resource::<ReplicatedArchetypes>();
+        assert_eq!(archetypes.list.len(), 1);
+        let archetype = archetypes.list.first().unwrap();
+        assert!(archetype.components.is_empty());
+    }
+
+    #[test]
+    fn bundle_with_subset() {
+        let mut app = App::new();
+        app.init_resource::<ReplicatedArchetypes>()
+            .init_resource::<ReplicationRules>()
+            .init_resource::<ProtocolHasher>()
+            .init_resource::<ReplicationRegistry>()
+            .init_resource::<ReceiveMarkers>()
+            .replicate::<A>()
+            .replicate_bundle::<(A, B)>();
+
+        app.world_mut().spawn((Replicated, A, B));
+        update_archetypes(&mut app);
+
+        let archetypes = app.world().resource::<ReplicatedArchetypes>();
+        assert_eq!(archetypes.list.len(), 1);
+        let archetype = archetypes.list.first().unwrap();
+        assert_eq!(archetype.components.len(), 2);
+    }
+
+    #[test]
+    fn bundle_with_multiple_subsets() {
+        let mut app = App::new();
+        app.init_resource::<ReplicatedArchetypes>()
+            .init_resource::<ReplicationRules>()
+            .init_resource::<ProtocolHasher>()
+            .init_resource::<ReplicationRegistry>()
+            .init_resource::<ReceiveMarkers>()
+            .replicate::<A>()
+            .replicate::<B>()
+            .replicate_bundle::<(A, B)>();
+
+        app.world_mut().spawn((Replicated, A, B));
+        update_archetypes(&mut app);
+
+        let archetypes = app.world().resource::<ReplicatedArchetypes>();
+        assert_eq!(archetypes.list.len(), 1);
+        let archetype = archetypes.list.first().unwrap();
+        assert_eq!(archetype.components.len(), 2);
+    }
+
+    #[test]
+    fn bundles_with_overlap() {
+        let mut app = App::new();
+        app.init_resource::<ReplicatedArchetypes>()
+            .init_resource::<ReplicationRules>()
+            .init_resource::<ProtocolHasher>()
+            .init_resource::<ReplicationRegistry>()
+            .init_resource::<ReceiveMarkers>()
+            .replicate_bundle::<(A, B)>()
+            .replicate_bundle::<(A, C)>();
+
+        app.world_mut().spawn((Replicated, A, B, C));
+        update_archetypes(&mut app);
+
+        let archetypes = app.world().resource::<ReplicatedArchetypes>();
+        assert_eq!(archetypes.list.len(), 1);
+        let archetype = archetypes.list.first().unwrap();
+        assert_eq!(archetype.components.len(), 3);
+    }
+
+    fn update_archetypes(app: &mut App) {
+        app.world_mut()
+            .resource_scope(|world, mut archetypes: Mut<ReplicatedArchetypes>| {
+                let rules = world.resource::<ReplicationRules>();
+                let receive_markers = world.resource::<ReceiveMarkers>();
+                archetypes.update(world.archetypes(), rules, receive_markers);
+            });
+    }
+
+    #[derive(Component, Serialize, Deserialize)]
+    struct A;
+
+    #[derive(Component, Serialize, Deserialize)]
+    struct B;
+
+    #[derive(Component, Serialize, Deserialize)]
+    struct C;
+}

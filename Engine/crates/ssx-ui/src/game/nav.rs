@@ -148,6 +148,10 @@ impl Nav {
         self.states.len()
     }
 
+    pub fn started(&self) -> bool {
+        self.started
+    }
+
     pub fn event_names(&self) -> Vec<&str> {
         let mut v: Vec<&str> =
             self.states.iter().flat_map(|s| s.transitions.iter().filter_map(|t| t.event.as_deref())).collect();

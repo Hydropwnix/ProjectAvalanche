@@ -134,13 +134,14 @@ pub(crate) fn riders(v: &Vaults) -> Result<Vec<Rider>> {
             display_name: r.text(0xEAA0_A6F7).unwrap_or_default(),
             cost: r.int(fnv1(b"cost")).unwrap_or(0),
             locked: r.int(0x5650_1F0A) == Some(1),
-            unk_349e965b: r.int(0x349E_965B) == Some(1),
+            default: r.int(0x349E_965B) == Some(1),
             unk_940b9b22: r.int(0x940B_9B22).unwrap_or(0),
             stat_bonuses,
             portrait: r.text(0x2714_52A4).unwrap_or_default(),
             description: r.text(0x726F_CE94).unwrap_or_default(),
             round_icon: r.text(0xC0F1_B828).unwrap_or_default(),
             icon: r.text(0x9368_E42D).unwrap_or_default(),
+            content: None,
         });
     }
     Ok(out)
@@ -169,6 +170,7 @@ fn item(v: &Vaults, key: u32, group: u32) -> Result<Item> {
         attributes: stat_pairs(&attrs, 4),
         unk_b6ef00c6: r.int(0xB6EF_00C6).unwrap_or(0),
         descriptions: r.refs(0x9F3E_A0B0),
+        content: None,
     })
 }
 

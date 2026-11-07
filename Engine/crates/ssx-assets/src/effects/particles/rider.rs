@@ -5,7 +5,7 @@ use ssx_formats::attrib::Value;
 
 use super::{CLASS_PARTICLE_NODE, ParticleNode, particle_node};
 use crate::character::{GEAR_SLOTS, Loadout};
-use crate::vault_db::{Db, fnv1, refs, single, with_track_db};
+use crate::vault_db::{Db, fnv1, refs, single};
 
 const CLASS_CHARACTER: u32 = fnv1("character");
 const CLASS_BOARDER: u32 = fnv1("ge_characterboarder");
@@ -36,9 +36,14 @@ pub struct RiderNode {
     pub node: ParticleNode,
 }
 
-pub fn rider_particle_nodes(big_root: &Path, track: &str, name: &str, loadout: &Loadout) -> Result<Vec<RiderNode>> {
+pub fn rider_particle_nodes(
+    big_root: &Path,
+    track: Option<&str>,
+    name: &str,
+    loadout: &Loadout,
+) -> Result<Vec<RiderNode>> {
     let (equipped, _) = crate::character::equipment_refs(big_root, name, loadout)?;
-    with_track_db(big_root, track, |db| {
+    crate::vault_db::with_level_db(big_root, track, |db| {
         let boarder = boarder_of(db, name)?;
         let mut out = Vec::new();
         for field in db.fields(CLASS_BOARDER, boarder)? {

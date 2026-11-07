@@ -12,8 +12,8 @@ const TILES: [(Slot, Icon, &str, &str, Page, &str); 3] = [
     (
         Slot::TileMods,
         Icon::Mountain,
-        "MOD BROWSER",
-        "Not available yet.\nMod support is planned, not built.",
+        "MODS",
+        "Texture packs: install them,\norder them, switch them on and off.",
         Page::Mods,
         "tile_mods",
     ),
@@ -29,7 +29,7 @@ const TILES: [(Slot, Icon, &str, &str, Page, &str); 3] = [
         Slot::TileExtras,
         Icon::Wrench,
         "EXTRAS",
-        "Tools, the output of what was started,\ncredits and where the files are.",
+        "Tools, the output of what was started,\ncredits, updates and where the files are.",
         Page::Extras,
         "tile_extras",
     ),
@@ -127,13 +127,22 @@ impl Launcher {
                         enabled: true,
                     };
                 }
-                let line = match &self.setup_message {
-                    Some((true, message)) => (message.clone(), theme::GOOD),
+                let line = match (&self.setup_message, self.mods_line()) {
+                    (Some((true, message)), _) => (message.clone(), theme::GOOD),
+                    (_, Some(line)) => line,
                     _ => ("Experience the original game, now on PC.".to_owned(), soft),
                 };
                 HeroText { title, line, tab: ("READY", theme::GOOD), enabled: true }
             }
         }
+    }
+
+    fn mods_line(&self) -> Option<(String, Color32)> {
+        let r = self.mods.snapshot.as_ref()?.report.as_ref()?;
+        let problems = !r.skipped.is_empty() || !r.registry.conflicts.is_empty() || r.list_error.is_some();
+        let colour = if problems { theme::WARN } else { theme::TEXT_SOFT };
+        let more = if problems { " See Mods, Before play." } else { "" };
+        Some((format!("{}{more}", super::mods_report::summary(r)), colour))
     }
 
     pub fn hero_clicked(&mut self, ctx: &egui::Context) {

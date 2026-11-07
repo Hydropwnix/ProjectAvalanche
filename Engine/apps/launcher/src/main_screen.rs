@@ -68,7 +68,11 @@ impl Launcher {
         }
         let big = self.settings.big_root();
         if std::mem::take(&mut self.auto_play_pending) {
-            self.start(ctx, &command::game(&self.settings, &big), true);
+            let game = match self.link.take() {
+                Some(link) => command::game_with_link(&self.settings, &big, &link),
+                None => command::game(&self.settings, &big),
+            };
+            self.start(ctx, &game, true);
         }
         if std::mem::take(&mut self.auto_launch_pending) {
             self.start(ctx, &command::viewer(&self.settings, &big), false);
@@ -85,7 +89,11 @@ impl Launcher {
             && !self.gallery.loading
             && (!self.auto_extract || extracting || self.setup_message.is_some())
             && (!self.auto_launch || viewer_done)
-            && !self.auto_play_pending;
+            && !self.auto_play_pending
+            && !self.mods.busy()
+            && self.host.script.is_empty()
+            && self.host.scripted_done()
+            && (self.page != Page::Host || self.host.drops.is_some() == self.data_ready);
         if !plan.requested && self.frame >= 40 && settled {
             plan.requested = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
@@ -98,7 +106,7 @@ impl Launcher {
         });
         if let Some(image) = image {
             if let Err(e) = crate::save_png(&plan.path, &image) {
-                eprintln!("error: saving {}: {e}", plan.path.display());
+                ssx_core::eprintln!("error: saving {}: {e}", plan.path.display());
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
@@ -111,11 +119,17 @@ impl eframe::App for Launcher {
         theme::NIGHT.to_normalized_gamma_f32()
     }
 
+    fn on_exit(&mut self) {
+        if let Some(server) = &mut self.host.server {
+            server.stop_and_wait();
+        }
+    }
+
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         let due = self.frame >= 12 && self.frame.is_multiple_of(4) && self.window_pixels.is_none();
-        if let Some(key) = due.then(|| self.scripted_keys.pop_front()).flatten() {
+        if let Some((key, shift)) = due.then(|| self.scripted_keys.pop_front()).flatten() {
             for pressed in [true, false] {
-                let modifiers = Default::default();
+                let modifiers = if shift { egui::Modifiers::SHIFT } else { egui::Modifiers::default() };
                 raw_input.events.push(egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers });
             }
         }
@@ -128,15 +142,21 @@ impl eframe::App for Launcher {
         let ctx = ui.ctx().clone();
         self.frame += 1;
         self.poll(&ctx);
+        let big = self.data_ready.then(|| self.settings.big_root());
+        let opened = self.page == Page::Mods && self.last_page != Page::Mods;
+        if self.mods.poll() || opened || self.mods.base_changed(&big) {
+            self.refresh_mods(&ctx);
+        }
+        self.last_page = self.page;
         let loading = self.gallery.loading;
         self.gallery.poll(&ctx);
         if let Some(started) = self.timing {
             let ms = started.elapsed().as_secs_f64() * 1e3;
             if self.frame == 1 {
-                eprintln!("first frame after {ms:.0} ms ({} pictures ready)", self.gallery.ready());
+                ssx_core::eprintln!("first frame after {ms:.0} ms ({} pictures ready)", self.gallery.ready());
             }
             if loading && !self.gallery.loading {
-                eprintln!("pictures complete after {ms:.0} ms (frame {})", self.frame);
+                ssx_core::eprintln!("pictures complete after {ms:.0} ms (frame {})", self.frame);
             }
         }
         let screen = ctx.content_rect();
@@ -167,6 +187,7 @@ impl eframe::App for Launcher {
         }
         match self.page {
             Page::Play => self.play_page(ui, &l),
+            Page::Host => self.host_page(ui, &l),
             Page::Mods => self.mods_page(ui, &l),
             Page::Settings => self.settings_page(ui, &l),
             Page::Extras => self.extras_page(ui, &l),

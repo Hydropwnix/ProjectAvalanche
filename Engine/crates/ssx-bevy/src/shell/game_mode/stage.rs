@@ -2,7 +2,7 @@ use std::sync::mpsc::TryRecvError;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use bevy::prelude::*;
+use bevy::prelude::{Assets, Camera, Commands, Image, Query, Sprite, Vec2, Visibility, default, error, info};
 use ssx_ui::game::GameUi;
 
 use super::world::speech_block;
@@ -48,11 +48,14 @@ impl Shell {
         match (&mut self.movie, wanted) {
             (None, Some(_)) if self.movie_ended == Some(serial) => {}
             (None, Some(name)) => {
-                let paths = ssx_ui::game::fe::host::movie_paths(&self.big_root, &name);
+                let content = ssx_assets::content::GameContent::of(&self.big_root);
                 let lang = ui::movie::movie_language(&self.lang);
-                match ui::movie::MoviePlayback::open_lang(&name, &paths, images, lang) {
+                let fmv = ssx_assets::content::fmv::movie_id(&name)
+                    .ok_or_else(|| anyhow::anyhow!("movie {name}: not a movie id"))
+                    .and_then(|id| content.fmv(&id).ok_or_else(|| anyhow::anyhow!("movie {id} not found")));
+                match fmv.and_then(|f| ui::movie::MoviePlayback::open_fmv(&name, &f, &content, images, lang)) {
                     Ok(m) => {
-                        info!("shell: movie {name} ({} frames at {:.2} fps)", m.frames, m.fps);
+                        info!("shell: movie {name} ({})", m.describe());
                         if let Ok((mut sprite, mut v)) = sprites.get_mut(self.movie_sprite) {
                             sprite.image = m.image.clone();
                             *v = Visibility::Visible;
@@ -73,6 +76,13 @@ impl Shell {
             (Some(m), Some(name)) if m.name == name => {
                 let stopped = ui.fe.as_ref().is_some_and(|fe| fe.movie_stop);
                 if m.advance(dt, images) || m.time >= self.movie_cap || stopped {
+                    if let Some((id, source, why)) = m.failure() {
+                        error!("shell: movie {name} ({id} of {source}) stopped at {:.2} s: {why}", m.time);
+                        ssx_assets::content::GameContent::of(&self.big_root).refuse_fmv(id, source, why);
+                    }
+                    if let Some(counts) = m.picture_counts() {
+                        info!("shell: movie {name}: {counts}");
+                    }
                     self.movie = None;
                     self.movie_ended = Some(serial);
                     self.host.finish_movie(ui);
@@ -99,10 +109,16 @@ impl Shell {
         if let Ok(mut c) = cameras.get_mut(self.movie_camera) {
             c.is_active = self.movie.is_some();
         }
-        self.host.viewer_movie_frame = self.movie.as_ref().map(|m| (m.time * m.fps) as i32);
+        self.host.viewer_movie_frame = self.movie.as_ref().map(ui::movie::MoviePlayback::frame);
     }
 
-    pub(super) fn stage_step(&mut self, ui: &mut GameUi, level: Option<&game_level::LevelGame>, ride: Option<&Ride>) {
+    pub(super) fn stage_step(
+        &mut self,
+        ui: &mut GameUi,
+        level: Option<&game_level::LevelGame>,
+        ride: Option<&Ride>,
+        mut live: Option<&mut crate::shell::live::LiveSession>,
+    ) {
         match self.stage {
             Stage::Menus => {
                 let Some(launch) = ui.fe.as_ref().and_then(|f| f.launch.clone()) else { return };
@@ -110,7 +126,21 @@ impl Shell {
                     return;
                 }
                 let _ = self.host.frame(ui, 0.0);
-                match self.start_load(ui, &launch) {
+                let rules = live.as_deref().filter(|l| !l.ending()).and_then(|l| l.rules);
+                if let (Some(l), Some(fe)) = (live.as_deref_mut(), ui.fe.as_mut()) {
+                    if l.ending() {
+                        return;
+                    }
+                    l.level = crate::shell::live::LiveLevel::Loading;
+                    self.live_away = None;
+                    self.live_profile.get_or_insert_with(|| fe.profile.clone());
+                    fe.network_session = true;
+                }
+                let started = match launch.map.clone() {
+                    Some(map) => self.start_map_load(ui, &launch, &map, rules),
+                    None => self.start_load(ui, &launch, rules),
+                };
+                match started {
                     Ok(()) => {
                         self.launch = Some(launch);
                         self.stage = Stage::Loading;
@@ -118,6 +148,7 @@ impl Shell {
                     }
                     Err(e) => {
                         error!("shell: the level did not start: {e:#}");
+                        self.map_refused(ui, Some(&launch), &format!("{e:#}"));
                         self.level_lost(ui);
                     }
                 }
@@ -138,12 +169,16 @@ impl Shell {
                     Ok(Err(e)) => {
                         error!("shell: the level did not load: {e:#}");
                         self.loading = None;
+                        let launch = self.launch.clone();
+                        self.map_refused(ui, launch.as_ref(), &format!("{e:#}"));
                         self.level_lost(ui);
                     }
                     Err(TryRecvError::Empty) => {}
                     Err(TryRecvError::Disconnected) => {
                         error!("shell: the level's loader ended without a level");
                         self.loading = None;
+                        let launch = self.launch.clone();
+                        self.map_refused(ui, launch.as_ref(), "the level's loader ended without a level");
                         self.level_lost(ui);
                     }
                 }
@@ -153,10 +188,42 @@ impl Shell {
                     if let Some(l) = level {
                         info!("shell: level {} ends: {}", self.rides, l.summary());
                     }
-                    if let Some(r) = ride {
-                        game_level::stats_from_ride(ui, r, &self.stat_names);
-                        let n = ui.fe.as_ref().map_or(0, |f| f.badge_progress.len());
-                        info!("shell: the badge manager has the progress of {n} badges");
+                    let change_gear = ui.fe.as_ref().is_some_and(|f| f.change_gear);
+                    let live_level = live.is_some();
+                    if let Some(l) = live
+                        && !l.ending()
+                    {
+                        if l.relaunch.is_some() {
+                            info!("shell: the network session's level was left for the next round's drop");
+                            l.level = crate::shell::live::LiveLevel::Next;
+                        } else if change_gear {
+                            info!("shell: the network session's level was left for the equipment: the session stays");
+                            l.level = crate::shell::live::LiveLevel::Away;
+                            self.live_away = Some(super::live::Away::default());
+                        } else {
+                            info!("shell: the network session's level was left: the server is left");
+                            l.level = crate::shell::live::LiveLevel::Left;
+                            l.end = Some(crate::shell::live::LiveEnd {
+                                reason: None,
+                                #[cfg(feature = "net")]
+                                refusal: None,
+                            });
+                        }
+                    }
+                    let map_level = self.launch.as_ref().is_some_and(|l| l.map.is_some());
+                    match ride {
+                        Some(_) if map_level => {
+                            info!("shell: a map's ride: no stats and no badge progress to the career")
+                        }
+                        Some(r) if !live_level => {
+                            game_level::stats_from_ride(ui, r, &self.stat_names);
+                            let n = ui.fe.as_ref().map_or(0, |f| f.badge_progress.len());
+                            info!("shell: the badge manager has the progress of {n} badges");
+                        }
+                        Some(_) => {
+                            info!("shell: a network session's ride: no stats and no badge progress to the career")
+                        }
+                        None => {}
                     }
                     self.set_op(WorldOp::Teardown);
                     self.stats_in = Some(120);
@@ -213,11 +280,19 @@ impl Shell {
         audio: Option<&FrontEndAudio>,
         ride: Option<&Ride>,
     ) {
-        if let Some(a) = audio.and_then(FrontEndAudio::settings) {
+        if self.live_profile.is_some() {
+            info!("shell: {why}: not saved (a network session's level)");
+            return;
+        }
+        if let Some(mut a) = audio.and_then(FrontEndAudio::settings) {
+            for (id, v) in super::audio_values(&super::settings_values(&ui.values)) {
+                a.set_ui(id, v);
+            }
             self.save.extras.store_audio(&self.save.schema, &a);
         }
-        if let Some(fe) = ui.fe.as_ref() {
+        if let Some(fe) = ui.fe.as_mut() {
             self.save.extras.set_song_flags(&self.save.schema, &fe.music.flags());
+            self.save.music_switches_into(fe);
         }
         if let Some(r) = ride {
             game_level::stats_from_ride(ui, r, &self.stat_names);
@@ -227,7 +302,12 @@ impl Shell {
         }
     }
 
-    fn start_load(&mut self, ui: &mut GameUi, l: &ssx_ui::game::fe::Launch) -> Result<()> {
+    fn start_load(
+        &mut self,
+        ui: &mut GameUi,
+        l: &ssx_ui::game::fe::Launch,
+        live: Option<crate::ride::live::LiveRules>,
+    ) -> Result<()> {
         let visits = ui.fe.as_mut().and_then(|fe| ssx_ui::game::fe::flow::count_range_visit(fe, l));
         info!("shell: {} counts visit {visits:?} of its range by {} (the intro's path)", l.event, l.rider);
         let fe = ui.fe.as_ref().context("no front end")?;
@@ -253,12 +333,16 @@ impl Shell {
                 game: true,
                 autoplay: self.autoplay,
                 setup: Some(ssx_ui::game::ride::game_setup(&l.setup)),
+                setup_presentation: l.setup.presentation.as_deref().map(ssx_ui::game::ride::game_setup),
                 intro_visits: visits,
                 own_tombstone: ssx_ui::game::ride::own_tombstone_for(ui, l.drop),
+                live,
+                event_name: Some(l.event.clone()),
                 ..default()
             }),
             character: l.rider.clone(),
             screenshot: false,
+            map: None,
         };
         let shots = self
             .ride_shots
@@ -280,7 +364,7 @@ impl Shell {
         };
         let (tx, rx) = std::sync::mpsc::channel();
         let big_root = self.big_root.clone();
-        let song_flags = fe.music.flags();
+        let song_flags = fe.music.switches();
         let block_in = fe.career.event(l.drop).map(|e| {
             use ssx_assets::sfx::speech::launch;
             let words = launch::campaign_words(&fe.profile, l.drop, e.deadly_descent);

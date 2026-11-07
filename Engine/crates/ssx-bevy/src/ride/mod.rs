@@ -1,4 +1,7 @@
-use bevy::prelude::*;
+use bevy::prelude::{
+    App, FixedUpdate, IntoScheduleConfigs, PostUpdate, Quat, Resource, SystemSet, Update, Vec2, Vec3, World, info,
+    resource_exists, warn,
+};
 use ssx_assets::postfx_overlay::OverlayDrop;
 use ssx_physics::SIM_HZ;
 use ssx_physics::rewind::RewindPad;
@@ -23,6 +26,7 @@ mod controls;
 mod draw;
 pub mod helicopter;
 mod hud;
+pub mod live;
 mod scripted;
 mod start;
 mod step;
@@ -39,6 +43,7 @@ pub struct RideSetup {
     pub drop_start: bool,
     pub big_root: std::path::PathBuf,
     pub character: String,
+    pub wire_key: u32,
     pub track: String,
     pub drop_key: Option<u32>,
     pub fixed_input: Option<Input>,
@@ -60,6 +65,68 @@ pub struct RideSetup {
     pub setup: Option<ssx_physics::gear::GameSetup>,
     pub intro_visits: Option<u32>,
     pub own_tombstone: Option<ssx_physics::session::tombstones::OwnRecord>,
+    pub live: Option<live::LiveRules>,
+    pub sim_content_id: Option<String>,
+    pub map: Option<MapRide>,
+}
+
+#[derive(Clone, Debug)]
+pub struct MapRide {
+    pub id: ssx_content::ContentId,
+    pub title: String,
+    pub gates: ssx_physics::map::Gates,
+    pub setup: ssx_physics::event::EventSetup,
+    pub player: ssx_physics::map::MapPlayer,
+    pub finished: bool,
+    pub markers: Vec<MapMarker>,
+    pub drawn: (u64, u64),
+    pub mode: Option<MapRideMode>,
+}
+
+#[derive(Clone, Debug)]
+pub struct MapRideMode {
+    pub name: String,
+    pub title: Option<String>,
+    pub rules: ssx_content::gamemode::Rules,
+    pub gamemode: Option<ssx_content::ContentId>,
+}
+
+impl MapRideMode {
+    pub fn of(m: &ssx_assets::content::gamemodes::ResolvedMode) -> Self {
+        MapRideMode {
+            name: m.choice.name(),
+            title: m.gamemode.as_ref().map(|g| g.value.title.clone()),
+            rules: m.rules.clone(),
+            gamemode: m.gamemode.as_ref().map(|g| g.id.clone()),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct MapMarker {
+    pub node: String,
+    pub look: std::sync::Arc<ssx_assets::content::markers::MarkerLook>,
+    pub position: [f32; 3],
+    pub heading: f32,
+}
+
+impl MapRide {
+    pub fn new(
+        id: ssx_content::ContentId,
+        title: String,
+        gates: ssx_physics::map::Gates,
+        setup: ssx_physics::event::EventSetup,
+    ) -> MapRide {
+        let fall_at =
+            std::env::var("SSX_MAP_FALL_AT").ok().and_then(|v| v.parse::<f32>().ok()).filter(|t| t.is_finite());
+        let player = ssx_physics::map::MapPlayer::new(fall_at);
+        MapRide { id, title, gates, setup, player, finished: false, markers: Vec::new(), drawn: (0, 0), mode: None }
+    }
+
+    pub fn target(&self, world: &PhysicsWorld) -> Option<Vec3> {
+        let gate = self.gates.checkpoints.get(self.gates.next).map(|v| v.centre);
+        gate.or_else(|| self.gates.finish.and_then(|i| world.triggers.volumes.get(i)).map(|v| v.centre))
+    }
 }
 
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -93,11 +160,13 @@ pub struct OutroRun {
 
 #[derive(Resource)]
 pub struct Ride {
-    world: PhysicsWorld,
+    world: std::sync::Arc<PhysicsWorld>,
     spawn: (Vec3, Vec3),
     pub intro: Option<std::sync::Arc<ssx_physics::nis::IntroAssets>>,
     intro_short: Option<std::sync::Arc<ssx_physics::nis::IntroAssets>>,
     big_root: std::path::PathBuf,
+    sim_content_id: Option<String>,
+    pub map: Option<MapRide>,
     intro_graph: bool,
     pub cabin_seen: Option<usize>,
     pub world_hidden: bool,
@@ -106,6 +175,7 @@ pub struct Ride {
     pub vista: Option<ssx_physics::outro::VistaCamera>,
     event_def: Option<ssx_physics::event::EventDef>,
     character: String,
+    wire_key: u32,
     pub outro: Option<OutroRun>,
     pub state: RiderState,
     prev: Pose,
@@ -165,11 +235,30 @@ pub struct Ride {
     messages_logged: f64,
     pub loadout: ssx_assets::character::Loadout,
     pub game_setup: Option<ssx_physics::gear::GameSetup>,
+    pub live: Option<live::LiveRules>,
+    pub pads_held: bool,
+    pub chat_held: bool,
+    pub pose_blocks: Option<ssx_physics::graph::LiveBlocks>,
+    pub start_gate: live::StartGate,
+    pub go_step: Option<u64>,
 }
 
 impl Ride {
+    pub fn sim_content_id(&self) -> Option<&str> {
+        self.sim_content_id.as_deref()
+    }
+
+    pub fn big_root(&self) -> &std::path::Path {
+        &self.big_root
+    }
+
     pub fn world(&self) -> &PhysicsWorld {
         &self.world
+    }
+
+    #[cfg(feature = "scripts")]
+    pub fn world_arc(&self) -> std::sync::Arc<PhysicsWorld> {
+        self.world.clone()
     }
 
     pub fn step(&self) -> (&Pose, f32) {
@@ -196,6 +285,14 @@ impl Ride {
     pub fn seconds(&self) -> f32 {
         self.steps as f32 / SIM_HZ
     }
+
+    pub fn character(&self) -> &str {
+        &self.character
+    }
+
+    pub fn wire_key(&self) -> u32 {
+        self.wire_key
+    }
 }
 
 pub struct RideLoad {
@@ -217,6 +314,10 @@ impl RideLoad {
         &self.ride
     }
 
+    pub fn ride_mut(&mut self) -> &mut Ride {
+        &mut self.ride
+    }
+
     pub fn avalanche(&self) -> Option<&crate::render::avalanche::AvalancheScene> {
         self.avalanche.as_ref()
     }
@@ -232,6 +333,10 @@ pub fn prepare(
     lighting: Option<&crate::render::lighting::GameLighting>,
 ) -> anyhow::Result<RideLoad> {
     use anyhow::Context;
+    anyhow::ensure!(
+        setup.live.is_none() || setup.screenshot_steps.is_none(),
+        "a network session refuses the screenshot clock (one step per drawn frame): its steps follow the wall clock"
+    );
     let board = setup.board.take();
     let mut body = setup.rider.take();
     let (load_secs, spawn, fly) = (setup.load_secs, setup.spawn, setup.fly_camera);
@@ -258,7 +363,7 @@ pub fn prepare(
         None => Vec::new(),
     };
     let overlay = Some(crate::render::post::overlay::load(big_root, drop, &presets));
-    let avalanche = lighting.and_then(|l| crate::render::avalanche::load(big_root, &l.track, &ride));
+    let avalanche = lighting.and_then(|l| crate::render::avalanche::load(big_root, l.disc_track()?, &ride));
     let noise = crate::camera::chase::load_noise(big_root);
     let ripple = ssx_physics::controllers::ripple::RippleTuning::load(big_root)
         .map_err(|e| warn!("landing ripple unavailable: {e:#}"))

@@ -88,6 +88,60 @@ fn bot_spray_inputs(pose: &ssx_assets::ghosts::GhostPose) -> SprayInputs {
     }
 }
 
+fn spray_views(spray: &Spray, records: Vec<EffectRecord>) -> Vec<RecordView> {
+    spray
+        .effects
+        .iter()
+        .zip(records)
+        .map(|(e, r)| RecordView {
+            scale: r.scale,
+            rotation: r.rotation,
+            position: r.position,
+            start: e.start,
+            stop: e.stop,
+            instant_off: e.instant,
+            ao: r.ao,
+            blend: r.blend,
+        })
+        .collect()
+}
+
+fn live_spray_records(
+    w: &mut ParticleWorld,
+    bots: Option<&crate::ride::bots::Bots>,
+    root: Option<&crate::render::lighting::BigRoot>,
+    clock: f32,
+    precipitation: f32,
+) -> Vec<Vec<RecordView>> {
+    let (Some(bots), Some(root)) = (bots, root) else { return Vec::new() };
+    if w.live_sprays.pool.is_empty() {
+        return Vec::new();
+    }
+    let before = w.texture_names.len();
+    let ParticleWorld { live_sprays, arena, defs, texture_names, .. } = w;
+    let build = |set: &ssx_assets::particles::SnowSpraySet, arena: &mut crate::particles::sim::SetArena| {
+        super::load::spray_of(set, &root.0, arena, defs, texture_names, true)
+    };
+    match live_sprays.assign(bots.live.sprays(), arena, build, bot_spray_inputs) {
+        Ok(true) => load_new_textures(w, &root.0, before),
+        Ok(false) => {}
+        Err(e) => {
+            warn!("particles: a live racer's lod snow spray unavailable: {e:#}");
+            w.live_sprays.set = None;
+        }
+    }
+    let mut out = Vec::with_capacity(w.live_sprays.pool.len());
+    for s in &mut w.live_sprays.pool {
+        let Some(board) = s.board else {
+            out.push(Vec::new());
+            continue;
+        };
+        let records = driver_records(&mut s.spray, &s.inputs, clock, &board, precipitation);
+        out.push(spray_views(&s.spray, records));
+    }
+    out
+}
+
 fn manager_dt(w: &mut ParticleWorld, ride: Option<&Ride>, real_dt: f32) -> Option<f32> {
     match ride {
         Some(ride) => {
@@ -165,7 +219,7 @@ pub(super) fn update(
     let rider_rig = ride.zip(rig.as_deref());
     let joints = rider_rig.map(|(ride, rig)| newest_joints(rig, ride));
     if let (Some((ride, rig)), Some(root), Some(l), false) = (rider_rig, &big_root, &lighting, w.rider_tried) {
-        load_rider_effects(w, &root.0, &l.track, rig, ride);
+        load_rider_effects(w, &root.0, l.disc_track(), rig, ride);
     }
     let board = rig.as_deref().and_then(|r| r.anim.posed().1.find("Board"));
     let mut spray_inputs = None;
@@ -223,6 +277,7 @@ pub(super) fn update(
             );
         }
     }
+    let live_recs = live_spray_records(w, bot_boards.as_deref(), big_root.as_deref(), clock, weather.precipitation);
     let mut rider_recs: Vec<Option<RecordView>> = Vec::new();
     if let (Some(ride), Some(rider), Some(inputs), Some(joints)) =
         (ride, w.rider.as_mut(), spray_inputs.as_ref(), joints.as_ref())
@@ -342,6 +397,12 @@ pub(super) fn update(
             e.instance.apply_record(rec, clock, frame_dt, v, arena);
         }
     }
+    for (s, recs) in w.live_sprays.pool.iter_mut().zip(&live_recs) {
+        for (e, rec) in s.spray.effects.iter_mut().zip(recs) {
+            let v = vis(rec, &e.instance);
+            e.instance.apply_record(rec, clock, frame_dt, v, arena);
+        }
+    }
     if let Some(rider) = w.rider.as_mut() {
         for (e, rec) in rider.slots.iter_mut().zip(&rider_recs) {
             if let Some(rec) = rec {
@@ -394,6 +455,9 @@ pub(super) fn update(
     }
     for spray in &mut w.bot_sprays {
         instances.extend(spray.effects.iter_mut().map(|e| &mut e.instance));
+    }
+    for s in &mut w.live_sprays.pool {
+        instances.extend(s.spray.effects.iter_mut().map(|e| &mut e.instance));
     }
     if let Some(rider) = w.rider.as_mut() {
         instances.extend(rider.slots.iter_mut().map(|e| &mut e.instance));

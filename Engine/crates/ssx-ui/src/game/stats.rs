@@ -62,6 +62,7 @@ pub fn from_session<'a>(
     rules: &'a Rules,
 ) -> Vec<&'a BadgeText> {
     take_records(profile, store, modelled);
+    take_added_tricks(profile, store);
     let mut new = Vec::new();
     for k in &store.awarded[2] {
         if let Some(b) = rules.badge_texts.get(k)
@@ -71,6 +72,19 @@ pub fn from_session<'a>(
         }
     }
     new
+}
+
+pub const ADDED_TRICK_FIELDS: [&str; 3] = ["performed", "uber_performed", "super_uber_performed"];
+
+fn take_added_tricks(profile: &mut Profile, store: &StatsStore) {
+    for (id, counts) in &store.added_tricks {
+        let Ok(id) = id.parse::<ssx_content::ContentId>() else { continue };
+        for (field, &n) in ADDED_TRICK_FIELDS.iter().zip(counts).filter(|(_, n)| **n > 0) {
+            let had = profile.mod_state.int(&id, field).unwrap_or(0);
+            let value = ssx_content::profile_state::StateValue::Int(had.saturating_add(i64::from(n)));
+            profile.mod_state.set(&id, field, value);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -121,5 +135,20 @@ mod tests {
         assert!(again.awarded(badge, 2));
         assert!(from_session(&mut p, &again, &BTreeMap::new(), &rules).is_empty());
         assert_eq!(p.stats.records.len(), n);
+    }
+
+    #[test]
+    fn a_rides_added_tricks_are_added_to_the_profiles_mod_state() {
+        let mut p = Profile::new();
+        let id: ssx_content::ContentId = "p:trick/air_walk".parse().expect("an id");
+        let mut store = StatsStore::default();
+        store.added_tricks.insert(id.to_string().into(), [2, 1, 0]);
+        take_added_tricks(&mut p, &store);
+        take_added_tricks(&mut p, &store);
+        let counts: Vec<Option<i64>> = ADDED_TRICK_FIELDS.iter().map(|f| p.mod_state.int(&id, f)).collect();
+        assert_eq!(counts, [Some(4), Some(2), None]);
+        p.mod_state.set(&id, "performed", ssx_content::profile_state::StateValue::Int(i64::MAX - 1));
+        take_added_tricks(&mut p, &store);
+        assert_eq!(p.mod_state.int(&id, "performed"), Some(i64::MAX), "saturating");
     }
 }

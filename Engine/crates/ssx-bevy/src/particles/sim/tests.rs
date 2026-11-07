@@ -1,7 +1,7 @@
 use ssx_formats::lynx::ParticleSystem;
 use ssx_formats::lynx_schema;
 
-use super::actions::{kill_age, turbulence_table, vec_cos_approx};
+use super::actions::{kill_age, turbulence_table};
 use super::defs::{ActionDef, compile_action};
 use super::emit::{EmitEnv, emit_count};
 use super::params::default_lanes;
@@ -138,11 +138,7 @@ fn shared_sets_follow_the_instancing_flags() {
 }
 
 #[test]
-fn cos_approx_matches_cos() {
-    for i in 0..256 {
-        let x = i as f32 * 0.024_543_693;
-        assert!((vec_cos_approx(x) - x.cos()).abs() < 2e-6, "{x}");
-    }
+fn turbulence_table_spans_the_cosine() {
     assert!((turbulence_table()[0] - 1.0).abs() < 1e-6 && turbulence_table()[128] + 1.0 < 1e-5);
 }
 

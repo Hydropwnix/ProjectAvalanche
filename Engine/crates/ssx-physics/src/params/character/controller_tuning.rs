@@ -242,6 +242,7 @@ pub struct Tuning {
     pub aerial: crate::air::AerialTuning,
     pub balance: crate::landing::BalanceTuning,
     pub tricks: crate::tricks::TrickTuning,
+    pub added_trick_ids: crate::tricks::AddedTrickIds,
     pub scoring: crate::scoring::ScoringTuning,
     pub combo_flow: crate::scoring::ComboFlowTuning,
     pub root_motion: crate::rootmotion::RootMotion,
@@ -258,9 +259,7 @@ pub struct Tuning {
 
 impl Tuning {
     pub fn load(bundle: &Bundle) -> Result<Self> {
-        let cpso = bundle.view("CharacterPropertiesSceneOpAsset", "CharacterPropertiesSceneOpAsset")?;
-        let cp_min = CharacterProperties::from_asset(&cpso.asset("CharacterPropertiesAssetMin")?)?;
-        let cp_max = CharacterProperties::from_asset(&cpso.asset("CharacterPropertiesAssetMax")?)?;
+        let (cp_min, cp_max) = CharacterProperties::load_min_max(bundle)?;
         let carving = CarvingTuning::load(&bundle.view("carve_riding", "CarvingControllerAsset")?)?;
         let b = bundle.view("ballistic_airborne", "BallisticControllerAsset")?;
         let ballistic = BallisticTuning {
@@ -321,6 +320,7 @@ impl Tuning {
         let aerial = crate::air::AerialTuning::load(bundle)?;
         let balance = crate::landing::BalanceTuning::load(bundle)?;
         let tricks = crate::tricks::TrickTuning::load(bundle)?;
+        let added_trick_ids = crate::tricks::AddedAirTricks::load(bundle.data_root()).1;
         let scoring = crate::scoring::ScoringTuning::load(bundle)?;
         let combo_flow = crate::scoring::ComboFlowTuning::load(bundle)?;
         Ok(Self {
@@ -335,6 +335,7 @@ impl Tuning {
             aerial,
             balance,
             tricks,
+            added_trick_ids,
             scoring,
             combo_flow,
             root_motion: crate::rootmotion::RootMotion::load(bundle)?,

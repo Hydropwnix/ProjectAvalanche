@@ -1,0 +1,27 @@
+# Project Avalanche master server with Docker Compose (see the Dockerfile beside it for the steps). master.toml beside
+# this file is mounted read-only: copy master.toml.example and set `port = 8443` and the [tls] paths to
+# /srv/avalanche-master/tls/fullchain.pem and /srv/avalanche-master/tls/privkey.pem. The folder ./tls holds them: the
+# host's certbot deploy hook copies them there (certbot-deploy-hook.sh with AVALANCHE_MASTER_TLS=<this folder>/tls,
+# AVALANCHE_MASTER_GROUP=10002 and AVALANCHE_MASTER_RELOAD="docker compose -f <this file> kill -s HUP avalanche-master":
+# the master reads them again without a restart). ./tls is root's with group 10002 and mode 0750, and every folder above
+# it is root's and writable by nobody else (the hook refuses anything else: it writes there as root).
+name: avalanche-master
+
+services:
+  avalanche-master:
+    build:
+      context: ../../../..
+      dockerfile: Engine/assets/master/deploy/Dockerfile
+    image: project-avalanche-master:local
+    restart: unless-stopped
+    stop_signal: SIGTERM
+    stop_grace_period: 15s
+    ports:
+      - "443:8443/tcp"
+    volumes:
+      - ./master.toml:/srv/avalanche-master/master.toml:ro
+      - ./tls:/srv/avalanche-master/tls:ro
+      - avalanche-master-data:/srv/avalanche-master/data
+
+volumes:
+  avalanche-master-data:

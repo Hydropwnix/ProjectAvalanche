@@ -128,7 +128,14 @@ pub(super) fn write_dumps(dumps: Res<Dumps>, device: Res<RenderDevice>) {
         return;
     }
     for r in &pending {
-        let data = r.buffer.slice(..).get_mapped_range();
+        let data = match r.buffer.slice(..).get_mapped_range() {
+            Ok(data) => data,
+            Err(e) => {
+                error!("globe dump: reading {} back: {e}", r.name);
+                r.buffer.unmap();
+                continue;
+            }
+        };
         let line = (r.width * r.bytes_per_pixel) as usize;
         let mut out = Vec::with_capacity(line * r.height as usize);
         for y in 0..r.height as usize {

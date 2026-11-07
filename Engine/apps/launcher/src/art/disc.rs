@@ -1,24 +1,24 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use ssx_assets::content::GameContent;
 use ssx_assets::setup;
-use ssx_assets::texture::{DxnExport, decode_resource};
+use ssx_content::ContentId;
 use ssx_formats::ea_movie::Movie;
 use ssx_formats::vp6::Decoder;
-use ssx_formats::xpr::XprFile;
 
 use super::Slot;
 use super::image::Picture;
 
 // TODO(guess): the rectangles and frame numbers were measured on the one disc we have (USA, En / Fr / De / Es / It); other pressings with the same atlas size and frame count are assumed to match (sizes are checked, contents cannot be); settle: a second disc image.
 
-const LOGO_XPR: &str = "bootcache/data/common/fe/views/bootlogo_i6.xpr";
+const LOGO_XPR: &str = "ssx:texture/fe/views/bootlogo_i6";
 const LOGO_ATLAS: (usize, usize) = (991, 981);
 const LOGO_RECT: [usize; 4] = [1, 393, 593, 380];
 const SPLASH_XPR: [&str; 3] = [
-    "bootcache/data/xenon/gameexplorer/frontend/textures/fe_splashscreen_eu.xpr",
-    "bootcache/data/xenon/gameexplorer/frontend/textures/fe_splashscreen_na_eng.xpr",
-    "bootcache/data/xenon/gameexplorer/frontend/textures/fe_splashscreen_na_fre.xpr",
+    "ssx:texture/frontend/textures/fe_splashscreen_eu",
+    "ssx:texture/frontend/textures/fe_splashscreen_na_eng",
+    "ssx:texture/frontend/textures/fe_splashscreen_na_fre",
 ];
 const SPLASH_BAND: [usize; 4] = [0, 8, 1280, 412];
 
@@ -43,29 +43,29 @@ const MOVIE_SHOTS: [Shot; 4] = [
     shot(Slot::TileExtras, 2128, [140, 81, 1000, 639], (576, 368)),
 ];
 
-fn xpr(path: &Path) -> Result<Picture> {
-    let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    let file = XprFile::parse(&data).with_context(|| format!("parsing {}", path.display()))?;
-    let resource = file.resources.first().context("no texture in the file")?;
-    let level = decode_resource(&data, &file, resource, false, DxnExport::Raw)?.into_iter().next();
-    let image = level.context("no level decoded")?.image;
-    Picture::new(image.width as usize, image.height as usize, image.rgba)
+fn xpr(big_root: &Path, id: &str) -> Result<(Picture, String)> {
+    let id: ContentId = id.parse().map_err(|e| anyhow::anyhow!("{id}: {e}"))?;
+    let content = GameContent::of(big_root);
+    let found = content.base_texture(&id, &ssx_content::texture::Want::PLANE)?;
+    let file = content.base_file(&id).context("no file")?;
+    let from = file.strip_prefix(content.big_root()).unwrap_or(&file).to_string_lossy().replace('\\', "/");
+    let level = found.texture.levels.into_iter().next().context("no level decoded")?;
+    let rgba = level.images.into_iter().next().context("no image decoded")?;
+    Ok((Picture::new(level.width as usize, level.height as usize, rgba)?, from))
 }
 
 pub fn logo(big_root: &Path) -> Result<(Picture, String)> {
-    let atlas = xpr(&big_root.join(LOGO_XPR))?;
+    let (atlas, from) = xpr(big_root, LOGO_XPR)?;
     if (atlas.width, atlas.height) != LOGO_ATLAS {
-        bail!("{LOGO_XPR} is {} x {}, not the atlas the logo was measured in", atlas.width, atlas.height);
+        bail!("{from} is {} x {}, not the atlas the logo was measured in", atlas.width, atlas.height);
     }
     let [x, y, w, h] = LOGO_RECT;
-    Ok((atlas.crop(x, y, w, h), format!("{LOGO_XPR} [{x}, {y}, {w}, {h}]")))
+    Ok((atlas.crop(x, y, w, h), format!("{from} [{x}, {y}, {w}, {h}]")))
 }
 
 pub fn hero(big_root: &Path) -> Result<(Picture, String)> {
-    let (name, splash) = SPLASH_XPR
-        .iter()
-        .find_map(|n| xpr(&big_root.join(n)).ok().map(|p| (n, p)))
-        .context("no splash screen in bootcache")?;
+    let (splash, name) =
+        SPLASH_XPR.iter().find_map(|n| xpr(big_root, n).ok()).context("no splash screen in bootcache")?;
     if (splash.width, splash.height) != MOVIE_SIZE {
         bail!("{name} is {} x {}, not 1280 x 720", splash.width, splash.height);
     }

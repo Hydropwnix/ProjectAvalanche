@@ -1,0 +1,9 @@
+{
+	"title": "TXT_AVA_OPTIONS_PLAYER_NAME_TITLE",
+	"body": "",
+	"useoverride": true,
+	"defaultButton": 0,
+	"buttons":	[
+					{"label": "TXT_OK", "event": "ava_options_message_ok"}
+				]
+}

@@ -1,0 +1,9 @@
+{
+	"title": "TXT_AVA_NET_TITLE",
+	"body": "",
+	"useoverride": true,
+	"defaultButton": 0,
+	"buttons":	[
+					{"label": "TXT_OK", "event": "ava_net_message_ok"}
+				]
+}

@@ -1,11 +1,18 @@
-mod midground;
+pub(crate) mod midground;
+pub mod package;
+mod package_gpu;
 mod render;
 
+use crate::render::reload::Recipe;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use bevy::asset::{RenderAssetUsages, embedded_asset};
-use bevy::prelude::*;
+use bevy::prelude::{
+    App, Assets, Handle, Image, IntoScheduleConfigs, Plugin, Res, ResMut, Resource, Update, Vec3, Vec4, World, default,
+    warn,
+};
+use bevy::render::RenderApp;
 use bevy::render::extract_resource::ExtractResource;
 use bevy::render::render_resource::{Extent3d, ShaderType, TextureDimension, TextureFormat};
 
@@ -38,22 +45,30 @@ pub struct SkyUniform {
 }
 
 #[derive(Resource, Clone, ExtractResource)]
+#[extract_app(RenderApp)]
 pub struct SkySettings {
     pub uniform: SkyUniform,
     pub cloud_density: Handle<Image>,
     pub cloud_normal: Handle<Image>,
     pub light_texture: Handle<Image>,
     pub midground: Option<midground::MidgroundSettings>,
+    pub package: Option<package::PackageSky>,
 }
 
 impl Plugin for SkyPlugin {
     fn build(&self, app: &mut App) {
-        embedded_asset!(app, "sky.wgsl");
+        embedded_asset!(app, "sky.wesl");
         embedded_asset!(app, "midground.wgsl");
+        embedded_asset!(app, "sky_cube.wesl");
+        embedded_asset!(app, "sky_dome.wesl");
         render::build(app);
         crate::shell::level::scoped::<SkySettings>(app);
         use crate::render::lighting::fade::{LightingFadeSet, faded};
         app.add_systems(Update, follow_lighting.after(LightingFadeSet).run_if(faded));
+        app.add_systems(
+            Update,
+            dome_clock.run_if(bevy::ecs::schedule::common_conditions::resource_exists::<SkySettings>),
+        );
     }
 }
 
@@ -62,6 +77,24 @@ fn follow_lighting(lighting: Res<GameLighting>, settings: Option<ResMut<SkySetti
     settings.uniform = sky_uniform(&lighting);
     for part in settings.midground.iter_mut().flat_map(|m| &mut m.parts) {
         part.uniform = midground::relit(&lighting, &part.uniform);
+    }
+    if let (Some(p), Some(def)) = (settings.package.as_mut(), lighting.sky()) {
+        match &mut p.background {
+            package::Background::Cube { uniform, .. } => *uniform = package::cube_uniform(def, &lighting),
+            package::Background::Dome { uniform, .. } => {
+                let time = uniform.rotation.w;
+                if let ssx_assets::content::level::LevelSky::Dome { material, .. } = &lighting.level.sky {
+                    *uniform = package::dome_uniform(def, material, &lighting, time);
+                }
+            }
+        }
+    }
+}
+
+fn dome_clock(time: Res<bevy::prelude::Time>, settings: Option<ResMut<SkySettings>>) {
+    let Some(mut settings) = settings else { return };
+    if let Some(package::Background::Dome { uniform, .. }) = settings.package.as_mut().map(|p| &mut p.background) {
+        uniform.rotation.w = time.elapsed_secs_wrapped();
     }
 }
 
@@ -124,15 +157,17 @@ fn sky_uniform(l: &GameLighting) -> SkyUniform {
     }
 }
 
-fn load_texture(big_root: &Path, rel: &str) -> Result<Image> {
-    let path = ssx_assets::track_objects::asset_file(big_root, &format!("{rel}.xpr"))
-        .with_context(|| format!("{rel}.xpr not found under {}", big_root.display()))?;
-    let chain = crate::render::terrain::textures::decode_xpr(&path)?;
-    Ok(crate::render::terrain::textures::texture_2d(
-        &chain,
-        crate::render::terrain::textures::Texels::Linear,
-        default(),
-    ))
+fn load_texture(big_root: &Path, rel: &str, l: &GameLighting) -> Result<(Image, Option<Recipe>)> {
+    use crate::render::terrain::textures::{Texels, load_chain, plane_recipe, texture_2d};
+    let id =
+        ssx_assets::content::presets::preset_texture_id(rel).with_context(|| format!("{rel:?}: not a texture id"))?;
+    if l.level.textures.contains_key(&id) {
+        return Ok((package::decided_texture(big_root, l, &id)?, None));
+    }
+    let want = ssx_content::texture::Want::PLANE;
+    let chain = load_chain(big_root, &id, &want)?;
+    let recipe = plane_recipe(big_root, &id, want, Texels::Linear, default());
+    Ok((texture_2d(&chain, Texels::Linear, default()), Some(recipe)))
 }
 
 fn texel(rgba: [u8; 4]) -> Image {
@@ -142,8 +177,9 @@ fn texel(rgba: [u8; 4]) -> Image {
 
 pub struct SkyLoad {
     uniform: SkyUniform,
-    images: [Image; 3],
+    images: [(Image, Option<Recipe>); 3],
     midground: Option<midground::MidgroundLoad>,
+    package: Option<package::PackageLoad>,
     pub status: String,
 }
 
@@ -155,17 +191,22 @@ pub fn load(lighting: &GameLighting, root: &Path) -> Result<SkyLoad> {
     let density = tex("cloudDensityTexture").context("preset has no cloudDensityTexture")?;
     let normal = tex("cloudDensityNormalTexture").context("preset has no cloudDensityNormalTexture")?;
     let moon = tex("dirLightTexture");
-    let density_img = load_texture(root, &density)?;
-    let normal_img = load_texture(root, &normal)?;
+    let density_img = load_texture(root, &density, lighting)?;
+    let normal_img = load_texture(root, &normal, lighting)?;
     let light_img = match &moon {
-        Some(rel) => load_texture(root, rel)?,
-        None => texel([0, 0, 0, 0]),
+        Some(rel) => load_texture(root, rel, lighting)?,
+        None => (texel([0, 0, 0, 0]), None),
     };
     let uniform = sky_uniform(lighting);
     let name = |rel: &str| rel.rsplit('\\').next().unwrap_or(rel).to_string();
-    let midground = midground::load(lighting, root)
-        .inspect_err(|e| warn!("mid-ground mountains off: {e:#}"))
-        .map_err(|e| format!("mid-ground: off ({e:#})"));
+    let package = package::load(lighting, root).inspect_err(|e| warn!("the level's package sky: {e:#}")).ok().flatten();
+    let midground = if package.as_ref().is_some_and(|p| !p.midground) {
+        Ok(None)
+    } else {
+        midground::load(lighting, root)
+            .inspect_err(|e| warn!("mid-ground mountains off: {e:#}"))
+            .map_err(|e| format!("mid-ground: off ({e:#})"))
+    };
     let midground_status = match &midground {
         Ok(Some(m)) => m.status.clone(),
         Ok(None) => "mid-ground: none placed by the track".to_string(),
@@ -181,18 +222,25 @@ pub fn load(lighting: &GameLighting, root: &Path) -> Result<SkyLoad> {
     ) + "\n"
         + &midground_status;
     let midground = midground.ok().flatten();
-    Ok(SkyLoad { uniform, images: [density_img, normal_img, light_img], midground, status })
+    let status = match &package {
+        Some(p) => format!("{}\n{status}", p.status),
+        None => status,
+    };
+    Ok(SkyLoad { uniform, images: [density_img, normal_img, light_img], midground, package, status })
 }
 
 pub fn insert(world: &mut World, load: SkyLoad) -> Result<()> {
     let [density, normal, light] = load.images;
     let mut images = world.get_resource_mut::<Assets<Image>>().context("no image assets")?;
+    let mut add = |(image, recipe): (Image, Option<Recipe>)| crate::render::reload::add(&mut images, image, recipe);
+    let (cloud_density, cloud_normal, light_texture) = (add(density), add(normal), add(light));
     let settings = SkySettings {
         uniform: load.uniform,
-        cloud_density: images.add(density),
-        cloud_normal: images.add(normal),
-        light_texture: images.add(light),
+        cloud_density,
+        cloud_normal,
+        light_texture,
         midground: load.midground.map(|m| m.into_settings(&mut images)),
+        package: load.package.map(|p| p.into_settings(&mut images)),
     };
     world.insert_resource(settings);
     Ok(())

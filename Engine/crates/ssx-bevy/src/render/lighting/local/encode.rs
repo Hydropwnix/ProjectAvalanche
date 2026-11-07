@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
 use bevy::math::Affine3A;
-use bevy::prelude::*;
+use bevy::prelude::{IVec2, Quat, Vec2, Vec3};
 use ssx_assets::light_script::LightBehaviour;
 use ssx_assets::track_lights::text::Strings;
 use ssx_assets::track_lights::{LightNode, LightShape, load_track_lights};
@@ -213,6 +213,24 @@ pub(super) fn record(w: &mut Words, p: &Placed) {
     w.f([frequency, gap, vol[0], vol[1]]);
 }
 
+pub(super) fn bounds(p: &Placed) -> [f32; 4] {
+    let (_, _, centre, _, _) = constants(p);
+    let m = p.world.matrix3;
+    let gram = m.transpose() * m;
+    let stretch =
+        [gram.x_axis, gram.y_axis, gram.z_axis].map(|c| c.abs().element_sum()).into_iter().fold(0.0, f32::max);
+    let stretch = stretch.sqrt();
+    let (extent, ends) = match p.light.shape {
+        LightShape::Point { outer_radius, inner_radius } => (outer_radius, inner_radius <= outer_radius),
+        LightShape::Spot { outer_length, inner_length, .. } => (outer_length, inner_length <= outer_length),
+        LightShape::Box { width, height, outer_length, inner_length, penumbra, .. } => {
+            (0.5 * Vec3::new(width, height, outer_length).length(), inner_length <= outer_length && penumbra >= 0.0)
+        }
+    };
+    let radius = extent.abs() * stretch * 1.0001 + 1e-4;
+    [centre.x, centre.y, centre.z, if ends && radius.is_finite() { radius } else { f32::MAX }]
+}
+
 pub(super) fn encode(placed: &[Placed], slots: u32, light: &GameLightUniform) -> (Words, usize) {
     let records: Vec<_> = placed.iter().map(constants).collect();
     let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
@@ -264,6 +282,10 @@ pub(super) fn encode(placed: &[Placed], slots: u32, light: &GameLightUniform) ->
     w.0.resize(dynamic_at + (RECORD * slots) as usize, [0; 4]);
     w.0[3] = [dynamic_at as u32, 0, 0, w.0.len() as u32];
     w.0.extend(light_words(light));
+    for p in placed {
+        w.f(bounds(p));
+    }
+    w.0.resize(w.0.len() + slots as usize, [0; 4]);
     (w, dynamic_at)
 }
 
@@ -290,6 +312,8 @@ fn sphere_planes() -> Vec<[f32; 4]> {
 
 #[cfg(test)]
 mod tests {
+    use bevy::prelude::Vec3A;
+
     use super::super::{DYNAMIC_SLOTS, LIGHT_WORDS};
     use super::*;
 
@@ -317,6 +341,97 @@ mod tests {
         assert_eq!(dynamic_at as u32, HEADER + STACKS * SLICES + 1);
         let light_at = HEADER + STACKS * SLICES + 1 + RECORD * DYNAMIC_SLOTS;
         assert_eq!(w.0[3], [dynamic_at as u32, 0, 0, light_at]);
-        assert_eq!(w.0.len(), light_at as usize + LIGHT_WORDS);
+        assert_eq!(w.0.len(), light_at as usize + LIGHT_WORDS + DYNAMIC_SLOTS as usize);
+    }
+
+    #[test]
+    fn bounds_hold_the_attenuation() {
+        let shapes = [
+            LightShape::Point { outer_radius: 7.0, inner_radius: 1.0 },
+            LightShape::Spot {
+                cone_angle: 1.2,
+                penumbra_angle: 0.1,
+                outer_length: 9.0,
+                inner_length: 2.0,
+                drop_off: 3.0,
+            },
+            LightShape::Box {
+                width: 8.0,
+                height: 5.0,
+                penumbra: 1.0,
+                outer_length: 6.0,
+                inner_length: 0.5,
+                projected_texture: None,
+                unk_fe912176: String::new(),
+                unk_ebeca5b9: false,
+            },
+        ];
+        let world = Affine3A::from_cols(
+            Vec3A::new(2.0, 0.3, -0.1),
+            Vec3A::new(0.9, 0.5, 0.2),
+            Vec3A::new(-0.4, 0.2, 1.7),
+            Vec3A::new(100.0, -20.0, 35.0),
+        );
+        let mut seed = 0x2545_f491_u32;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as f32 / u32::MAX as f32 * 2.0 - 1.0
+        };
+        for shape in shapes {
+            let p = placed(world, shape.clone());
+            let b = bounds(&p);
+            let (centre, radius) = (Vec3::new(b[0], b[1], b[2]), b[3]);
+            let inv = world.inverse();
+            let (mut reached, mut beyond) = (0, 0);
+            for _ in 0..200_000 {
+                let q = Vec3::from(world.translation) + Vec3::new(next(), next(), next()) * 20.0;
+                let pl = inv.transform_point3(q);
+                let lit = match shape {
+                    LightShape::Point { outer_radius: r, .. } | LightShape::Spot { outer_length: r, .. } => {
+                        pl.length() < r
+                    }
+                    LightShape::Box { width, height, outer_length, .. } => {
+                        pl.z < 0.0 && -pl.z < outer_length && pl.x.abs() < width * 0.5 && pl.y.abs() < height * 0.5
+                    }
+                };
+                reached += lit as u32;
+                beyond += (lit && q.distance(centre) > radius) as u32;
+            }
+            assert!(reached > 100, "{shape:?}: {reached}");
+            assert_eq!(beyond, 0, "{shape:?}");
+        }
+        let point = |outer_radius, inner_radius| LightShape::Point { outer_radius, inner_radius };
+        assert_eq!(bounds(&placed(Affine3A::IDENTITY, point(2.0, 3.0)))[3], f32::MAX);
+        let turned = Affine3A::from_scale_rotation_translation(Vec3::splat(3.0), Quat::from_rotation_y(0.7), Vec3::ONE);
+        assert!((bounds(&placed(turned, point(2.0, 2.0)))[3] - 6.0).abs() < 2e-3);
+    }
+
+    fn placed(world: Affine3A, shape: LightShape) -> Placed {
+        let light = ssx_assets::track_lights::SceneLight {
+            name: String::new(),
+            debug_name: String::new(),
+            color: [1.0; 4],
+            diffuse_intensity: 1.0,
+            specular_intensity: 0.0,
+            fall_off: 1.0,
+            enable_specular: false,
+            enable: true,
+            shape,
+        };
+        Placed {
+            world,
+            light,
+            factor: None,
+            ctrl: None,
+            node: Affine3A::IDENTITY,
+            scale: Vec3::ONE,
+            order: (0, 0, 0, 0, 0),
+            behaviour: None,
+            entity: 0,
+            texture: None,
+            texture_layer: 0,
+        }
     }
 }

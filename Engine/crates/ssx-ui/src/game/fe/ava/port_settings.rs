@@ -1,0 +1,600 @@
+use std::path::Path;
+
+use anyhow::{Context, Result, bail};
+use serde_json::{Map, Value as Json};
+
+use crate::game::loc::Localization;
+
+pub const MAX_FILE: u64 = 1024 * 1024;
+
+#[cfg(feature = "net")]
+// TODO(guess): a port choice — "Player", the port's offline gamertag (`USER_gamertag`); settle: none (the player sets
+// a name in Options, Player Name).
+pub const DEFAULT_PLAYER_NAME: &str = "Player";
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Shading {
+    #[default]
+    Auto,
+    Textured,
+    Height,
+    Material,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Music {
+    #[default]
+    Auto,
+    DeadlyDescent,
+    Licensed,
+    Off,
+}
+
+const SHADINGS: [(Shading, &str, &str); 4] = [
+    (Shading::Auto, "Auto", "TXT_AVA_OPT_SHADING_AUTO"),
+    (Shading::Textured, "Textured", "TXT_AVA_OPT_SHADING_TEXTURED"),
+    (Shading::Height, "Height", "TXT_AVA_OPT_SHADING_HEIGHT"),
+    (Shading::Material, "Material", "TXT_AVA_OPT_SHADING_MATERIAL"),
+];
+const MUSICS: [(Music, &str, &str); 4] = [
+    (Music::Auto, "Auto", "TXT_AVA_OPT_MUSIC_AUTO"),
+    (Music::DeadlyDescent, "DeadlyDescent", "TXT_AVA_OPT_MUSIC_DEADLY_DESCENT"),
+    (Music::Licensed, "Licensed", "TXT_AVA_OPT_MUSIC_LICENSED"),
+    (Music::Off, "Off", "TXT_OFF"),
+];
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PortSettings {
+    pub subdivide: u32,
+    pub shading: Shading,
+    pub vsync: bool,
+    pub objects: bool,
+    pub wireframe: bool,
+    pub particles: bool,
+    pub snow_tracks: bool,
+    pub local_lights: bool,
+    pub game_post: bool,
+    pub game_sky: bool,
+    pub music: Music,
+    pub music_volume: f32,
+    pub sfx: bool,
+    pub sfx_volume: f32,
+    #[cfg(feature = "net")]
+    pub player_name: Option<String>,
+    #[cfg(feature = "net")]
+    pub resources: super::resource_settings::ResourceSettings,
+}
+
+impl Default for PortSettings {
+    fn default() -> Self {
+        PortSettings {
+            subdivide: ssx_assets::subdiv::GAME_LEVELS as u32,
+            shading: Shading::Auto,
+            vsync: true,
+            objects: true,
+            wireframe: false,
+            particles: true,
+            snow_tracks: true,
+            local_lights: true,
+            game_post: true,
+            game_sky: true,
+            music: Music::Auto,
+            music_volume: 1.0,
+            sfx: true,
+            sfx_volume: 1.0,
+            #[cfg(feature = "net")]
+            player_name: None,
+            #[cfg(feature = "net")]
+            resources: Default::default(),
+        }
+    }
+}
+
+pub const SUBDIVIDE_MAX: u32 = 3;
+
+impl PortSettings {
+    pub fn from_json(v: &Json) -> (PortSettings, Vec<String>) {
+        let mut s = PortSettings::default();
+        let mut problems = Vec::new();
+        let Some(m) = v.as_object() else {
+            return (s, vec!["settings.json is not an object".into()]);
+        };
+        let mut bad = |k: &str| problems.push(format!("settings.json: `{k}` has a value the launcher cannot read"));
+        if let Some(x) = m.get("subdivide") {
+            match x.as_u64().filter(|&n| n <= u64::from(u32::MAX)) {
+                Some(n) => s.subdivide = n as u32,
+                None => bad("subdivide"),
+            }
+        }
+        if let Some(x) = m.get("shading") {
+            match SHADINGS.iter().find(|(_, n, _)| x.as_str() == Some(n)) {
+                Some(&(v, _, _)) => s.shading = v,
+                None => bad("shading"),
+            }
+        }
+        if let Some(x) = m.get("music") {
+            match MUSICS.iter().find(|(_, n, _)| x.as_str() == Some(n)) {
+                Some(&(v, _, _)) => s.music = v,
+                None => bad("music"),
+            }
+        }
+        for (k, field) in [
+            ("vsync", &mut s.vsync),
+            ("objects", &mut s.objects),
+            ("wireframe", &mut s.wireframe),
+            ("particles", &mut s.particles),
+            ("snow_tracks", &mut s.snow_tracks),
+            ("local_lights", &mut s.local_lights),
+            ("game_post", &mut s.game_post),
+            ("game_sky", &mut s.game_sky),
+            ("sfx", &mut s.sfx),
+        ] {
+            if let Some(x) = m.get(k) {
+                match x.as_bool() {
+                    Some(b) => *field = b,
+                    None => bad(k),
+                }
+            }
+        }
+        for (k, field) in [("music_volume", &mut s.music_volume), ("sfx_volume", &mut s.sfx_volume)] {
+            if let Some(x) = m.get(k) {
+                match x.as_f64().filter(|f| f.is_finite()) {
+                    Some(f) => *field = f as f32,
+                    None => bad(k),
+                }
+            }
+        }
+        #[cfg(feature = "net")]
+        if let Some(x) = m.get("player_name") {
+            match x.as_str().map(ssx_net_proto::name::player_name) {
+                Some(Ok(name)) if Some(name.as_str()) == x.as_str() => s.player_name = Some(name),
+                _ => problems.push("settings.json: `player_name` is not a name the servers accept".into()),
+            }
+        }
+        #[cfg(feature = "net")]
+        {
+            s.resources = super::resource_settings::ResourceSettings::from_json(m.get("resources"), &mut problems);
+        }
+        (s, problems)
+    }
+
+    pub fn write_json(&self, m: &mut Map<String, Json>) {
+        let shading = SHADINGS.iter().find(|x| x.0 == self.shading).map_or("Auto", |x| x.1);
+        let music = MUSICS.iter().find(|x| x.0 == self.music).map_or("Auto", |x| x.1);
+        m.insert("subdivide".into(), Json::from(self.subdivide));
+        m.insert("shading".into(), Json::String(shading.into()));
+        m.insert("music".into(), Json::String(music.into()));
+        for (k, b) in [
+            ("vsync", self.vsync),
+            ("objects", self.objects),
+            ("wireframe", self.wireframe),
+            ("particles", self.particles),
+            ("snow_tracks", self.snow_tracks),
+            ("local_lights", self.local_lights),
+            ("game_post", self.game_post),
+            ("game_sky", self.game_sky),
+            ("sfx", self.sfx),
+        ] {
+            m.insert(k.into(), Json::Bool(b));
+        }
+        for (k, f) in [("music_volume", self.music_volume), ("sfx_volume", self.sfx_volume)] {
+            let v = f.to_string().parse::<f64>().unwrap_or(f64::from(f));
+            m.insert(k.into(), Json::from(v));
+        }
+        #[cfg(feature = "net")]
+        if let Some(name) = &self.player_name {
+            m.insert("player_name".into(), Json::String(name.clone()));
+        }
+        #[cfg(feature = "net")]
+        m.insert("resources".into(), self.resources.to_json());
+    }
+}
+
+#[derive(Debug)]
+pub enum SaveError {
+    Unreadable(String),
+    Io(anyhow::Error),
+}
+
+pub fn read_file(path: &Path) -> Result<Map<String, Json>> {
+    let meta = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Map::new()),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    if meta.len() > MAX_FILE {
+        bail!("{}: {} bytes, at most {MAX_FILE}", path.display(), meta.len());
+    }
+    let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    match serde_json::from_str::<Json>(&text) {
+        Ok(Json::Object(m)) => Ok(m),
+        Ok(_) => bail!("{}: not a JSON object", path.display()),
+        Err(e) => Err(e).with_context(|| format!("parsing {}", path.display())),
+    }
+}
+
+pub fn save_file(path: &Path, s: &PortSettings) -> Result<(), SaveError> {
+    let mut m = read_file(path).map_err(|e| SaveError::Unreadable(format!("{e:#}")))?;
+    s.write_json(&mut m);
+    write_object(path, m).map_err(SaveError::Io)
+}
+
+pub fn replace_unreadable(path: &Path, s: &PortSettings) -> Result<std::path::PathBuf> {
+    let aside = super::files::move_aside(path).with_context(|| format!("moving {} aside", path.display()))?;
+    let mut m = Map::new();
+    s.write_json(&mut m);
+    write_object(path, m)?;
+    Ok(aside)
+}
+
+fn write_object(path: &Path, m: Map<String, Json>) -> Result<()> {
+    let text = serde_json::to_string_pretty(&Json::Object(m))?;
+    super::files::write_whole(path, text.as_bytes()).with_context(|| format!("writing {}", path.display()))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Item {
+    Subdivide,
+    Shading,
+    Vsync,
+    Objects,
+    Wireframe,
+    Particles,
+    SnowTracks,
+    LocalLights,
+    Post,
+    Sky,
+    Music,
+    MusicVolume,
+    Sfx,
+    SfxVolume,
+    #[cfg(feature = "net")]
+    DownloadLimit,
+    #[cfg(feature = "net")]
+    ResourceCache,
+    #[cfg(feature = "net")]
+    ServerScripts,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Page {
+    Display,
+    Effects,
+    Sound,
+    #[cfg(feature = "net")]
+    Multiplayer,
+}
+
+impl Page {
+    pub fn items(self) -> &'static [Item] {
+        match self {
+            Page::Display => &[Item::Subdivide, Item::Shading, Item::Vsync, Item::Objects, Item::Wireframe],
+            Page::Effects => &[Item::Particles, Item::SnowTracks, Item::LocalLights, Item::Post, Item::Sky],
+            Page::Sound => &[Item::Music, Item::MusicVolume, Item::Sfx, Item::SfxVolume],
+            #[cfg(feature = "net")]
+            Page::Multiplayer => &[Item::DownloadLimit, Item::ResourceCache, Item::ServerScripts],
+        }
+    }
+}
+
+#[cfg(feature = "net")]
+const NET_ITEMS: [Item; 3] = [Item::DownloadLimit, Item::ResourceCache, Item::ServerScripts];
+#[cfg(not(feature = "net"))]
+const NET_ITEMS: [Item; 0] = [];
+
+const ALL: [Item; 14] = [
+    Item::Subdivide,
+    Item::Shading,
+    Item::Vsync,
+    Item::Objects,
+    Item::Wireframe,
+    Item::Particles,
+    Item::SnowTracks,
+    Item::LocalLights,
+    Item::Post,
+    Item::Sky,
+    Item::Music,
+    Item::MusicVolume,
+    Item::Sfx,
+    Item::SfxVolume,
+];
+
+// TODO(guess): a port choice — the launcher's volumes (0 … 1 in hundredths on its slider) are shown and stepped in tenths, as the game's own speech and effect volumes step 0 … 10 (`AUDIOSETTING_*`); a step from 0.37 goes to 0.3 or 0.4; settle: none (the port's own setting).
+const VOLUME_STEPS: f32 = 10.0;
+
+impl Item {
+    pub fn name(self) -> &'static str {
+        match self {
+            Item::Subdivide => "ava_opt_subdivide",
+            Item::Shading => "ava_opt_shading",
+            Item::Vsync => "ava_opt_vsync",
+            Item::Objects => "ava_opt_objects",
+            Item::Wireframe => "ava_opt_wireframe",
+            Item::Particles => "ava_opt_particles",
+            Item::SnowTracks => "ava_opt_snow_tracks",
+            Item::LocalLights => "ava_opt_local_lights",
+            Item::Post => "ava_opt_post",
+            Item::Sky => "ava_opt_sky",
+            Item::Music => "ava_opt_music",
+            Item::MusicVolume => "ava_opt_music_volume",
+            Item::Sfx => "ava_opt_sfx",
+            Item::SfxVolume => "ava_opt_sfx_volume",
+            #[cfg(feature = "net")]
+            Item::DownloadLimit => "ava_opt_download_limit",
+            #[cfg(feature = "net")]
+            Item::ResourceCache => "ava_opt_resource_cache",
+            #[cfg(feature = "net")]
+            Item::ServerScripts => "ava_opt_server_scripts",
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Item::Subdivide => "TXT_AVA_OPT_SUBDIVIDE",
+            Item::Shading => "TXT_AVA_OPT_SHADING",
+            Item::Vsync => "TXT_AVA_OPT_VSYNC",
+            Item::Objects => "TXT_AVA_OPT_OBJECTS",
+            Item::Wireframe => "TXT_AVA_OPT_WIREFRAME",
+            Item::Particles => "TXT_AVA_OPT_PARTICLES",
+            Item::SnowTracks => "TXT_AVA_OPT_SNOW_TRACKS",
+            Item::LocalLights => "TXT_AVA_OPT_LOCAL_LIGHTS",
+            Item::Post => "TXT_AVA_OPT_POST",
+            Item::Sky => "TXT_AVA_OPT_SKY",
+            Item::Music => "TXT_AVA_OPT_MUSIC",
+            Item::MusicVolume => "TXT_AVA_OPT_MUSIC_VOLUME",
+            Item::Sfx => "TXT_AVA_OPT_SFX",
+            Item::SfxVolume => "TXT_AVA_OPT_SFX_VOLUME",
+            #[cfg(feature = "net")]
+            Item::DownloadLimit => "TXT_AVA_OPT_DOWNLOAD_LIMIT",
+            #[cfg(feature = "net")]
+            Item::ResourceCache => "TXT_AVA_OPT_RESOURCE_CACHE",
+            #[cfg(feature = "net")]
+            Item::ServerScripts => "TXT_AVA_OPT_SERVER_SCRIPTS",
+        }
+    }
+
+    pub fn of_dp(dp: &str) -> Option<Item> {
+        ALL.into_iter().chain(NET_ITEMS).find(|i| dp.strip_prefix("dp_") == Some(i.name()))
+    }
+
+    fn flag(self, s: &mut PortSettings) -> Option<&mut bool> {
+        Some(match self {
+            Item::Vsync => &mut s.vsync,
+            Item::Objects => &mut s.objects,
+            Item::Wireframe => &mut s.wireframe,
+            Item::Particles => &mut s.particles,
+            Item::SnowTracks => &mut s.snow_tracks,
+            Item::LocalLights => &mut s.local_lights,
+            Item::Post => &mut s.game_post,
+            Item::Sky => &mut s.game_sky,
+            Item::Sfx => &mut s.sfx,
+            #[cfg(feature = "net")]
+            Item::ServerScripts => &mut s.resources.server_scripts,
+            _ => return None,
+        })
+    }
+
+    pub fn reset(self, s: &mut PortSettings, defaults: &PortSettings) {
+        match self {
+            Item::Subdivide => s.subdivide = defaults.subdivide,
+            Item::Shading => s.shading = defaults.shading,
+            Item::Music => s.music = defaults.music,
+            Item::MusicVolume => s.music_volume = defaults.music_volume,
+            Item::SfxVolume => s.sfx_volume = defaults.sfx_volume,
+            #[cfg(feature = "net")]
+            Item::DownloadLimit => s.resources.download_limit_mib = defaults.resources.download_limit_mib,
+            #[cfg(feature = "net")]
+            Item::ResourceCache => s.resources.cache_mib = defaults.resources.cache_mib,
+            i => {
+                let mut d = defaults.clone();
+                if let (Some(to), Some(from)) = (i.flag(s), i.flag(&mut d)) {
+                    *to = *from;
+                }
+            }
+        }
+    }
+
+    pub fn enabled(self, s: &PortSettings) -> bool {
+        match self {
+            Item::MusicVolume => s.music != Music::Off,
+            Item::SfxVolume => s.sfx,
+            _ => true,
+        }
+    }
+
+    pub fn label(self, s: &PortSettings, loc: &mut Localization) -> String {
+        let mut on_off = |b: bool| loc.text(if b { "TXT_ON" } else { "TXT_OFF" });
+        let mut s = s.clone();
+        match self {
+            Item::Subdivide => s.subdivide.to_string(),
+            Item::Shading => loc.text(SHADINGS.iter().find(|x| x.0 == s.shading).map_or("", |x| x.2)),
+            Item::Music => loc.text(MUSICS.iter().find(|x| x.0 == s.music).map_or("", |x| x.2)),
+            Item::MusicVolume => volume_step(s.music_volume).to_string(),
+            Item::SfxVolume => volume_step(s.sfx_volume).to_string(),
+            #[cfg(feature = "net")]
+            Item::DownloadLimit => super::resource_settings::size_label(s.resources.download_limit_mib, loc),
+            #[cfg(feature = "net")]
+            Item::ResourceCache => super::resource_settings::size_label(s.resources.cache_mib, loc),
+            i => on_off(i.flag(&mut s).is_some_and(|b| *b)),
+        }
+    }
+
+    pub fn step(self, s: &mut PortSettings, next: bool) -> bool {
+        fn wrap<T: Copy + PartialEq>(list: &[T], cur: T, next: bool) -> T {
+            let i = list.iter().position(|x| *x == cur).unwrap_or(0);
+            let n = list.len();
+            list[if next { (i + 1) % n } else { (i + n - 1) % n }]
+        }
+        match self {
+            Item::Subdivide => {
+                let v = s.subdivide.min(SUBDIVIDE_MAX);
+                let to = if next { (v + 1).min(SUBDIVIDE_MAX) } else { v.saturating_sub(1) };
+                let moved = to != s.subdivide;
+                s.subdivide = to;
+                moved
+            }
+            Item::Shading => {
+                s.shading = wrap(&SHADINGS.map(|x| x.0), s.shading, next);
+                true
+            }
+            Item::Music => {
+                s.music = wrap(&MUSICS.map(|x| x.0), s.music, next);
+                true
+            }
+            Item::MusicVolume => step_volume(&mut s.music_volume, next),
+            Item::SfxVolume => step_volume(&mut s.sfx_volume, next),
+            #[cfg(feature = "net")]
+            Item::DownloadLimit => super::resource_settings::step(
+                &mut s.resources.download_limit_mib,
+                &super::resource_settings::DOWNLOAD_STEPS_MIB,
+                next,
+            ),
+            #[cfg(feature = "net")]
+            Item::ResourceCache => super::resource_settings::step(
+                &mut s.resources.cache_mib,
+                &super::resource_settings::CACHE_STEPS_MIB,
+                next,
+            ),
+            i => match i.flag(s) {
+                Some(b) => {
+                    *b = !*b;
+                    true
+                }
+                None => false,
+            },
+        }
+    }
+}
+
+fn volume_step(v: f32) -> i32 {
+    (v.clamp(0.0, 1.0) * VOLUME_STEPS).round() as i32
+}
+
+fn step_volume(v: &mut f32, next: bool) -> bool {
+    let cur = volume_step(*v);
+    let to = if next { (cur + 1).min(VOLUME_STEPS as i32) } else { (cur - 1).max(0) };
+    let new = to as f32 / VOLUME_STEPS;
+    let moved = new != *v;
+    *v = new;
+    moved
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_launchers_file_is_read_member_by_member_and_written_back_whole() {
+        let (s, problems) = PortSettings::from_json(&serde_json::json!({
+            "iso": "/x.iso", "subdivide": 1, "shading": "Height", "vsync": false, "music": "Off",
+            "music_volume": 0.37, "sfx": "yes", "sfx_volume": 2.5, "particles": false, "unknown": [1]
+        }));
+        assert_eq!(
+            (s.subdivide, s.shading, s.vsync, s.music, s.particles),
+            (1, Shading::Height, false, Music::Off, false)
+        );
+        assert!(s.sfx && problems.len() == 1 && problems[0].contains("`sfx`"));
+        assert_eq!((volume_step(s.music_volume), volume_step(s.sfx_volume)), (4, 10));
+        let (d, p) = PortSettings::from_json(&serde_json::json!({}));
+        assert!(p.is_empty() && d == PortSettings::default());
+        assert!(!PortSettings::from_json(&serde_json::json!([1])).1.is_empty());
+        for bad in [
+            serde_json::json!({"subdivide": -1}),
+            serde_json::json!({"subdivide": 1e300}),
+            serde_json::json!({"shading": "textured"}),
+            serde_json::json!({"music_volume": "1"}),
+        ] {
+            let (s, p) = PortSettings::from_json(&bad);
+            assert!(s == PortSettings::default() && p.len() == 1, "{bad}");
+        }
+    }
+
+    #[test]
+    fn steps_wrap_choices_and_stop_numbers_at_their_ends() {
+        let mut s = PortSettings::default();
+        assert!(Item::Subdivide.step(&mut s, true) && s.subdivide == 3);
+        assert!(!Item::Subdivide.step(&mut s, true) && s.subdivide == 3);
+        assert!(Item::Shading.step(&mut s, false) && s.shading == Shading::Material);
+        assert!(Item::Music.step(&mut s, false) && s.music == Music::Off && !Item::MusicVolume.enabled(&s));
+        assert!(!Item::SfxVolume.step(&mut s, true) && s.sfx_volume == 1.0);
+        s.sfx_volume = 0.37;
+        assert!(Item::SfxVolume.step(&mut s, false) && s.sfx_volume == 0.3);
+        assert!(Item::Vsync.step(&mut s, true) && !s.vsync);
+        for p in [Page::Display, Page::Effects, Page::Sound] {
+            for i in p.items() {
+                assert_eq!(Item::of_dp(&format!("dp_{}", i.name())), Some(*i));
+            }
+        }
+        assert_eq!(ALL.len(), Page::Display.items().len() + Page::Effects.items().len() + Page::Sound.items().len());
+        #[cfg(feature = "net")]
+        {
+            assert_eq!(&NET_ITEMS[..], Page::Multiplayer.items());
+            for i in Page::Multiplayer.items() {
+                assert_eq!(Item::of_dp(&format!("dp_{}", i.name())), Some(*i));
+            }
+            assert!(Item::DownloadLimit.step(&mut s, false) && s.resources.download_limit_mib == 1024);
+            assert!(Item::ServerScripts.step(&mut s, true) && !s.resources.server_scripts);
+        }
+    }
+
+    #[test]
+    fn saving_keeps_the_launchers_other_members() {
+        let dir = std::env::temp_dir().join(format!("ava-options-{}", std::process::id()));
+        let path = dir.join("settings.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, r#"{"iso": "/games/ssx.iso", "track": "alps0101", "vsync": true}"#).unwrap();
+        let s = PortSettings { vsync: false, music_volume: 0.4, ..Default::default() };
+        save_file(&path, &s).unwrap();
+        let m = read_file(&path).unwrap();
+        assert_eq!(m["iso"], "/games/ssx.iso");
+        assert_eq!(m["track"], "alps0101");
+        assert_eq!(m["vsync"], false);
+        assert_eq!(m["music_volume"], 0.4);
+        assert_eq!(PortSettings::from_json(&Json::Object(m)).0, s);
+        assert!(!path.with_extension("json.partial").exists());
+        assert!(read_file(&dir.join("missing.json")).unwrap().is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_unreadable_file_is_never_written_over_unasked() {
+        let dir = std::env::temp_dir().join(format!("ava-options-broken-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let s = PortSettings { vsync: false, ..Default::default() };
+        for broken in [&b"[1, 2"[..], b"{\"iso\": \"/games/ssx.iso\",", b"[]", &vec![b' '; MAX_FILE as usize + 1]] {
+            std::fs::write(&path, broken).unwrap();
+            assert!(matches!(save_file(&path, &s), Err(SaveError::Unreadable(_))));
+            assert_eq!(std::fs::read(&path).unwrap(), broken, "left as it was");
+        }
+        let aside = replace_unreadable(&path, &s).unwrap();
+        assert_eq!(std::fs::read(&aside).unwrap().len(), MAX_FILE as usize + 1, "kept aside whole");
+        let (back, problems) = PortSettings::from_json(&Json::Object(read_file(&path).unwrap()));
+        assert!(problems.is_empty() && back == s);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(feature = "net")]
+    #[test]
+    fn the_player_name_is_read_by_the_rule_and_written_back() {
+        let s = PortSettings { player_name: Some("Elise".into()), ..Default::default() };
+        let mut m = Map::new();
+        s.write_json(&mut m);
+        let (back, problems) = PortSettings::from_json(&Json::Object(m));
+        assert!(problems.is_empty() && back == s);
+        let (n, p) = PortSettings::from_json(&serde_json::json!({"player_name": " Elise "}));
+        assert!(n.player_name.is_none() && p.len() == 1);
+    }
+
+    #[cfg(not(feature = "net"))]
+    #[test]
+    fn without_the_network_the_player_name_is_kept_untouched() {
+        let mut m = Map::new();
+        m.insert("player_name".into(), Json::String(" not checked here ".into()));
+        let (s, problems) = PortSettings::from_json(&Json::Object(m.clone()));
+        assert!(problems.is_empty());
+        s.write_json(&mut m);
+        assert_eq!(m["player_name"], " not checked here ");
+    }
+}

@@ -7,7 +7,11 @@ use bevy::light::NotShadowCaster;
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::mesh::{Indices, MeshVertexBufferLayoutRef, PrimitiveTopology, VertexAttributeValues};
 use bevy::pbr::{Material, MaterialPipeline, MaterialPipelineKey, MaterialPlugin};
-use bevy::prelude::*;
+use bevy::prelude::{
+    AlphaMode, App, Asset, Assets, ChildOf, Commands, Entity, Handle, Image, IntoScheduleConfigs, Mat4, Mesh, Mesh3d,
+    MeshMaterial3d, Name, Plugin, PostUpdate, Quat, Query, Reflect, Res, ResMut, Resource, Time, Transform, Vec3, Vec4,
+    Visibility, World, info, resource_exists, warn,
+};
 use bevy::render::render_resource::{
     AsBindGroup, BlendComponent, BlendFactor, BlendOperation, BlendState, Extent3d, RenderPipelineDescriptor,
     ShaderType, SpecializedMeshPipelineError, TextureDimension, TextureFormat,
@@ -22,13 +26,13 @@ use ssx_physics::event::{Course, EventType};
 use crate::render::objects::material::{LDR_FRAME_FORMAT, LDR_PIPELINE_LABEL};
 use crate::rider::anim::{JointRecord, world_records};
 
-const SHADER_PATH: &str = "embedded://ssx_bevy/rider/ghost.wgsl";
+const SHADER_PATH: &str = "embedded://ssx_bevy/rider/ghost.wesl";
 
 pub struct GhostMaterialPlugin;
 
 impl Plugin for GhostMaterialPlugin {
     fn build(&self, app: &mut App) {
-        embedded_asset!(app, "ghost.wgsl");
+        embedded_asset!(app, "ghost.wesl");
         app.add_plugins(MaterialPlugin::<GhostMaterial>::default());
     }
 }
@@ -134,6 +138,7 @@ pub struct LoadedGhosts {
     info: GhostRigInfo,
     rivals: Vec<(Rival, GhostAnimation)>,
     normal: Image,
+    normal_source: (std::path::PathBuf, String),
     course: Option<Course>,
     event: String,
     riding: bool,
@@ -148,11 +153,9 @@ fn load(root: &Path, track: &str, drop_key: u32, riding: bool) -> Result<Option<
     let want = std::env::var("SSX_RIDE_EVENT").unwrap_or_else(|_| "race".into());
     let def = if want == "none" { None } else { ssx_physics::event::choose_event(events.iter(), &want) };
     let Some(def) = def else { return Ok(None) };
-    let mut rows: Vec<_> = def.rivals.iter().filter(|r| r.starting_idx == 0).collect();
-    rows.sort_by_key(|r| r.value());
-    if !def.event_type.is_some_and(EventType::ranks_ascending) {
-        rows.reverse();
-    }
+    let board = def.ghost_board();
+    let rows: Vec<(usize, &ssx_physics::event::Rival)> =
+        board.iter().enumerate().filter_map(|(k, g)| Some((k, def.rivals.get(g.row?)?))).collect();
     if rows.is_empty() {
         return Ok(None);
     }
@@ -170,7 +173,7 @@ fn load(root: &Path, track: &str, drop_key: u32, riding: bool) -> Result<Option<
     let floats = ssx_assets::rig_anim::float_dofs(root)?;
     let db = AssetDb::load(&root.join(ssx_assets::rig_anim::ANIM_DIR), &[ssx_assets::rig_anim::RIG_BUNDLE])?;
     let mut rivals = Vec::new();
-    for (k, row) in rows.into_iter().take(MEDAL_LABELS.len()).enumerate() {
+    for (k, row) in rows.into_iter().filter(|(k, _)| *k < MEDAL_LABELS.len()) {
         let id = row.ghost_id as u32;
         let replay = match GhostReplay::load(root, id) {
             Ok(r) => r,
@@ -180,7 +183,7 @@ fn load(root: &Path, track: &str, drop_key: u32, riding: bool) -> Result<Option<
             }
         };
         let (anim, problems) = GhostAnimation::new(root, &db, &info.ghost, &floats)?;
-        if k == 0 {
+        if rivals.is_empty() {
             for p in problems {
                 info!("ghost animation: {p}");
             }
@@ -188,35 +191,30 @@ fn load(root: &Path, track: &str, drop_key: u32, riding: bool) -> Result<Option<
         rivals.push((Rival { label: MEDAL_LABELS[k], value: row.value(), replay }, anim));
     }
     let normal_rel = model.parts.first().and_then(|p| p.material.textures.get("normalTexture").cloned());
-    let normal = load_normal(root, normal_rel.as_deref().context("ghost_character_mat has no normalTexture")?)?;
+    let normal_rel = normal_rel.context("ghost_character_mat has no normalTexture")?;
+    let normal = load_normal(root, &normal_rel)?;
+    let normal_source = (root.to_path_buf(), normal_rel);
     let slot = ssx_physics::spawn::load_drop_starts(root, track)?
         .iter()
         .find(|s| s.drop_key == drop_key)
         .and_then(|s| s.slot(0));
     let start_y = slot.map(|(p, _)| p.y);
     let course = start_y.zip(end).map(|(start_y, e)| Course { start_y, end_y: e.y });
-    Ok(Some(LoadedGhosts { model, info, rivals, normal, course, event: def.name.clone(), riding, slot }))
+    Ok(Some(LoadedGhosts { model, info, rivals, normal, normal_source, course, event: def.name.clone(), riding, slot }))
 }
 
 fn load_normal(root: &Path, rel: &str) -> Result<Image> {
-    use ssx_assets::texture::{self, DxnExport};
-    use ssx_formats::xpr::XprFile;
-    let path = ssx_assets::track_objects::asset_file(root, &format!("{rel}.xpr"))
-        .with_context(|| format!("{rel}.xpr not found under {}", root.display()))?;
-    let data = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-    let xpr = XprFile::parse(&data).with_context(|| format!("parsing {}", path.display()))?;
-    let res = xpr.resources.first().with_context(|| format!("{}: no resource", path.display()))?;
-    let mut levels = texture::decode_resource(&data, &xpr, res, true, DxnExport::Raw)?;
-    levels.retain(|l| l.face == 0);
-    levels.sort_by_key(|l| l.level);
-    let first = &levels.first().context("no levels")?.image;
+    let id = ssx_assets::content::textures::texture_id(rel).with_context(|| format!("{rel:?}: not a texture id"))?;
+    let found = ssx_assets::content::GameContent::of(root).texture(&id, &ssx_content::texture::Want::NORMAL)?;
+    let levels = found.texture.levels;
+    let first = levels.first().context("no levels")?;
     let (w, h) = (first.width, first.height);
     let mips = levels
         .iter()
         .enumerate()
-        .take_while(|(i, l)| l.image.width == (w >> i).max(1) && l.image.height == (h >> i).max(1))
+        .take_while(|(i, l)| l.width == (w >> i).max(1) && l.height == (h >> i).max(1))
         .count();
-    let bytes: Vec<u8> = levels[..mips].iter().flat_map(|l| l.image.rgba.iter().copied()).collect();
+    let bytes: Vec<u8> = levels[..mips].iter().flat_map(|l| l.images[0].iter().copied()).collect();
     let size = Extent3d { width: w, height: h, depth_or_array_layers: 1 };
     let mut image =
         Image::new_uninit(size, TextureDimension::D2, TextureFormat::Rgba8Unorm, RenderAssetUsages::RENDER_WORLD);
@@ -367,7 +365,16 @@ fn spawn(
         Ok(s) => normal.sampler = s,
         Err(e) => warn!("ghost normal sampler: {e:#}"),
     }
-    let normal = images.add(normal);
+    let ((root, rel), sampler) = (loaded.normal_source.clone(), normal.sampler.clone());
+    let id = ssx_assets::content::textures::texture_id(&rel);
+    let recipe = id.map(|id| {
+        crate::render::reload::Recipe::new(vec![id], move || {
+            let mut image = load_normal(&root, &rel)?;
+            image.sampler = sampler.clone();
+            Ok(image)
+        })
+    });
+    let normal = crate::render::reload::add(&mut images, normal, recipe);
     let mat = &loaded.model.parts[0].material;
     let vec4 = |name: &str, d: Vec4| mat.vectors.get(name).filter(|v| v.len() == 4).map_or(d, |v| Vec4::from_slice(v));
     let float = |name: &str| mat.float(name).unwrap_or(0.0);

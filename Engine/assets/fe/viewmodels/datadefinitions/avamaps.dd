@@ -1,0 +1,19 @@
+{
+	"actions":
+		[
+			{ "viewname": "A_AvaMapsSetup", "actionname": "A_AvaMapsSetup", "argumenttype": "object" },
+			{ "viewname": "A_AvaMapsRequestData", "actionname": "A_AvaMapsRequestData", "argumenttype": "float" },
+			{ "viewname": "A_AvaMapsPage", "actionname": "A_AvaMapsPage", "argumenttype": "float" },
+			{ "viewname": "A_AvaMapsMode", "actionname": "A_AvaMapsMode", "argumenttype": "float" },
+			{ "viewname": "A_AvaMapsRide", "actionname": "A_AvaMapsRide" },
+			{ "viewname": "A_AvaMapsRefresh", "actionname": "A_AvaMapsRefresh" },
+			{ "viewname": "A_AvaMapsBack", "actionname": "A_AvaMapsBack" }
+		],
+	"data":
+		[
+			{ "viewname": "ava_maps", "type": "object", "dpname": "dp_ava_maps" },
+			{ "viewname": "ava_maps_rows", "type": "array", "dpname": "dp_ava_maps_rows" },
+			{ "viewname": "ava_maps_rows_index", "type": "int", "dpname": "dp_ava_maps_rows_index" },
+			{ "viewname": "ava_maps_details", "type": "object", "dpname": "dp_ava_maps_details" }
+		]
+}

@@ -1,4 +1,5 @@
 use super::bits::SwfReader;
+use super::limits::Budget;
 use super::types::{Matrix, Rect, Rgba};
 use crate::{Error, Result};
 
@@ -165,10 +166,12 @@ fn read_records(
     mut fills: usize,
     mut lines: usize,
     style_version: u8,
+    budget: &Budget,
 ) -> Result<Vec<ShapeRecord>> {
     let mut fill_bits = r.ub(4)?;
     let mut line_bits = r.ub(4)?;
     let mut out = Vec::new();
+    let mut held = 0u64;
     let check = |v: u32, n: usize, what: &str| {
         if v as usize > n { Err(Error::invalid(format!("{what} style {v} of {n}"))) } else { Ok(v) }
     };
@@ -178,6 +181,7 @@ fn read_records(
             if flags == 0 {
                 break;
             }
+            budget.shape_record(&mut held)?;
             let move_to = if flags & 1 != 0 {
                 let n = r.ub(5)?;
                 Some((r.sb(n)?, r.sb(n)?))
@@ -208,6 +212,7 @@ fn read_records(
             }
             out.push(ShapeRecord::StyleChange { move_to, fill0, fill1, line, new_styles });
         } else if r.flag()? {
+            budget.shape_record(&mut held)?;
             let n = r.ub(4)? + 2;
             let (dx, dy) = if r.flag()? {
                 (r.sb(n)?, r.sb(n)?)
@@ -218,6 +223,7 @@ fn read_records(
             };
             out.push(ShapeRecord::Straight { dx, dy });
         } else {
+            budget.shape_record(&mut held)?;
             let n = r.ub(4)? + 2;
             out.push(ShapeRecord::Curved {
                 control_dx: r.sb(n)?,
@@ -233,13 +239,21 @@ fn read_records(
 
 impl Shape {
     pub fn read_with_style(r: &mut SwfReader, version: u8) -> Result<Self> {
+        Self::read_with_style_in(r, version, &Budget::unlimited())
+    }
+
+    pub fn read_with_style_in(r: &mut SwfReader, version: u8, budget: &Budget) -> Result<Self> {
         let styles = Styles::read(r, version)?;
-        let records = read_records(r, version, styles.fills.len(), styles.lines.len(), version)?;
+        let records = read_records(r, version, styles.fills.len(), styles.lines.len(), version, budget)?;
         Ok(Shape { styles, records })
     }
 
     pub fn read_glyph(r: &mut SwfReader) -> Result<Self> {
-        Ok(Shape { styles: Styles::default(), records: read_records(r, 1, 1, 0, 1)? })
+        Self::read_glyph_in(r, &Budget::unlimited())
+    }
+
+    pub fn read_glyph_in(r: &mut SwfReader, budget: &Budget) -> Result<Self> {
+        Ok(Shape { styles: Styles::default(), records: read_records(r, 1, 1, 0, 1, budget)? })
     }
 }
 
@@ -258,6 +272,10 @@ pub struct DefineShape {
 
 impl DefineShape {
     pub fn read(data: &[u8], version: u8) -> Result<Self> {
+        Self::read_in(data, version, &Budget::unlimited())
+    }
+
+    pub fn read_in(data: &[u8], version: u8, budget: &Budget) -> Result<Self> {
         let mut r = SwfReader::new(data);
         let id = r.u16()?;
         let bounds = Rect::read(&mut r)?;
@@ -270,7 +288,7 @@ impl DefineShape {
             non_scaling = r.flag()?;
             scaling = r.flag()?;
         }
-        let shape = Shape::read_with_style(&mut r, version)?;
+        let shape = Shape::read_with_style_in(&mut r, version, budget)?;
         super::expect_end(&r, "DefineShape")?;
         Ok(DefineShape {
             version,
@@ -327,6 +345,10 @@ fn morph_gradient(r: &mut SwfReader) -> Result<(Gradient, Gradient)> {
 
 impl MorphShape {
     pub fn read(data: &[u8]) -> Result<Self> {
+        Self::read_in(data, &Budget::unlimited())
+    }
+
+    pub fn read_in(data: &[u8], budget: &Budget) -> Result<Self> {
         let mut r = SwfReader::new(data);
         let id = r.u16()?;
         let start_bounds = Rect::read(&mut r)?;
@@ -334,7 +356,7 @@ impl MorphShape {
         let offset = r.u32()? as usize;
         let end_at = r.pos() + offset;
         let nf = style_count(&mut r, true)?;
-        let mut fills = Vec::with_capacity(nf);
+        let mut fills = Vec::with_capacity(nf.min(r.remaining() / 9));
         for _ in 0..nf {
             let kind = r.u8()?;
             fills.push(match kind {
@@ -362,7 +384,7 @@ impl MorphShape {
             });
         }
         let nl = style_count(&mut r, true)?;
-        let mut lines = Vec::with_capacity(nl);
+        let mut lines = Vec::with_capacity(nl.min(r.remaining() / 12));
         for _ in 0..nl {
             lines.push(MorphLine {
                 start_width: r.u16()?,
@@ -371,11 +393,11 @@ impl MorphShape {
                 end_color: Rgba::read_rgba(&mut r)?,
             });
         }
-        let start_edges = read_records(&mut r, 1, nf, nl, 3)?;
+        let start_edges = read_records(&mut r, 1, nf, nl, 3, budget)?;
         if r.pos() != end_at {
             return Err(Error::invalid(format!("morph end edges at {:#x}, offset says {end_at:#x}", r.pos())));
         }
-        let end_edges = read_records(&mut r, 1, nf, nl, 3)?;
+        let end_edges = read_records(&mut r, 1, nf, nl, 3, budget)?;
         super::expect_end(&r, "DefineMorphShape")?;
         Ok(MorphShape { id, start_bounds, end_bounds, fills, lines, start_edges, end_edges })
     }

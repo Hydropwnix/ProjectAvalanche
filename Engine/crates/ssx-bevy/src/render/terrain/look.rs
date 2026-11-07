@@ -2,7 +2,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use ssx_assets::content::GameContent;
 use ssx_assets::terrain_material::{TerrainMaterial as VaultMaterial, load_track_materials};
+use ssx_assets::vault_db::MaterialTextures;
+use ssx_content::ContentId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SnowType {
@@ -32,8 +35,8 @@ impl SnowType {
 
 #[derive(Clone, Debug)]
 pub struct SurfaceLook {
-    pub diffuse: PathBuf,
-    pub normal: PathBuf,
+    pub diffuse: ContentId,
+    pub normal: ContentId,
     pub tile: f32,
     pub normal_scale: f32,
     pub specular_intensity: f32,
@@ -43,7 +46,7 @@ pub struct SurfaceLook {
 #[derive(Clone, Debug)]
 pub struct SnowLayerLook {
     pub snow_type: SnowType,
-    pub normal: PathBuf,
+    pub normal: ContentId,
     pub tile: f32,
     pub specular_intensity: f32,
     pub eccentricity: f32,
@@ -54,8 +57,8 @@ pub struct TerrainLook {
     pub material: String,
     pub base: [SurfaceLook; 2],
     pub snow: [SnowLayerLook; 6],
-    pub scatter: PathBuf,
-    pub sparkle: PathBuf,
+    pub scatter: ContentId,
+    pub sparkle: ContentId,
     pub reflect_env_exponent: f32,
     pub reflect_env_fresnel: f32,
     pub scatter_tile: f32,
@@ -78,10 +81,11 @@ impl TerrainLook {
                 default
             })
         };
-        let texture = |param: String| -> Result<PathBuf> {
-            let path = m.texture_file(big_root, &param).with_context(|| format!("{}: no {param}", m.name))?;
-            anyhow::ensure!(path.is_file(), "{}: {param} = {} does not exist", m.name, path.display());
-            Ok(path)
+        let content = GameContent::of(big_root);
+        let texture = |param: String| -> Result<ContentId> {
+            let id = m.texture_id(&param).with_context(|| format!("{}: no {param}", m.name))?;
+            anyhow::ensure!(content.has(&id), "{}: {param} = {id} does not exist", m.name);
+            Ok(id)
         };
         let mut base = Vec::with_capacity(2);
         for n in 1..=2 {
@@ -168,7 +172,7 @@ impl TrackLooks {
     }
 
     pub fn summary(&self) -> String {
-        let stem = |p: &Path| p.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        let stem = |id: &ContentId| id.path().rsplit('/').next().unwrap_or_default().to_string();
         let mut out = String::from("materials (vault):");
         for (i, look) in self.looks.iter().enumerate() {
             let files = self.by_file.values().filter(|&&l| l == i).count();

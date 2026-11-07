@@ -185,18 +185,19 @@ pub fn fx_file(big_root: &Path, vault_path: &str) -> PathBuf {
     gameexplorer(big_root).join(vault_path.replace('\\', "/"))
 }
 
-pub fn texture_file(big_root: &Path, texture: &str) -> PathBuf {
+pub fn texture_id(texture: &str) -> Option<ssx_content::ContentId> {
+    if texture.contains(':') {
+        return texture.parse::<ssx_content::ContentId>().ok().filter(|id| id.kind() == ssx_content::Kind::Texture);
+    }
     let stem = texture.strip_suffix(".dds").unwrap_or(texture);
-    gameexplorer(big_root).join("fx/textures").join(format!("{stem}.xpr"))
+    crate::content::textures::texture_id(&format!("fx/textures/{stem}"))
 }
 
 pub fn load_node_files(big_root: &Path, node: &ParticleNode) -> Result<(ParticleSystem, Option<Behaviour>)> {
     let vfx = node.lynx.as_ref().with_context(|| format!("ge_particlenode {:#010x} has no effect", node.key))?;
-    let lnx = fx_file(big_root, &vfx.path);
-    let data = std::fs::read(&lnx).with_context(|| format!("reading {}", lnx.display()))?;
-    let sys = ParticleSystem::parse(&data).with_context(|| lnx.display().to_string())?;
+    let sys = crate::content::GameContent::of(big_root).particle_system(&vfx.path)?.as_ref().clone();
     if sys.effect(&vfx.definition).is_none() {
-        bail!("{}: no effect {}", lnx.display(), vfx.definition);
+        bail!("{}: no effect {}", vfx.path, vfx.definition);
     }
     let behaviour = match &node.behaviour_path {
         Some(p) => match std::fs::read(fx_file(big_root, p)) {
@@ -223,6 +224,7 @@ pub fn load_snow_spray_files(big_root: &Path, collection: u32) -> Result<LoadedS
         .with_context(|| format!("no *_track.vlt in {}", dir.display()))?;
     crate::vault_db::with_track_db(big_root, &track, |db| {
         let set = load_snow_spray(db, collection)?;
+        let set = crate::content::GameContent::of(big_root).route_spray(collection, set);
         let mut files = std::collections::HashMap::new();
         for node in set.slots.iter().flatten().flatten() {
             if let std::collections::hash_map::Entry::Vacant(e) = files.entry(node.key) {

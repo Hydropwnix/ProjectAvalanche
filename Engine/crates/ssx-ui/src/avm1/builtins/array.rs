@@ -44,7 +44,8 @@ pub(crate) fn install(b: &mut Builder, global: ObjId) -> ObjId {
 fn array_ctor(cx: &mut Ctx, this: Value, args: &[Value]) -> R {
     let items = match args {
         [Value::Number(n)] => {
-            let n = if n.is_finite() && *n >= 0.0 { (*n as usize).min(1 << 24) } else { 0 };
+            let n = if n.is_finite() && *n >= 0.0 { n.min(f64::from(1u32 << 24)) as usize } else { 0 };
+            cx.grew_array(n, n)?;
             vec![Value::Undefined; n]
         }
         _ => args.to_vec(),
@@ -58,11 +59,13 @@ fn array_ctor(cx: &mut Ctx, this: Value, args: &[Value]) -> R {
     Ok(Value::Object(cx.new_array(items)))
 }
 
-fn elems(cx: &Ctx, this: &Value) -> Option<Vec<Value>> {
-    match cx.kind_of(this) {
-        Some(Kind::Array(a)) => Some(a.clone()),
-        _ => None,
-    }
+fn elems(cx: &mut Ctx, this: &Value) -> Option<Vec<Value>> {
+    let a = match cx.kind_of(this) {
+        Some(Kind::Array(a)) => a.clone(),
+        _ => return None,
+    };
+    let _ = cx.walked(a.len() / 4);
+    Some(a)
 }
 
 fn with_elems<T>(cx: &mut Ctx, this: &Value, f: impl FnOnce(&mut Vec<Value>) -> T) -> Option<T> {
@@ -73,6 +76,8 @@ fn with_elems<T>(cx: &mut Ctx, this: &Value, f: impl FnOnce(&mut Vec<Value>) -> 
 }
 
 fn push(cx: &mut Ctx, this: Value, args: &[Value]) -> R {
+    let len = with_elems(cx, &this, |a| a.len()).unwrap_or(0);
+    cx.grew_array(len + args.len(), args.len())?;
     let n = with_elems(cx, &this, |a| {
         a.extend_from_slice(args);
         a.len()
@@ -89,6 +94,8 @@ fn shift(cx: &mut Ctx, this: Value, _: &[Value]) -> R {
 }
 
 fn unshift(cx: &mut Ctx, this: Value, args: &[Value]) -> R {
+    let len = with_elems(cx, &this, |a| a.len()).unwrap_or(0);
+    cx.grew_array(len + args.len(), args.len() + len / 4)?;
     let n = with_elems(cx, &this, |a| {
         a.splice(0..0, args.iter().cloned());
         a.len()
@@ -114,6 +121,7 @@ fn splice(cx: &mut Ctx, this: Value, args: &[Value]) -> R {
         a.len() - start
     };
     let insert = args.get(2..).unwrap_or(&[]).to_vec();
+    cx.grew_array(a.len() - count + insert.len(), insert.len())?;
     let removed =
         with_elems(cx, &this, |a| a.splice(start..start + count, insert).collect::<Vec<_>>()).unwrap_or_default();
     Ok(Value::Object(cx.new_array(removed)))
@@ -130,10 +138,12 @@ fn slice(cx: &mut Ctx, this: Value, args: &[Value]) -> R {
 fn concat(cx: &mut Ctx, this: Value, args: &[Value]) -> R {
     let mut out = elems(cx, &this).unwrap_or_default();
     for v in args {
-        match elems(cx, v) {
-            Some(x) => out.extend(x),
-            None => out.push(v.clone()),
-        }
+        let more = match elems(cx, v) {
+            Some(x) => x,
+            None => vec![v.clone()],
+        };
+        cx.grew_array(out.len() + more.len(), more.len())?;
+        out.extend(more);
     }
     Ok(Value::Object(cx.new_array(out)))
 }
@@ -141,10 +151,12 @@ fn concat(cx: &mut Ctx, this: Value, args: &[Value]) -> R {
 pub(crate) fn join_values(cx: &mut Ctx, a: &[Value], sep: &str) -> Result<String, Fault> {
     let mut s = String::new();
     for (i, v) in a.iter().enumerate() {
+        let x = cx.to_string(v)?;
+        cx.made_string(s.len() + sep.len() + x.len())?;
         if i > 0 {
             s.push_str(sep);
         }
-        s.push_str(&cx.to_string(v)?);
+        s.push_str(&x);
     }
     Ok(s)
 }

@@ -4,7 +4,11 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use bevy::camera::Hdr;
 use bevy::core_pipeline::tonemapping::{DebandDither, Tonemapping};
-use bevy::prelude::*;
+use bevy::prelude::{
+    App, ButtonInput, Camera, Camera2d, ClearColorConfig, Commands, DetectChangesMut, Entity, FixedUpdate, Has,
+    IntoScheduleConfigs, KeyCode, Msaa, Mut, PostUpdate, Query, Res, ResMut, Resource, Update, With, Without, World,
+    default, info, resource_exists, warn,
+};
 use bevy::ui::IsDefaultUiCamera;
 use ssx_formats::csvdb::Geotag;
 use ssx_physics::event::EventResult;
@@ -64,13 +68,21 @@ impl LevelLoad {
         let def = data
             .ride
             .as_ref()
+            .filter(|_| opts.launch.map.is_none())
             .and_then(|r| r.ride().world().events.iter().find(|e| e.key == opts.launch.drop).cloned());
         let rivals = ssx_ui::game::ride::drop_rivals(&opts.big_root, def.as_ref());
-        let geotags = match ssx_assets::track_objects::geotags::load_rows(&opts.big_root, &opts.launch.track) {
-            Ok(rows) => rows.unwrap_or_default(),
-            Err(e) => {
-                warn!("level: the geotags of {} did not load: {e:#}", opts.launch.track);
-                Vec::new()
+        for p in &rivals.problems {
+            warn!("level: {p}");
+        }
+        let geotags = if opts.launch.map.is_some() {
+            Vec::new()
+        } else {
+            match ssx_assets::track_objects::geotags::load_rows(&opts.big_root, &opts.launch.track) {
+                Ok(rows) => rows.unwrap_or_default(),
+                Err(e) => {
+                    warn!("level: the geotags of {} did not load: {e:#}", opts.launch.track);
+                    Vec::new()
+                }
             }
         };
         let script = ssx_ui::game::fe::host::parse_script(&opts.script).context("the level's script")?;
@@ -80,6 +92,23 @@ impl LevelLoad {
             _ => Vec::new(),
         };
         Ok(LevelLoad { opts, rivals, geotags, script, rival_values, bot_scores })
+    }
+}
+
+#[cfg(feature = "scripts")]
+impl LevelGame {
+    pub(crate) fn script_view(&self) -> (&HudFeed, &Launch) {
+        (&self.feed, &self.launch)
+    }
+
+    pub(crate) fn script_ghost(&self, id: u64, seconds: f32) -> Option<(usize, [f32; 3], [f32; 3], bool)> {
+        let (k, r) = self.ghosts.replays.iter().find(|(_, r)| u64::from(r.id) == id)?;
+        if r.finished(seconds) {
+            return None;
+        }
+        let pose = r.pose(seconds);
+        let air = pose.flags & ssx_formats::ghost::FLAG_IN_AIR != 0;
+        Some((*k, r.position(seconds), pose.velocity, air))
     }
 }
 
@@ -106,6 +135,7 @@ pub struct LevelGame {
     release: Vec<(Button, u8)>,
     script_a_until: Option<f64>,
     script_back_until: Option<f64>,
+    script_bumper_until: Option<(KeyCode, f64)>,
     stick_dpad: game_mode::StickDpad,
     requests: Vec<GameRequest>,
     restart_at: Option<u32>,
@@ -127,15 +157,31 @@ pub struct LevelGame {
     win_after: Option<f32>,
     rival_values: Vec<u32>,
     bot_scores: Vec<u32>,
+    live: bool,
+    live_rounds: bool,
 }
 
 impl LevelGame {
+    pub fn is_up(&self) -> bool {
+        self.up
+    }
+
     pub fn takes_input(&self) -> bool {
         self.up && !self.results_posted
     }
 
     pub fn results_shown(&self) -> bool {
         self.results_posted
+    }
+
+    #[cfg(feature = "net")]
+    pub fn session_results_shown(&mut self, shown: bool) {
+        self.results_posted = shown;
+    }
+
+    #[cfg(feature = "net")]
+    pub fn set_session_hud(&mut self, hud: Option<ssx_ui::game::session_board::SessionHud>) {
+        self.feed.session = hud;
     }
 
     pub fn take_save(&mut self) -> bool {
@@ -173,9 +219,10 @@ impl LevelGame {
                 )
             },
         );
+        let on = if self.launch.track.is_empty() { "a new track" } else { self.launch.track.as_str() };
         format!(
-            "{} on {}: ride {:.1} s, {result}; frame time {avg:.2} ms average over {n} frames, the UI's CPU {ui:.2} ms",
-            self.launch.event, self.launch.track, self.ride_seconds
+            "{} on {on}: ride {:.1} s, {result}; frame time {avg:.2} ms average over {n} frames, the UI's CPU {ui:.2} ms",
+            self.launch.event, self.ride_seconds
         )
     }
 }
@@ -225,6 +272,7 @@ pub fn start(world: &mut World, load: LevelLoad) {
     let LevelLoad { opts, rivals, geotags, script, rival_values, bot_scores } = load;
     let event_type =
         world.get_resource::<Ride>().and_then(|r| r.session.event.setup.event_type).map_or(-1, |t| t as i32);
+    let event_type = if opts.launch.map.is_some() { opts.launch.event_type as i32 } else { event_type };
     let mut badges_seen = 0;
     let mut flags = std::collections::BTreeSet::new();
     if world.contains_resource::<Ride>() {
@@ -244,21 +292,44 @@ pub fn start(world: &mut World, load: LevelLoad) {
         });
     }
     let launched = ssx_ui::game::ride::game_setup(&opts.launch.setup);
+    let in_session = world.get_resource::<crate::shell::live::LiveSession>().is_some();
+    let handed = match (&opts.launch.setup.presentation, in_session) {
+        (Some(p), true) => ssx_ui::game::ride::game_setup(p),
+        _ => launched.clone(),
+    };
     if let Some(ride) = world.get_resource::<Ride>()
         && launched.character != 0
-        && ride.game_setup.as_ref() != Some(&launched)
+        && ride.game_setup.as_ref().is_none_or(|g| g.items != handed.items)
         && std::env::var("SSX_RIDE_LOADOUT").is_err()
         && std::env::var("SSX_RIDE_GEAR").is_err()
     {
         warn!("level: the ride was not handed the launch's game setup (`RideOptions::setup`): the event's loadout");
     }
+    let live_rules = world.get_resource::<crate::shell::live::LiveSession>().and_then(|l| l.rules);
+    let rivals = match live_rules {
+        Some(rules) if !rules.explore_ghosts => {
+            info!("level: a network session without the event's explore ghosts: no medal ghosts");
+            ssx_ui::game::ride::DropRivals { rider_titles: rivals.rider_titles, ..Default::default() }
+        }
+        _ => rivals,
+    };
     let mut feed = HudFeed::new(&opts.launch.rider);
     feed.explore.rivals = rivals.rivals;
     if let Some(fe) = world.resource::<GameUiRes>().0.fe.as_ref() {
         feed.explore.pictures = fe.career.riders.iter().map(|r| (r.title.clone(), r.icon.clone())).collect();
     }
     feed.rider_titles = rivals.rider_titles;
-    let ghosts = ssx_ui::game::ride::RivalGhosts::new(rivals.replays);
+    let mut ghosts = ssx_ui::game::ride::RivalGhosts::new(rivals.replays);
+    let board = world.get_resource::<Ride>().and_then(|r| r.map.as_ref()?.mode.as_ref()).and_then(|m| {
+        (m.gamemode.is_some() && m.rules.rivals() != ssx_content::gamemode::Rivals::None)
+            .then(|| m.rules.board_values())
+    });
+    if let Some(values) = board {
+        let rows = ssx_ui::game::ride::target_rows(&values);
+        info!("level: the map's gamemode's board {values:?} as the HUD's rows");
+        feed.explore.rivals = rows.clone();
+        ghosts = ghosts.with_targets(rows);
+    }
     world.resource_mut::<GameUiRes>().set_drop(opts.launch.drop, event_type);
     world.resource_mut::<GameUiRes>().fe_call(|fe, _| ssx_ui::game::fe::flow::simulation_begins(fe));
     let saved = world.resource::<GameUiRes>().0.fe.as_ref().map_or(-1, |f| f.profile.camera_type());
@@ -282,7 +353,15 @@ pub fn start(world: &mut World, load: LevelLoad) {
     if opts.debug_hud {
         info!("level: the viewer's debug text is on (--debug-hud)");
     }
+    let live_rules = world.get_resource::<crate::shell::live::LiveSession>().and_then(|l| l.rules);
+    let live = live_rules.is_some();
+    let live_rounds = live_rules.is_some_and(|r| r.rounds);
+    if live {
+        info!("level: a network session's level (the pause, the popups and the results as multiplayer has them)");
+    }
     world.insert_resource(LevelGame {
+        live,
+        live_rounds,
         launch: opts.launch,
         stat_names: opts.stat_names,
         badges_seen,
@@ -304,6 +383,7 @@ pub fn start(world: &mut World, load: LevelLoad) {
         release: Vec::new(),
         script_a_until: None,
         script_back_until: None,
+        script_bumper_until: None,
         stick_dpad: Default::default(),
         requests: Vec::new(),
         restart_at: None,

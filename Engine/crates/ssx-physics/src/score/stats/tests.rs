@@ -63,8 +63,11 @@ fn every_trick_family_is_registered_and_a_grind_counts() {
         let v = CONSTANTS.iter().find(|(b, n, _)| *b == Binder::Objectives && n == name).map(|c| c.2);
         assert_eq!(v, Some(i as f64), "{name}");
     }
-    assert_eq!((trick_name(TrickType::Grind1), trick_name(TrickType::Grind6SUber)), ("Grind_1", "Grind_6_SUber"));
-    assert_eq!(trick_name(TrickType::None), "None");
+    assert_eq!(
+        (trick_name(TrickType::Grind1), trick_name(TrickType::Grind6SUber)),
+        (Some("Grind_1"), Some("Grind_6_SUber"))
+    );
+    assert_eq!(trick_name(TrickType::None), Some("None"));
     let mut s = StatsStore::default();
     for family in TRICK_FAMILIES {
         for trick in TRICK_NAMES {
@@ -143,4 +146,23 @@ fn the_message_writers() {
     assert_eq!(s.get(&key), None);
     s.add_int_key(h, PERSISTENT, 1, true);
     assert_eq!(s.get(&key), Some(StatValue::Int(1)));
+}
+
+#[test]
+fn an_added_tricks_records_are_counted_by_its_id() {
+    let mut s = StatsStore::default();
+    let id: std::sync::Arc<str> = "p:trick/air_walk".into();
+    let air =
+        |awesome, super_awesome| TrickRecord { kind: RecordKind::Air, awesome, super_awesome, ..Default::default() };
+    for r in [air(false, false), air(false, false), air(true, false), air(true, true), air(false, true)] {
+        s.added_trick_flushed(&r, &id);
+    }
+    s.added_trick_flushed(&TrickRecord { kind: RecordKind::Grind, ..Default::default() }, &id);
+    assert_eq!(s.added_tricks[&id], [2, 1, 2]);
+    s.added_tricks.insert(id.clone(), [u32::MAX, 0, 0]);
+    s.added_trick_flushed(&air(false, false), &id);
+    assert_eq!(s.added_tricks[&id], [u32::MAX, 0, 0], "saturating");
+    s.writeable = false;
+    s.added_trick_flushed(&air(true, false), &id);
+    assert_eq!(s.added_tricks[&id], [u32::MAX, 0, 0], "a read-only store counts nothing");
 }

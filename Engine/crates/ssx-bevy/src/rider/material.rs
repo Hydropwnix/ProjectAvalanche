@@ -11,7 +11,7 @@ use crate::render::shadows::{ShadowPassKey, specialize_shadow_pass};
 use crate::render::lighting::GameLighting;
 use crate::render::lighting::game::GameLightUniform;
 
-const SHADER_PATH: &str = "embedded://ssx_bevy/rider/character.wgsl";
+const SHADER_PATH: &str = "embedded://ssx_bevy/rider/character.wesl";
 
 pub const CHARACTER_STATUS: &str = "\
 rider (listing port): player_body/hair/eye/apparel gbuffer + material passes (normal z:=1, d^2, rim + fill, \
@@ -55,13 +55,13 @@ pub struct CharacterMaterialPlugin;
 
 impl Plugin for CharacterMaterialPlugin {
     fn build(&self, app: &mut App) {
-        embedded_asset!(app, "character.wgsl");
+        embedded_asset!(app, "character.wesl");
         app.add_plugins(MaterialPlugin::<CharacterMaterial>::default());
         let frame = RiderFrame::default();
         let _ = app
             .world_mut()
             .resource_mut::<Assets<ShaderBuffer>>()
-            .insert(RIDER_FRAME.id(), ShaderBuffer::new(&frame.bytes(), RenderAssetUsages::default()));
+            .insert(RIDER_FRAME.id(), ShaderBuffer::new(frame.bytes(), RenderAssetUsages::default()));
         app.add_systems(PostUpdate, upload_rider_frame);
         use crate::render::lighting::fade::{LightingFadeSet, faded};
         app.add_systems(Update, follow_lighting.after(LightingFadeSet).run_if(faded));
@@ -108,7 +108,8 @@ fn upload_rider_frame(
         return;
     }
     if let Some(mut buffer) = buffers.get_mut(&RIDER_FRAME) {
-        buffer.data = Some(frame.bytes());
+        buffer.clear();
+        buffer.extend_from_slice(&frame.bytes());
         *last = Some(frame);
     }
 }
@@ -277,6 +278,18 @@ impl RiderShading {
         self.samples.push_back(sample);
         let (sum, weight) = self.samples.iter().fold((0.0, 0.0), |(s, w), (v, k)| (s + v * k, w + k));
         self.ao = if weight > 0.0 { (sum / weight).clamp(0.0, 1.0) } else { AO_IN_AIR };
+    }
+
+    pub fn replace(
+        &mut self,
+        old: &[Handle<CharacterMaterial>],
+        new: Vec<Handle<CharacterMaterial>>,
+        wingsuit: Vec<Handle<CharacterMaterial>>,
+    ) {
+        self.materials.retain(|m| !old.contains(m));
+        self.materials.extend(new);
+        self.wingsuit = wingsuit;
+        (self.bound, self.wingsuit_alpha) = (false, None);
     }
 
     pub fn apply(&mut self, shadow_point: Vec3, materials: &mut Assets<CharacterMaterial>) {

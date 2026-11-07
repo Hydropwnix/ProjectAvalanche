@@ -13,6 +13,12 @@ use ssx_physics::{SIM_HZ, Vec2, Vec3};
 use super::GameUi;
 use super::feed::HudFeed;
 
+mod map;
+mod rows;
+
+pub use map::{MapRun, post_map_results};
+pub use rows::{DropRivals, RivalGhosts, board_rivals, drop_rivals, target_rows};
+
 #[derive(Clone, Debug)]
 pub struct RideOptions {
     pub track: String,
@@ -74,9 +80,10 @@ pub struct ResultsContext {
     pub event_type: i32,
     pub event_name: String,
     pub character: String,
-    pub rivals: Vec<u32>,
     pub track_bonuses: Vec<String>,
     pub bot_scores: Vec<u32>,
+    pub event_id: Option<ssx_content::ContentId>,
+    pub sim_content_id: Option<String>,
 }
 
 pub fn bot_scores(_def: &EventDef, bots: Option<&ssx_physics::session::bots::BotRace>) -> Vec<u32> {
@@ -106,25 +113,20 @@ pub fn career_results_with_splits(
     let money_previous = profile.credits();
     let mut stats = profile.riders.get(&rider).cloned().unwrap_or_default();
     let level_before = update_rider_level(&mut stats, &rules.level_thresholds, &rules.level_prices);
-    let mut leaderboard = ctx.rivals.clone();
-    let ascending = rules.event(event).is_some_and(|e| e.ascending());
-    if ascending {
-        leaderboard.sort();
-    } else {
-        leaderboard.sort_by(|a, b| b.cmp(a));
-    }
     let outcome = EventOutcome {
         event,
         rider,
         failed: r.failed,
         value: r.value,
-        leaderboard,
+        leaderboard: r.rivals.clone(),
         rewinds: r.rewinds,
-        place: r.rank.unwrap_or(0) as u32,
+        place: r.place,
         geotag_credits: r.geotag_credits,
         track_bonuses: ctx.track_bonuses.clone(),
         bot_scores: ctx.bot_scores.clone(),
         splits,
+        event_id: ctx.event_id.clone(),
+        sim_content_id: ctx.sim_content_id.clone(),
         ..Default::default()
     };
     let report = profile.apply_result(rules, &outcome);
@@ -147,7 +149,20 @@ pub fn career_results_with_splits(
         success: report.success,
         medal: report.medal,
         notices: report.notices,
+        best_not_kept: report.best_not_kept,
     }
+}
+
+pub fn results_portrait(
+    career: &ssx_assets::career::CareerDb,
+    rules: &ssx_assets::career::Rules,
+    character: &str,
+) -> String {
+    rules
+        .riders
+        .get(character)
+        .and_then(|key| career.riders.iter().find(|r| r.key == *key))
+        .map_or_else(String::new, |r| r.icon.clone())
 }
 
 pub fn post_event_results(
@@ -156,8 +171,15 @@ pub fn post_event_results(
     r: &EventResult,
     profile: &mut ssx_assets::career::Profile,
     rules: &ssx_assets::career::Rules,
-) -> bool {
+) -> Posted {
     post_event_results_with_splits(ui, ctx, r, [0; 4], profile, rules)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Posted {
+    pub won: bool,
+    pub best_not_kept: Option<ssx_assets::career::profile::BestNotKept>,
+    pub medal: Option<ssx_assets::career::profile::Medal>,
 }
 
 pub fn own_tombstone(
@@ -180,7 +202,7 @@ pub fn post_event_results_with_splits(
     splits: [u32; 4],
     profile: &mut ssx_assets::career::Profile,
     rules: &ssx_assets::career::Rules,
-) -> bool {
+) -> Posted {
     let career = career_results_with_splits(ctx, r, splits, profile, rules);
     let medal = career.medal.map_or(-1, |m| m as i32);
     // TODO(guess): without a front end the game mode (0x825775C0) comes from the event's name (`exp_` 0, `chapter_` 1, else 3), with one from the launch; settle: none (the front end's is the game's).
@@ -205,13 +227,10 @@ pub fn post_event_results_with_splits(
         medal,
         career,
         tutorial: super::fe::globe::TUTORIAL_DROPS.contains(&ctx.drop_key),
-        character_pic: rules
-            .riders
-            .get(&ctx.character)
-            .and_then(|key| ui.fe.as_ref()?.career.riders.iter().find(|r| r.key == *key))
-            .map_or_else(String::new, |r| r.icon.clone()),
+        character_pic: ui.fe.as_ref().map_or_else(String::new, |f| results_portrait(&f.career, rules, &ctx.character)),
     };
-    let success = input.career.success;
+    let posted =
+        Posted { won: input.career.success, best_not_kept: input.career.best_not_kept, medal: input.career.medal };
     if !r.failed && r.geotag_credits > 0 {
         ui.values.set_int(0x228, (input.career.money_previous - r.geotag_credits) as i32);
     }
@@ -222,99 +241,17 @@ pub fn post_event_results_with_splits(
             let items = super::fe::unlocks::items_of(n, &f.career, &mut ui.loc);
             f.unlocks.extend(items);
         }
+        if let Some(why) = posted.best_not_kept {
+            super::fe::notify::post_best_not_kept(f, &mut ui.loc, why, &input.character_pic);
+        }
     }
     super::hud::results::post_results(&mut ui.values, &mut ui.loc, &input);
-    success
+    posted
 }
 
 pub fn post_death_body(ui: &mut GameUi, course: Option<ssx_physics::event::Course>, r: &EventResult) {
     let course_mm = course.map_or(0, |c| ((c.start_y - c.end_y).abs() * 1000.0) as i64);
     super::hud::results::death_body(&mut ui.values, &mut ui.loc, course_mm, r.descent_mm);
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct DropRivals {
-    pub rivals: Vec<(String, u32)>,
-    pub replays: Vec<ssx_assets::ghosts::GhostReplay>,
-    pub rider_titles: std::collections::BTreeMap<u32, String>,
-}
-
-pub fn drop_rivals(big_root: &Path, def: Option<&EventDef>) -> DropRivals {
-    let career = ssx_assets::career::CareerDb::load(big_root).ok();
-    let rider_titles: std::collections::BTreeMap<u32, String> =
-        career.iter().flat_map(|c| c.riders.iter().map(|r| (r.key, r.title.clone()))).collect();
-    let mut rows: Vec<_> = def.map(|d| d.rivals.iter().filter(|r| r.starting_idx == 0).collect()).unwrap_or_default();
-    let ascending = def.and_then(|d| d.event_type).is_some_and(|t| t.ranks_ascending());
-    rows.sort_by_key(|r| if ascending { i64::from(r.value()) } else { -i64::from(r.value()) });
-    let mut out = DropRivals { rider_titles, ..Default::default() };
-    for r in rows {
-        let title = out.rider_titles.get(&r.character).cloned().unwrap_or_default();
-        if let Ok(g) = ssx_assets::ghosts::GhostReplay::load(big_root, r.ghost_id as u32) {
-            out.replays.push(g);
-        }
-        out.rivals.push((title, r.value()));
-    }
-    out
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct RivalGhosts {
-    pub replays: Vec<ssx_assets::ghosts::GhostReplay>,
-    finish: Vec<Option<u32>>,
-}
-
-impl RivalGhosts {
-    pub fn new(replays: Vec<ssx_assets::ghosts::GhostReplay>) -> Self {
-        RivalGhosts { finish: vec![None; replays.len()], replays }
-    }
-
-    pub fn step(
-        &mut self,
-        seconds: f32,
-        ms: u32,
-        set: &ssx_physics::triggers::TriggerSet,
-        loc: &mut super::loc::Localization,
-    ) -> (Vec<super::hud::billboards::Ghost>, Vec<super::leaderboard::RaceEntrant>) {
-        let mut ghosts = Vec::new();
-        let mut racers = Vec::new();
-        for (k, g) in self.replays.iter().enumerate() {
-            let key =
-                ["TXT_EXPLORE_GHOST_MEDAL_GOLD", "TXT_EXPLORE_GHOST_MEDAL_SILVER", "TXT_EXPLORE_GHOST_MEDAL_BRONZE"]
-                    .get(k)
-                    .copied()
-                    .unwrap_or_default();
-            let name = loc.text(key);
-            let position = g.position(seconds);
-            let active = !g.finished(seconds);
-            let p = Vec3::from_array(position);
-            if active
-                && self.finish[k].is_none()
-                && set
-                    .touching(p, ssx_physics::triggers::PLAYER_TOUCH_RADIUS, ssx_physics::triggers::IG_GHOST)
-                    .any(|i| set.volumes[i].name == "end")
-            {
-                self.finish[k] = Some(ms);
-            }
-            // TODO(guess): these entrants (the medal names, no picture) stand in where the session has no racers (the game's are kind 1 for explore requests too, `Racers_Activate` 0x82501874…0x825018A0: `GameMode_BuildExploreGhostRequests` 0x82480840 makes them racers of type 2 with request +0x80 = 1,
-            // so the race leaderboard's query 0x824CB548 gives the character's name and `assets\gamertagIcons\%s.dds`); settle: load the racers' data here as well.
-            racers.push(super::leaderboard::RaceEntrant {
-                name: name.clone(),
-                picture: String::new(),
-                active: super::feed::RACER_PRESENT,
-                finish_ms: self.finish[k],
-                y: position[1],
-            });
-            if active {
-                ghosts.push(super::hud::billboards::Ghost {
-                    id: u64::from(g.id),
-                    name,
-                    colour: ssx_assets::ghosts::EXPLORE_GHOST_TINT,
-                    position,
-                });
-            }
-        }
-        (ghosts, racers)
-    }
 }
 
 impl RideDriver {
@@ -324,9 +261,10 @@ impl RideDriver {
             event_type: self.event_type,
             event_name: self.event_name.clone(),
             character: self.opts.character.clone(),
-            rivals: self.rivals.iter().map(|(_, v)| *v).collect(),
             track_bonuses: self.session.stats.track_bonuses(),
             bot_scores: self.session.bots.as_ref().map_or_else(Vec::new, |r| r.scores.clone()),
+            event_id: ssx_assets::content::data::events::event_id(&self.event_name),
+            sim_content_id: None,
         }
     }
 
@@ -343,7 +281,7 @@ impl RideDriver {
     ) -> bool {
         let rules = self.rules.clone().unwrap_or_default();
         let splits = self.session.event.explore_splits().unwrap_or_default();
-        let won = post_event_results_with_splits(ui, &self.results_context(), r, splits, profile, &rules);
+        let won = post_event_results_with_splits(ui, &self.results_context(), r, splits, profile, &rules).won;
         if r.failed {
             post_death_body(ui, self.session.event.setup.course, r);
         }
@@ -400,7 +338,10 @@ impl RideDriver {
         });
         let event_type = def.as_ref().and_then(|d| d.event_type).map_or(-1, |t| t as i32);
         let event_name = def.as_ref().map(|d| d.name.clone()).unwrap_or_default();
-        let DropRivals { rivals, replays, rider_titles } = drop_rivals(big_root, def.as_ref());
+        let DropRivals { rivals, replays, rider_titles, problems } = drop_rivals(big_root, def.as_ref());
+        for p in problems {
+            ssx_core::eprintln!("ride: {p}");
+        }
         let career = ssx_assets::career::CareerDb::load(big_root).ok();
         let mut feed = HudFeed::new(&opts.character);
         feed.explore.rivals = rivals.clone();
@@ -422,7 +363,7 @@ impl RideDriver {
             rules: career.map(|c| {
                 let mut r = c.rules();
                 if let Err(e) = r.load_badge_texts(big_root) {
-                    eprintln!("ride: the badges' texts: {e:#}");
+                    ssx_core::eprintln!("ride: the badges' texts: {e:#}");
                 }
                 r
             }),
@@ -503,7 +444,7 @@ impl RideDriver {
         ui.tutorial_step(&self.rider, &self.session, &events, &rider);
         if std::env::var_os("SSX_RIDE_TRACE").is_some() && i.is_multiple_of(30) {
             let s = &self.rider;
-            eprintln!(
+            ssx_core::eprintln!(
                 "{time:6.1} {:?} stopped {} speed {:.1} m/s traj {:.1} bail {} start {}",
                 s.state,
                 s.stopped,
@@ -538,5 +479,46 @@ mod tests {
         assert_eq!((stats.stats[0], stats.stats[1], stats.stats[2], stats.stats[3]), (19.0, 27.0, 22.0, 0.0));
         assert!(stats.slots[0] && stats.slots[12] && stats.slots[13] && !stats.slots[1]);
         assert!(RideOptions::default().setup.is_none());
+    }
+
+    #[test]
+    fn the_results_portrait_is_the_launched_riders_own() {
+        use ssx_assets::career::{CareerDb, Rider, RiderContent};
+        let rider = |name: &str, icon: &str, content: Option<RiderContent>| Rider {
+            key: ssx_formats::attrib::fnv1(name.as_bytes()),
+            name: name.into(),
+            title: String::new(),
+            display_name: name.into(),
+            cost: 0,
+            locked: false,
+            default: false,
+            unk_940b9b22: 0,
+            stat_bonuses: Vec::new(),
+            portrait: String::new(),
+            description: String::new(),
+            round_icon: String::new(),
+            icon: icon.into(),
+            content,
+        };
+        let id: ssx_content::ContentId = "skins:character/sam".parse().expect("an id");
+        let added = RiderContent {
+            id: id.clone(),
+            stand_in: ssx_formats::attrib::fnv1(b"sam"),
+            portrait: None,
+            round_icon: None,
+            icon: None,
+            added: true,
+            default_board: None,
+            disc_stat_bonuses: None,
+        };
+        let career = CareerDb {
+            riders: vec![rider("sam", "disc_sam.png", None), rider(id.as_str(), "package_sam.png", Some(added))],
+            ..CareerDb::default()
+        };
+        assert_eq!(career.riders[1].key, ssx_assets::content::characters::career::content_key(&id));
+        let rules = career.rules();
+        assert_eq!(results_portrait(&career, &rules, id.as_str()), "package_sam.png");
+        assert_eq!(results_portrait(&career, &rules, "sam"), "disc_sam.png");
+        assert_eq!(results_portrait(&career, &rules, "nobody"), "");
     }
 }

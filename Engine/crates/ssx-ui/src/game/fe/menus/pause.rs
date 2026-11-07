@@ -20,6 +20,7 @@ pub enum GameRequest {
     Quit,
     SaveSettings,
     Save,
+    ExitGame,
 }
 
 pub mod reason {
@@ -95,10 +96,16 @@ pub struct Pause {
     pub restart: bool,
     pub settings: bool,
     pub restart_enabled: bool,
+    pub players: bool,
 }
 
 pub fn restart_allowed(fe: &FrontEnd, values: &crate::game::values::UiValues) -> bool {
-    fe.game_mode != 3 || values.int(LIVEEVENT_REMAINING_MS) >= 60_000
+    // TODO(guess): a port choice — the game disables the restart entry only in a live event with under a minute left
+    // (game mode 3, LIVEEVENT_REMAINING_MS < 60 000, 0x8240D330); a network session's menu has no restart at all (its
+    // items are Resume, Players, Settings, Leave server), as the original's live-event pause (the online racers'
+    // sessions) is not decoded; settle: the live-event pause, if it is ever decoded (the live-event manager
+    // 0x82426C18).
+    !fe.network_session && (fe.game_mode != 3 || values.int(LIVEEVENT_REMAINING_MS) >= 60_000)
 }
 
 pub fn game_input(fe: &mut FrontEnd, env: &mut FeEnv, start: bool) {
@@ -131,6 +138,7 @@ pub fn activate(fe: &mut FrontEnd, env: &mut FeEnv) {
     fe.pause.leaving = false;
     fe.pause.restart = false;
     fe.pause.settings = false;
+    fe.pause.players = false;
     fe.pause.restart_enabled = restart_allowed(fe, env.values);
     env.values.set_bool(PAUSE_IS_IN_PAUSE_MENU, true);
     env.values.set_bool(PAUSE_IS_EXITING_BE, false);
@@ -146,7 +154,7 @@ pub fn deactivate(fe: &mut FrontEnd, env: &mut FeEnv) {
         return;
     }
     fe.pause.active = false;
-    if !fe.pause.settings {
+    if !fe.pause.settings && !fe.pause.players {
         if fe.pause.leaving {
             fe.note("pause menu closed: FE manager event 0xD (0x329E66FA {3}, audio event 0x8BE0E597 {0, 1, 0})");
         } else {
@@ -259,6 +267,8 @@ pub fn do_restart(fe: &mut FrontEnd, env: &mut FeEnv) {
 pub fn build(fe: &FrontEnd, cx: &mut Ctx, loc: &mut crate::game::loc::Localization, dp: &str) -> Option<Value> {
     match dp {
         "dp_pause_menu_index" => Some(Value::Number(0.0)),
+        #[cfg(feature = "net")]
+        "dp_pause_menu_data" if fe.network_session => Some(crate::game::fe::ava::session::pause::build(cx, loc)),
         "dp_pause_menu_data" => {
             let drop = fe.current_drop;
             let full = drop != FIRST_TUTORIAL;

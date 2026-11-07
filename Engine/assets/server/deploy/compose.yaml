@@ -1,0 +1,29 @@
+# Project Avalanche dedicated server with Docker Compose (see the Dockerfile beside it for the steps). server.toml beside
+# this file is mounted read-only (copy server.toml.example and edit it; bind "::" or "0.0.0.0" inside a container); the
+# data volume holds the rules subset, the keys and the logs.
+name: avalanche-server
+
+services:
+  avalanche-server:
+    build:
+      context: ../../../..
+      dockerfile: Engine/assets/server/deploy/Dockerfile
+    image: project-avalanche-server:local
+    restart: unless-stopped
+    stop_signal: SIGTERM
+    # the graceful stop's bound ([stop] round_end, 60 s by default, and the results, the riders, the masters)
+    stop_grace_period: 90s
+    ports:
+      - "27450:27450/udp"
+      - "27450:27450/tcp"
+      - "27451:27451/udp"
+    volumes:
+      - ./server.toml:/srv/avalanche/server.toml:ro
+      - avalanche-data:/srv/avalanche/data
+      # the server's icon ([server] icon = "icon.png"): beside server.toml
+      # - ./icon.png:/srv/avalanche/icon.png:ro
+    # LAN discovery's broadcasts and port mapping need the host's network: remove `ports` and use
+    # network_mode: host
+
+volumes:
+  avalanche-data:

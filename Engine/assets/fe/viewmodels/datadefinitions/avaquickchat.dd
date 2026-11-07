@@ -1,0 +1,13 @@
+{
+	"actions":
+		[
+			{ "viewname": "A_AvaQuickChat", "actionname": "A_AvaQuickChat", "argumenttype": "float" },
+			{ "viewname": "A_AvaQuickChatClose", "actionname": "A_AvaQuickChatClose" }
+		],
+	"data":
+		[
+			{ "viewname": "ava_quickchat", "type": "object", "dpname": "dp_ava_quickchat" },
+			{ "viewname": "ava_quickchat_items", "type": "array", "dpname": "dp_ava_quickchat_items" },
+			{ "viewname": "ava_quickchat_items_index", "type": "int", "dpname": "dp_ava_quickchat_items_index" }
+		]
+}

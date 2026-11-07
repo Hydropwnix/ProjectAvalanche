@@ -1,0 +1,9 @@
+{
+	"title": "TXT_AVA_EXIT_TITLE",
+	"body": "TXT_AVA_EXIT_BODY",
+	"defaultButton": 1,
+	"buttons":	[
+					{"label": "TXT_YES", "event": "ava_exit_yes"},
+					{"label": "TXT_NO", "event": "ava_exit_no"}
+				]
+}

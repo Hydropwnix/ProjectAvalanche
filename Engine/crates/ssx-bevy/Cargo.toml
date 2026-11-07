@@ -10,11 +10,20 @@ publish.workspace = true
 [lib]
 doctest = false
 
+[features]
+shader-check = ["wgpu/noop", "wgpu/wgsl"]
+net = ["dep:ssx-net", "dep:ssx-net-proto", "dep:ssx-net-join", "dep:ssx-gameplay", "ssx-ui/net", "ssx-script?/wire"]
+scripts = ["dep:ssx-script"]
+
 [dependencies]
 ssx-assets.workspace = true
+ssx-content.workspace = true
+ssx-core = { workspace = true, features = ["log"] }
+ssx-files.workspace = true
+ssx-movie.workspace = true
 ssx-formats.workspace = true
 ssx-lua.workspace = true
-bevy.workspace = true
+bevy = { workspace = true, features = ["default"] }
 cpal.workspace = true
 anyhow.workspace = true
 clap.workspace = true
@@ -22,7 +31,19 @@ ssx-physics.workspace = true
 ssx-ui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-wgpu = { version = "29.0.4", default-features = false }
+wgpu = { version = "30.0.1", default-features = false }
+naga.workspace = true
+wgpu-naga-bridge = "30.0.1"
+wesl.workspace = true
+half.workspace = true
+ssx-net = { workspace = true, optional = true }
+ssx-net-proto = { workspace = true, optional = true }
+ssx-net-join = { workspace = true, optional = true }
+ssx-gameplay = { workspace = true, optional = true }
+ssx-script = { workspace = true, optional = true }
+
+[dev-dependencies]
+wgpu = { version = "30.0.1", default-features = false, features = ["noop", "wgsl"] }
 
 [lints]
 workspace = true

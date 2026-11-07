@@ -46,9 +46,19 @@ impl Ctx<'_> {
     }
 
     pub fn define(&mut self, obj: ObjId, name: &str, v: Value, fl: u8) {
-        if let Some(o) = self.vm.heap.get_mut(obj) {
-            o.props.insert(Str::from(name), Property::new(v, fl));
+        let Some(o) = self.vm.heap.get_mut(obj) else { return };
+        let new = !o.props.contains(name);
+        if new && o.props.len() >= super::sandbox::caps::PROPS {
+            return;
         }
+        o.props.insert(Str::from(name), Property::new(v, fl));
+        if new {
+            self.new_property(name);
+        }
+    }
+
+    pub(crate) fn new_property(&mut self, name: &str) {
+        self.vm.sandbox.grow(super::sandbox::PROPERTY_BYTES + name.len() as u64);
     }
 
     pub fn kind_of(&self, v: &Value) -> Option<&Kind> {

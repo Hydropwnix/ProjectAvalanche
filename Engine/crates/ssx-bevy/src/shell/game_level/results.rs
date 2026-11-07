@@ -11,25 +11,25 @@ pub(super) fn post_results(
     l: &Launch,
     r: &EventResult,
     course: Option<ssx_physics::event::Course>,
-    track_bonuses: Vec<String>,
-    bot_scores: Vec<u32>,
-    splits: [u32; 4],
-) -> bool {
+    o: RideOutcome,
+) -> ssx_ui::game::ride::Posted {
+    let RideOutcome { track_bonuses, bot_scores, splits, sim_content_id } = o;
     let ctx = ssx_ui::game::ride::ResultsContext {
         drop_key: l.drop,
         event_type: r.event_type.map_or(-1, |t| t as i32),
         event_name: l.event.clone(),
         character: l.rider.clone(),
-        rivals: r.rivals.clone(),
         track_bonuses,
         bot_scores,
+        event_id: ssx_assets::content::data::events::event_id(&l.event),
+        sim_content_id,
     };
     let Some((mut profile, rules)) = ui.fe.as_mut().map(|f| (std::mem::take(&mut f.profile), f.rules.clone())) else {
-        return false;
+        return ssx_ui::game::ride::Posted { won: false, best_not_kept: None, medal: None };
     };
     use ssx_assets::career::profile::DropState;
     let before = profile.drop_state(l.drop);
-    let won = ssx_ui::game::ride::post_event_results_with_splits(ui, &ctx, r, splits, &mut profile, &rules);
+    let posted = ssx_ui::game::ride::post_event_results_with_splits(ui, &ctx, r, splits, &mut profile, &rules);
     if r.failed {
         ssx_ui::game::ride::post_death_body(ui, course, r);
     }
@@ -39,10 +39,17 @@ pub(super) fn post_results(
     if let Some(f) = ui.fe.as_mut() {
         f.profile = profile;
         ssx_ui::game::fe::flow::store_camera_type(f);
-        f.last_success = Some(won);
+        f.last_success = Some(posted.won);
         f.last_result_drop = l.drop;
     }
-    won
+    posted
+}
+
+pub(super) struct RideOutcome {
+    pub track_bonuses: Vec<String>,
+    pub bot_scores: Vec<u32>,
+    pub splits: [u32; 4],
+    pub sim_content_id: Option<String>,
 }
 
 pub(super) fn sync_named_flags(l: &mut LevelGame, ride: &mut Ride, ui: &mut GameUi) {

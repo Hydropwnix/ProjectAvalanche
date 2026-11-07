@@ -1,0 +1,68 @@
+# Project Avalanche dedicated server as a systemd service (Linux).
+#
+# Install (as root), the binary from the server archive (ProjectAvalanche-server-linux-x64):
+#   useradd --system --home-dir /var/lib/avalanche-server --shell /usr/sbin/nologin avalanche
+#   install -D -m 0755 avalanche-server /opt/avalanche-server/avalanche-server
+#   install -D -m 0644 server.toml.example /etc/avalanche-server/server.toml   (then edit it)
+#   install -D -m 0644 avalanche-server.service /etc/systemd/system/avalanche-server.service
+#   install -d -o avalanche -g avalanche -m 0750 /var/lib/avalanche-server
+#   sudo -u avalanche /opt/avalanche-server/avalanche-server setup /path/to/your/ssx.iso --out /var/lib/avalanche-server/data
+#   sudo -u avalanche /opt/avalanche-server/avalanche-server check --config /etc/avalanche-server/server.toml --data /var/lib/avalanche-server/data
+#   systemctl daemon-reload && systemctl enable --now avalanche-server
+# The log: journalctl -u avalanche-server, and /var/lib/avalanche-server/data/logs/server.log.
+# Open UDP 27450 (the game), TCP 27450 (the join) and UDP 27451 (the query) in the firewall.
+
+[Unit]
+Description=Project Avalanche dedicated server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=avalanche
+Group=avalanche
+WorkingDirectory=/var/lib/avalanche-server
+ExecStart=/opt/avalanche-server/avalanche-server run --config /etc/avalanche-server/server.toml --data /var/lib/avalanche-server/data
+# The first SIGTERM is the graceful stop (a round under way ends within server.toml's [stop] round_end, 60 s by
+# default, and its results stay up 5 s; then the riders are told and the masters told it leaves); a second ends it at
+# once. The bound covers the default: 60 + 5 + 2 s for the rounds, 2 s for the riders, 3 s for the masters, a margin.
+KillSignal=SIGTERM
+TimeoutStopSec=90
+Restart=on-failure
+RestartSec=5
+# The console reads stdin: a service has none (the console ends, the server runs on).
+StandardInput=null
+StateDirectory=avalanche-server
+StateDirectoryMode=0750
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ReadWritePaths=/var/lib/avalanche-server
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+# IPv4 and IPv6 sockets; netlink for the interface list (LAN discovery's on-link check)
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ProtectProc=invisible
+KeyringMode=private
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

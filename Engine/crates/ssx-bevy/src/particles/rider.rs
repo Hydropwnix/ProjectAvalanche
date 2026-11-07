@@ -44,7 +44,7 @@ impl RiderEffects {
     #[allow(clippy::too_many_arguments)]
     pub fn load(
         root: &Path,
-        track: &str,
+        track: Option<&str>,
         name: &str,
         loadout: &Loadout,
         rig: &SceneGraph,

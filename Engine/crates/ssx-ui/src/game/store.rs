@@ -48,51 +48,50 @@ impl DataStore {
         for p in vm_paths {
             let j = s.read_json(files, p)?;
             let name = p.rsplit('/').next().unwrap_or(p).trim_end_matches(".vm").to_string();
-            let view = j.get("view").and_then(Json::as_str).unwrap_or_default().to_string();
-            let providers = j
-                .get("dataproviders")
-                .and_then(Json::as_array)
-                .map(|a| a.iter().filter_map(Json::as_str).map(str::to_string).collect())
-                .unwrap_or_default();
-            s.view_models.insert(name.clone(), ViewModel { name, view, providers });
+            s.view_models.insert(name.clone(), view_model(&name, &j));
         }
         for p in dd_paths {
             let j = s.read_json(files, p)?;
             let name = p.rsplit('/').next().unwrap_or(p).trim_end_matches(".dd").to_string();
-            let list = |k: &str| j.get(k).and_then(Json::as_array).cloned().unwrap_or_default();
-            let field = |o: &Json, k: &str| o.get(k).and_then(Json::as_str).unwrap_or_default().to_string();
-            let def = DataDefinition {
-                actions: list("actions").iter().map(|o| (field(o, "viewname"), field(o, "actionname"))).collect(),
-                data: list("data")
-                    .iter()
-                    .map(|o| (field(o, "viewname"), field(o, "dpname"), field(o, "type")))
-                    .collect(),
-                bindings: list("databindings")
-                    .iter()
-                    .map(|o| (field(o, "viewname"), field(o, "bindingname")))
-                    .collect(),
-                data_actions: list("data")
-                    .iter()
-                    .flat_map(|d| {
-                        let data = field(d, "viewname");
-                        d.get("actions")
-                            .and_then(Json::as_array)
-                            .into_iter()
-                            .flatten()
-                            .map(move |a| (data.clone(), field(a, "viewname"), field(a, "actionname")))
-                            .collect::<Vec<_>>()
-                    })
-                    .collect(),
-            };
-            s.definitions.insert(name, def);
+            s.definitions.insert(name, definition(&j));
         }
         Ok(s)
     }
 
-    pub fn load_disc(disc: &crate::fs::Disc) -> Result<Self> {
-        let vms = disc.list(VM_DIR, "vm");
-        let dds = disc.list(&format!("{VM_DIR}datadefinitions/"), "dd");
-        Self::load(disc, &vms, &dds)
+    pub fn add_view_model(&mut self, name: &str, text: &str) -> Result<()> {
+        if self.view_models.contains_key(name) {
+            anyhow::bail!("the view model {name} exists on the disc");
+        }
+        let j: Json = serde_json::from_str(text).with_context(|| format!("parsing {name}.vm"))?;
+        self.view_models.insert(name.to_string(), view_model(name, &j));
+        Ok(())
+    }
+
+    pub fn add_definition(&mut self, name: &str, text: &str) -> Result<()> {
+        if self.definitions.contains_key(name) {
+            anyhow::bail!("the data definition {name} exists on the disc");
+        }
+        let j: Json = serde_json::from_str(text).with_context(|| format!("parsing {name}.dd"))?;
+        self.definitions.insert(name.to_string(), definition(&j));
+        Ok(())
+    }
+
+    pub fn extend_view_model(&mut self, view_model: &str, provider: &str) -> Result<()> {
+        if !self.definitions.contains_key(provider) {
+            anyhow::bail!("the provider {provider} has no data definition");
+        }
+        let vm = self.view_models.get_mut(view_model).with_context(|| format!("no view model {view_model}"))?;
+        if vm.providers.iter().any(|p| p == provider) {
+            anyhow::bail!("the view model {view_model} names {provider} already");
+        }
+        vm.providers.push(provider.to_string());
+        Ok(())
+    }
+
+    pub fn load_files(files: &dyn FileSource) -> Result<Self> {
+        let vms = files.list(VM_DIR, "vm");
+        let dds = files.list(&format!("{VM_DIR}datadefinitions/"), "dd");
+        Self::load(files, &vms, &dds)
     }
 
     // TODO(guess): `.dd` files with a trailing comma (`badges.dd`) are read by dropping it; settle: the game's JSON reader for `.dd` files (the provider's loader).
@@ -217,6 +216,38 @@ impl DataStore {
     }
 }
 
+fn view_model(name: &str, j: &Json) -> ViewModel {
+    let view = j.get("view").and_then(Json::as_str).unwrap_or_default().to_string();
+    let providers = j
+        .get("dataproviders")
+        .and_then(Json::as_array)
+        .map(|a| a.iter().filter_map(Json::as_str).map(str::to_string).collect())
+        .unwrap_or_default();
+    ViewModel { name: name.to_string(), view, providers }
+}
+
+fn definition(j: &Json) -> DataDefinition {
+    let list = |k: &str| j.get(k).and_then(Json::as_array).cloned().unwrap_or_default();
+    let field = |o: &Json, k: &str| o.get(k).and_then(Json::as_str).unwrap_or_default().to_string();
+    DataDefinition {
+        actions: list("actions").iter().map(|o| (field(o, "viewname"), field(o, "actionname"))).collect(),
+        data: list("data").iter().map(|o| (field(o, "viewname"), field(o, "dpname"), field(o, "type"))).collect(),
+        bindings: list("databindings").iter().map(|o| (field(o, "viewname"), field(o, "bindingname"))).collect(),
+        data_actions: list("data")
+            .iter()
+            .flat_map(|d| {
+                let data = field(d, "viewname");
+                d.get("actions")
+                    .and_then(Json::as_array)
+                    .into_iter()
+                    .flatten()
+                    .map(move |a| (data.clone(), field(a, "viewname"), field(a, "actionname")))
+                    .collect::<Vec<_>>()
+            })
+            .collect(),
+    }
+}
+
 pub(crate) fn drop_trailing_commas(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut in_str = false;
@@ -247,6 +278,32 @@ pub(crate) fn drop_trailing_commas(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_port_provider_extends_a_disc_view_model_once() {
+        let mut s = DataStore::default();
+        s.view_models.insert(
+            "mainmenu".into(),
+            view_model(
+                "mainmenu",
+                &serde_json::json!({"view": "mainmenu",
+            "dataproviders": ["menuhub"]}),
+            ),
+        );
+        assert!(s.extend_view_model("mainmenu", "avamainmenu").is_err(), "a provider without a definition");
+        s.add_definition("avamainmenu", r#"{"actions": [{"viewname": "A_X", "actionname": "A_X"}], "data": []}"#)
+            .unwrap();
+        assert!(s.add_definition("avamainmenu", "{}").is_err(), "a definition's name is taken once");
+        assert!(s.extend_view_model("nomenu", "avamainmenu").is_err());
+        s.extend_view_model("mainmenu", "avamainmenu").unwrap();
+        assert!(s.extend_view_model("mainmenu", "avamainmenu").is_err());
+        assert!(s.extend_view_model("mainmenu", "menuhub").is_err());
+        assert_eq!(
+            s.activate("mainmenu").map(|v| v.providers.clone()),
+            Some(vec!["menuhub".into(), "avamainmenu".into()])
+        );
+        assert_eq!(s.action_provider("A_X"), Some(("avamainmenu".into(), "A_X".into())));
+    }
 
     #[test]
     fn trailing_commas() {

@@ -5,8 +5,12 @@ mod args;
 mod art;
 mod catalog;
 mod command;
+mod host;
 mod jobs;
+mod link_handler;
 mod main_screen;
+mod masters;
+mod mod_list;
 mod settings;
 mod setup_flow;
 mod ui;
@@ -16,7 +20,7 @@ use std::path::Path;
 
 use eframe::egui;
 
-use crate::ui::{ExtrasTab, MenuItem, SettingsTab, layout};
+use crate::ui::{ExtrasTab, MenuItem, ModsTab, SettingsTab, layout};
 
 fn main() -> eframe::Result {
     let started = std::time::Instant::now();
@@ -24,14 +28,25 @@ fn main() -> eframe::Result {
     if words.first().is_some_and(|w| w == "--apply-update") {
         std::process::exit(update::install::helper(&words[1..]));
     }
-    update::install::cleanup_leftovers();
-    let args = match args::Args::parse(&words) {
-        Ok(args) => args,
-        Err(e) => {
-            eprintln!("error: {e}");
-            std::process::exit(2);
+    let args = if link_handler::link_start_asked(&words) {
+        match link_handler::link_start(&words) {
+            Ok(link) => args::Args { link: Some(link), ..Default::default() },
+            Err(reason) => {
+                ssx_core::eprintln!("error: the link was not opened: {reason}");
+                refused(reason);
+                std::process::exit(2);
+            }
+        }
+    } else {
+        match args::Args::parse(&words) {
+            Ok(args) => args,
+            Err(e) => {
+                ssx_core::eprintln!("error: {e}");
+                std::process::exit(2);
+            }
         }
     };
+    update::install::cleanup_leftovers();
     let settings = settings::Settings::load();
     if args.print {
         std::process::exit(print(&settings));
@@ -66,6 +81,7 @@ fn main() -> eframe::Result {
             if let Some(tab) = &args.tab {
                 app.settings_tab = SettingsTab::parse(tab).unwrap_or_default();
                 app.extras_tab = ExtrasTab::parse(tab).unwrap_or_default();
+                app.mods_tab = ModsTab::parse(tab).unwrap_or_default();
             }
             if args.hover.as_deref() == Some(MenuItem::Exit.name()) {
                 app.cursor = MenuItem::Exit;
@@ -78,46 +94,100 @@ fn main() -> eframe::Result {
             app.shot_after_setup = args.after_setup;
             app.auto_launch = args.launch;
             app.auto_launch_pending = args.launch;
-            app.auto_play_pending = args.play;
+            app.auto_play_pending = args.play || args.link.is_some();
+            app.link = args.link.clone();
+            app.host.script = args.host.iter().copied().collect();
+            if let Some(package) = &args.install {
+                app.mods.start_install(&cc.egui_ctx, settings::app_dir(), package.clone(), false);
+            }
             Ok(Box::new(app))
         }),
     )
 }
 
+fn refused(reason: String) {
+    let viewport = egui::ViewportBuilder::default()
+        .with_title("Project Avalanche")
+        .with_app_id("project-avalanche")
+        .with_inner_size([640.0, 280.0]);
+    let options = eframe::NativeOptions { viewport, ..Default::default() };
+    let _ = eframe::run_native(
+        "Project Avalanche",
+        options,
+        Box::new(move |cc| {
+            ui::theme::install(&cc.egui_ctx);
+            Ok(Box::new(Refused { reason }))
+        }),
+    );
+}
+
+struct Refused {
+    reason: String,
+}
+
+impl eframe::App for Refused {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        ui::theme::NIGHT.to_normalized_gamma_f32()
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        egui::Frame::NONE.inner_margin(24.0).show(ui, |ui| {
+            ui::widgets::heading(ui, "This link was not opened");
+            ui::widgets::paragraph(ui, &self.reason);
+            ui::widgets::note(
+                ui,
+                "A server link starts Project Avalanche with the link alone. Nothing was started and nothing was \
+                 written.",
+            );
+            ui.add_space(12.0);
+            if ui::widgets::button(ui, "Close", ui::widgets::Kind::Primary, true).clicked() {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        });
+    }
+}
+
 fn print(s: &settings::Settings) -> i32 {
-    println!("settings {}", settings::Settings::path().display());
-    println!("game data {} (ready: {})", s.game_data().display(), s.data_ready());
+    ssx_core::println!("settings {}", settings::Settings::path().display());
+    ssx_core::println!("game data {} (ready: {})", s.game_data().display(), s.data_ready());
     if !s.data_ready() {
         return 1;
     }
     let big = s.big_root();
     let tracks = catalog::tracks(&big);
-    println!("{} tracks: {}", tracks.len(), tracks.join(" "));
+    ssx_core::println!("{} tracks: {}", tracks.len(), tracks.join(" "));
     match catalog::riders(&big) {
-        Ok(r) => println!(
+        Ok(r) => ssx_core::println!(
             "{} riders: {}",
             r.len(),
             r.iter().map(|r| format!("{} ({})", r.name, r.label)).collect::<Vec<_>>().join(", ")
         ),
-        Err(e) => println!("riders: {e:#}"),
+        Err(e) => ssx_core::println!("riders: {e:#}"),
     }
     match catalog::DropCache::default().get(&big, &s.track) {
         Ok(drops) => {
             for (i, d) in drops.iter().enumerate() {
-                println!("  {} drop {}: {} peak {} lighting {}", s.track, i + 1, d.text_id, d.peak, d.lighting);
+                ssx_core::println!(
+                    "  {} drop {}: {} peak {} lighting {}",
+                    s.track,
+                    i + 1,
+                    d.text_id,
+                    d.peak,
+                    d.lighting
+                );
             }
-            println!("  presets: {}", catalog::presets(drops).join(", "));
+            ssx_core::println!("  presets: {}", catalog::presets(drops).join(", "));
         }
-        Err(e) => println!("  drops: {e}"),
+        Err(e) => ssx_core::println!("  drops: {e}"),
     }
-    println!("{}", command::viewer(s, &big).display());
-    println!("{}", command::game(s, &big).display());
+    ssx_core::println!("{}", command::viewer(s, &big).display());
+    ssx_core::println!("{}", command::game(s, &big).display());
     0
 }
 
 fn dump_art(s: &settings::Settings, dir: &Path) -> i32 {
     if let Err(e) = std::fs::create_dir_all(dir) {
-        eprintln!("error: {}: {e}", dir.display());
+        ssx_core::eprintln!("error: {}: {e}", dir.display());
         return 1;
     }
     let started = std::time::Instant::now();
@@ -125,7 +195,7 @@ fn dump_art(s: &settings::Settings, dir: &Path) -> i32 {
     let problems = art::load(&app::art_request(s), &mut |l| {
         let file = dir.join(format!("{}.png", l.slot.name()));
         let (w, h) = (l.picture.width, l.picture.height);
-        println!(
+        ssx_core::println!(
             "{:>6.0} ms  {:<13} {:?}: {w} x {h}  {}",
             started.elapsed().as_secs_f64() * 1e3,
             l.slot.name(),
@@ -133,12 +203,12 @@ fn dump_art(s: &settings::Settings, dir: &Path) -> i32 {
             l.note
         );
         if let Err(e) = l.picture.write_png(&file) {
-            eprintln!("error: {e:#}");
+            ssx_core::eprintln!("error: {e:#}");
             failed = true;
         }
     });
     for p in &problems {
-        println!("note: {p}");
+        ssx_core::println!("note: {p}");
     }
     failed as i32
 }

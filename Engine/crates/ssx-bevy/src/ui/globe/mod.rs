@@ -9,7 +9,8 @@ use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
 use anyhow::{Context, Result};
-use bevy::prelude::*;
+use bevy::prelude::{App, Last, Plugin, Res, ResMut, Resource, SystemSet, Time, error, info};
+use bevy::render::RenderApp;
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use ssx_assets::career::globe::GlobeData;
 use ssx_assets::career::globe::look::PostFxState;
@@ -37,6 +38,7 @@ impl Plugin for GlobePlugin {
 }
 
 #[derive(Resource, Clone, Default, ExtractResource)]
+#[extract_app(RenderApp)]
 pub struct GlobeView {
     pub assets: Option<Arc<GlobeAssets>>,
     pub frame: Option<GlobeFrame>,
@@ -165,6 +167,19 @@ pub struct GlobeAssets {
 }
 
 impl GlobeAssets {
+    pub fn texture_ids(&self) -> Vec<ssx_content::ContentId> {
+        let materials = [&self.earth_material, &self.halo_material];
+        let paths = materials.iter().flat_map(|m| m.textures.values()).chain(self.sky_textures.keys());
+        let mut ids: Vec<ssx_content::ContentId> = paths
+            .filter_map(|rel| ssx_assets::content::textures::texture_id(&rel.replace('\\', "/")))
+            .chain(ssx_assets::content::textures::texture_id(BACKGROUND))
+            .chain(self.particle_textures.keys().filter_map(|n| ssx_assets::particles::texture_id(n)))
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
     pub fn texture_line(&self) -> String {
         let singles = [&self.diffuse, &self.relief, &self.frost, &self.background];
         let one: Vec<Vec<Vec<u8>>> = singles.iter().map(|t| vec![t.rgba.clone()]).collect();
@@ -179,22 +194,17 @@ impl GlobeAssets {
     }
 }
 
+const BACKGROUND: &str = "frontend/textures/fe_background";
+
 fn texture(big_root: &Path, rel: &str) -> Result<GlobeTexture> {
-    let path = ssx_assets::track_objects::asset_file(big_root, &format!("{rel}.xpr"))
-        .with_context(|| format!("{rel}.xpr not found"))?;
-    let data = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-    let xpr = ssx_formats::xpr::XprFile::parse(&data)?;
-    let res = xpr.resources.first().context("no texture resource")?;
-    let levels = ssx_assets::texture::decode_resource(&data, &xpr, res, false, ssx_assets::texture::DxnExport::Raw)?;
-    let l = levels.into_iter().next().context("no texture level")?;
-    let (width, height) = (l.image.width, l.image.height);
-    let blocks = midground::blocks_of(&data, &xpr, res, (width, height), 1);
-    Ok(GlobeTexture { width, height, rgba: l.image.rgba, blocks })
+    let id = ssx_assets::content::textures::texture_id(rel).with_context(|| format!("{rel:?}: not a texture id"))?;
+    let t = midground::texture_by_id(big_root, &id, true)?;
+    let rgba = t.levels.into_iter().next().context("no texture level")?;
+    Ok(GlobeTexture { width: t.width, height: t.height, rgba, blocks: t.blocks })
 }
 
 fn mesh(big_root: &Path, rel: &str) -> Result<GlobeMesh> {
-    let path = ssx_assets::track_objects::asset_file(big_root, rel).with_context(|| format!("{rel} not found"))?;
-    let m = ssx_assets::object_mesh::load(&path)?;
+    let m = crate::render::sky::midground::static_mesh(big_root, rel)?;
     let uvs = m.uv0.clone().unwrap_or_else(|| vec![[0.0, 0.0]; m.positions.len()]);
     Ok(GlobeMesh { positions: m.positions, uvs, indices: m.indices })
 }
@@ -224,15 +234,14 @@ impl GlobeAssets {
                     continue;
                 };
                 if let std::collections::btree_map::Entry::Vacant(e) = particle_textures.entry(name) {
-                    let file = ssx_assets::particles::texture_file(big_root, e.key());
-                    let rel = file.strip_prefix(big_root).unwrap_or(&file).with_extension("");
-                    let rel = rel.to_string_lossy().replace('\\', "/");
-                    e.insert(midground::mip_texture_at(&file).with_context(|| rel)?);
+                    let id = ssx_assets::particles::texture_id(e.key())
+                        .with_context(|| format!("{:?}: not a texture id", e.key()))?;
+                    e.insert(midground::texture_by_id(big_root, &id, false).with_context(|| id.to_string())?);
                 }
             }
         }
         Ok(GlobeAssets {
-            background: texture(big_root, "frontend/textures/fe_background")?,
+            background: texture(big_root, BACKGROUND)?,
             sky_textures,
             particle_textures,
             earth: mesh(big_root, &earth_mesh.geometry.replace('\\', "/"))?,

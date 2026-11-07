@@ -14,6 +14,9 @@ use crate::landing::twist;
 pub mod rewind_pack;
 
 mod intro;
+mod live_blocks;
+mod pose_block;
+mod rig_ops;
 mod signals;
 mod update;
 
@@ -21,6 +24,9 @@ use crate::rider::{Input, RideState, RiderState, TrickInput};
 use crate::steering::ground_frame;
 use crate::tricks::{SignatureTiming, TrickHand};
 pub use intro::*;
+pub use live_blocks::{BlockSample, LiveBlocks, TELEPORT_M};
+pub use pose_block::{BlockPose, LandingRumble, PoseRecorder, pose_source};
+pub use rig_ops::RiderRigOps;
 
 fn signature_of(a: &Animator) -> Option<SignatureTiming> {
     use ssx_assets::anim_graph::Ctrl;
@@ -263,6 +269,7 @@ pub struct RiderGraph {
     signature: Option<SignatureTiming>,
     start: Option<LevelStartGraph>,
     rewind: RewindGraph,
+    block_joints: ([Option<usize>; 29], [Option<usize>; 12]),
     floats: Vec<String>,
     script_updates: u64,
 }
@@ -289,6 +296,7 @@ impl RiderGraph {
             .filter_map(|n| rig.find(n).map(|i| (i, true)))
             .chain(REWIND_TRANSLATIONS.iter().filter_map(|n| rig.find(n).map(|i| (i, false))))
             .collect();
+        let block_joints = (REWIND_ROTATIONS.map(|n| rig.find(n)), REWIND_TRANSLATIONS.map(|n| rig.find(n)));
         let script_signals = (animator.graph.signals.iter().enumerate())
             .filter_map(|(i, s)| match &s.kind {
                 ssx_assets::anim_graph::SignalKind::Script { function, float, .. } => {
@@ -318,6 +326,7 @@ impl RiderGraph {
             signature,
             start: None,
             rewind: RewindGraph { channels, ..RewindGraph::default() },
+            block_joints,
             floats: floats.to_vec(),
             script_updates: 0,
         }
@@ -353,8 +362,18 @@ impl RiderGraph {
     }
 
     pub fn load(big_root: &Path, track: &str, name: &str) -> Result<Self> {
-        use ssx_assets::rig_anim::{ANIM_DIR, RIG_BUNDLE, float_dofs};
         let character = ssx_assets::character::load_character(big_root, track, name)?;
+        Self::of_character(big_root, name, &character)
+    }
+
+    pub fn load_untracked(big_root: &Path, name: &str) -> Result<Self> {
+        let loadout = ssx_assets::character::Loadout::default();
+        let character = ssx_assets::character::load_character_untracked(big_root, name, &loadout)?;
+        Self::of_character(big_root, name, &character)
+    }
+
+    fn of_character(big_root: &Path, name: &str, character: &ssx_assets::character::Character) -> Result<Self> {
+        use ssx_assets::rig_anim::{ANIM_DIR, RIG_BUNDLE, float_dofs};
         let (rig, bind, _) =
             ssx_assets::anim_rigops::extend_character_rig(big_root, &character.rig, &character.bind_pose())?;
         let floats = float_dofs(big_root)?;

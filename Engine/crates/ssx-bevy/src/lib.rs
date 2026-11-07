@@ -1,18 +1,24 @@
 mod audio;
 mod camera;
+#[cfg(feature = "net")]
+mod net;
 mod particles;
 mod render;
 mod ride;
 mod rider;
+#[cfg(feature = "scripts")]
+mod script;
 mod shell;
 #[allow(dead_code)]
 pub mod ui;
 
 pub use audio::{music, sfx, sfx_input};
-pub use render::lighting;
 pub use render::terrain::look as terrain_look;
+pub use render::{hooks, lighting};
 pub use rider::anim as rider_anim;
 pub use shell::{game_mode, level, screenshot};
+#[cfg(feature = "net")]
+pub use ssx_ui::game::fe::ava::browser;
 
 use std::path::PathBuf;
 

@@ -17,17 +17,19 @@ mod wordmark;
 pub enum Page {
     #[default]
     Play,
+    Host,
     Mods,
     Settings,
     Extras,
 }
 
 impl Page {
-    pub const ALL: [Self; 4] = [Self::Play, Self::Mods, Self::Settings, Self::Extras];
+    pub const ALL: [Self; 5] = [Self::Play, Self::Host, Self::Mods, Self::Settings, Self::Extras];
 
     pub fn parse(name: &str) -> Option<Self> {
         match name.to_ascii_lowercase().as_str() {
             "play" => Some(Self::Play),
+            "host" => Some(Self::Host),
             "mods" => Some(Self::Mods),
             "settings" => Some(Self::Settings),
             "extras" => Some(Self::Extras),
@@ -43,8 +45,9 @@ pub enum MenuItem {
 }
 
 impl MenuItem {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Page(Page::Play),
+        Self::Page(Page::Host),
         Self::Page(Page::Mods),
         Self::Page(Page::Settings),
         Self::Page(Page::Extras),
@@ -59,6 +62,7 @@ impl MenuItem {
     pub fn name(self) -> &'static str {
         match self {
             Self::Page(Page::Play) => "menu_play",
+            Self::Page(Page::Host) => "menu_host",
             Self::Page(Page::Mods) => "menu_mods",
             Self::Page(Page::Settings) => "menu_settings",
             Self::Page(Page::Extras) => "menu_extras",
@@ -74,6 +78,26 @@ pub enum SettingsTab {
     Graphics,
     Audio,
     Controls,
+    Multiplayer,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ModsTab {
+    #[default]
+    Installed,
+    Report,
+}
+
+impl ModsTab {
+    pub const ALL: [(Self, &str); 2] = [(Self::Installed, "INSTALLED"), (Self::Report, "BEFORE PLAY")];
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "installed" => Some(Self::Installed),
+            "report" => Some(Self::Report),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -87,16 +111,17 @@ pub enum ExtrasTab {
 }
 
 impl SettingsTab {
-    pub const ALL: [(Self, &str); 4] = [
+    pub const ALL: [(Self, &str); 5] = [
         (Self::GameData, "GAME DATA"),
         (Self::Graphics, "GRAPHICS"),
         (Self::Audio, "AUDIO"),
         (Self::Controls, "CONTROLS"),
+        (Self::Multiplayer, "MULTIPLAYER"),
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
         let name = name.to_ascii_lowercase();
-        ["data", "graphics", "audio", "controls"].iter().position(|n| *n == name).map(|i| Self::ALL[i].0)
+        ["data", "graphics", "audio", "controls", "multiplayer"].iter().position(|n| *n == name).map(|i| Self::ALL[i].0)
     }
 }
 
@@ -135,7 +160,7 @@ mod tests {
     fn the_menu_cursor_stops_at_the_ends() {
         let play = MenuItem::Page(Page::Play);
         assert_eq!(play.moved(-1), play);
-        assert_eq!(play.moved(1), MenuItem::Page(Page::Mods));
+        assert_eq!(play.moved(1), MenuItem::Page(Page::Host));
         assert_eq!(MenuItem::Page(Page::Extras).moved(1), MenuItem::Exit);
         assert_eq!(MenuItem::Exit.moved(1), MenuItem::Exit);
     }

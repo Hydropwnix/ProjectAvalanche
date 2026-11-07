@@ -1,0 +1,213 @@
+mod collision;
+mod gates;
+mod player;
+#[cfg(test)]
+mod tests;
+
+pub use collision::{CLUSTER_CELL, CLUSTER_TRIANGLES, MapCollisionStats, TERRAIN_SURFACE, add_map_collision};
+pub use gates::{FINISH_GROUPS, GateStep, Gates};
+pub use player::MapPlayer;
+mod start;
+pub use start::{
+    BoxedInput, ENVELOPE_INPUTS, ENVELOPE_SEQUENCES, MapStart, START_FIRST, START_IDLE, StartControls, StartEnvelope,
+    StartInput, envelope_gears, envelope_sequence, map_start, map_start_after, neutral, sequence_input, start_envelope,
+};
+
+use std::collections::BTreeMap;
+use std::path::Path;
+
+use anyhow::{Context, Result, anyhow};
+use glam::{Quat, Vec3};
+use ssx_assets::content::GameContent;
+use ssx_assets::content::gamemodes::{ModeChoice, ResolvedMode};
+use ssx_assets::content::maps::{LayoutBase, MapObject};
+use ssx_assets::content::resolve::Found;
+use ssx_assets::track_lighting::LightingPreset;
+use ssx_content::ContentId;
+use ssx_content::map::{BOUNDARY_CELL, BoundaryRaster, Map, Volume, VolumeShape};
+use ssx_rules::locators::DropStart;
+use ssx_rules::placement::Placement;
+
+use crate::character::Tuning;
+use crate::collision::CollisionWorld;
+use crate::event::{Course, EventSetup};
+use crate::rider::World;
+use crate::rider::boundary::BoundaryGrid;
+use crate::triggers::{TriggerScope, TriggerSet, TriggerVolume, interaction_mask, parse_group_mask};
+
+#[derive(Clone, Debug)]
+pub struct ResolvedMap {
+    pub map: Found<Map>,
+    pub objects: BTreeMap<ContentId, MapObject>,
+    pub base: Option<LayoutBase>,
+    pub lighting: Option<LightingPreset>,
+}
+
+impl ResolvedMap {
+    pub fn resolve(content: &GameContent, id: &ContentId) -> Result<Self> {
+        let map = content.map(id).map_err(|e| anyhow!("{e}"))?;
+        let objects = content.map_objects(&map.value).map_err(|e| anyhow!("{id}: {e}"))?;
+        let base = map.value.toml.base.as_ref().map(|b| content.layout_base(b)).transpose()?;
+        let lighting = map.value.toml.lighting.as_ref().map(|l| content.map_lighting(l)).transpose()?;
+        Ok(ResolvedMap { map, objects, base, lighting })
+    }
+
+    pub fn object_list(&self) -> Vec<MapObject> {
+        self.objects.values().cloned().collect()
+    }
+}
+
+pub struct MapLevel {
+    pub world: World,
+    pub drop: usize,
+    pub gates: Gates,
+    pub setup: EventSetup,
+    pub collision: MapCollisionStats,
+}
+
+impl MapLevel {
+    pub fn apply_rules(&mut self, big_root: &Path, rules: &ssx_rules::gamemode::Rules, medals: bool) {
+        use ssx_rules::gamemode::{Rivals, TimeUp};
+        let t = rules.event_type();
+        let s = &mut self.setup;
+        s.event_type = Some(t);
+        if medals && rules.rivals() != Rivals::None {
+            s.rivals = rules.board_values();
+            s.results = Some(ssx_rules::results::ResultsFlow::Explore);
+        }
+        let drop = self.world.survival.objectives.as_deref();
+        s.objectives = Some(std::sync::Arc::new(crate::objectives::EventObjectives::for_event_type(big_root, drop, t)));
+        s.time_up_result = rules.time_up() == TimeUp::Result;
+        s.loop_without_outro = rules.loops();
+        self.gates.time_limit_ms = rules.time_limit_ms();
+    }
+
+    pub fn has_finish(&self) -> bool {
+        self.gates.finish.is_some() || self.world.triggers.volumes.iter().any(|v| v.name == "end")
+    }
+    pub fn ride_mode(
+        &mut self,
+        big_root: &Path,
+        content: &GameContent,
+        m: &ResolvedMap,
+        choice: Option<&str>,
+    ) -> Result<ResolvedMode> {
+        let choice = match choice {
+            Some(c) => ModeChoice::parse(c).map_err(|e| anyhow!("{}: {e}", m.map.id))?,
+            None => {
+                let first = m.map.value.toml.modes.first().with_context(|| format!("{}: no mode", m.map.id))?;
+                ModeChoice::BuiltIn(*first)
+            }
+        };
+        let mode = content.resolve_mode(&m.map, &choice, self.has_finish()).map_err(|e| anyhow!("{e}"))?;
+        self.apply_rules(big_root, &mode.rules, mode.gamemode.is_some());
+        Ok(mode)
+    }
+}
+
+pub fn trigger_volume(v: &Volume, groups: &str, index: usize) -> TriggerVolume {
+    let (shape, centre, rotation) = match v.shape {
+        VolumeShape::Box { centre, rotation, half_extents } => (
+            crate::triggers::VolumeShape::Box { half_extents: Vec3::from_array(half_extents) },
+            centre,
+            Quat::from_array(rotation).normalize(),
+        ),
+        VolumeShape::Sphere { centre, radius } => {
+            (crate::triggers::VolumeShape::Sphere { radius }, centre, Quat::IDENTITY)
+        }
+    };
+    let g = parse_group_mask(groups);
+    TriggerVolume {
+        name: v.name.clone(),
+        type_text: groups.to_string(),
+        groups: g,
+        interacts: interaction_mask(g),
+        shape,
+        centre: Vec3::from_array(centre),
+        rotation,
+        object: 0,
+        instance: 0,
+        placement: index,
+        scope: TriggerScope::Track,
+    }
+}
+
+pub fn boundary_grid(r: &BoundaryRaster) -> BoundaryGrid {
+    let min = Vec3::new(r.min[0], 0.0, r.min[1]);
+    let span = Vec3::new(r.width as f32 * BOUNDARY_CELL, 0.0, r.height as f32 * BOUNDARY_CELL);
+    BoundaryGrid {
+        min,
+        max: min + span - Vec3::new(0.01, 0.0, 0.01),
+        cells_per_metre: Vec3::new(1.0 / BOUNDARY_CELL, 0.0, 1.0 / BOUNDARY_CELL),
+        width: r.width,
+        height: r.height,
+        cells: r.cells.clone(),
+    }
+}
+
+pub fn load_map_level(big_root: &Path, m: &ResolvedMap, gear_mix: f32) -> Result<MapLevel> {
+    let def = &m.map.value.definition;
+    let mut stats = MapCollisionStats::default();
+    let mut add = |c: &mut CollisionWorld| -> Result<()> {
+        stats = add_map_collision(c, def, &m.objects)?;
+        Ok(())
+    };
+    let (mut world, drop) = match &m.base {
+        Some(b) => {
+            let dir = big_root.join("data0/data/xenon/gameexplorer").join(&b.track);
+            let w = crate::spawn::track_world_for_drop_with(big_root, &dir, &b.track, gear_mix, b.index, &mut add)
+                .with_context(|| format!("{}: the world of {}", m.map.id, b.drop))?;
+            (w, b.index)
+        }
+        None => {
+            let mut collision = CollisionWorld::default();
+            add(&mut collision)?;
+            collision.boundary = def.boundary.as_ref().map(|b| boundary_grid(&b.raster));
+            collision.finish();
+            let tuning = Tuning::load(&crate::tuning::load(big_root)?)?;
+            let props = tuning.resolve(gear_mix)?;
+            let scripts = crate::objectives::DropScripts::load(big_root, Vec::new());
+            let survival = crate::spawn::survival_of_scripts(scripts);
+            let starts = vec![DropStart { drop_key: 0, slots: Vec::new(), terrain_files: Vec::new() }];
+            let triggers = TriggerSet::default();
+            let w =
+                World { collision, tuning, props, starts, triggers, events: Vec::new(), end_locator: None, survival };
+            (w, 0)
+        }
+    };
+    if !def.spawns.is_empty() {
+        let slots = def
+            .spawns
+            .iter()
+            .map(|s| Placement { scale: [1.0; 3], rotation: s.rotation, position: s.position, unk: [0.0; 6] })
+            .collect();
+        world.starts.get_mut(drop).context("the base drop's start")?.slots = slots;
+    }
+    if let Some(l) = &m.lighting {
+        crate::spawn::apply_lighting(&mut world.survival, Some(l));
+    }
+    let set = &mut world.triggers.volumes;
+    if def.finish.is_some() {
+        set.retain(|v| v.name != "end");
+    }
+    for v in &def.triggers {
+        set.push(trigger_volume(v, "trigger", set.len()));
+    }
+    for v in &def.deaths {
+        set.push(trigger_volume(v, "death", set.len()));
+    }
+    let finish = def.finish.as_ref().map(|f| {
+        set.push(trigger_volume(f, FINISH_GROUPS, set.len()));
+        world.end_locator = Some(Vec3::from_array(match f.shape {
+            VolumeShape::Box { centre, .. } | VolumeShape::Sphere { centre, .. } => centre,
+        }));
+        set.len() - 1
+    });
+    let checkpoints = def.checkpoints.iter().enumerate().map(|(k, v)| trigger_volume(v, "", k)).collect();
+    let limit = m.map.value.toml.time_limit_s.map(|s| (f64::from(s) * 1000.0).round() as u32);
+    let gates = Gates::new(checkpoints, finish, limit);
+    let start_y = world.starts.get(drop).and_then(|d| d.slot(0)).map(|(p, _)| p.y);
+    let course = start_y.zip(world.end_locator).map(|(start_y, e)| Course { start_y, end_y: e.y });
+    let setup = EventSetup::new(None, course);
+    Ok(MapLevel { world, drop, gates, setup, collision: stats })
+}

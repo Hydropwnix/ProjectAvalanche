@@ -8,7 +8,7 @@ use crate::tuning::Bundle;
 
 #[derive(Clone, Debug)]
 pub struct RootClip {
-    anim: Animation,
+    anim: ssx_assets::anim_clip::ClipData,
     q: usize,
     t: usize,
     num_ticks: f32,
@@ -35,9 +35,11 @@ impl RootClip {
         let table =
             bundle.object_by_guid(anim.info().channel_to_dof).with_context(|| format!("{name}: no ChannelToDof"))?;
         let table = ChannelToDof::parse(bundle.schema(), table)?;
+        let guid = obj.guid(bundle.schema()).unwrap_or_default();
+        let (anim, indices) = ssx_assets::content::anims::clip_for(bundle.data_root(), guid, anim, table.indices);
         let dofs = dof_list(&bundle.stream, "genchar_rig", "AnimRig")?;
         let dof = |n: &str| dofs.iter().position(|d| d.layout == "Trajectory" && d.name == n);
-        let channel = |d: Option<usize>| d.and_then(|d| table.indices.iter().position(|&x| usize::from(x) == d));
+        let channel = |d: Option<usize>| d.and_then(|d| indices.iter().position(|&x| usize::from(x) == d));
         let c = anim.counts();
         let (Some(q), Some(t)) = (channel(dof("AITrajectory.q")), channel(dof("AITrajectory.t"))) else {
             bail!("{name}: no AITrajectory channels");

@@ -10,7 +10,7 @@ use ssx_formats::crsf::{CrsfFile, SceneGraph};
 
 use crate::character::{Skin, Srt};
 use crate::ghosts::{CLASS_GAMEOBJECT, FIELD_LOD_THRESHOLDS, FIELD_MODELS, bind_pose, part_refs, skin_of};
-use crate::object_mesh::{self, ObjectMesh};
+use crate::object_mesh::ObjectMesh;
 use crate::track_objects::asset_file;
 use crate::vault_db::{Material, refs, with_track_db};
 
@@ -71,7 +71,11 @@ impl Vaults {
             let (vlt, bin) = read(name)?;
             let vault = Vault::parse(&vlt, &bin).with_context(|| format!("parsing {name}"))?;
             let cols = collection::collections(&vault)?;
-            let decoded = cols.iter().map(|c| c.decode(&vault, &schema)).collect::<ssx_formats::Result<Vec<_>>>()?;
+            let mut decoded =
+                cols.iter().map(|c| c.decode(&vault, &schema)).collect::<ssx_formats::Result<Vec<_>>>()?;
+            if name == "attribdb.vlt" {
+                crate::content::data::events::route_ui_drops(big_root, &cols, &mut decoded);
+            }
             out.index.push(collection::index(&cols));
             out.cols.push(cols);
             out.decoded.push(decoded);
@@ -198,11 +202,11 @@ pub fn load_model(big_root: &Path, track: &str, key: u32) -> Result<HeliModel> {
     for p in lod0 {
         let read = || -> Result<(ObjectMesh, CrsfFile)> {
             let crsf_rel = p.crsf.as_deref().context("no FileRef (.crsf)")?;
-            let geom = asset_file(big_root, &p.geom).with_context(|| format!("{} not found", p.geom))?;
+            let mesh = crate::content::models::rider_mesh(big_root, &p.geom)?;
             let crsf = asset_file(big_root, crsf_rel).with_context(|| format!("{crsf_rel} not found"))?;
             let file = CrsfFile::parse(&std::fs::read(&crsf).with_context(|| format!("reading {}", crsf.display()))?)
                 .with_context(|| format!("parsing {}", crsf.display()))?;
-            Ok((object_mesh::load(&geom)?, file))
+            Ok((mesh, file))
         };
         match read() {
             Ok((mesh, file)) => {

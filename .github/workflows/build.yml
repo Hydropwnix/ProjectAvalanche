@@ -23,15 +23,15 @@ defaults:
 jobs:
   check:
     name: fmt, clippy, tests (Linux)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: System libraries for Bevy
         working-directory: .
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev libudev-dev \
-            libwayland-dev libxkbcommon-dev libgtk-3-dev
+            libwayland-dev libxkbcommon-dev libgtk-3-dev nasm
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -46,13 +46,48 @@ jobs:
     name: Windows build (launcher + game)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      # rav1d's assembly (the mod movies' AV1 decoder, decision M-D9) is assembled by NASM
+      - name: NASM
+        shell: pwsh
+        run: |
+          choco install nasm --no-progress -y
+          "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: Engine
       - name: Build
         run: cargo build --release -p avalanche-game -p avalanche-launcher
+      # its own cargo invocation: the game's and the launcher's features stay resolved as without the server
+      - name: Build the dedicated server
+        run: cargo build --release -p avalanche-server
+      # the C runtime is linked statically (Engine/.cargo/config.toml): no program may import the Visual C++ runtime's
+      # DLLs (vcruntime140, msvcp140) or the Universal CRT's (ucrtbase, api-ms-win-crt-*)
+      - name: No C runtime DLLs
+        shell: pwsh
+        run: |
+          rustup component add llvm-tools
+          $objdump = Join-Path (rustc --print sysroot) "lib/rustlib/x86_64-pc-windows-msvc/bin/llvm-objdump.exe"
+          $found = @()
+          foreach ($exe in "project-avalanche", "avalanche-game", "avalanche-server") {
+            $dlls = & $objdump -p "target/release/$exe.exe" | Select-String "DLL Name:" |
+              ForEach-Object { ($_.Line -split "DLL Name:")[1].Trim() }
+            if ($LASTEXITCODE -ne 0 -or -not $dlls) { "llvm-objdump read no imports of $exe.exe"; exit 1 }
+            "$exe.exe imports: $($dlls -join ', ')"
+            $found += $dlls | Where-Object { $_ -match '^(vcruntime|msvcp|ucrtbase|api-ms-win-crt-)' } |
+              ForEach-Object { "$exe.exe imports $_" }
+          }
+          if ($found) { $found; exit 1 }
+      # the movie decoder's sandbox run on Windows (crates/ssx-movie/tests/sandbox.rs): the child in its AppContainer,
+      # its job and its mitigation policies, read from outside; each escape attempt refused; a movie decoded inside
+      - name: The movie decoder's sandbox
+        run: cargo test --release -p ssx-movie --test sandbox
+      # the crash-safe writes on Windows (crates/ssx-files): each step's failure leaving the old file, a crash's partial
+      # file taken back and a live writer's left alone, writers in threads and in processes at once (the write-through
+      # rename and, over an open file, the POSIX-semantics rename), a write inside a folder handle
+      - name: Crash-safe file writes
+        run: cargo test --release -p ssx-files --features cap-std
       - name: Package
         shell: pwsh
         run: |
@@ -60,11 +95,19 @@ jobs:
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
           Copy-Item target/release/project-avalanche.exe "$dist/Project Avalanche.exe"
           Copy-Item target/release/avalanche-game.exe "$dist/avalanche-game.exe"
+          Copy-Item target/release/avalanche-server.exe "$dist/avalanche-server.exe"
+          Copy-Item assets/THIRD_PARTY_NOTICES.txt "$dist/THIRD_PARTY_NOTICES.txt"
+          Copy-Item assets/server/THIRD_PARTY_NOTICES.txt "$dist/THIRD_PARTY_NOTICES-server.txt"
+          # the fallback fonts, one copy for the game and the launcher (each file checked against the manifest the
+          # programs carry); a test keeps assets/fonts to exactly the set, its license and its manifest
+          New-Item -ItemType Directory -Force -Path "$dist/fonts" | Out-Null
+          Copy-Item assets/fonts/* "$dist/fonts/"
           @"
           Project Avalanche — native PC port of SSX (2012), test build $env:GITHUB_SHA
 
-          1. Start "Project Avalanche.exe" (keep "avalanche-game.exe" in the same folder: it is the
-             game, the launcher starts it).
+          1. Start "Project Avalanche.exe" (keep "avalanche-game.exe" and the "fonts" folder in the
+             same folder: the game, which the launcher starts, and the fonts both draw names and
+             chat in other scripts with).
           2. Click the large SET UP GAME DATA tile, select your own SSX (2012) Xbox 360 ISO once
              and click Extract game data; the launcher unpacks the game data
              (about 4.7 GB) into %LOCALAPPDATA%\Project Avalanche\GameData. A folder made by an
@@ -80,6 +123,9 @@ jobs:
                              I / J / L / K = Y / X / B / A, Shift = RT, Ctrl = LT, E = RB,
                              Backspace = LB (rewind), Esc = START (pause).
 
+          HOST starts a multiplayer server on this computer (avalanche-server.exe, next to the launcher; its
+          licences are THIRD_PARTY_NOTICES-server.txt) and joins it with the game.
+
           Extras, Tools starts the asset viewer or a test ride on a single track: development tools,
           not the game and not in this download (asset-viewer.exe, built from the source, next to
           the launcher). If a start fails, its output is shown under Extras, Output and kept in
@@ -87,39 +133,83 @@ jobs:
 
           No game data is included in this download.
           "@ | Set-Content -Encoding utf8 "$dist/README.txt"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ProjectAvalanche-windows-x64
           path: dist/ProjectAvalanche
+          if-no-files-found: error
+      - name: Package the dedicated server
+        shell: pwsh
+        run: |
+          $dist = "../dist/ProjectAvalancheServer"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          Copy-Item target/release/avalanche-server.exe "$dist/avalanche-server.exe"
+          Copy-Item assets/server/THIRD_PARTY_NOTICES.txt "$dist/THIRD_PARTY_NOTICES.txt"
+          Copy-Item assets/server/deploy/server.toml.example "$dist/server.toml.example"
+          Copy-Item assets/server/deploy/windows-service.txt "$dist/windows-service.txt"
+          @"
+          Project Avalanche dedicated server, test build $env:GITHUB_SHA
+
+          1. Take the rules from your own SSX (2012) disc image once (21 MB of it; nothing else of the disc):
+               .\avalanche-server.exe setup D:\path\to\your\ssx.iso --out data
+          2. Copy server.toml.example to server.toml and edit it, then check everything:
+               .\avalanche-server.exe check
+          3. Run it in a console: .\avalanche-server.exe   (windows-service.txt: as a Windows service)
+
+          It listens on port 27450, UDP for the game and TCP for the join, and the UDP query on 27451: open them
+          in the firewall. "::" in server.toml listens on IPv6 and IPv4. [port_mapping] enabled = true maps the
+          ports on your router (UPnP IGD, PCP, NAT-PMP; off by default). The first start makes the server's keys
+          in data\ (netcode.key, identity.key): keep them; players' games remember the identity key and refuse a
+          server whose key changed. The log is data\logs\server.log.
+
+          Console: status, kick <rider number | player id | name> [reason], say <text>, stop.
+          Ctrl-C (or closing the console) stops it gracefully; a second Ctrl-C ends it at once.
+
+          No game data is included: setup reads your own disc image.
+          "@ | Set-Content -Encoding utf8 "$dist/README.txt"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ProjectAvalanche-server-windows-x64
+          path: dist/ProjectAvalancheServer
           if-no-files-found: error
 
   linux:
     name: Linux build (launcher + game)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: System libraries for Bevy
         working-directory: .
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev libudev-dev \
-            libwayland-dev libxkbcommon-dev libgtk-3-dev
+            libwayland-dev libxkbcommon-dev libgtk-3-dev nasm
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: Engine
       - name: Build
         run: cargo build --release -p avalanche-game -p avalanche-launcher
+      # its own cargo invocation: the game's and the launcher's features stay resolved as without the server
+      - name: Build the dedicated server
+        run: cargo build --release -p avalanche-server
       - name: Package
         run: |
           dist=../dist/ProjectAvalanche
           mkdir -p "$dist"
-          cp target/release/project-avalanche target/release/avalanche-game "$dist/"
+          cp target/release/project-avalanche target/release/avalanche-game target/release/avalanche-server \
+            assets/THIRD_PARTY_NOTICES.txt "$dist/"
+          cp assets/server/THIRD_PARTY_NOTICES.txt "$dist/THIRD_PARTY_NOTICES-server.txt"
+          # the fallback fonts, one copy for the game and the launcher (each file checked against the manifest the
+          # programs carry); a test keeps assets/fonts to exactly the set, its license and its manifest
+          mkdir -p "$dist/fonts"
+          cp assets/fonts/* "$dist/fonts/"
           cat > "$dist/README.txt" <<EOF
           Project Avalanche — native PC port of SSX (2012), test build $GITHUB_SHA
 
-          1. Start ./project-avalanche (keep avalanche-game in the same folder: it is the game,
-             the launcher starts it).
+          1. Start ./project-avalanche (keep avalanche-game and the fonts folder in the same
+             folder: the game, which the launcher starts, and the fonts both draw names and chat
+             in other scripts with).
           2. Click the large SET UP GAME DATA tile, select your own SSX (2012) Xbox 360 ISO once
              and click Extract game data; the launcher unpacks the game data (about 4.7 GB) into
              ~/.local/share/project-avalanche/GameData (\$XDG_DATA_HOME/project-avalanche;
@@ -138,28 +228,104 @@ jobs:
                              I / J / L / K = Y / X / B / A, Shift = RT, Ctrl = LT, E = RB,
                              Backspace = LB (rewind), Esc = START (pause).
 
+          HOST starts a multiplayer server on this computer (avalanche-server, next to the launcher; its licences
+          are THIRD_PARTY_NOTICES-server.txt) and joins it with the game.
+
           If a start fails, its output is shown under Extras, Output and kept in
           ~/.local/share/project-avalanche/viewer.log.
 
           No game data is included in this download.
           EOF
-          tar -C ../dist -czf ../dist/ProjectAvalanche-linux-x64.tar.gz ProjectAvalanche
+          # without a top-level folder, as the Windows updater's archive: the launcher 0.2.0's updater takes a file
+          # at most one folder deep and refuses the archive for a deeper one (ProjectAvalanche/fonts/…), while it
+          # skips ./fonts/… as a name it does not replace
+          tar -C "$dist" -czf ../dist/ProjectAvalanche-linux-x64.tar.gz .
       # The tarball keeps the executable bits, which an artifact's zip would drop.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ProjectAvalanche-linux-x64
           path: dist/ProjectAvalanche-linux-x64.tar.gz
           if-no-files-found: error
+      - name: Package the dedicated server
+        run: |
+          dist=../dist/ProjectAvalancheServer
+          mkdir -p "$dist"
+          cp target/release/avalanche-server "$dist/"
+          cp assets/server/THIRD_PARTY_NOTICES.txt "$dist/"
+          cp assets/server/deploy/server.toml.example assets/server/deploy/avalanche-server.service "$dist/"
+          cat > "$dist/README.txt" <<EOF
+          Project Avalanche dedicated server, test build $GITHUB_SHA
+
+          1. Take the rules from your own SSX (2012) disc image once (21 MB of it; nothing else of the disc):
+               ./avalanche-server setup /path/to/your/ssx.iso --out data
+          2. Copy server.toml.example to server.toml and edit it, then check everything:
+               ./avalanche-server check
+          3. Run it in a terminal: ./avalanche-server   (avalanche-server.service: as a systemd service; the
+             source repository's Engine/assets/server/deploy has a Docker example)
+
+          It listens on port 27450, UDP for the game and TCP for the join, and the UDP query on 27451: open them
+          in the firewall. "::" in server.toml listens on IPv6 and IPv4. [port_mapping] enabled = true maps the
+          ports on your router (UPnP IGD, PCP, NAT-PMP; off by default). The first start makes the server's keys
+          in data/ (netcode.key, identity.key, readable by the owner only): keep them; players' games remember
+          the identity key and refuse a server whose key changed. The log is data/logs/server.log. It needs no
+          GPU, sound, display or input libraries.
+
+          Console: status, kick <rider number | player id | name> [reason], say <text>, stop.
+          SIGINT / SIGTERM stop it gracefully; a second signal ends it at once.
+
+          No game data is included: setup reads your own disc image.
+          EOF
+          tar -C ../dist -czf ../dist/ProjectAvalanche-server-linux-x64.tar.gz ProjectAvalancheServer
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ProjectAvalanche-server-linux-x64
+          path: dist/ProjectAvalanche-server-linux-x64.tar.gz
+          if-no-files-found: error
+
+  server-headless:
+    name: Server without desktop packages (Linux)
+    runs-on: ubuntu-24.04
+    # a bare Ubuntu: no ALSA, udev, Wayland, xkbcommon, GTK or X11 development packages (the check job installs them)
+    container: ubuntu:24.04
+    steps:
+      - name: A compiler and rustup, nothing else
+        working-directory: /
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl gcc libc6-dev git
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: actions/checkout@v7
+      - name: Build
+        run: cargo build --release -p avalanche-server
+      - name: No desktop library in the build or the binary
+        run: |
+          if cargo tree -p avalanche-server -e normal --prefix none | grep -E '^(alsa(-sys)?|libudev(-sys)?|wayland-[a-z_-]+|x11[a-z_-]*|xkbcommon[a-z_-]*|gilrs[a-z_-]*|winit|wgpu[a-z_-]*|naga|ash|cpal|rodio|bevy_(render|winit|window|audio|gilrs)) v'; then
+            echo "the server's build names a desktop library"; exit 1
+          fi
+          ldd target/release/avalanche-server
+          if ldd target/release/avalanche-server | grep -vE 'linux-vdso|libc\.so|libm\.so|libgcc_s\.so|ld-linux'; then
+            echo "the server links a library beyond libc, libm and libgcc_s"; exit 1
+          fi
+          # without the rules data (no disc on a runner) the check must run, find the folder empty and say so
+          set +e
+          target/release/avalanche-server check --config none.toml --data empty-data > check.txt 2>&1
+          code=$?
+          set -e
+          cat check.txt
+          if [ "$code" -ne 2 ] || ! grep -q "no rules data yet" check.txt; then
+            echo "the check did not run as expected (exit $code)"; exit 1
+          fi
 
   release:
     name: Release (tags only)
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, linux]
-    runs-on: ubuntu-latest
+    needs: [windows, linux, server-headless]
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
       - name: Release
@@ -168,9 +334,30 @@ jobs:
           (cd ProjectAvalanche-windows-x64 && zip -r ../ProjectAvalanche-windows-x64.zip .)
           # The launcher's updater downloads the tar.gz (the zip is for a manual install).
           tar -C ProjectAvalanche-windows-x64 -czf ProjectAvalanche-windows-x64.tar.gz .
+          (cd ProjectAvalanche-server-windows-x64 && zip -r ../ProjectAvalanche-server-windows-x64.zip .)
+          cat > downloads.md <<'EOF'
+          ## Downloads
+
+          - **Windows (x64):** `ProjectAvalanche-windows-x64.zip`. Unpack it anywhere and start `Project Avalanche.exe`.
+            (`ProjectAvalanche-windows-x64.tar.gz` holds the same files for the launcher's updater.)
+          - **Linux (x64):** `ProjectAvalanche-linux-x64.tar.gz`. Unpack it into a folder of its own
+            (`mkdir ProjectAvalanche && tar -xzf ProjectAvalanche-linux-x64.tar.gz -C ProjectAvalanche`) and start
+            `./project-avalanche`. Built on Ubuntu 24.04; it needs a Vulkan driver and that glibc or newer.
+          - **Dedicated server:** `ProjectAvalanche-server-windows-x64.zip` and `ProjectAvalanche-server-linux-x64.tar.gz`:
+            `avalanche-server`, headless (no GPU, sound or display), port 27450 UDP and TCP and 27451 UDP; it takes the
+            rules from your own disc image (`setup`), and its README.txt says how to run it (a systemd unit and a Windows
+            service note inside). The game's downloads carry it too, for the launcher's HOST.
+
+          The launcher, `avalanche-game` and the `fonts` folder must stay in the same folder. You need your own copy
+          of the game: the
+          launcher sets the game data up from an ISO image of your retail Xbox 360 disc of SSX (2012), and no game
+          data is included. The port is a work in progress; the README says what runs and how to report problems.
+          EOF
           gh release create "$GITHUB_REF_NAME" ProjectAvalanche-windows-x64.zip \
             ProjectAvalanche-windows-x64.tar.gz \
             ProjectAvalanche-linux-x64/ProjectAvalanche-linux-x64.tar.gz \
-            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+            ProjectAvalanche-server-windows-x64.zip \
+            ProjectAvalanche-server-linux-x64/ProjectAvalanche-server-linux-x64.tar.gz \
+            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes "$(cat downloads.md)" --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}

@@ -6,7 +6,7 @@ use ssx_formats::gfx::types::{Matrix, Rgba};
 
 use crate::geom::{Mat2d, rgba};
 use crate::library::{BitmapDef, CharRef, Character, Library, MovieId};
-use crate::tess::{self, Cap, Edge, FillRule, Join, Mesh, StrokeStyle};
+use crate::tess::{self, Budget, Cap, Edge, FillRule, Join, Mesh, OverBudget, StrokeStyle};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GradientKind {
@@ -152,7 +152,12 @@ struct StyleSet {
     lines: BTreeMap<u32, Vec<Vec<[f32; 2]>>>,
 }
 
-fn collect<'a>(styles: &'a Styles, records: &'a [ShapeRecord], tol: f32) -> Vec<(&'a Styles, StyleSet)> {
+fn collect<'a>(
+    styles: &'a Styles,
+    records: &'a [ShapeRecord],
+    tol: f32,
+    budget: &mut Budget,
+) -> Result<Vec<(&'a Styles, StyleSet)>, OverBudget> {
     let mut sets: Vec<(&Styles, StyleSet)> = vec![(styles, StyleSet::default())];
     let (mut x, mut y) = (0f32, 0f32);
     let (mut f0, mut f1, mut ln) = (0u32, 0u32, 0u32);
@@ -191,6 +196,8 @@ fn collect<'a>(styles: &'a Styles, records: &'a [ShapeRecord], tol: f32) -> Vec<
                 (x, y) = (a[0], a[1]);
             }
         }
+        let sides = usize::from(f1 > 0) + usize::from(f0 > 0) + usize::from(ln > 0);
+        budget.edges(pts.len() * sides)?;
         let set = &mut sets.last_mut().expect("a style set").1;
         for (f, reverse) in [(f1, false), (f0, true)] {
             if f > 0 {
@@ -213,7 +220,7 @@ fn collect<'a>(styles: &'a Styles, records: &'a [ShapeRecord], tol: f32) -> Vec<
             line_open = false;
         }
     }
-    sets
+    Ok(sets)
 }
 
 pub fn build(
@@ -223,14 +230,15 @@ pub fn build(
     records: &[ShapeRecord],
     non_zero: bool,
     tol: &Tolerance,
-) -> ShapeMesh {
+    budget: &mut Budget,
+) -> Result<ShapeMesh, OverBudget> {
     let rule = if non_zero { FillRule::NonZero } else { FillRule::EvenOdd };
     let mut out = ShapeMesh::default();
-    for (styles, set) in collect(styles, records, tol.curve) {
+    for (styles, set) in collect(styles, records, tol.curve, budget)? {
         for (f, edges) in &set.fills {
             let Some(style) = styles.fills.get(*f as usize - 1) else { continue };
             let Some(paint) = fill_paint(lib, movie, style) else { continue };
-            let mesh = tess::fill(edges, rule);
+            let mesh = tess::fill(edges, rule, budget)?;
             if !mesh.is_empty() {
                 out.layers.push(ShapeLayer { paint, mesh: Arc::new(mesh) });
             }
@@ -242,23 +250,47 @@ pub fn build(
                 None => Some(Paint::Solid(rgba(style.color))),
             };
             let Some(paint) = paint else { continue };
-            let mesh = tess::stroke(polys, &line_style(style, tol), tol.curve);
+            let mesh = tess::stroke(polys, &line_style(style, tol), tol.curve, budget)?;
             if !mesh.is_empty() {
                 out.layers.push(ShapeLayer { paint, mesh: Arc::new(mesh) });
             }
         }
     }
-    out
+    Ok(out)
 }
 
-pub fn glyph_mesh(records: &[ShapeRecord], tol: f32) -> Mesh {
+pub fn coverage(
+    styles: &Styles,
+    records: &[ShapeRecord],
+    non_zero: bool,
+    tol: &Tolerance,
+    budget: &mut Budget,
+) -> Result<Mesh, OverBudget> {
+    let rule = if non_zero { FillRule::NonZero } else { FillRule::EvenOdd };
+    let mut out = Mesh::default();
+    for (styles, set) in collect(styles, records, tol.curve, budget)? {
+        for (f, edges) in &set.fills {
+            if styles.fills.get(*f as usize - 1).is_some() {
+                out.append(&tess::fill(edges, rule, budget)?);
+            }
+        }
+        for (l, polys) in &set.lines {
+            if let Some(style) = styles.lines.get(*l as usize - 1) {
+                out.append(&tess::stroke(polys, &line_style(style, tol), tol.curve, budget)?);
+            }
+        }
+    }
+    Ok(out)
+}
+
+pub fn glyph_mesh(records: &[ShapeRecord], tol: f32, budget: &mut Budget) -> Result<Mesh, OverBudget> {
     let styles = Styles { fills: vec![FillStyle::Solid(Rgba::default())], lines: Vec::new() };
     let mut mesh = Mesh::default();
-    for (_, set) in collect(&styles, records, tol) {
+    for (_, set) in collect(&styles, records, tol, budget)? {
         let edges: Vec<Edge> = set.fills.values().flatten().copied().collect();
-        mesh.append(&tess::fill(&edges, FillRule::EvenOdd));
+        mesh.append(&tess::fill(&edges, FillRule::EvenOdd, budget)?);
     }
-    mesh
+    Ok(mesh)
 }
 
 fn lerp_rgba(a: Rgba, b: Rgba, t: f32) -> Rgba {
@@ -367,18 +399,24 @@ pub fn morph_at(ms: &MorphShape, t: f32) -> (Styles, Vec<ShapeRecord>) {
     (Styles { fills, lines }, records)
 }
 
-pub fn region_areas(styles: &Styles, records: &[ShapeRecord], non_zero: bool, tol: f32) -> Vec<(usize, u32, f64, f64)> {
+pub fn region_areas(
+    styles: &Styles,
+    records: &[ShapeRecord],
+    non_zero: bool,
+    tol: f32,
+) -> Result<Vec<(usize, u32, f64, f64)>, OverBudget> {
     let rule = if non_zero { FillRule::NonZero } else { FillRule::EvenOdd };
     let mut out = Vec::new();
-    for (set_index, (_, set)) in collect(styles, records, tol).into_iter().enumerate() {
+    let mut budget = Budget::shape();
+    for (set_index, (_, set)) in collect(styles, records, tol, &mut budget)?.into_iter().enumerate() {
         for (f, edges) in &set.fills {
             let signed: f64 = edges
                 .iter()
                 .map(|e| f64::from(e.from[0]) * f64::from(e.to[1]) - f64::from(e.to[0]) * f64::from(e.from[1]))
                 .sum::<f64>()
                 / 2.0;
-            out.push((set_index, *f, signed.abs(), tess::fill(edges, rule).area()));
+            out.push((set_index, *f, signed.abs(), tess::fill(edges, rule, &mut budget)?.area()));
         }
     }
-    out
+    Ok(out)
 }

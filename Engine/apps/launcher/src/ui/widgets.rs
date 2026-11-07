@@ -76,17 +76,21 @@ pub fn paragraph(ui: &mut Ui, text: &str) {
 }
 
 pub fn note(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).color(theme::TEXT_DIM));
+    ui.label(RichText::new(shown(text)).color(theme::TEXT_DIM));
+}
+
+pub fn shown(text: &str) -> String {
+    ssx_core::text::shown_lines(text, ssx_core::text::LINE_CHARS).to_string()
 }
 
 pub fn path(ui: &mut Ui, path: &std::path::Path) {
-    let text = path.display().to_string();
+    let text = ssx_core::text::shown_max(&path.to_string_lossy(), ssx_core::text::PATH_CHARS).to_string();
     let label = egui::Label::new(RichText::new(&text).monospace().color(theme::TEXT)).truncate();
     ui.add(label).on_hover_text(text);
 }
 
 pub fn status(ui: &mut Ui, colour: Color32, text: impl Into<String>) {
-    ui.label(RichText::new(text).color(colour));
+    ui.label(RichText::new(shown(&text.into())).color(colour));
 }
 
 pub fn progress(ui: &mut Ui, fraction: f32) {

@@ -35,8 +35,13 @@ impl SaveSchema {
         Ok(SaveSchema {
             database,
             meta,
-            riders: db.riders.iter().map(|r| (r.key, r.name.clone())).collect(),
-            items: db.items.iter().map(|i| i.key).collect(),
+            riders: db
+                .riders
+                .iter()
+                .filter(|r| r.content.as_ref().is_none_or(|c| !c.added))
+                .map(|r| (r.key, r.name.clone()))
+                .collect(),
+            items: db.items.iter().filter(|i| i.content.as_ref().is_none_or(|c| !c.added)).map(|i| i.key).collect(),
             drops: db.events.iter().map(|e| e.key).collect(),
             audio: Self::load_audio(big_root),
         })
@@ -187,6 +192,13 @@ fn fill(table: &mut Table, capacity: u16, rows: &[Vec<(String, u32)>]) -> Result
 
 impl Profile {
     pub fn to_save(&self, schema: &SaveSchema, extras: &SaveExtras) -> Result<ProfileFile> {
+        if self.mod_keys.is_empty() {
+            return self.disc_save(schema, extras);
+        }
+        self.disc_view().disc_save(schema, extras)
+    }
+
+    fn disc_save(&self, schema: &SaveSchema, extras: &SaveExtras) -> Result<ProfileFile> {
         let mut db = schema.database.clone();
         let group_tables: Vec<(String, u16)> = schema
             .meta
@@ -508,7 +520,8 @@ fn read_generated(g: &dyn Fn(&str) -> Result<u32>) -> Result<GeneratedItem> {
 
 pub fn write_file(profile: &Profile, schema: &SaveSchema, extras: &SaveExtras, path: &Path) -> Result<Vec<u8>> {
     let bytes = profile.to_save(schema, extras)?.write();
-    std::fs::write(path, &bytes).with_context(|| format!("writing {}", path.display()))?;
+    ssx_files::replace(path, &bytes, &ssx_files::Options::new())
+        .with_context(|| format!("writing {}", path.display()))?;
     Ok(bytes)
 }
 

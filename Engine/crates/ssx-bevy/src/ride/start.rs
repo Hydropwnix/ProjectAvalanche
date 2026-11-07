@@ -14,6 +14,7 @@ impl Ride {
     pub(super) fn new(mut setup: RideSetup) -> Option<Self> {
         let want = std::env::var("SSX_RIDE_EVENT").unwrap_or_else(|_| "race".into());
         let def = match setup.event_key {
+            _ if setup.map.is_some() => None,
             Some(key) => setup.world.events.iter().find(|e| e.key == key).cloned(),
             None if want == "none" => None,
             None => choose_event(setup.world.events.iter(), &want).cloned(),
@@ -125,8 +126,14 @@ impl Ride {
         }
         let mut state = level_start(&setup.world, setup.spawn, intro.as_ref())?;
         let course = setup.world.end_locator.map(|e| Course { start_y: setup.spawn.0.y, end_y: e.y });
-        let event = EventManager::new(EventSetup::new(def.as_ref(), course));
+        let event = match &setup.map {
+            Some(m) => EventManager::new(m.setup.clone()),
+            None => EventManager::new(EventSetup::new(def.as_ref(), course)),
+        };
         let mut session = Session { event, ..Session::default() };
+        if let Some(m) = setup.map.as_mut() {
+            m.gates.reset(&mut session);
+        }
         match ssx_physics::event::rider_display_names(&setup.big_root) {
             Ok(names) => session.stats.rider = names.get(&setup.character).cloned(),
             Err(e) => warn!("the riders' names: {e:#}"),
@@ -138,9 +145,19 @@ impl Ride {
             info!("controllers: DropHeli runs {}", e.script);
             session.named_entities.push(e);
         }
-        if let Some(d) =
-            def.as_ref().filter(|d| d.event_type.is_some() && !crate::render::post::env_is("SSX_GHOSTS", "off"))
-        {
+        if let Some(rules) = setup.live {
+            session.bots = Some(live_rivals(&setup.big_root, def.as_ref(), rules, session.event.setup.course));
+            let count = &mut session.manager.count;
+            match rules.rewinds {
+                super::live::LiveRewinds::Event => {}
+                super::live::LiveRewinds::Off => count.enabled = false,
+                super::live::LiveRewinds::Limit(n) => (count.infinite, count.rewinds_left) = (false, i32::from(n)),
+            }
+            info!("live: rewinds {:?} ({count:?})", rules.rewinds);
+        }
+        if let Some(d) = def.as_ref().filter(|d| {
+            setup.live.is_none() && d.event_type.is_some() && !crate::render::post::env_is("SSX_GHOSTS", "off")
+        }) {
             match ssx_physics::session::bots::BotData::load(&setup.big_root) {
                 Ok(data) => {
                     let seed = std::env::var("SSX_BOT_SEED")
@@ -229,7 +246,7 @@ impl Ride {
             .as_ref()
             .and_then(|l| l.intro.as_ref())
             .map(|i| ssx_physics::helicopter::Helicopter::with_flight(i, heli_flight.clone()));
-        if !crate::render::post::env_is("SSX_GEOTAGS", "off") {
+        if !crate::render::post::env_is("SSX_GEOTAGS", "off") && setup.map.is_none() {
             match ssx_physics::session::geotags::GeotagData::load(&setup.big_root, &setup.track) {
                 Ok(Some(data)) => {
                     let seed = crate::render::geotags::seed();
@@ -262,7 +279,11 @@ impl Ride {
             session.set_ui_flag(ssx_physics::objectives::UI_HUD_READY, false);
         }
         let mut intro = intro;
-        if let Ok(data) = ssx_physics::session::heli_jump::HeliJumpData::load(&setup.big_root, &setup.world.triggers) {
+        let heli_jump = match &setup.map {
+            Some(_) => Err(anyhow::anyhow!("a map's ride")),
+            None => ssx_physics::session::heli_jump::HeliJumpData::load(&setup.big_root, &setup.world.triggers),
+        };
+        if let Ok(data) = heli_jump {
             let data = std::sync::Arc::new(data);
             let outro_script = def.as_ref().and_then(|d| ssx_physics::outro::outro_of_scripts(&d.scripts))
                 == Some(ssx_physics::outro::OutroScript::HeliJump);
@@ -278,7 +299,7 @@ impl Ride {
             if let Some((k, before)) = std::env::var("SSX_RIDE_FROM_GHOST").ok().and_then(|v| {
                 let (k, b) = v.split_once(',')?;
                 Some((k.trim().parse::<usize>().ok()?, b.trim().parse::<f32>().ok()?))
-            }) && let Some(row) = def.as_ref().and_then(|d| d.rivals.iter().filter(|r| r.starting_idx == 0).nth(k))
+            }) && let Some(row) = def.as_ref().and_then(|d| d.rivals.get(k))
                 && let Ok(replay) = ssx_assets::ghosts::GhostReplay::load(&setup.big_root, row.ghost_id as u32)
             {
                 let rail = data.rail_at_start();
@@ -350,11 +371,13 @@ impl Ride {
             None => None,
         };
         Some(Self {
-            world: setup.world,
+            world: std::sync::Arc::new(setup.world),
             spawn: setup.spawn,
             intro,
             intro_short,
             big_root: setup.big_root,
+            sim_content_id: setup.sim_content_id,
+            map: setup.map,
             intro_graph: false,
             cabin_seen: None,
             world_hidden: false,
@@ -363,6 +386,7 @@ impl Ride {
             vista: None,
             event_def: def,
             character: setup.character,
+            wire_key: setup.wire_key,
             outro: None,
             state,
             prev: pose,
@@ -422,7 +446,46 @@ impl Ride {
             messages_logged: 0.0,
             loadout,
             game_setup,
+            live: setup.live,
+            pads_held: false,
+            chat_held: false,
+            pose_blocks: setup.live.map(|_| ssx_physics::graph::LiveBlocks::default()),
+            start_gate: super::live::StartGate::Free,
+            go_step: None,
         })
+    }
+}
+
+fn live_rivals(
+    big_root: &std::path::Path,
+    def: Option<&ssx_physics::event::EventDef>,
+    rules: super::live::LiveRules,
+    course: Option<Course>,
+) -> ssx_physics::session::bots::BotRace {
+    use ssx_physics::event::EventType;
+    use ssx_physics::session::bots::{BotData, BotRace, explore_requests};
+    let empty = || BotRace { course, ..BotRace::default() };
+    let Some(d) = def.filter(|d| matches!(d.event_type, Some(EventType::RaceGhosts | EventType::TrickGhosts))) else {
+        info!("live: no rivals (the event has no explore ghosts)");
+        return empty();
+    };
+    if !rules.explore_ghosts {
+        info!("live: the event's explore ghosts are off (the server's `ghosts = off`)");
+        return empty();
+    }
+    match BotData::load(big_root) {
+        Ok(data) => {
+            let (race, problems) = BotRace::load_requests(big_root, explore_requests(d), Vec::new(), &data, course);
+            for p in problems {
+                warn!("live: explore ghosts: {p}");
+            }
+            info!("live: {} explore ghosts of {} kept (the server's `ghosts = on`)", race.bots.len(), d.name);
+            race
+        }
+        Err(e) => {
+            warn!("live: the explore ghosts unavailable: {e:#}");
+            empty()
+        }
     }
 }
 

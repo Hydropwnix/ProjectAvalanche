@@ -1,0 +1,171 @@
+[package]
+name = "bevy_replicon"
+version = "0.45.2"
+authors = [
+  "Hennadii Chernyshchyk <genaloner@gmail.com>",
+  "koe <ukoe@protonmail.com>",
+]
+edition = "2024"
+description = "A server-authoritative replication crate for Bevy"
+readme = "README.md"
+repository = "https://github.com/simgine/bevy_replicon"
+keywords = [
+  "bevy",
+  "multiplayer",
+  "netcode",
+  "replication",
+  "server-authoritative",
+]
+categories = ["game-development", "network-programming"]
+license = "MIT OR Apache-2.0"
+include = ["/src", "/LICENSE*"]
+
+[package.metadata.docs.rs]
+rustdoc-args = ["-Zunstable-options", "--cfg", "docsrs"]
+all-features = true
+
+[workspace]
+members = ["example_backend"]
+
+[dependencies]
+bevy = { version = "0.20", default-features = false, features = ["bevy_state"] }
+log = "0.4" # Directly depend on `log` like other `no_std` Bevy crates, since `bevy_log` currently requires `std`.
+petgraph = { version = "0.8", default-features = false, features = [
+  "stable_graph",
+] }
+variadics_please = "2.0"
+typeid = "1.0"
+bytes = { version = "1.10", default-features = false }
+serde = { version = "1.0", default-features = false }
+bitflags = { version = "2.6", features = ["serde"] }
+smallbitvec = "2.6"
+smallvec = "1.15"
+postcard = { version = "1.1", default-features = false, features = [
+  "experimental-derive",
+] }
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+deterministic-hash = "1.0.2"
+
+[target.'cfg(not(all(target_has_atomic = "8", target_has_atomic = "16", target_has_atomic = "32", target_has_atomic = "64", target_has_atomic = "ptr")))'.dependencies]
+bytes = { version = "1.10", default-features = false, features = [
+  "extra-platforms",
+] }
+
+[dev-dependencies]
+ron = { version = "0.12", default-features = false }
+bevy = { version = "0.20", default-features = false, features = [
+  "debug",
+  "serialize",
+] }
+test-log = "0.2"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+bevy = { version = "0.20", default-features = false, features = [
+  "bevy_log",
+  "bevy_sprite_render",
+] }
+criterion = { version = "0.8", default-features = false, features = [
+  "cargo_bench_support",
+] }
+
+
+[features]
+default = ["client", "server", "world_serialization"]
+
+# Client-related logic.
+client = []
+
+# Server-related logic.
+server = []
+
+# Integration with Bevy diagnostics for client.
+client_diagnostics = ["client"]
+
+# State serialization based on replication rules.
+world_serialization = ["bevy/bevy_world_serialization"]
+
+# Replication into a scene.
+scene = ["bevy/bevy_world_serialization"]
+
+[[bench]]
+name = "replication"
+harness = false
+
+[[bench]]
+name = "related_entities"
+harness = false
+
+[[test]]
+name = "archetype_skip"
+required-features = ["client", "server"]
+
+[[test]]
+name = "mutations"
+required-features = ["client", "server"]
+
+[[test]]
+name = "client_message"
+required-features = ["client", "server"]
+
+[[test]]
+name = "client_event"
+required-features = ["client", "server"]
+
+[[test]]
+name = "connection"
+required-features = ["client", "server"]
+
+[[test]]
+name = "despawn"
+required-features = ["client", "server"]
+
+[[test]]
+name = "diff"
+required-features = ["client", "server"]
+
+[[test]]
+name = "diff_buffering"
+required-features = ["client", "server"]
+
+[[test]]
+name = "fns"
+required-features = ["client"]
+
+[[test]]
+name = "insertion"
+required-features = ["client", "server"]
+
+[[test]]
+name = "removal"
+required-features = ["client", "server"]
+
+[[test]]
+name = "world_serialization"
+required-features = ["world_serialization", "client"]
+
+[[test]]
+name = "server_message"
+required-features = ["client", "server"]
+
+[[test]]
+name = "server_event"
+required-features = ["client", "server"]
+
+[[test]]
+name = "spawn"
+required-features = ["client", "server"]
+
+[[test]]
+name = "stats"
+required-features = ["client_diagnostics", "client", "server"]
+
+[[test]]
+name = "userdata"
+required-features = ["client", "server"]
+
+[lints.clippy]
+type_complexity = "allow"
+too_many_arguments = "allow"
+alloc_instead_of_core = "warn"
+std_instead_of_alloc = "warn"
+std_instead_of_core = "warn"

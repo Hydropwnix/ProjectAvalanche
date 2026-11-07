@@ -1,0 +1,72 @@
+[package]
+name = "avalanche-server"
+description = "Project Avalanche's dedicated multiplayer server (port feature): headless Bevy with lightyear through ssx-net, the HTTP join, the console."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "avalanche-server"
+path = "src/main.rs"
+
+[dependencies]
+ssx-net.workspace = true
+ssx-core = { workspace = true, features = ["log"] }
+ssx-net-proto = { workspace = true, features = ["icon"] }
+ssx-files.workspace = true
+bevy = { workspace = true, features = ["std", "multi_threaded", "async_executor", "bevy_log", "bevy_state"] }
+anyhow.workspace = true
+bytes.workspace = true
+clap.workspace = true
+hmac.workspace = true
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["client"] }
+hyper-util.workspace = true
+serde.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+toml.workspace = true
+zeroize.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+rustls-native-certs.workspace = true
+socket2.workspace = true
+ssx-net-lan.workspace = true
+ssx-gameplay.workspace = true
+ssx-assets = { path = "../../crates/ssx-assets", default-features = false, features = ["pipeline"] }
+serde_json.workspace = true
+blake3.workspace = true
+md-5.workspace = true
+quick-xml.workspace = true
+ssx-net-portmap.workspace = true
+ssx-rules.workspace = true
+ssx-physics.workspace = true
+ssx-content.workspace = true
+ssx-net-ops.workspace = true
+ssx-script = { workspace = true, features = ["wire"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+ssx-net-join.workspace = true
+ssx-assets.workspace = true
+ureq.workspace = true
+ssx-physics.workspace = true
+avalanche-master.workspace = true
+rcgen.workspace = true
+ssx-net-portmap = { workspace = true, features = ["fake-gateways"] }
+png.workspace = true
+
+[lints]
+workspace = true

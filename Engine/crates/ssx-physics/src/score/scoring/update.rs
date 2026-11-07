@@ -254,11 +254,11 @@ impl ScoreState {
     }
 
     pub(super) fn tricky(&self, rewind_active: bool) -> f32 {
-        if self.time_since_rewind > 240.0 && !rewind_active {
+        if self.time_since_rewind > TRICKY_AFTER_REWIND_TICKS && !rewind_active {
             if self.is_super_awesome {
-                return 2.0;
+                return SUPER_TRICKY_MULTIPLIER;
             } else if self.is_awesome {
-                return 1.5;
+                return TRICKY_MULTIPLIER;
             }
         }
         1.0
@@ -266,9 +266,9 @@ impl ScoreState {
 
     pub(super) fn duplicate_or_rewind(&self, rewind_active: bool) -> f32 {
         if rewind_active || self.time_rewinding_backwards > 0.0 {
-            0.10
+            REWIND_MULTIPLIER
         } else if self.duplicate {
-            0.25
+            DUPLICATE_MULTIPLIER
         } else if self.time_since_rewind > 0.0 {
             rewind_ramp(self.time_since_rewind)
         } else {

@@ -9,7 +9,7 @@ use ssx_physics::controllers::{Controllers, LightUpdate, OfflineHost};
 
 use crate::render::lighting::game::GameLightUniform;
 use crate::render::lighting::{BigRoot, GameLighting};
-use encode::{Words, assign_layers, bin_of, collect, encode, record};
+use encode::{Words, assign_layers, bin_of, bounds, collect, encode, record};
 use textures::{blank_array, texture_array};
 
 mod encode;
@@ -59,7 +59,7 @@ pub struct LocalLightsPlugin;
 
 impl Plugin for LocalLightsPlugin {
     fn build(&self, app: &mut App) {
-        load_shader_library!(app, "local_lights.wgsl");
+        load_shader_library!(app, "local_lights.wesl");
         app.init_resource::<DynamicLocalLights>()
             .init_resource::<DynamicLightReserve>()
             .init_resource::<LiveLights>()
@@ -137,7 +137,8 @@ fn follow_lighting(
     let block = light_words(&bytes.light);
     bytes.words.0[at..at + LIGHT_WORDS].copy_from_slice(&block);
     if let Some(mut buffer) = buffers.get_mut(&LOCAL_LIGHT_BUFFER) {
-        buffer.data = Some(bytes.words.bytes());
+        buffer.clear();
+        buffer.extend_from_slice(&bytes.words.bytes());
     }
 }
 
@@ -163,7 +164,10 @@ fn setup_local_lights(
     let disabled = std::env::var("SSX_LOCAL_LIGHTS").is_ok_and(|v| v == "off");
     let lights = match (&lighting, &root, disabled) {
         (_, _, true) => Ok((Vec::new(), "local lights off (SSX_LOCAL_LIGHTS=off)".to_string())),
-        (Some(l), Some(r), false) => collect(&r.0, &l.track),
+        (Some(l), Some(r), false) => match l.disc_track() {
+            Some(track) => collect(&r.0, track),
+            None => Ok((Vec::new(), "local lights: a map's new track places none".to_string())),
+        },
         _ => Ok((Vec::new(), "local lights: no track lighting".to_string())),
     };
     let (mut placed, mut summary) = lights.unwrap_or_else(|e| {
@@ -176,7 +180,21 @@ fn setup_local_lights(
         _ => Ok(None),
     };
     let image = match textures {
-        Ok(Some(image)) => image,
+        Ok(Some(image)) => {
+            if let Some(r) = &root {
+                let ids = paths
+                    .iter()
+                    .filter_map(|p| match p {
+                        Projected::File(rel) => ssx_assets::content::textures::texture_id(rel),
+                        Projected::Text { .. } => None,
+                    })
+                    .collect();
+                let (big, all) = (r.0.clone(), paths.clone());
+                let recipe = crate::render::reload::Recipe::new(ids, move || texture_array(&big, &all));
+                crate::render::reload::track(LOCAL_LIGHT_TEXTURES.id(), recipe);
+            }
+            image
+        }
         Ok(None) => blank_array(),
         Err(e) => {
             warn!("local light textures: {e:#}");
@@ -188,13 +206,15 @@ fn setup_local_lights(
     let light = lighting.as_deref().map_or_else(GameLightUniform::viewer_default, GameLightUniform::from_preset);
     let (words, dynamic_at) = encode(&placed, slots, &light);
     if let Err(e) =
-        buffers.insert(LOCAL_LIGHT_BUFFER.id(), ShaderBuffer::new(&words.bytes(), RenderAssetUsages::default()))
+        buffers.insert(LOCAL_LIGHT_BUFFER.id(), ShaderBuffer::new(words.bytes(), RenderAssetUsages::default()))
     {
         warn!("local light buffer: {e:?}");
     }
-    if let (Some(l), Some(r), false) = (&lighting, &root, disabled) {
+    if let (Some(l), Some(r), false) = (&lighting, &root, disabled)
+        && let Some(track) = l.disc_track()
+    {
         let drop = (l.drop_count > 0).then_some(l.drop_key);
-        match ssx_physics::spawn::load_trigger_volumes(&r.0, &l.track, drop) {
+        match ssx_physics::spawn::load_trigger_volumes(&r.0, track, drop) {
             Ok(t) => {
                 commands.insert_resource(LiveLights {
                     offline: Some((Box::new(Controllers::offline(&t)), OfflineHost::default())),
@@ -297,10 +317,13 @@ fn follow_controllers(
         (bytes.words, bytes.dynamic_at, bytes.last_clock, bytes.animated) = (words, dynamic_at, tracks, animated);
         bytes.last_count = usize::MAX;
         if let Some(mut buffer) = buffers.get_mut(&LOCAL_LIGHT_BUFFER) {
-            buffer.data = Some(bytes.words.bytes());
+            buffer.clear();
+            buffer.extend_from_slice(&bytes.words.bytes());
         }
     }
 }
+
+static DYNAMIC_OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 fn upload_dynamic_lights(
     dynamic: Res<DynamicLocalLights>,
@@ -310,13 +333,15 @@ fn upload_dynamic_lights(
 ) {
     let Some(mut bytes) = bytes else { return };
     let tracks = (clock.clock.0.to_bits(), clock.clock.1);
-    if dynamic.lights.is_empty() && bytes.last_count == 0 && (!bytes.animated || tracks == bytes.last_clock) {
+    let off = *DYNAMIC_OFF.get_or_init(|| crate::render::post::env_is("SSX_DYNAMIC_LIGHTS", "off"));
+    let none: &[DynamicLight] = &[];
+    let requested = if off { none } else { &dynamic.lights[..] };
+    if requested.is_empty() && bytes.last_count == 0 && (!bytes.animated || tracks == bytes.last_clock) {
         return;
     }
     (bytes.words.0[2][3], bytes.words.0[3][2]) = tracks;
     bytes.last_clock = tracks;
-    let mut lights: Vec<Placed> = dynamic
-        .lights
+    let mut lights: Vec<Placed> = requested
         .iter()
         .take(bytes.slots as usize)
         .map(|d| Placed {
@@ -336,6 +361,10 @@ fn upload_dynamic_lights(
     lights.sort_by_key(bin_of);
     let mut w = Words::default();
     lights.iter().for_each(|p| record(&mut w, p));
+    let bounds_at = bytes.words.0[3][3] as usize + LIGHT_WORDS + bytes.words.0[0][3] as usize;
+    for (k, p) in lights.iter().enumerate() {
+        bytes.words.0[bounds_at + k] = bounds(p).map(f32::to_bits);
+    }
     let at = bytes.dynamic_at;
     if lights.len() != bytes.last_count {
         info!(
@@ -349,6 +378,7 @@ fn upload_dynamic_lights(
     bytes.words.0[at..at + w.0.len()].copy_from_slice(&w.0);
     bytes.last_count = lights.len();
     if let Some(mut buffer) = buffers.get_mut(&LOCAL_LIGHT_BUFFER) {
-        buffer.data = Some(bytes.words.bytes());
+        buffer.clear();
+        buffer.extend_from_slice(&bytes.words.bytes());
     }
 }

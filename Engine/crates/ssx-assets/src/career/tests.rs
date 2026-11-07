@@ -308,3 +308,50 @@ fn tutorial_drops_and_range_visits() {
     let r = p.stats.records[&key];
     assert_eq!((r.value, r.key_again, r.scope, r.kind, r.initial), (2, key, 2, 0, 0));
 }
+
+#[test]
+fn a_modded_best_is_kept_only_with_its_sim_content_id() {
+    use ssx_content::profile_state::{MAX_ENTRIES, MAX_FIELDS, StateValue};
+    let r = rules();
+    let mut p = Profile::new();
+    let event_id =
+        |name: &str| ssx_content::ContentId::new(ssx_content::BASE_NAMESPACE, ssx_content::Kind::Event, name);
+    let id = event_id("x").unwrap();
+    let field = |p: &Profile| p.mod_state.entries.get(&id).and_then(|e| e.get(SIM_ID_FIELD)).cloned();
+    let o = EventOutcome {
+        event: key("x"),
+        value: 90_000,
+        leaderboard: vec![77_532, 92_631, 120_965],
+        event_id: Some(id.clone()),
+        sim_content_id: Some("ab".repeat(32)),
+        ..Default::default()
+    };
+    assert_eq!(p.apply_result(&r, &o).best_not_kept, None);
+    assert_eq!(field(&p), Some(StateValue::Text("ab".repeat(32))));
+    p.apply_result(&r, &EventOutcome { value: 95_000, sim_content_id: Some("cd".repeat(32)), ..o.clone() });
+    assert_eq!(field(&p), Some(StateValue::Text("ab".repeat(32))));
+    p.apply_result(&r, &EventOutcome { value: 85_000, sim_content_id: None, ..o.clone() });
+    assert_eq!((p.explore_scores[&key("x")].score, field(&p)), (85_000, None));
+    assert!(!p.mod_state.entries.contains_key(&id));
+    for k in 0..MAX_FIELDS {
+        assert!(p.mod_state.set(&id, &format!("f{k}"), StateValue::Int(1)));
+    }
+    let rep = p.apply_result(&r, &EventOutcome { value: 80_000, ..o.clone() });
+    assert_eq!(rep.best_not_kept, Some(BestNotKept::ModStateFull));
+    assert_eq!(rep.medal, Some(Medal::Silver), "the run's own medal stands");
+    assert_eq!((p.explore_scores[&key("x")].score, field(&p)), (85_000, None));
+    assert_eq!(p.apply_result(&r, &EventOutcome { value: 99_000, ..o.clone() }).best_not_kept, None);
+    let rep = p.apply_result(&r, &EventOutcome { value: 80_000, event_id: None, ..o.clone() });
+    assert_eq!(rep.best_not_kept, Some(BestNotKept::NoEventId));
+    assert_eq!(p.explore_scores[&key("x")].score, 85_000);
+    p.mod_state.entries.clear();
+    for k in 0..MAX_ENTRIES {
+        assert!(p.mod_state.set(&event_id(&format!("e{k}")).unwrap(), "n", StateValue::Int(1)));
+    }
+    let y = EventOutcome { event: key("t"), event_id: Some(event_id("t").unwrap()), ..o.clone() };
+    assert_eq!(p.apply_result(&r, &y).best_not_kept, Some(BestNotKept::ModStateFull));
+    assert!(!p.explore_scores.get(&key("t")).is_some_and(|s| s.score == 90_000));
+    assert_eq!(p.apply_result(&r, &EventOutcome { sim_content_id: None, ..y }).best_not_kept, None);
+    assert_eq!(p.explore_scores[&key("t")].score, 90_000);
+    assert_eq!(p.explore_scores[&key("x")].attempts, 6);
+}

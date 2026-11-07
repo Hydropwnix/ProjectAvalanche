@@ -7,8 +7,10 @@ use super::{Ctx, NativeCall};
 
 #[derive(Clone, Debug, Default)]
 pub struct NativeState {
-    pub calls: HashMap<(&'static str, &'static str), Vec<Vec<Value>>>,
+    pub calls: HashMap<(&'static str, &'static str), std::collections::VecDeque<Vec<Value>>>,
     queue: Vec<(&'static str, &'static str, Vec<Value>)>,
+    pub view_ready: Option<String>,
+    pub refused: u64,
 }
 
 impl NativeState {
@@ -28,18 +30,45 @@ impl NativeState {
         std::mem::take(&mut self.queue)
     }
 
-    pub fn of(&self, object: &str, method: &str) -> &[Vec<Value>] {
-        self.calls.iter().find(|((o, m), _)| *o == object && *m == method).map_or(&[], |(_, v)| v.as_slice())
+    pub fn of(&self, object: &str, method: &str) -> Vec<&Vec<Value>> {
+        self.calls
+            .iter()
+            .find(|((o, m), _)| *o == object && *m == method)
+            .map_or(Vec::new(), |(_, v)| v.iter().collect())
     }
 }
 
 fn record(cx: &mut Ctx, object: &'static str, method: &'static str, a: &[Value]) -> R {
+    use super::sandbox::caps::CALLS_KEPT;
+    if let Some((m, why)) = cx.vm.sandbox.native_call() {
+        cx.vm.sandbox.stop(m, why);
+        return Err(super::Fault::Stopped(m));
+    }
+    if let Err(why) = super::calls::check(cx, object, method, a) {
+        cx.vm.natives.refused += 1;
+        cx.vm.diag.note("native call refused", &format!("{object}.{method}: {why}"));
+        return Ok(Value::Undefined);
+    }
     let mut text = Vec::new();
     for v in a {
         text.push(describe(cx, v));
     }
-    cx.vm.native_calls.push(NativeCall { object, method, args: text });
-    cx.vm.natives.calls.entry((object, method)).or_default().push(a.to_vec());
+    if cx.vm.native_calls.len() >= CALLS_KEPT {
+        cx.vm.native_calls.pop_front();
+    }
+    cx.vm.native_calls.push_back(NativeCall { object, method, args: text });
+    cx.vm.natives_total += 1;
+    let kept = cx.vm.natives.calls.entry((object, method)).or_default();
+    if kept.len() >= CALLS_KEPT {
+        kept.pop_front();
+    }
+    kept.push_back(a.to_vec());
+    if (object, method) == ("Dispatcher", "DispatchEvent")
+        && let (Some(Value::Number(e)), Some(Value::String(p))) = (a.first(), a.get(1))
+        && *e == f64::from(super::runtime::nav::VIEW_READY)
+    {
+        cx.vm.natives.view_ready = Some(p.to_string());
+    }
     cx.vm.natives.queue.push((object, method, a.to_vec()));
     cx.vm.diag.note("native call", &format!("{object}.{method}"));
     Ok(Value::Undefined)

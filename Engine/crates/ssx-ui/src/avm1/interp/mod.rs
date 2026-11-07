@@ -80,6 +80,38 @@ impl Ctx<'_> {
     }
 
     pub fn run(&mut self, f: &mut Frame, start: usize, end: usize) -> Result<Flow, Fault> {
+        if !self.lib.has_package_movies() {
+            return self.run_actions(f, start, end, false);
+        }
+        let package = self.lib.origin(f.movie).is_some();
+        if package && self.vm.sandbox.is_stopped(f.movie) {
+            return Err(Fault::Stopped(f.movie));
+        }
+        let outer = self.vm.sandbox.charged;
+        if package {
+            self.vm.sandbox.charged = Some(f.movie);
+        }
+        let making = std::mem::replace(&mut self.player.making_for, self.vm.sandbox.charged);
+        self.player.take_scanned();
+        let r = self.run_actions(f, start, end, self.vm.sandbox.charged.is_some());
+        self.player.making_for = making;
+        self.vm.sandbox.charged = outer;
+        if package && let Err(Fault::Abort(why)) = &r {
+            self.vm.sandbox.stop(f.movie, (*why).to_string());
+            return Err(Fault::Stopped(f.movie));
+        }
+        r
+    }
+
+    pub fn charge(&mut self, units: u64) -> Result<(), Fault> {
+        if let Some((m, why)) = self.vm.sandbox.work(units) {
+            self.vm.sandbox.stop(m, why);
+            return Err(Fault::Stopped(m));
+        }
+        Ok(())
+    }
+
+    fn run_actions(&mut self, f: &mut Frame, start: usize, end: usize, charged: bool) -> Result<Flow, Fault> {
         f.pc = start;
         loop {
             while let Some(&(e, _)) = f.withs.last() {
@@ -97,7 +129,21 @@ impl Ctx<'_> {
             if self.vm.budget == 0 {
                 return Err(Fault::Abort("script time-out (action budget spent)"));
             }
+            if charged {
+                let (made, live) = (self.vm.heap.since_gc, self.vm.heap.live());
+                let walked = self.player.take_scanned();
+                let over = self.vm.sandbox.work(1 + walked).or_else(|| self.vm.sandbox.heap_over(made, live));
+                if let Some((m, why)) = over {
+                    self.vm.sandbox.stop(m, why);
+                    return Err(Fault::Stopped(m));
+                }
+            }
             self.vm.diag.actions += 1;
+            let peaks = &mut self.vm.sandbox.peaks;
+            peaks.stack = peaks.stack.max(self.vm.stack.len());
+            if self.vm.stack.len() > super::sandbox::caps::STACK_VALUES {
+                return Err(Fault::Abort("more than 65 536 values on the stack"));
+            }
             let code = f.code.clone();
             let a = &code[f.pc];
             self.vm.cur_op = (a.op, a.offset);

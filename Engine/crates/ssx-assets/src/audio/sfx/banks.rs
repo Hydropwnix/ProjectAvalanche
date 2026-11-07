@@ -137,7 +137,8 @@ impl RiderAudioInfo {
 pub fn rider_audio_info(big_root: &Path, character: &str) -> Result<RiderAudioInfo> {
     use crate::vault_db::{fnv1, single, single_text};
     use ssx_formats::attrib::{Schema, Value, Vault, collection};
-    let name = match character {
+    let voice = crate::content::GameContent::of(big_root).voice_of(character);
+    let name = match voice.as_str() {
         "travisrice" => "travis",
         "ty" => "tyler",
         n => n,

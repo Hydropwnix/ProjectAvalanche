@@ -151,8 +151,8 @@ impl RiderGraph {
         self.put_bool("BLN_BallisticRayValid", s.ballistic.valid);
         self.put("VEC_Velocity.y", start.velocity.y);
         let t = &s.tricks;
-        self.put("GSENUM_TrickType", t.trick_type as i32 as f32);
-        self.put("GSENUM_TrickTypeLocked", t.trick_type_locked as i32 as f32);
+        self.put("GSENUM_TrickType", f32::from(t.trick_type.value()));
+        self.put("GSENUM_TrickTypeLocked", f32::from(t.trick_type_locked.value()));
         self.put("GSENUM_TrickHand", hand_value(t.hand));
         self.put_bool("BLN_HasValidTrickInput", t.has_valid_input);
         self.put_bool("BLN_IsTweaking", t.is_tweaking);

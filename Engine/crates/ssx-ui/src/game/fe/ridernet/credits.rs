@@ -1,15 +1,13 @@
-use std::path::Path;
-
 use crate::avm1::Ctx;
 use crate::avm1::value::Value;
 use crate::game::loc::Localization;
 
 pub const DP: &str = "dp_credits_data";
-pub const FILE: &str = "data0/data/common/config/credits.txt";
-
-pub fn load(big_root: &Path) -> Option<Vec<u8>> {
-    std::fs::read(big_root.join(FILE)).ok()
+pub fn read(files: &dyn crate::fs::FileSource) -> Option<Vec<u8>> {
+    files.read(PATH)
 }
+
+pub const PATH: &str = "data/common/config/credits.txt";
 
 pub fn lines(text: &[u8]) -> Vec<&[u8]> {
     let text = text.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(text);

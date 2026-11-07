@@ -14,8 +14,8 @@ use bevy::shader::ShaderRef;
 use crate::render::lighting::game::GameLightUniform;
 use crate::render::shadows::{ShadowPassKey, specialize_shadow_pass};
 
-const SHADER_PATH: &str = "embedded://ssx_bevy/render/objects/object.wgsl";
-pub const SHADOW_ALPHA_PATH: &str = "embedded://ssx_bevy/render/objects/shadow_alpha.wgsl";
+const SHADER_PATH: &str = "embedded://ssx_bevy/render/objects/object.wesl";
+pub const SHADOW_ALPHA_PATH: &str = "embedded://ssx_bevy/render/objects/shadow_alpha.wesl";
 
 pub const PLACEMENT_BUFFER: Handle<ShaderBuffer> = uuid_handle!("4b5d0a52-8a3e-4f63-9a51-1d9e1f2c6b70");
 
@@ -58,15 +58,16 @@ pub struct ObjectMaterialPlugin;
 
 impl Plugin for ObjectMaterialPlugin {
     fn build(&self, app: &mut App) {
-        embedded_asset!(app, "object.wgsl");
-        embedded_asset!(app, "shadow_alpha.wgsl");
-        app.add_plugins(MaterialPlugin::<ObjectMaterial>::default());
+        embedded_asset!(app, "object.wesl");
+        embedded_asset!(app, "shadow_alpha.wesl");
+        embedded_asset!(app, "object_prepass.wesl");
+        app.add_plugins(MaterialPlugin::<ObjectMaterial>::default()).add_systems(Update, follow_hooks);
         if let Some(mut buffers) = app.world_mut().get_resource_mut::<Assets<ShaderBuffer>>() {
-            let neutral = ShaderBuffer::new(&placement_bytes(&[[1.0, 1.0]]), RenderAssetUsages::default());
+            let neutral = ShaderBuffer::new(placement_bytes(&[[1.0, 1.0]]), RenderAssetUsages::default());
             if let Err(e) = buffers.insert(PLACEMENT_BUFFER.id(), neutral) {
                 error!("placement buffer: {e}");
             }
-            let ldr = ShaderBuffer::new(&ldr_tonemap_neutral(), RenderAssetUsages::default());
+            let ldr = ShaderBuffer::new(ldr_tonemap_neutral(), RenderAssetUsages::default());
             if let Err(e) = buffers.insert(LDR_TONEMAP_BUFFER.id(), ldr) {
                 error!("LDR tone-map buffer: {e}");
             }
@@ -104,17 +105,30 @@ pub struct ObjectExtension {
     pub ldr_tonemap: Handle<ShaderBuffer>,
     pub shadow_pass: ShadowPassKey,
     pub ldr: bool,
+    pub tangent_sign: bool,
+    pub hook: Option<u64>,
+    pub hook_wanted: Option<(u64, String)>,
+    pub hook_epoch: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Reflect)]
 pub struct ObjectPipelineKey {
     pub shadow: ShadowPassKey,
     pub ldr: bool,
+    pub tangent_sign: bool,
+    pub hook: Option<u64>,
+    pub hook_epoch: u64,
 }
 
 impl From<&ObjectExtension> for ObjectPipelineKey {
     fn from(e: &ObjectExtension) -> Self {
-        ObjectPipelineKey { shadow: e.shadow_pass, ldr: e.ldr }
+        ObjectPipelineKey {
+            shadow: e.shadow_pass,
+            ldr: e.ldr,
+            tangent_sign: e.tangent_sign,
+            hook: e.hook,
+            hook_epoch: e.hook_epoch,
+        }
     }
 }
 
@@ -154,7 +168,82 @@ impl MaterialExtension for ObjectExtension {
         if blend && key.bind_group_data.ldr {
             specialize_ldr_translucent(descriptor);
         }
+        if key.bind_group_data.tangent_sign
+            && let Some(fragment) = descriptor.fragment.as_mut()
+        {
+            fragment.shader_defs.push("SSX_TANGENT_SIGN".into());
+        }
+        if let Some(hash) = key.bind_group_data.hook {
+            specialize_hook(descriptor, hash);
+        }
         Ok(())
+    }
+}
+
+fn specialize_hook(descriptor: &mut RenderPipelineDescriptor, hash: u64) {
+    use crate::render::hooks::runtime::{admit, hook_defs, variant_shader};
+    const PREPASS: &str = "render/objects/object_prepass.wesl";
+    const FRAGMENT: &str = "render/objects/object.wesl";
+    const VERTEX: &str = "render/lighting/game_vertex.wesl";
+    let Some(flags) = hook_defs(hash) else { return };
+    let with_flags = |defs: &[bevy::shader::ShaderDefVal]| {
+        let mut out = defs.to_vec();
+        out.extend(flags.iter().cloned());
+        out
+    };
+    let prepass = descriptor
+        .vertex
+        .shader_defs
+        .iter()
+        .any(|d| matches!(d, bevy::shader::ShaderDefVal::Bool(n, true) if n == "PREPASS_PIPELINE"));
+    if prepass {
+        if let Some((shader, _, true)) = variant_shader(hash, PREPASS) {
+            let defs = with_flags(&descriptor.vertex.shader_defs);
+            if admit(hash, PREPASS, &defs) {
+                descriptor.vertex.shader = shader;
+                descriptor.vertex.shader_defs = defs;
+            }
+        }
+        return;
+    }
+    let (Some((fragment, ..)), Some((vertex, ..)), Some(f)) =
+        (variant_shader(hash, FRAGMENT), variant_shader(hash, VERTEX), descriptor.fragment.as_mut())
+    else {
+        return;
+    };
+    let fragment_defs = with_flags(&f.shader_defs);
+    let vertex_defs = with_flags(&descriptor.vertex.shader_defs);
+    let (fragment_ok, vertex_ok) = (admit(hash, FRAGMENT, &fragment_defs), admit(hash, VERTEX, &vertex_defs));
+    if !(fragment_ok && vertex_ok) {
+        return;
+    }
+    f.shader = fragment;
+    f.shader_defs = fragment_defs;
+    descriptor.vertex.shader = vertex;
+    descriptor.vertex.shader_defs = vertex_defs;
+}
+
+fn follow_hooks(mut seen: Local<u64>, mut materials: ResMut<Assets<ObjectMaterial>>) {
+    use crate::render::hooks::runtime::{drawn, epoch, settled};
+    let now = settled();
+    if now == *seen {
+        return;
+    }
+    *seen = now;
+    let changes: Vec<(AssetId<ObjectMaterial>, Option<u64>, u64)> = materials
+        .iter()
+        .filter_map(|(id, m)| {
+            let (hash, key) = m.extension.hook_wanted.as_ref()?;
+            let d = drawn(*hash, key);
+            let round = d.map_or(0, epoch);
+            (d != m.extension.hook || round != m.extension.hook_epoch).then_some((id, d, round))
+        })
+        .collect();
+    for (id, d, round) in changes {
+        if let Some(mut m) = materials.get_mut(id) {
+            m.extension.hook = d;
+            m.extension.hook_epoch = round;
+        }
     }
 }
 

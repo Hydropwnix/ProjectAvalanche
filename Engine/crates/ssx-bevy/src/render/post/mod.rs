@@ -1,3 +1,4 @@
+pub mod adapt;
 pub mod overlay;
 mod render;
 
@@ -5,7 +6,11 @@ use std::f32::consts::PI;
 
 use anyhow::{Context, Result};
 use bevy::asset::{RenderAssetUsages, embedded_asset};
-use bevy::prelude::*;
+use bevy::prelude::{
+    Added, App, Assets, Component, Handle, Image, IntoScheduleConfigs, Mesh3d, Msaa, Plugin, Query, Res, ResMut,
+    Resource, Time, UVec4, Update, Vec4, With, World, info, resource_exists,
+};
+use bevy::render::RenderApp;
 use bevy::render::extract_component::ExtractComponent;
 use bevy::render::extract_resource::ExtractResource;
 use bevy::render::render_resource::{Extent3d, ShaderType, TextureDimension, TextureFormat};
@@ -16,6 +21,7 @@ use crate::render::lighting::GameLighting;
 pub struct PostPlugin;
 
 #[derive(Component, Clone, Copy, Debug, ExtractComponent)]
+#[extract_app(RenderApp)]
 pub struct GamePostCamera;
 
 #[derive(Resource, Clone, Debug)]
@@ -36,6 +42,7 @@ pub struct PostUniform {
 }
 
 #[derive(Resource, Clone, ExtractResource)]
+#[extract_app(RenderApp)]
 pub struct PostSettings {
     pub uniform: PostUniform,
     pub lut: Handle<Image>,
@@ -45,12 +52,12 @@ pub struct PostSettings {
 
 impl Plugin for PostPlugin {
     fn build(&self, app: &mut App) {
-        embedded_asset!(app, "post_common.wgsl");
-        embedded_asset!(app, "post_downsample.wgsl");
-        embedded_asset!(app, "post_adapt.wgsl");
-        embedded_asset!(app, "post_bloom.wgsl");
-        embedded_asset!(app, "post_final.wgsl");
-        embedded_asset!(app, "post_fxaa.wgsl");
+        embedded_asset!(app, "post_common.wesl");
+        embedded_asset!(app, "post_downsample.wesl");
+        embedded_asset!(app, "post_adapt.wesl");
+        embedded_asset!(app, "post_bloom.wesl");
+        embedded_asset!(app, "post_final.wesl");
+        embedded_asset!(app, "post_fxaa.wesl");
         app.add_systems(Update, (tick.run_if(resource_exists::<PostSettings>), msaa_off));
         use crate::render::lighting::fade::{LightingFadeSet, faded};
         app.add_systems(Update, follow_lighting.after(LightingFadeSet).run_if(faded));

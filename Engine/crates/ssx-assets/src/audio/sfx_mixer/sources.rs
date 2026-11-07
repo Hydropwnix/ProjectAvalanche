@@ -178,6 +178,7 @@ impl RamSound {
 pub(super) enum Frames {
     Ram(Arc<RamSound>),
     Stream { cursor: Box<Cursor>, buf: Vec<f32>, base: usize, ended: bool },
+    Package { sample: Arc<crate::sfx_override::Samples48>, looped: bool },
 }
 
 pub(super) struct Source {
@@ -204,6 +205,15 @@ impl Source {
                 }
                 None => false,
             },
+            Frames::Package { sample, looped } => {
+                let n = sample.frames();
+                if n == 0 || (!*looped && i >= n) {
+                    return false;
+                }
+                let j = i % n;
+                out[..ch].copy_from_slice(&sample.samples[j * ch..j * ch + ch]);
+                true
+            }
             Frames::Stream { cursor, buf, base, ended } => {
                 while *base + buf.len() / ch <= i {
                     if *ended {
@@ -219,7 +229,7 @@ impl Source {
                         Ok(true) => {}
                         Ok(false) => *ended = true,
                         Err(e) => {
-                            eprintln!("sfx: decoding {}: {e:#}", self.label);
+                            ssx_core::eprintln!("sfx: decoding {}: {e:#}", self.label);
                             *ended = true;
                         }
                     }

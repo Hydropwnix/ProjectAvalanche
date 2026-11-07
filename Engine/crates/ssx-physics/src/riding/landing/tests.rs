@@ -1,4 +1,4 @@
-use std::f32::consts::PI;
+use std::f32::consts::{FRAC_PI_2, PI};
 
 use super::*;
 use crate::testutil::{balance, tuning};
@@ -46,11 +46,9 @@ fn touchdown_snaps_yaw_to_the_velocity_and_pitch_to_the_ground() {
     assert!(l.spin.abs() < 1e-4 && (l.pitch - 30.0 * DEG).abs() < 1e-4);
     assert!(!l.bail_on_landing && l.quality == LandingQuality::Sloppy && !l.landed_switch);
     let (l, a) = land(20.0 * DEG, 30.0 * DEG, false);
-    let vl = a.conjugate() * Vec3::Z;
     let roll = (a * Vec3::Z).dot(Vec3::Y).asin();
-    assert!(
-        vl.z.abs() < 1e-4 && twist(crate::steering::ground_frame(a, Vec3::Y).conjugate() * a, Vec3::Z).abs() < 1e-4
-    );
+    assert!((l.spin - 20.0 * DEG).abs() < 1e-4, "spin {}°", l.spin / DEG);
+    assert!(twist(crate::steering::ground_frame(a, Vec3::Y).conjugate() * a, Vec3::Z).abs() < 1e-4);
     assert!(roll.abs() < 15.0 * DEG && l.pitch > 25.0 * DEG, "roll {}°, pitch {}°", roll / DEG, l.pitch / DEG);
     eprintln!("20° slip + 30° nose up: residual roll {:.1}°, kept pitch {:.1}°", roll / DEG, l.pitch / DEG);
     let (l, a) = land(PI - 10.0 * DEG, 0.0, false);
@@ -245,4 +243,24 @@ fn an_impact_kicks_the_spin_sideways_and_softens_the_springs() {
         b.balance_update(&t, 1.0, 0.0, 0.3, false, true, false, false, false, false, false, 2.0);
     }
     assert!((a.spin - a.spin_target).abs() > (b.spin - b.spin_target).abs());
+}
+
+#[test]
+fn a_fall_onto_a_slope_snaps_the_board_onto_the_slope_travel() {
+    let (t, c) = (balance(), tuning().carving);
+    let n = Vec3::new(0.0, 0.92, 0.39).normalize();
+    let v = Vec3::new(0.1, -0.8, 0.0);
+    let mut steering = SteeringState::new(&c);
+    let mut a = board(FRAC_PI_2, 0.0);
+    assert!((a * Vec3::X).distance(Vec3::X) < 1e-5);
+    let mut l = LandingState::default();
+    l.touchdown(&t, &c, &mut a, &mut steering, v, n, Quat::IDENTITY, false, true, &ImpactKick::default(), 2.0);
+    let slip_after = |a: Quat| {
+        let g = crate::steering::ground_frame(a, n);
+        let vl = g.conjugate() * v;
+        vl.z.atan2(vl.x).abs()
+    };
+    assert!(l.spin.abs() > 60.0 * DEG, "spin {}°", l.spin / DEG);
+    assert!(slip_after(a) < 10.0 * DEG, "slip after the snap {}°", slip_after(a) / DEG);
+    assert!(slip_after(board(FRAC_PI_2, 0.0)) > 60.0 * DEG);
 }

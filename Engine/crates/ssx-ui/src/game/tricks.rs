@@ -36,7 +36,6 @@ pub fn trick_type_name(loc: &mut Localization, trick: u32, awesome: bool, super_
         "WHEELMAN",
     ];
     let key = match trick {
-        // TODO(guess): the signature trick's key takes the character asset name (the game: the character service's name, 0x6CB2D833 → 0x8248CB48 field 5, upper-cased); settle: that field's value per rider.
         1 => format!("TXT_SSX_TRICK_NAME_SIGNATURE_{}", rider.to_ascii_uppercase()),
         2..=13 => {
             let g = GRABS[(trick - 2) as usize];
@@ -54,7 +53,10 @@ pub fn trick_type_name(loc: &mut Localization, trick: u32, awesome: bool, super_
                 _ => format!("TXT_SSX_TRICK_TYPE_GRIND_{n}_SUPERUBER"),
             }
         }
-        _ => return String::new(),
+        _ => match added_trick_key(loc, trick, awesome, super_awesome) {
+            Some(key) => key,
+            None => return String::new(),
+        },
     };
     loc.text(&key)
 }
@@ -145,4 +147,11 @@ pub fn trick_name(loc: &mut Localization, r: &TrickRecordView, rider: &str, shor
         _ => {}
     }
     out
+}
+
+fn added_trick_key(loc: &Localization, trick: u32, awesome: bool, super_awesome: bool) -> Option<String> {
+    let routes = loc.content.as_ref()?.trick_routes();
+    let t = routes.by_value(trick)?;
+    let level = usize::from(awesome || super_awesome) + usize::from(super_awesome);
+    t.trick.names.get(level).map(ToString::to_string)
 }

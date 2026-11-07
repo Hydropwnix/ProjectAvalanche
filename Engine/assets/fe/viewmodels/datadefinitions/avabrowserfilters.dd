@@ -1,0 +1,50 @@
+{
+	"actions":
+		[
+		],
+	"data":
+		[
+			{ "viewname": "settings_init", "type": "object", "dpname": "dp_ava_bf_init" },
+			{ "viewname": "settings_commit", "type": "object", "dpname": "dp_ava_bf_commit", "actions":
+				[
+					{ "viewname": "advance", "actionname": "A_GameAdvanceScreen" },
+					{ "viewname": "back", "actionname": "A_GamePreviousScreen" },
+					{ "viewname": "resetToDefault", "actionname": "A_SettingsResetToDefault" }
+				] },
+			{ "viewname": "ava_bf_not_full", "type": "object", "dpname": "dp_ava_bf_not_full", "actions":
+				[
+					{ "viewname": "prev", "actionname": "A_TogglePreviousItem" },
+					{ "viewname": "next", "actionname": "A_ToggleNextItem" }
+				] },
+			{ "viewname": "ava_bf_not_empty", "type": "object", "dpname": "dp_ava_bf_not_empty", "actions":
+				[
+					{ "viewname": "prev", "actionname": "A_TogglePreviousItem" },
+					{ "viewname": "next", "actionname": "A_ToggleNextItem" }
+				] },
+			{ "viewname": "ava_bf_no_password", "type": "object", "dpname": "dp_ava_bf_no_password", "actions":
+				[
+					{ "viewname": "prev", "actionname": "A_TogglePreviousItem" },
+					{ "viewname": "next", "actionname": "A_ToggleNextItem" }
+				] },
+			{ "viewname": "ava_bf_mode", "type": "object", "dpname": "dp_ava_bf_mode", "actions":
+				[
+					{ "viewname": "prev", "actionname": "A_TogglePreviousItem" },
+					{ "viewname": "next", "actionname": "A_ToggleNextItem" }
+				] },
+			{ "viewname": "ava_bf_compatible", "type": "object", "dpname": "dp_ava_bf_compatible", "actions":
+				[
+					{ "viewname": "prev", "actionname": "A_TogglePreviousItem" },
+					{ "viewname": "next", "actionname": "A_ToggleNextItem" }
+				] },
+			{ "viewname": "ava_bf_sort", "type": "object", "dpname": "dp_ava_bf_sort", "actions":
+				[
+					{ "viewname": "prev", "actionname": "A_TogglePreviousItem" },
+					{ "viewname": "next", "actionname": "A_ToggleNextItem" }
+				] },
+			{ "viewname": "ava_bf_order", "type": "object", "dpname": "dp_ava_bf_order", "actions":
+				[
+					{ "viewname": "prev", "actionname": "A_TogglePreviousItem" },
+					{ "viewname": "next", "actionname": "A_ToggleNextItem" }
+				] }
+		]
+}

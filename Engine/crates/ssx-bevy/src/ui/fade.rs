@@ -15,11 +15,13 @@ use bevy::render::extract_component::{ExtractComponent, ExtractComponentPlugin};
 use super::UiCamera;
 
 #[derive(Component, Clone, Copy, Default, ExtractComponent)]
+#[extract_app(RenderApp)]
 pub struct FadeCamera;
 
 type FadeViews = Or<(With<UiCamera>, With<FadeCamera>)>;
 
 #[derive(Resource, Clone, Copy, Debug, PartialEq, ExtractResource)]
+#[extract_app(RenderApp)]
 pub struct ScreenFade {
     pub alpha: f32,
     pub grey: f32,
@@ -134,6 +136,7 @@ fn fade_pipeline(
             shader_defs: Vec::new(),
             entry_point: Some("vs_full".into()),
             buffers: Vec::new(),
+            constants: Vec::new(),
         },
         fragment: Some(FragmentState {
             shader: shader.clone(),

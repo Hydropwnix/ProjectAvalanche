@@ -117,6 +117,65 @@ impl Graph {
         v.plugins.iter().find_map(|p| if let Stage::SubMix { input } = &p.stage { *input } else { None })
     }
 
+    pub fn senders_into(&self, input: usize) -> usize {
+        self.voices
+            .iter()
+            .flatten()
+            .filter(|v| {
+                v.plugins.iter().any(|p| match &p.stage {
+                    Stage::Send { target, .. } | Stage::Route { target, .. } => *target == Some(input),
+                    _ => false,
+                })
+            })
+            .count()
+    }
+
+    pub fn add_bus_copies(&mut self, template: &str, names: &[&str]) -> usize {
+        let def = self.set.buses.modules.iter().find_map(|m| match &m.kind {
+            ModuleV1Kind::Voice(v) if v.name == template => Some(v.clone()),
+            _ => None,
+        });
+        let vars = self.voices.iter().flatten().find(|v| v.name == template).map(|v| v.vars);
+        let (Some(def), Some(vars)) = (def, vars) else { return 0 };
+        let has = |f: &[u8; 4]| def.plugins.iter().any(|p| &p.fourcc == f);
+        if !has(b"Sub0") || !has(b"Pn30") {
+            return 0;
+        }
+        for name in names {
+            if self.voices.iter().flatten().any(|v| v.name == *name) {
+                continue;
+            }
+            let mut copy = def.clone();
+            copy.name = (*name).to_string();
+            for l in &mut copy.links {
+                if def.plugins.get(usize::from(l.plugin)).is_some_and(|p| &p.fourcc == b"Sub0") {
+                    l.target = (*name).to_string();
+                }
+            }
+            self.add_voice(copy, vars, None);
+        }
+        names.iter().filter(|n| self.submix_input(n).is_some()).count()
+    }
+
+    pub fn redirect_voice_send(&mut self, slot: usize, target: Option<usize>) -> bool {
+        let Some(v) = self.voices.get_mut(slot).and_then(Option::as_mut) else { return false };
+        for p in &mut v.plugins {
+            match &mut p.stage {
+                Stage::Send { target: t, key, .. } => {
+                    *t = target;
+                    *key = (String::new(), CORE_NAMESPACE);
+                    return true;
+                }
+                Stage::Route { last, .. } => {
+                    p.stage = Stage::Send { last: *last, target, key: (String::new(), CORE_NAMESPACE) };
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
     pub fn redirect_send(&mut self, voice: &str, target: Option<usize>) -> bool {
         let Some(v) = self.voices.iter_mut().flatten().find(|v| v.name == voice) else { return false };
         for p in &mut v.plugins {

@@ -45,17 +45,28 @@ impl Session {
         tricks: &TrickInput,
         r2: f32,
         pad: &RewindPad,
+        graph: Option<&mut RiderGraph>,
+    ) -> Execution {
+        self.execute_with(s, w, input, tricks, r2, pad, graph, &mut |_, _, _| {})
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_with(
+        &mut self,
+        s: &mut RiderState,
+        w: &World,
+        input: &Input,
+        tricks: &TrickInput,
+        r2: f32,
+        pad: &RewindPad,
         mut graph: Option<&mut RiderGraph>,
+        actors: &mut dyn FnMut(&mut Session, &mut RiderState, f32),
     ) -> Execution {
         self.load_objectives(w);
         self.effects_fresh = true;
         let dt = DT_TICKS * self.dilation;
         let mut survive = survive::SurviveStep::None;
         if std::mem::take(&mut self.head_pending) {
-            // TODO(guess): the activation's dt-0 step (0x823D3258 → 0x82AB0DA0 → 0x8354CA40) reaches the player's `CharacterPropertiesSceneOp` before the first objectives update (the actor exists once its entity is built, 0x82D3FFC0 / 0x82D444A8; open: that build's moment against the activation); read: the player's actor component exists then
-            // (the activation's BE +0x18 is read every frame without a null test), and the tutorial's `BLN_WingsuitEnabled` false (`tutorial0001_1_1`) is written to stand until its wingsuit lesson; settle there: whether the actor (0x82AAE410, the Animatable component factory's create) is made at the scene batch's `CreateWorldEntity`
-            // or at the pending activation 0x82D3DB98 → 0x82D444A8, and that the scheduler 0x829E2720 runs a world's ops at 0 ticks.
-            crate::guess_hit!();
             crate::rider::resolve_item_flags(s, w);
             survive = self.frame_head(s, w, false, dt, true);
         }
@@ -108,6 +119,11 @@ impl Session {
         }
         for m in s.score.flushed.iter().flatten() {
             self.stats.banks_flushed(m, &self.stats_record);
+            if let crate::tricks::TrickType::Added(a) = self.stats_record.trick_id
+                && let Some(Some(id)) = w.tuning.added_trick_ids.get(usize::from(a.slot))
+            {
+                self.stats.added_trick_flushed(&self.stats_record, id);
+            }
         }
         let event_type = self.event.setup.event_type.map(|t| t as i32);
         if let Some(p) = s.score.base_points {
@@ -157,6 +173,7 @@ impl Session {
         self.last_sim_dt_s = dt / TICKS_PER_SECOND;
         let event = self.score_manager(s, w, self.last_sim_dt_s, r.active && r.speed <= 1.525_878_9e-5, false);
         let timer = event.timer.unwrap_or(DeathTimerEvent::None);
+        actors(self, s, dt);
         let next = self.frame_head(s, w, race_start, dt, false);
         if next != survive::SurviveStep::None {
             survive = next;

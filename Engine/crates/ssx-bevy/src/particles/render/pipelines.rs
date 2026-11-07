@@ -115,8 +115,8 @@ pub(super) fn init_pipelines(
     fullscreen: Res<FullscreenShader>,
     cache: Res<PipelineCache>,
 ) {
-    let draw_shader: Handle<Shader> = assets.load("embedded://ssx_bevy/particles/render/particles.wgsl");
-    let pass_shader: Handle<Shader> = assets.load("embedded://ssx_bevy/particles/render/particles_pass.wgsl");
+    let draw_shader: Handle<Shader> = assets.load("embedded://ssx_bevy/particles/render/particles.wesl");
+    let pass_shader: Handle<Shader> = assets.load("embedded://ssx_bevy/particles/render/particles_pass.wesl");
     let float = TextureSampleType::Float { filterable: true };
     let unfiltered = TextureSampleType::Float { filterable: false };
     let both = ShaderStages::VERTEX_FRAGMENT;
@@ -165,6 +165,7 @@ pub(super) fn init_pipelines(
                 shader_defs: defs.clone(),
                 entry_point: Some(vs.into()),
                 buffers: vec![],
+                constants: vec![],
             },
             fragment: Some(FragmentState {
                 shader: draw_shader.clone(),
@@ -175,6 +176,7 @@ pub(super) fn init_pipelines(
                     blend: Some(state),
                     write_mask: ColorWrites::ALL,
                 })],
+                constants: vec![],
             }),
             primitive: PrimitiveState {
                 cull_mode: None,

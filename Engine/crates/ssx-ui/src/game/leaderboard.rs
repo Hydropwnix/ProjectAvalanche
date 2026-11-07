@@ -5,10 +5,10 @@ use super::values::{LeaderboardRow, SplitsCallout, UiValue, UiValues, id};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Entry {
-    kind: u8,
-    value: i32,
-    name: String,
-    picture: String,
+    pub(crate) kind: u8,
+    pub(crate) value: i32,
+    pub(crate) name: String,
+    pub(crate) picture: String,
 }
 
 #[derive(Clone, Debug)]
@@ -114,26 +114,28 @@ impl ExploreLeaderboard {
 }
 
 pub(crate) fn sort_entries(list: &mut [Entry], ascending: bool, player_wins_ties: bool) {
+    list.sort_by(|a, b| entry_order(a, b, ascending, player_wins_ties));
+}
+
+pub(crate) fn entry_order(a: &Entry, b: &Entry, ascending: bool, player_wins_ties: bool) -> std::cmp::Ordering {
     use std::cmp::Ordering;
-    list.sort_by(|a, b| {
-        if a.value == b.value {
-            return match (a.kind == 2, b.kind == 2) {
-                (true, false) if player_wins_ties => Ordering::Less,
-                (true, false) => Ordering::Greater,
-                (false, true) if player_wins_ties => Ordering::Greater,
-                (false, true) => Ordering::Less,
-                _ => Ordering::Equal,
-            };
-        }
-        if a.value == -1 {
-            return Ordering::Greater;
-        }
-        if b.value == -1 {
-            return Ordering::Less;
-        }
-        let o = (a.value as u32).cmp(&(b.value as u32));
-        if ascending { o } else { o.reverse() }
-    });
+    if a.value == b.value {
+        return match (a.kind == 2, b.kind == 2) {
+            (true, false) if player_wins_ties => Ordering::Less,
+            (true, false) => Ordering::Greater,
+            (false, true) if player_wins_ties => Ordering::Greater,
+            (false, true) => Ordering::Less,
+            _ => Ordering::Equal,
+        };
+    }
+    if a.value == -1 {
+        return Ordering::Greater;
+    }
+    if b.value == -1 {
+        return Ordering::Less;
+    }
+    let o = (a.value as u32).cmp(&(b.value as u32));
+    if ascending { o } else { o.reverse() }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -142,7 +144,7 @@ pub struct RaceEntrant {
     pub picture: String,
     pub active: bool,
     pub finish_ms: Option<u32>,
-    pub y: f32,
+    pub y: Option<f32>,
 }
 
 pub fn race_update(
@@ -170,7 +172,7 @@ pub fn race_update(
                 finished.push(e);
             }
             (true, None) => {
-                e.value = racing_value(r.y);
+                e.value = r.y.map_or(-1, racing_value);
                 racing.push(e);
             }
             (false, _) => racing.push(e),
@@ -357,7 +359,7 @@ mod tests {
             name: name.into(),
             active: true,
             finish_ms,
-            y,
+            y: Some(y),
             ..Default::default()
         };
         let player = r("me", None, 400.0);
@@ -369,5 +371,25 @@ mod tests {
         assert_eq!(rows.iter().map(|x| x.value).collect::<Vec<_>>(), [61_000, 800, 900, 1_500]);
         assert!(v.bool(id::EXPLORE_LEADERBOARD_IS_ACTIVE));
         assert!(rows[2].is_player);
+    }
+
+    #[test]
+    fn an_entrant_with_no_entity_ranks_by_its_finish_alone() {
+        let mut v = UiValues::new();
+        let mut loc = Localization::empty(Language::English);
+        let r = |name: &str, finish_ms: Option<u32>, y: Option<f32>| RaceEntrant {
+            name: name.into(),
+            active: true,
+            finish_ms,
+            y,
+            ..Default::default()
+        };
+        let player = r("me", None, Some(400.0));
+        let racers = [r("silver", Some(15_000), None), r("gold", Some(13_000), None), r("odd", None, None)];
+        race_update(&mut v, &mut loc, EventType::RaceGhosts, &player, &racers, 1_000.0, 0.0);
+        let rows = v.rows(id::LEADERBOARD).to_vec();
+        let names: Vec<_> = rows.iter().map(|x| x.name.as_str()).collect();
+        assert_eq!(names, ["gold", "silver", "me", "odd"]);
+        assert_eq!(rows.iter().map(|x| x.value).collect::<Vec<_>>(), [13_000, 15_000, 900, -1]);
     }
 }

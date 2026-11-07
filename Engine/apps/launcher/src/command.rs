@@ -17,6 +17,10 @@ pub fn viewer_exe() -> PathBuf {
     next_to_launcher("asset-viewer")
 }
 
+pub fn server_exe() -> PathBuf {
+    next_to_launcher("avalanche-server")
+}
+
 pub const MANAGED_ENV: [&str; 9] = [
     "SSX_MUSIC",
     "SSX_MUSIC_VOLUME",
@@ -121,6 +125,18 @@ pub fn game(s: &Settings, big_root: &Path) -> Invocation {
         }
     }
     Invocation { program: game_exe(), args, env: env(s) }
+}
+
+pub fn game_joining(s: &Settings, big_root: &Path, server: std::net::SocketAddr) -> Invocation {
+    let mut inv = game(s, big_root);
+    inv.args.extend(["--connect".into(), server.to_string().into()]);
+    inv
+}
+
+pub fn game_with_link(s: &Settings, big_root: &Path, link: &str) -> Invocation {
+    let mut inv = game(s, big_root);
+    inv.args.extend(["--link".into(), link.into()]);
+    inv
 }
 
 impl Invocation {

@@ -3,7 +3,6 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail};
-use ssx_formats::ant::Stream;
 use ssx_formats::ant_anim::{Animation, ChannelToDof, VbrBlock, dof_list, nlerp};
 use ssx_formats::crsf::{Mat4, SceneGraph};
 
@@ -29,7 +28,7 @@ pub struct RigClip {
     pub end_frame: u16,
     pub additive: bool,
     pub driven: Vec<usize>,
-    anim: Animation,
+    anim: crate::anim_clip::ClipData,
     bindings: Vec<Binding>,
     floats: Vec<(usize, usize)>,
     pub unbound: usize,
@@ -92,6 +91,10 @@ impl RigPose {
 }
 
 impl RigClip {
+    pub fn package(&self) -> Option<&crate::anim_clip::ModClip> {
+        self.anim.package()
+    }
+
     pub fn duration(&self) -> f32 {
         f32::from(self.end_frame) / FPS
     }
@@ -101,8 +104,12 @@ impl RigClip {
     }
 
     fn sample(&self, frame: f32) -> ssx_formats::Result<ssx_formats::ant_anim::Pose> {
+        let disc = match &self.anim {
+            crate::anim_clip::ClipData::Disc(a) => a.as_ref(),
+            m @ crate::anim_clip::ClipData::Mod(_) => return m.sample(frame),
+        };
         let mut c = self.cache.0.lock().unwrap_or_else(|e| e.into_inner());
-        match &self.anim {
+        match disc {
             Animation::Vbr(a) => {
                 let (k0, k1, t) = a.keys_at(frame);
                 let ((b0, r0), (b1, r1)) = (a.key_location(k0), a.key_location(k1));
@@ -193,8 +200,9 @@ pub fn blend_into(acc: &mut [Srt], other: &[Srt], t: f32) {
     }
 }
 
-fn codec_name(a: &Animation) -> &'static str {
-    match a {
+fn codec_name(a: &crate::anim_clip::ClipData) -> &'static str {
+    let crate::anim_clip::ClipData::Disc(a) = a else { return "package" };
+    match a.as_ref() {
         Animation::Vbr(_) => "VBR",
         Animation::Dct(_) => "DCT",
         Animation::Curve(_) => "curve",
@@ -207,9 +215,7 @@ pub fn load_clips(big_root: &Path, rig: &SceneGraph, bind: &[Srt], names: &[&str
     if bind.len() != rig.nodes.len() {
         bail!("rest pose has {} nodes, the rig {}", bind.len(), rig.nodes.len());
     }
-    let path = big_root.join(ANIM_DIR).join(RIG_BUNDLE);
-    let data = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-    let stream = Stream::parse(&data).with_context(|| format!("parsing {}", path.display()))?;
+    let stream = crate::content::data::tuning::anim_all(big_root)?;
     let dofs = dof_list(&stream, "genchar_rig", "AnimRig").context("genchar_rig AnimRig DOF list")?;
     let mut tables = HashMap::new();
     for a in stream.assets_of_class(ChannelToDof::CLASS) {
@@ -219,17 +225,21 @@ pub fn load_clips(big_root: &Path, rig: &SceneGraph, bind: &[Srt], names: &[&str
     }
     let mut out = Vec::with_capacity(names.len());
     for &name in names {
-        let anim = stream
+        let (guid, anim) = stream
             .assets
             .iter()
             .filter(|a| a.object.name(&stream.schema).is_some_and(|n| n.strip_suffix(" Anim").unwrap_or(n) == name))
-            .find_map(|a| Animation::from_object(&stream.schema, &a.object).transpose())
+            .find_map(|a| {
+                let anim = Animation::from_object(&stream.schema, &a.object).transpose()?;
+                Some(anim.map(|x| (a.object.guid(&stream.schema).unwrap_or_default(), x)))
+            })
             .with_context(|| format!("no animation {name} in {RIG_BUNDLE}"))?
             .with_context(|| format!("decoding {name}"))?;
         let table = tables
             .get(&anim.info().channel_to_dof)
             .with_context(|| format!("{name}: its ChannelToDof table is not in {RIG_BUNDLE}"))?;
-        out.push(bind_clip(name, &anim, table, &dofs, rig)?);
+        let (clip, indices) = crate::content::anims::clip_for(Some(big_root), guid, anim, table.indices.clone());
+        out.push(bind_clip(name, &clip, &indices, &dofs, rig)?);
     }
     Ok(out)
 }
@@ -248,7 +258,19 @@ pub fn load_clips_db(
         tables.insert(a.guid, ChannelToDof::parse(a.schema, a.obj)?);
     }
     let (mut out, mut index, mut problems) = (Vec::new(), HashMap::new(), Vec::new());
+    let tricks = crate::content::tricks::tricks_for(db.data_root());
     for (g, name) in clips {
+        if let Some(m) = tricks.as_ref().and_then(|t| t.by_guid.get(g)).filter(|_| db.get(*g).is_none()) {
+            let clip = crate::anim_clip::ClipData::Mod(m.clone());
+            match bind_clip(name, &clip, &m.channel_to_dof, &dofs, rig) {
+                Ok(c) => {
+                    index.insert(*g, out.len());
+                    out.push(c);
+                }
+                Err(e) => problems.push(format!("{e:#}")),
+            }
+            continue;
+        }
         let Some(a) = db.get(*g) else {
             problems.push(format!("{name}: animation not loaded"));
             continue;
@@ -259,7 +281,8 @@ pub fn load_clips_db(
             .and_then(|anim| {
                 let table =
                     tables.get(&anim.info().channel_to_dof).with_context(|| format!("{name}: no channel table"))?;
-                bind_clip(name, &anim, table, &dofs, rig)
+                let (clip, indices) = crate::content::anims::clip_for(db.data_root(), *g, anim, table.indices.clone());
+                bind_clip(name, &clip, &indices, &dofs, rig)
             });
         match bound {
             Ok(c) => {
@@ -281,20 +304,20 @@ struct Binding {
 
 fn bind_clip(
     name: &str,
-    anim: &Animation,
-    table: &ChannelToDof,
+    anim: &crate::anim_clip::ClipData,
+    table: &[u16],
     dofs: &[ssx_formats::ant_anim::Dof],
     rig: &SceneGraph,
 ) -> Result<RigClip> {
     let counts = anim.counts();
-    if table.indices.len() != counts.total() {
-        bail!("{name}: {} channels, its table has {}", counts.total(), table.indices.len());
+    if table.len() != counts.total() {
+        bail!("{name}: {} channels, its table has {}", counts.total(), table.len());
     }
     let mut bindings = Vec::new();
     let mut unbound = 0;
     let float_list = float_dof_names(dofs);
     let mut floats: Vec<(usize, usize)> = Vec::new();
-    for (c, &d) in table.indices.iter().enumerate() {
+    for (c, &d) in table.iter().enumerate() {
         if c >= counts.quats + counts.vec3s {
             let name = dofs.get(usize::from(d)).filter(|dof| dof.ty == ssx_formats::ant_anim::DofType::Float);
             match name.and_then(|dof| float_list.iter().position(|n| *n == format!("{}.{}", dof.layout, dof.name))) {
@@ -320,15 +343,14 @@ fn bind_clip(
     let mut driven: Vec<usize> = bindings.iter().map(|b| b.node).collect();
     driven.sort_unstable();
     driven.dedup();
-    let info = anim.info();
-    for f in [0.0, f32::from(info.end_frame)] {
+    for f in [0.0, f32::from(anim.end_frame())] {
         anim.sample(f).with_context(|| format!("{name}: frame {f}"))?;
     }
     Ok(RigClip {
         name: name.to_string(),
         codec: codec_name(anim),
-        end_frame: info.end_frame,
-        additive: info.additive,
+        end_frame: anim.end_frame(),
+        additive: anim.additive(),
         driven,
         anim: anim.clone(),
         bindings,
@@ -346,9 +368,7 @@ pub fn float_dof_names(dofs: &[ssx_formats::ant_anim::Dof]) -> Vec<String> {
 }
 
 pub fn float_dofs(big_root: &Path) -> Result<Vec<String>> {
-    let path = big_root.join(ANIM_DIR).join(RIG_BUNDLE);
-    let data = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-    let stream = Stream::parse(&data).with_context(|| format!("parsing {}", path.display()))?;
+    let stream = crate::content::data::tuning::anim_all(big_root)?;
     Ok(float_dof_names(&dof_list(&stream, "genchar_rig", "AnimRig")?))
 }
 

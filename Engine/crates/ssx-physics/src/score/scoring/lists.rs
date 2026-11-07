@@ -58,7 +58,7 @@ impl ScoreState {
         let on = self.is_rewinding_backwards && self.time_rewinding_backwards > 0.0;
         if on {
             let level = rewind_time_level(self.time_rewinding_backwards);
-            self.rewind_bank += -1000.0 * self.tricky(c.rewind_active) * level / 60.0 * dt;
+            self.rewind_bank += REWIND_POINTS_PER_SECOND * self.tricky(c.rewind_active) * level / 60.0 * dt;
         }
         self.is_scoring_rewind = on;
     }
@@ -82,10 +82,12 @@ impl ScoreState {
             }
             let p = match k {
                 0..=2 if n > 0 => 0.0,
-                0 => 20_000.0 * if heli_mult < 1.0 { heli_mult * 0.10 } else { heli_mult },
-                1 => 5_000.0,
-                2 => 1_000.0,
-                _ => -5_000.0 * uphill_time_level(self.time_uphill) / 60.0 * dt,
+                0 => {
+                    HELI_INTERACTION_POINTS * if heli_mult < 1.0 { heli_mult * HELI_PENALTY_FACTOR } else { heli_mult }
+                }
+                1 => BONK_POINTS,
+                2 => FLARE_POINTS,
+                _ => UPHILL_POINTS_PER_SECOND * uphill_time_level(self.time_uphill) / 60.0 * dt,
             };
             self.interaction_triggers[k] = if k == 3 { n + 1 } else { 1 };
             self.interaction_bank += p;
@@ -105,7 +107,7 @@ impl ScoreState {
             any = true;
         }
         if avail && self.tweak_time > 0.0 {
-            self.air_bank += points * 0.10;
+            self.air_bank += points * TWEAK_MULT_PER_EXECUTION;
             any = true;
         }
         let degs = [self.spin_fs, self.spin_bs, self.flip_fwd, self.flip_bwd].map(f32::to_degrees);
@@ -129,16 +131,16 @@ impl ScoreState {
     pub(super) fn evaluate_grind_list(&mut self, i: &ScoringInputs, c: &ScoringContext, capture: bool, dt: f32) {
         let tricky = self.tricky(c.rewind_active);
         let dup = self.duplicate_or_rewind(c.rewind_active);
-        let terrain = if i.super_grind { 1.0 } else { 1.2 };
+        let terrain = if i.super_grind { SUPER_GRIND_TERRAIN_MULTIPLIER } else { GRIND_TERRAIN_MULTIPLIER };
         let mut any = false;
         if i.is_grinding && self.trick_id != TrickType::None && self.trick_time > 15.0 {
             let level = grind_trick_time_level(self.trick_time);
             self.grind_bank += self.trick_id.points() * terrain * tricky * dup * level / 60.0 * dt;
             any = true;
         }
-        let short = i.is_grinding && self.grind_time < 1200.0;
+        let short = i.is_grinding && self.grind_time < GRIND_TIME_MAX;
         let conds = [
-            short && self.grind_distance > 20.0,
+            short && self.grind_distance > GRIND_DISTANCE_MIN,
             short && self.grind_spin_fs.to_degrees() >= 180.0,
             short && self.grind_spin_bs.to_degrees() >= 180.0,
         ];
@@ -146,7 +148,7 @@ impl ScoreState {
             let a = &mut self.grind_on_end[k];
             if a.met && (!on || capture) && !a.paid {
                 self.grind_bank += match k {
-                    0 => self.grind_distance * 25.0 * terrain * tricky * dup,
+                    0 => self.grind_distance * GRIND_DISTANCE_POINTS * terrain * tricky * dup,
                     1 => grind_spin_points(self.grind_spin_fs.to_degrees()) * terrain * dup,
                     _ => grind_spin_points(self.grind_spin_bs.to_degrees()) * terrain * dup,
                 };

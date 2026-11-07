@@ -1,9 +1,12 @@
 pub mod foreground;
+mod gather;
 mod load;
 mod lods;
+mod map;
 pub mod material;
 mod part;
 mod specs;
+mod warm_up;
 
 use std::collections::BTreeMap;
 
@@ -14,9 +17,9 @@ use bevy::transform::TransformSystems;
 use ssx_assets::track_objects::Placement;
 
 use load::ObjectLod;
-pub use load::load;
+pub use load::{ObjectsSource, load, load_from};
 pub use lods::{ObjectLods, placement_transform};
-use lods::{follow_bodies, spawn_objects, update_object_lods};
+use lods::{follow_bodies, respawn_objects, spawn_objects, update_object_lods};
 pub use part::{LoadedPart, load_part, part_from_mesh};
 pub use specs::MaterialHandle;
 use specs::MaterialSpec;
@@ -63,6 +66,9 @@ pub struct ObjectStats {
     pub effects: BTreeMap<String, usize>,
     pub shadow_proxies: usize,
     pub problems: Vec<String>,
+    pub package_objects: Vec<String>,
+    pub decision: Option<String>,
+    pub map_drawn: Option<ssx_assets::content::track_packages::Usage>,
 }
 
 impl ObjectStats {
@@ -97,6 +103,9 @@ impl ObjectStats {
         if !self.problems.is_empty() {
             out += &format!("\n  {} problems (missing files / unset parameters, see log)", self.problems.len());
         }
+        if !self.package_objects.is_empty() {
+            out += &format!("\n  {} objects from packages", self.package_objects.len());
+        }
         out + "\n" + crate::render::objects::material::OBJECT_STATUS
     }
 }
@@ -116,18 +125,29 @@ fn effect_note(effect: &str) -> Option<&'static str> {
 pub struct LoadedObjects {
     pub stats: ObjectStats,
     meshes: Vec<(String, Mesh)>,
-    images: Vec<Image>,
+    images: crate::render::reload::BuiltImages,
     materials: Vec<MaterialSpec>,
     parts: Vec<Vec<Vec<(usize, usize)>>>,
     lods: Vec<ObjectLod>,
     placements: Vec<(usize, Placement)>,
+    source: (std::path::PathBuf, ObjectsSource),
 }
 
 #[derive(Resource)]
 struct PendingObjects(Option<LoadedObjects>);
 
+#[derive(Resource)]
+pub struct ReloadedObjects(Option<LoadedObjects>);
+
+impl ReloadedObjects {
+    pub fn new(objects: LoadedObjects) -> Self {
+        ReloadedObjects(Some(objects))
+    }
+}
+
 pub fn register(app: &mut App) {
     app.add_systems(crate::shell::level::LevelStartup, spawn_objects.run_if(resource_exists::<PendingObjects>))
+        .add_systems(Update, respawn_objects.run_if(resource_exists::<ReloadedObjects>))
         .add_systems(
             PostUpdate,
             update_object_lods
@@ -135,10 +155,12 @@ pub fn register(app: &mut App) {
                 .after(CameraUpdateSystems)
                 .before(VisibilitySystems::VisibilityPropagate),
         );
-    app.add_systems(PostUpdate, follow_bodies.before(TransformSystems::Propagate));
+    app.add_systems(PostUpdate, follow_bodies.before(TransformSystems::Propagate))
+        .add_systems(PostUpdate, crate::render::warm_up::end.before(VisibilitySystems::VisibilityPropagate));
     crate::shell::level::scoped::<PendingObjects>(app);
     crate::shell::level::scoped::<ObjectStats>(app);
     crate::shell::level::scoped::<ObjectLods>(app);
+    crate::shell::level::scoped::<ReloadedObjects>(app);
 }
 
 pub fn insert(world: &mut World, objects: LoadedObjects) {

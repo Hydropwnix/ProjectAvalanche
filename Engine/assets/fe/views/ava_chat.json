@@ -1,0 +1,314 @@
+{
+  "format": 1,
+  "view": "ava_chat",
+  "layer": "eventtimer",
+  "stage": [
+    1280,
+    720
+  ],
+  "frame_rate": 30,
+  "imports": [],
+  "symbols": [
+    {
+      "name": "AvaChat",
+      "export": true,
+      "children": [
+        {
+          "instance": "mcBack",
+          "x": 36,
+          "y": 382,
+          "rect": {
+            "width": 470,
+            "height": 212,
+            "color": "#0617228c"
+          }
+        },
+        {
+          "instance": "txtName0",
+          "x": 44,
+          "y": 388,
+          "text": {
+            "font": "DIN Mittelschrift Std",
+            "size": 15,
+            "color": "#6eb7c6",
+            "align": "right",
+            "width": 120,
+            "height": 22
+          }
+        },
+        {
+          "instance": "txtText0",
+          "x": 170,
+          "y": 388,
+          "text": {
+            "font": "DIN Mittelschrift Std",
+            "size": 15,
+            "color": "#ffffff",
+            "width": 330,
+            "height": 34,
+            "multiline": true,
+            "wrap": true
+          }
+        },
+        {
+          "instance": "txtName1",
+          "x": 44,
+          "y": 422,
+          "text": {
+            "font": "DIN Mittelschrift Std",
+            "size": 15,
+            "color": "#6eb7c6",
+            "align": "right",
+            "width": 120,
+            "height": 22
+          }
+        },
+        {
+          "instance": "txtText1",
+          "x": 170,
+          "y": 422,
+          "text": {
+            "font": "DIN Mittelschrift Std",
+            "size": 15,
+            "color": "#ffffff",
+            "width": 330,
+            "height": 34,
+            "multiline": true,
+            "wrap": true
+          }
+        },
+        {
+          "instance": "txtName2",
+          "x": 44,
+          "y": 456,
+          "text": {
+            "font": "DIN Mittelschrift Std",
+            "size": 15,
+            "color": "#6eb7c6",
+            "align": "right",
+            "width": 120,
+            "height": 22
+          }
+        },
+        {
+          "instance": "txtText2",
+          "x": 170,
+          "y": 456,
+          "text": {
+            "font": "DIN Mittelschrift Std",
+            "size": 15,
+            "color": "#ffffff",
+            "width": 330,
+            "height": 34,
+            "multiline": true,
+            "wrap": true
+          }
+        },
+        {
+          "instance": "txtName3",
+          "x": 44,
+          "y": 490,
+          "text": {
+            "font": "DIN Mittelschrift Std",
+            "size": 15,
+            "color": "#6eb7c6",
+            "align": "right",
+            "width": 120,
+            "height": 22
+          }
+        },
+        {
+          "instance": "txtText3",
+          "x": 170,
+          "y": 490,
+          "text": {
+            "font": "DIN Mittelschrift Std",
+            "size": 15,
+            "color": "#ffffff",
+            "width": 330,
+            "height": 34,
+            "multiline": true,
+            "wrap": true
+          }
+        },
+        {
+          "instance": "txtName4",
+          "x": 44,
+          "y": 524,
+          "text": {
+            "font": "DIN Mittelschrift Std",
+            "size": 15,
+            "color": "#6eb7c6",
+            "align": "right",
+            "width": 120,
+            "height": 22
+          }
+        },
+        {
+          "instance": "txtText4",
+          "x": 170,
+          "y": 524,
+          "text": {
+            "font": "DIN Mittelschrift Std",
+            "size": 15,
+            "color": "#ffffff",
+            "width": 330,
+            "height": 34,
+            "multiline": true,
+            "wrap": true
+          }
+        },
+        {
+          "instance": "txtName5",
+          "x": 44,
+          "y": 558,
+          "text": {
+            "font": "DIN Mittelschrift Std",
+            "size": 15,
+            "color": "#6eb7c6",
+            "align": "right",
+            "width": 120,
+            "height": 22
+          }
+        },
+        {
+          "instance": "txtText5",
+          "x": 170,
+          "y": 558,
+          "text": {
+            "font": "DIN Mittelschrift Std",
+            "size": 15,
+            "color": "#ffffff",
+            "width": 330,
+            "height": 34,
+            "multiline": true,
+            "wrap": true
+          }
+        },
+        {
+          "instance": "mcBanner",
+          "x": 320,
+          "y": 226,
+          "rect": {
+            "width": 640,
+            "height": 46,
+            "color": "#0617228c"
+          }
+        },
+        {
+          "instance": "txtBanner",
+          "x": 330,
+          "y": 233,
+          "text": {
+            "font": "DIN Engschrift Std",
+            "size": 26,
+            "color": "#b8f3ff",
+            "align": "center",
+            "width": 620,
+            "height": 34
+          }
+        }
+      ]
+    }
+  ],
+  "view_symbol": {
+    "symbol": "AvaChat"
+  },
+  "logic": {
+    "data": [
+      "ava_chat"
+    ],
+    "texts": [
+      {
+        "target": "txtName0",
+        "data": "ava_chat",
+        "field": "name0",
+        "fit": "shrink"
+      },
+      {
+        "target": "txtText0",
+        "data": "ava_chat",
+        "field": "text0",
+        "fit": "shrink"
+      },
+      {
+        "target": "txtName1",
+        "data": "ava_chat",
+        "field": "name1",
+        "fit": "shrink"
+      },
+      {
+        "target": "txtText1",
+        "data": "ava_chat",
+        "field": "text1",
+        "fit": "shrink"
+      },
+      {
+        "target": "txtName2",
+        "data": "ava_chat",
+        "field": "name2",
+        "fit": "shrink"
+      },
+      {
+        "target": "txtText2",
+        "data": "ava_chat",
+        "field": "text2",
+        "fit": "shrink"
+      },
+      {
+        "target": "txtName3",
+        "data": "ava_chat",
+        "field": "name3",
+        "fit": "shrink"
+      },
+      {
+        "target": "txtText3",
+        "data": "ava_chat",
+        "field": "text3",
+        "fit": "shrink"
+      },
+      {
+        "target": "txtName4",
+        "data": "ava_chat",
+        "field": "name4",
+        "fit": "shrink"
+      },
+      {
+        "target": "txtText4",
+        "data": "ava_chat",
+        "field": "text4",
+        "fit": "shrink"
+      },
+      {
+        "target": "txtName5",
+        "data": "ava_chat",
+        "field": "name5",
+        "fit": "shrink"
+      },
+      {
+        "target": "txtText5",
+        "data": "ava_chat",
+        "field": "text5",
+        "fit": "shrink"
+      },
+      {
+        "target": "txtBanner",
+        "data": "ava_chat",
+        "field": "banner",
+        "fit": "shrink"
+      }
+    ],
+    "visibles": [
+      {
+        "target": "mcBack",
+        "data": "ava_chat",
+        "field": "bShown"
+      },
+      {
+        "target": "mcBanner",
+        "data": "ava_chat",
+        "field": "bBanner"
+      }
+    ]
+  }
+}

@@ -1,0 +1,33 @@
+# The master image's build context (round net4c): an allow-list. BuildKit, Docker's builder since 23.0, reads this file
+# for the Dockerfile beside it in place of a .dockerignore at the context's root; the legacy builder
+# (DOCKER_BUILDKIT=0) does not, and would send the whole working copy (Game-Data/, .build/, targets: hundreds of GB).
+# Only what `cargo build --locked -p avalanche-master` reads goes in: cargo loads every workspace member to build one,
+# then compiles the master and the crates it depends on, whole. A new workspace crate under the master needs its line below: the build names
+# the file it misses.
+*
+!Engine/Cargo.toml
+!Engine/Cargo.lock
+!Engine/.cargo/config.toml
+# every member's and patched crate's manifest and the files its targets are found by (cargo loads them all to build
+# one, and a declared target's file must exist even when it is not built): crate roots, binaries, examples, tests,
+# benches and build scripts, as cargo looks for them
+!Engine/*/*/Cargo.toml
+!Engine/*/*/build.rs
+!Engine/*/*/src/lib.rs
+!Engine/*/*/src/main.rs
+!Engine/*/*/src/bin/*.rs
+!Engine/*/*/src/bin/*/main.rs
+!Engine/*/*/examples/*.rs
+!Engine/*/*/examples/*/main.rs
+!Engine/*/*/tests/*.rs
+!Engine/*/*/tests/*/main.rs
+!Engine/*/*/benches/*.rs
+!Engine/*/*/benches/*/main.rs
+# the master and its workspace crates (`cargo tree -e normal,build -p avalanche-master`)
+!Engine/apps/avalanche-master/src
+!Engine/crates/ssx-core/src
+!Engine/crates/ssx-files/src
+!Engine/crates/ssx-formats/src
+!Engine/crates/ssx-net-proto/src
+# the image's notices
+!Engine/assets/master/THIRD_PARTY_NOTICES.txt

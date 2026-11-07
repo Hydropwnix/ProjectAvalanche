@@ -1,0 +1,97 @@
+[[font]]
+id = "ava:font/fallback/noto_sans"
+file = "NotoSans-Regular.ttf"
+family = "Noto Sans"
+version = "2.015"
+license = "OFL-1.1"
+copyright = ["Copyright 2022 The Noto Project Authors (https://github.com/notofonts/latin-greek-cyrillic)"]
+scripts = ["Latn", "Grek", "Cyrl"]
+release = "https://github.com/notofonts/latin-greek-cyrillic/releases/tag/NotoSans-v2.015"
+asset = "https://github.com/notofonts/latin-greek-cyrillic/releases/download/NotoSans-v2.015/NotoSans-v2.015.zip"
+member = "NotoSans/unhinted/ttf/NotoSans-Regular.ttf"
+zip_sha256 = "0c34df072a3fa7efbb7cbf34950e1f971a4447cffe365d3a359e2d4089b958f5"
+git_blob = "notofonts/notofonts.github.io fonts/NotoSans/unhinted/ttf/NotoSans-Regular.ttf cb427d582a6eec36a8fc64783f1ce6a022aa4f39"
+bytes = 431364
+sha256 = "f3961a9cde016d41a4879aecda1474d3a36d6bf54fa0e4643de029cc2248b0e8"
+
+[[font]]
+id = "ava:font/fallback/noto_sans_arabic"
+file = "NotoSansArabic-Regular.ttf"
+family = "Noto Sans Arabic"
+version = "2.013"
+license = "OFL-1.1"
+copyright = ["Copyright 2022 The Noto Project Authors (https://github.com/notofonts/arabic)"]
+scripts = ["Arab"]
+release = "https://github.com/notofonts/arabic/releases/tag/NotoSansArabic-v2.013"
+asset = "https://github.com/notofonts/arabic/releases/download/NotoSansArabic-v2.013/NotoSansArabic-v2.013.zip"
+member = "NotoSansArabic/unhinted/ttf/NotoSansArabic-Regular.ttf"
+zip_sha256 = "1301aceaea84c501cf2e6dcfb3182e2328c8eae5725817fcb239672bda7154f1"
+zip_sha256_published = true
+git_blob = "notofonts/notofonts.github.io fonts/NotoSansArabic/unhinted/ttf/NotoSansArabic-Regular.ttf 5466f861fcd30084f640badd377945c284f876bf"
+bytes = 142140
+sha256 = "bd86ca02f087d7f3c3788ba458fb6b73744c7639ed276b8d870dba6def6c40d0"
+
+[[font]]
+id = "ava:font/fallback/noto_sans_hebrew"
+file = "NotoSansHebrew-Regular.ttf"
+family = "Noto Sans Hebrew"
+version = "3.001"
+license = "OFL-1.1"
+copyright = ["Copyright 2024 The Noto Project Authors (https://github.com/notofonts/hebrew)"]
+scripts = ["Hebr"]
+release = "https://github.com/notofonts/hebrew/releases/tag/NotoSansHebrew-v3.001"
+asset = "https://github.com/notofonts/hebrew/releases/download/NotoSansHebrew-v3.001/NotoSansHebrew-v3.001.zip"
+member = "NotoSansHebrew/unhinted/ttf/NotoSansHebrew-Regular.ttf"
+zip_sha256 = "df0a71814b4e63644cf40fcc4529111b61266b7a2dafbe95068b29a7520cc3cb"
+git_blob = "notofonts/notofonts.github.io fonts/NotoSansHebrew/unhinted/ttf/NotoSansHebrew-Regular.ttf 6c71d56f76c8b2f8889fc16e85236146a88dc406"
+bytes = 16836
+sha256 = "04272f5600d0ec816d31d0df73b23aa8d3501ea359ebe820da31c11ffcf00853"
+
+[[font]]
+id = "ava:font/fallback/noto_sans_devanagari"
+file = "NotoSansDevanagari-Regular.ttf"
+family = "Noto Sans Devanagari"
+version = "2.007"
+license = "OFL-1.1"
+copyright = ["Copyright 2022 The Noto Project Authors (https://github.com/notofonts/devanagari)"]
+scripts = ["Deva"]
+release = "https://github.com/notofonts/devanagari/releases/tag/NotoSansDevanagari-v2.007"
+asset = "https://github.com/notofonts/devanagari/releases/download/NotoSansDevanagari-v2.007/NotoSansDevanagari-v2.007.zip"
+member = "NotoSansDevanagari/unhinted/ttf/NotoSansDevanagari-Regular.ttf"
+zip_sha256 = "820c7da45b1e63562cb41c0a8cac5d9a4202312043a3a040ed1325857ef469b1"
+zip_sha256_published = true
+git_blob = "notofonts/notofonts.github.io fonts/NotoSansDevanagari/unhinted/ttf/NotoSansDevanagari-Regular.ttf dfec2d7318031ff8ee83b1de001a779bf0bb8017"
+bytes = 184228
+sha256 = "9c7d935139ea6a1e6ad9dbac4f6d27ece1e04bca8123c8888d00a0f9df4724cd"
+
+[[font]]
+id = "ava:font/fallback/noto_sans_thai"
+file = "NotoSansThai-Regular.ttf"
+family = "Noto Sans Thai"
+version = "2.002"
+license = "OFL-1.1"
+copyright = ["Copyright 2022 The Noto Project Authors (https://github.com/notofonts/thai)"]
+scripts = ["Thai"]
+release = "https://github.com/notofonts/thai/releases/tag/NotoSansThai-v2.002"
+asset = "https://github.com/notofonts/thai/releases/download/NotoSansThai-v2.002/NotoSansThai-v2.002.zip"
+member = "NotoSansThai/unhinted/ttf/NotoSansThai-Regular.ttf"
+zip_sha256 = "af889cc673fc714060ce5e4e088fbad32aa4c0571a19958efeaff128a22da485"
+git_blob = "notofonts/notofonts.github.io fonts/NotoSansThai/unhinted/ttf/NotoSansThai-Regular.ttf d2f9f8289aa439efc1ea4b21eed7d7f5cf39415b"
+bytes = 20960
+sha256 = "d4303fe9c63ebb72759ca8b6d2040c8ae81689f7d08d7b91c656154382b49313"
+
+[[font]]
+id = "ava:font/fallback/noto_sans_cjk"
+file = "NotoSansCJKjp-Regular.otf"
+family = "Noto Sans CJK JP"
+version = "2.004"
+license = "OFL-1.1"
+copyright = ["© 2014-2021 Adobe (http://www.adobe.com/)."]
+scripts = ["Hira", "Kana", "Hani", "Hang", "Bopo"]
+release = "https://github.com/notofonts/noto-cjk/releases/tag/Sans2.004"
+asset = "https://github.com/notofonts/noto-cjk/releases/download/Sans2.004/06_NotoSansCJKjp.zip"
+member = "NotoSansCJKjp-Regular.otf"
+zip_sha256 = "bf5b26feb83ee02533d4eb4a127bd90ed9d42bdd7ca7cb6e4030b2f21ef55cc5"
+git_blob = "notofonts/noto-cjk@Sans2.004 Sans/OTF/Japanese/NotoSansCJKjp-Regular.otf f56224957fb13a81b4c14bac34f2f058a017f9fb"
+bytes = 16467736
+sha256 = "68a3fc98800b2a27b371f2fb79991daf3633bd89309d4ffaa6946fd587f375b5"

@@ -63,6 +63,9 @@ pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str) {
 }
 
 fn select_drop(fe: &mut FrontEnd, env: &mut FeEnv) {
+    if fe.ava.maps.riding.is_some() {
+        return;
+    }
     let (mode, drop) = (fe.post_race.mode, fe.post_race.drop);
     fe.note(format!(
         "post-race menu: message 0x945FF5CC {{{mode}, {drop:#010x}}} → SelectedGlobeNodeMessage {{3, drop}}"

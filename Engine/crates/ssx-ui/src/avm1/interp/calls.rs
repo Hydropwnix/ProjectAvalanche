@@ -201,8 +201,14 @@ impl Ctx<'_> {
         let Some(fd) = self.vm.heap.get(fid).and_then(|o| o.func()).cloned() else { return Ok(Value::Undefined) };
         if self.vm.depth >= MAX_CALL_DEPTH {
             self.vm.diag.note("abort", "256 levels of recursion");
+            if let Some(m) = self.vm.sandbox.charged {
+                self.vm.sandbox.stop(m, "256 levels of recursion".to_string());
+                return Err(Fault::Stopped(m));
+            }
             return Ok(Value::Undefined);
         }
+        let peaks = &mut self.vm.sandbox.peaks;
+        peaks.call_depth = peaks.call_depth.max(self.vm.depth + 1);
         let constructing = std::mem::replace(&mut self.vm.next_construct, false);
         match fd.code.clone() {
             FuncCode::Native(nf) => {
@@ -299,9 +305,13 @@ impl Ctx<'_> {
         }
         let height = self.vm.stack.len();
         self.vm.depth += 1;
+        let entry = self.vm.sandbox.charged;
         let r = self.run(&mut f, af.start, af.end);
         self.vm.depth -= 1;
         self.vm.stack.truncate(height);
+        if let (None, Err(Fault::Stopped(_))) = (entry, &r) {
+            return Ok(Value::Undefined);
+        }
         match r? {
             Flow::Return(v) => Ok(v),
             _ => Ok(Value::Undefined),

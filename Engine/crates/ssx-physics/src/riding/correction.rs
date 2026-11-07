@@ -14,6 +14,7 @@ pub struct ImpactState {
     pub pre_impact_orientation: Quat,
     pub impact_speed: f32,
     pub impact_intensity: f32,
+    pub collision_entity: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -51,6 +52,7 @@ struct Res {
     p: Vec3,
     n: Vec3,
     frac: f32,
+    cluster: Option<u32>,
 }
 
 impl Res {
@@ -61,8 +63,9 @@ impl Res {
                 p: h.point,
                 n: h.normal,
                 frac: if len > 0.0 { (h.t / len).clamp(0.0, 1.0) } else { 0.0 },
+                cluster: Some(h.cluster),
             },
-            None => Res { valid: false, p: Vec3::ZERO, n: Vec3::Y, frac: 1.0 },
+            None => Res { valid: false, p: Vec3::ZERO, n: Vec3::Y, frac: 1.0, cluster: None },
         }
     }
 }
@@ -152,7 +155,8 @@ impl World {
             }
             let up = i.orientation * Vec3::Y;
             if up.dot(n) <= q.cos_angle_from_upright_for_no_impact_on_landing && !i.grinding && !i.prev_grinding {
-                out.impact = self.impact_surface_weights(i.orientation, v, n, i.prev_colliding);
+                let entity = hard.cluster.and_then(|c| self.collision.cluster_entity.get(c as usize)).map_or(0, |e| *e);
+                out.impact = self.impact_surface_weights(i.orientation, v, n, i.prev_colliding, entity);
             }
             out.impact.in_soft_collision = true;
         } else if soft.valid {
@@ -164,7 +168,14 @@ impl World {
         out
     }
 
-    pub fn impact_surface_weights(&self, orientation: Quat, v: Vec3, n: Vec3, prev_colliding: bool) -> ImpactState {
+    pub fn impact_surface_weights(
+        &self,
+        orientation: Quat,
+        v: Vec3,
+        n: Vec3,
+        prev_colliding: bool,
+        entity: u32,
+    ) -> ImpactState {
         let q = &self.tuning.queries;
         let mut o = ImpactState { colliding: true, ..ImpactState::default() };
         let s = -v.dot(n);
@@ -177,6 +188,7 @@ impl World {
             o.impact_speed = s;
             let span = q.max_impact_speed_threshold - q.min_impact_speed_threshold;
             o.impact_intensity = ((s - q.min_impact_speed_threshold) / span).clamp(0.0, 1.0);
+            o.collision_entity = Some(entity & 0xFFFF);
         }
         o
     }
@@ -205,6 +217,7 @@ impl World {
             o.impact_velocity = Vec3::ZERO;
             o.impact_speed = 0.0;
             o.impact_intensity = 0.5;
+            o.collision_entity = Some(0);
         }
         o
     }

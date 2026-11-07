@@ -1,0 +1,30 @@
+# A production master.toml for a public master on the Internet (every key is optional; a missing file is the defaults:
+# plain HTTP on 27900, which only a LAN or test master uses). `avalanche-master check --config master.toml --data <data
+# folder>` says what is wrong, with the line and column, and reads the certificate and the key.
+
+[master]
+# "::" listens on IPv6 and IPv4 (dual stack)
+bind = "::"
+# HTTPS on its own port: the game's master list names it as https://host (443 is the default there)
+port = 443
+# servers listed at once, and from one address (a public address: a home router's)
+max_servers = 4096
+max_servers_per_address = 16
+# list public addresses only: private, loopback, link-local and carrier-grade NAT addresses are refused
+allow_private_addresses = false
+
+[tls]
+# the chain and the key as the deploy hook copies them from Let's Encrypt (certbot-deploy-hook.sh); the key must not
+# be readable by every user. Read again on SIGHUP (`systemctl reload avalanche-master`) and on the console's `reload`.
+certificate = "/etc/avalanche-master/tls/fullchain.pem"
+key = "/etc/avalanche-master/tls/privkey.pem"
+
+[blocklists]
+# server keys taken off the list and resource hashes published, one per line (read again with the certificate)
+# server_keys = "blocked-servers.txt"
+# resources = "blocked-resources.txt"
+
+# [proxy]
+# behind a TLS-terminating reverse proxy instead of [tls] (Coolify's Traefik or Caddy: master.coolify.toml.example):
+# the proxy's network, whose requests name their client in the right-most X-Forwarded-For entry
+# trusted = ["10.0.1.0/24"]

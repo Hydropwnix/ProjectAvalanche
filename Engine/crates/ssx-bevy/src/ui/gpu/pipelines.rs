@@ -2,9 +2,7 @@ use std::collections::HashMap;
 
 use bevy::mesh::VertexBufferLayout;
 use bevy::prelude::*;
-use bevy::render::render_resource::binding_types::{
-    sampler, storage_buffer_read_only_sized, texture_2d, uniform_buffer_sized,
-};
+use bevy::render::render_resource::binding_types::{sampler, storage_buffer_read_only_sized, texture_2d};
 use bevy::render::render_resource::*;
 use bevy::render::renderer::RenderDevice;
 use bevy::shader::Shader;
@@ -17,14 +15,10 @@ pub(super) struct UiPipelines {
     pub(super) fill_layout: BindGroupLayoutDescriptor,
     pub(super) paint_layout: BindGroupLayoutDescriptor,
     pub(super) full_layout: BindGroupLayoutDescriptor,
-    pub(super) filter_layout: BindGroupLayoutDescriptor,
     pub(super) content: HashMap<UiBlend, CachedRenderPipelineId>,
     pub(super) mask_incr: CachedRenderPipelineId,
     pub(super) mask_decr: CachedRenderPipelineId,
-    pub(super) layer: CachedRenderPipelineId,
     pub(super) scene_in: CachedRenderPipelineId,
-    pub(super) blur: CachedRenderPipelineId,
-    pub(super) compose: CachedRenderPipelineId,
     pub(super) result_out: HashMap<TextureFormat, CachedRenderPipelineId>,
     pub(super) linear: Sampler,
     pub(super) nearest: Sampler,
@@ -79,10 +73,6 @@ pub(super) fn init_pipelines(
         &BindGroupLayoutEntries::sequential(frag, (texture_2d(float), sampler(SamplerBindingType::Filtering))),
     );
     let full_layout = paint_layout.clone();
-    let filter_layout = BindGroupLayoutDescriptor::new(
-        "ssx_ui_filter",
-        &BindGroupLayoutEntries::sequential(frag, (uniform_buffer_sized(false, None), texture_2d(float))),
-    );
     let vertex = VertexState {
         shader: shaders.fill.clone(),
         shader_defs: Vec::new(),
@@ -94,6 +84,7 @@ pub(super) fn init_pipelines(
                 attributes: vec![VertexAttribute { format, offset: 0, shader_location: location }],
             })
             .to_vec(),
+        constants: Vec::new(),
     };
     let multisample = MultisampleState { count: SAMPLES, mask: !0, alpha_to_coverage_enabled: false };
     let fill = |label: String,
@@ -130,32 +121,25 @@ pub(super) fn init_pipelines(
     };
     let mask_incr = mask("ssx_ui_mask_incr", StencilOperation::IncrementClamp);
     let mask_decr = mask("ssx_ui_mask_decr", StencilOperation::DecrementClamp);
-    let layer =
-        fill("ssx_ui_layer".into(), "fs", Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING), ColorWrites::ALL, None);
-    let full =
-        |label: &'static str, entry: &'static str, layouts: Vec<BindGroupLayoutDescriptor>, samples: u32, format| {
-            cache.queue_render_pipeline(RenderPipelineDescriptor {
-                label: Some(label.into()),
-                layout: layouts,
-                vertex: VertexState {
-                    shader: shaders.post.clone(),
-                    shader_defs: Vec::new(),
-                    entry_point: Some("vs_full".into()),
-                    buffers: Vec::new(),
-                },
-                fragment: Some(FragmentState {
-                    shader: shaders.post.clone(),
-                    entry_point: Some(entry.into()),
-                    targets: vec![Some(ColorTargetState { format, blend: None, write_mask: ColorWrites::ALL })],
-                    ..default()
-                }),
-                multisample: MultisampleState { count: samples, mask: !0, alpha_to_coverage_enabled: false },
-                ..default()
-            })
-        };
-    let scene_in = full("ssx_ui_scene_in", "fs_scene_in", vec![full_layout.clone()], SAMPLES, UI_FORMAT);
-    let blur = full("ssx_ui_blur", "fs_blur", vec![full_layout.clone(), filter_layout.clone()], 1, UI_FORMAT);
-    let compose = full("ssx_ui_compose", "fs_compose", vec![full_layout.clone(), filter_layout.clone()], 1, UI_FORMAT);
+    let scene_in = cache.queue_render_pipeline(RenderPipelineDescriptor {
+        label: Some("ssx_ui_scene_in".into()),
+        layout: vec![full_layout.clone()],
+        vertex: VertexState {
+            shader: shaders.post.clone(),
+            shader_defs: Vec::new(),
+            entry_point: Some("vs_full".into()),
+            buffers: Vec::new(),
+            constants: Vec::new(),
+        },
+        fragment: Some(FragmentState {
+            shader: shaders.post.clone(),
+            entry_point: Some("fs_scene_in".into()),
+            targets: vec![Some(ColorTargetState { format: UI_FORMAT, blend: None, write_mask: ColorWrites::ALL })],
+            ..default()
+        }),
+        multisample,
+        ..default()
+    });
     let sampler_desc = |filter: FilterMode| SamplerDescriptor {
         label: Some("ssx_ui_sampler"),
         address_mode_u: AddressMode::ClampToEdge,
@@ -172,14 +156,10 @@ pub(super) fn init_pipelines(
         fill_layout,
         paint_layout,
         full_layout,
-        filter_layout,
         content,
         mask_incr,
         mask_decr,
-        layer,
         scene_in,
-        blur,
-        compose,
         result_out,
         linear: device.create_sampler(&sampler_desc(FilterMode::Linear)),
         nearest: device.create_sampler(&sampler_desc(FilterMode::Nearest)),
@@ -201,6 +181,7 @@ pub(super) fn result_out_pipeline(
             shader_defs: Vec::new(),
             entry_point: Some("vs_full".into()),
             buffers: Vec::new(),
+            constants: Vec::new(),
         },
         fragment: Some(FragmentState {
             shader: shader.clone(),

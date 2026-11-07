@@ -9,14 +9,15 @@ use ssx_formats::ant::Value as AntValue;
 use ssx_formats::attrib::Value;
 use ssx_formats::crsf::{CrsfFile, SceneGraph};
 use ssx_formats::ghost::{
-    FLAG_BOARD_PARTICLE, FLAG_GROUND_RAY, GhostFile, PoseBlock, ROTATION_CHANNELS, TRANSLATION_CHANNELS, UserHeader,
+    self, FLAG_BOARD_PARTICLE, FLAG_GROUND_RAY, GhostFile, PoseBlock, ROTATION_CHANNELS, TRANSLATION_CHANNELS,
+    UserHeader,
 };
 
 use crate::anim_db::AssetDb;
 use crate::anim_eval::Animator;
 use crate::anim_rigops::LegRigOps;
 use crate::character::{PaletteJoint, Skin, Srt};
-use crate::object_mesh::{self, ObjectMesh};
+use crate::object_mesh::ObjectMesh;
 use crate::rig_anim::RigPose;
 use crate::rigamate::RigamateRig;
 use crate::track_objects::asset_file;
@@ -60,7 +61,7 @@ pub struct GhostPose {
 }
 
 impl GhostPose {
-    fn of(b: &PoseBlock) -> Self {
+    pub fn of(b: &PoseBlock) -> Self {
         Self {
             trajectory_rotation: normalized(b.trajectory_rotation),
             trajectory_position: b.trajectory_position,
@@ -69,29 +70,36 @@ impl GhostPose {
             flags: b.flags,
             classic_rig: b.classic_rig(),
             velocity: b.velocity(),
-            snow_spray_carving: ssx_formats::ghost::unpack_vector(b.snow_spray_carving, [1.5; 3]),
-            snow_spray_speed: ssx_formats::ghost::f16_to_f32(b.snow_spray_speed),
-            landing_impact: ssx_formats::ghost::f16_to_f32(b.landing_impact),
+            snow_spray_carving: b.snow_spray_carving(),
+            snow_spray_speed: ghost::unpack_half(b.snow_spray_speed),
+            landing_impact: ghost::unpack_half(b.landing_impact),
             snow_coverage: f32::from(b.snow_coverage) / 255.0,
         }
     }
 
-    // TODO(guess): joint rotations skip the game's quaternion re-packing (0x82C76880; its ring/sign/trig-polynomial algorithm decoded, not ported): the packer 0x82CB6F00 writes strict q < 0 sign flags in bits 10–13, trunc(min(|w|·1023, 1023)) in bits 0–9 and r² + k from bit 14,
-    // r = floor(acos(axis.y)·325.31268 + 2^-16), k = floor(asin(axis.x)·4/π·r + 2^-16) of the normalised |xyz| (length < 0.001 → π/2, 0), acos / asin being VMX polynomials (0x8249EF98 / 0x82B16528, coefficients at 0x822800E0); a host-maths model of it moves joints by up to 7.9° on the disc's 727 replays;
-    // settle: implementation and Xenon numerical boundaries at 0x82CB6F00 (vrsqrtefp and the rounding at the floor boundaries: needs captured console codewords). Translations re-pack below.
     pub fn blend(a: &Self, b: &Self, u: f32) -> Self {
         let near = if u < 0.5 { a.flags } else { b.flags };
+        let repack = |v: [f32; 3], range: f32| ghost::unpack_vector(ghost::pack_vector(v, [range; 3]), [range; 3]);
         Self {
-            trajectory_rotation: nlerp(a.trajectory_rotation, b.trajectory_rotation, u),
+            trajectory_rotation: ghost::blend_rotation(a.trajectory_rotation, b.trajectory_rotation, u),
             trajectory_position: lerp3(a.trajectory_position, b.trajectory_position, u),
-            rotations: std::array::from_fn(|i| nlerp(a.rotations[i], b.rotations[i], u)),
+            rotations: std::array::from_fn(|i| {
+                ghost::unpack_quaternion(ghost::pack_quaternion(ghost::blend_rotation(
+                    a.rotations[i],
+                    b.rotations[i],
+                    u,
+                )))
+            }),
             translations: std::array::from_fn(|i| {
-                requantize_vector(blend_vector(a.translations[i], b.translations[i], u), 2.0)
+                repack(ghost::blend_lerp(a.translations[i], b.translations[i], u), ghost::CHANNEL_RANGE)
             }),
             flags: (near & !FLAG_GROUND_RAY) | (a.flags & b.flags & FLAG_GROUND_RAY),
             classic_rig: a.classic_rig,
             velocity: blend_velocity(a.velocity, b.velocity, u),
-            snow_spray_carving: requantize_vector(blend_vector(a.snow_spray_carving, b.snow_spray_carving, u), 1.5),
+            snow_spray_carving: repack(
+                ghost::blend_lerp(a.snow_spray_carving, b.snow_spray_carving, u),
+                ghost::CARVING_RANGE,
+            ),
             snow_spray_speed: requantize_half((b.snow_spray_speed - a.snow_spray_speed).mul_add(u, a.snow_spray_speed)),
             landing_impact: requantize_half((b.landing_impact - a.landing_impact).mul_add(u, a.landing_impact)),
             // TODO(guess): coverage lerps already-normalised endpoint floats, the game lerps raw bytes then × 1/255 (0x82C77040…90); settle: keep the endpoint bytes for last-bit parity.
@@ -104,45 +112,14 @@ impl GhostPose {
     }
 }
 
-fn blend_vector(a: [f32; 3], b: [f32; 3], u: f32) -> [f32; 3] {
-    std::array::from_fn(|i| (b[i] - a[i]).mul_add(u, a[i]))
-}
-
 fn requantize_half(value: f32) -> f32 {
-    let bits = value.to_bits();
-    let sign = ((bits >> 16) & 0x8000) as u16;
-    let exponent = ((bits >> 23) & 0xff) as i32 - 112;
-    let half = sign
-        | if exponent <= 0 {
-            0
-        } else if exponent >= 31 {
-            0x7c00
-        } else {
-            ((exponent as u16) << 10) | ((bits >> 13) as u16 & 0x3ff)
-        };
-    ssx_formats::ghost::f16_to_f32(half)
-}
-
-fn requantize_vector(value: [f32; 3], range: f32) -> [f32; 3] {
-    ssx_formats::ghost::unpack_vector(pack_vector(value, range), [range; 3])
-}
-
-fn pack_vector(value: [f32; 3], range: f32) -> u32 {
-    // TODO(guess): a scalar reciprocal replaces `vrefp` plus two Newton steps (0x82CB6E90…0x82CB6EC8); settle: the Xenon estimate / rounding or captured output codes for boundary parity.
-    let scale = range.recip() * 512.0;
-    let codes = value.map(|v| (v.mul_add(scale, 512.0) as u32) & 1023);
-    (codes[0] << 20) | (codes[1] << 10) | codes[2]
+    ghost::unpack_half(ghost::pack_half(value))
 }
 
 fn blend_velocity(a: [f32; 3], b: [f32; 3], u: f32) -> [f32; 3] {
-    let v = blend_vector(a, b, u);
-    // TODO(guess): a scalar sqrt replaces `vrsqrtefp` plus two Newton steps (0x82C77424…0x82C77464); settle: the Xenon estimate / rounding or captured half codes for length-code parity.
-    let range = v.iter().map(|c| c * c).sum::<f32>().sqrt() * f32::from_bits(0x3f80_20c5);
-    if range == 0.0 {
-        return [0.0; 3];
-    }
-    let stored_range = requantize_half(range);
-    ssx_formats::ghost::unpack_vector(pack_vector(v, range), [stored_range; 3])
+    let v = ghost::blend_lerp(a, b, u);
+    let range = ssx_formats::vmx::mul(ghost::vector_length(v), f32::from_bits(0x3F80_20C5));
+    ghost::unpack_vector(ghost::pack_vector(v, [range; 3]), [requantize_half(range); 3])
 }
 
 fn normalized(q: [f32; 4]) -> [f32; 4] {
@@ -284,7 +261,7 @@ mod tests {
         assert_eq!(requantize_half(2f32.powi(-15)), 0.0);
         assert_eq!(requantize_half(-2f32.powi(-15)).to_bits(), (-0.0f32).to_bits());
         assert_eq!(requantize_half(2f32.powi(-14)), 2f32.powi(-14));
-        assert_eq!(requantize_half(65536.0), f32::INFINITY);
+        assert_eq!(requantize_half(65536.0), 65536.0);
         let (mut a, mut b) = (auxiliary_pose(), auxiliary_pose());
         a.snow_spray_speed = 1.0;
         b.snow_spray_speed = 1.001_953_1;
@@ -328,7 +305,8 @@ mod tests {
         b.translations.fill([0.75, -0.75, 0.5]);
         assert_eq!(GhostPose::blend(&a, &b, 0.0).translations, a.translations);
         assert_eq!(GhostPose::blend(&a, &b, 1.0).translations, b.translations);
-        assert_eq!(requantize_vector([-2.0, 0.0, 2.0], 2.0), [-2.0, 0.0, -2.0]);
+        let wrapped = ghost::unpack_vector(ghost::pack_vector([-2.0, 0.0, 2.0], [2.0; 3]), [2.0; 3]);
+        assert_eq!(wrapped, [-2.0, 0.0, -2.0]);
     }
 
     #[test]
@@ -338,7 +316,7 @@ mod tests {
         assert!(out[0] > 0.498 && out[0] < 0.5);
         assert_eq!(out[0], out[1]);
         assert_eq!(out[2], 0.0);
-        let range = ssx_formats::ghost::f16_to_f32(0x3c01);
+        let range = ghost::unpack_half(0x3c01);
         assert_eq!(blend_velocity([1.0, 0.0, 0.0], [1.0, 0.0, 0.0], 0.0), [511.0 * range / 512.0, 0.0, 0.0]);
         let (mut a, mut b) = (auxiliary_pose(), auxiliary_pose());
         a.classic_rig = true;
@@ -358,7 +336,7 @@ mod tests {
     fn blend_takes_the_short_way() {
         let a = [0.0, 0.0, 0.0, 1.0];
         let b = [0.0, -0.382_683_43, 0.0, -0.923_879_5];
-        let q = nlerp(a, b, 1.0);
+        let q = ghost::blend_rotation(a, b, 1.0);
         assert!((q[1] - 0.382_683_43).abs() < 1e-6 && (q[3] - 0.923_879_5).abs() < 1e-6);
     }
 

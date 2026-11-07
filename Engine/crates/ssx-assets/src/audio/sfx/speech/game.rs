@@ -266,11 +266,13 @@ impl SpeechGame {
         out.push(Trigger { name, params: Vec::new() });
     }
 
-    pub fn run_end(&mut self, vars: &mut Vars, success: bool, medal: u8, out: &mut Vec<Trigger>) {
+    pub fn run_end(&mut self, vars: &mut Vars, end: &ssx_rules::results::RunEnd, bots: i32, out: &mut Vec<Trigger>) {
         vars.set(id::RACE_IS_ACTIVE, 0);
         self.finished = true;
-        let (gold, silver, bronze) = (medal == 1, medal == 2, medal == 3);
+        let gold = end.gold || (end.code == 1 && bots >= 1);
+        let (silver, bronze, won) = (end.silver, end.bronze, end.won);
         let (result_var, flags) = match self.kind {
+            _ if end.failed => (0, 0),
             EventKind::Race => {
                 let var = if gold {
                     4
@@ -290,10 +292,10 @@ impl SpeechGame {
                 } else {
                     0
                 };
-                (var, if success { medal_flag | 0x40 } else { 4 })
+                (var, if won { medal_flag | 0x40 } else { 4 })
             }
-            EventKind::Trick => (if success { 2 } else { 1 }, if success { 1 } else { 2 }),
-            _ => (0, if success { 0x40 } else { 0 }),
+            EventKind::Trick => (if won { 2 } else { 1 }, if won { 1 } else { 2 }),
+            _ => (0, if won { 0x40 } else { 0 }),
         };
         vars.set(id::RUN_COMPLETE_RESULT, result_var);
         if !self.run_ended {

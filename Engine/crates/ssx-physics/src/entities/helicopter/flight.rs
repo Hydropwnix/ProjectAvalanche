@@ -9,16 +9,19 @@ impl Helicopter {
                 self.frame = nis_frame(i);
                 self.phase = HeliPhase::Nis(i.scene);
                 self.cabin = i.cabin;
+                self.nis_chain = i.chain();
                 if let Some(t) = i.heli(i.ticks()) {
                     self.traj = t;
                 }
                 let sc = i.current();
                 idle = sc.actor(ssx_assets::nis::ROLE_HELICOPTER1).is_none()
                     && sc.heli_movement.as_deref() == Some("heli_move_idle");
+                self.note_nis_pose();
             }
             (None, HeliPhase::Nis(from)) => {
                 self.phase = HeliPhase::Gameplay { ticks: x.dt, from };
                 self.cabin = None;
+                self.nis_chain.clear();
                 self.node = HeliNode::IdleStart;
             }
             (None, HeliPhase::Gameplay { ticks, from }) => {
@@ -39,8 +42,6 @@ impl Helicopter {
             self.fly(&flight, x)
         };
         self.rig_op(delta, x.dt);
-        // TODO(guess): `GetVelocityProcessor`'s source is taken as the target's `VEC_Velocity` (its run-time code, asset type 0x98876441, was not found); settle: the interaction toolkit's processor dispatch.
-        crate::guess_hit!();
         (self.board.target_position, self.board.target_velocity) = x.target;
     }
 
@@ -256,9 +257,7 @@ impl Helicopter {
 
 impl Helicopter {
     pub(super) fn place_end_level(&mut self, f: &HeliFlightData, t: f32) {
-        // TODO(guess): the TOC's trajectory at full weight from the node's entry while the movement delta still applies through the BezierBlend; settle: the controller pose's trajectory DOF (0x82CC08B8 writes only the delta set) in the blend kernel.
         let (Some(clip), Some((p, q))) = (&f.end_level, self.move_to) else { return };
-        crate::guess_hit!();
         let Ok(pose) = clip.sample(t.rem_euclid(600.0)) else { return };
         let rig = self.assets.nis.rig(ssx_assets::nis::ROLE_HELICOPTER1);
         let (cq, ct) = clip.joint(&pose, rig, "AITrajectory");
@@ -290,34 +289,7 @@ impl Helicopter {
 
     pub fn floor_joint(&self) -> Vec3 {
         let rig = &self.assets.nis.heli;
-        let mut pose = ssx_assets::helicopter::HeliPose::defaults(rig);
-        let flight = self.flight.as_deref();
-        match (self.node, flight) {
-            (HeliNode::Trick { seq, ticks, .. }, Some(f)) => {
-                if let Some(t) = f.tricks.get(seq) {
-                    pose.write_nis(&t.clip, ticks);
-                }
-            }
-            _ => {
-                let sides = self.posing_sides();
-                let noise = sides.iter().rev().find_map(|s| s.2);
-                if let (Some(h), Some(n)) = (flight.and_then(|f| f.hover.as_ref()), noise) {
-                    h.write(&mut pose, self.board.speed_ratio, n);
-                }
-                let default_root = pose.q.get("Root").map_or(Quat::IDENTITY, |q| Quat::from_array(*q));
-                let mut root = None::<Quat>;
-                for &(w, r, _) in &sides {
-                    let r = r.unwrap_or(default_root);
-                    root = Some(match root {
-                        None => r,
-                        Some(a) => a.lerp(if a.dot(r) < 0.0 { -r } else { r }, w).normalize(),
-                    });
-                }
-                if let Some(root) = root {
-                    pose.q.insert("Root".into(), root.to_array());
-                }
-            }
-        }
+        let pose = self.gameplay_pose(0.0);
         let Some(chain) = rig.chain("Floor", "AITrajectory") else { return self.traj.1 };
         let (mut q, mut p) = self.traj;
         for j in chain.iter().rev() {

@@ -1,12 +1,12 @@
 use bevy::math::{Quat, Vec3, Vec4};
 use ssx_assets::anim_eval::Animator;
-use ssx_assets::anim_rigops::{Compression, LegRigOps};
+use ssx_assets::anim_rigops::LegRigOps;
 use ssx_assets::character::Srt;
 use ssx_assets::rig_anim::RigPose;
 use ssx_assets::rigamate::RigamateRig;
 use ssx_formats::crsf::SceneGraph;
 use ssx_physics::curve::Curve;
-use ssx_physics::graph::RiderGraph;
+use ssx_physics::graph::{RiderGraph, RiderRigOps};
 use ssx_physics::rider::RiderState;
 
 pub use ssx_physics::graph::CarveAnimTuning;
@@ -64,18 +64,10 @@ pub fn player_speed(s: &RiderState, in_air: bool) -> f32 {
     s.player_speed
 }
 
-fn wrap_pi(x: f32) -> f32 {
-    let t = std::f32::consts::TAU;
-    let y = (x + std::f32::consts::PI).rem_euclid(t) - std::f32::consts::PI;
-    if y <= -std::f32::consts::PI { y + t } else { y }
-}
-
 pub struct RiderAnimation {
     graph: RiderGraph,
-    rigamate: Option<(RigamateRig, Vec<Option<usize>>)>,
-    legs: Option<LegRigOps>,
+    rig_ops: RiderRigOps,
     rig: SceneGraph,
-    lean_curve: Curve,
     prev: RigPose,
     curr: RigPose,
     render: Vec<JointRecord>,
@@ -168,19 +160,14 @@ impl RiderAnimation {
         floats: &[String],
         scripts: ssx_physics::anim_lua::AnimScripts,
     ) -> Self {
-        let rigamate = rigamate.map(|r| {
-            let slots = r.float_names.iter().map(|n| floats.iter().position(|f| f == n)).collect();
-            (r, slots)
-        });
+        let rig_ops = RiderRigOps::new(legs, lean_curve, rigamate, floats);
         let graph = RiderGraph::new(animator, rig.clone(), floats, carve, scripts);
         let bind = graph.pose().clone();
         let bind_records = world_records(&rig, &bind.nodes, Vec3::ZERO);
         Self {
             graph,
-            rigamate,
-            legs,
+            rig_ops,
             rig,
-            lean_curve,
             prev: bind.clone(),
             render: Vec::new(),
             bind_records,
@@ -200,9 +187,7 @@ impl RiderAnimation {
 
     pub fn reset(&mut self) {
         self.graph.reset();
-        if let Some((rm, _)) = &mut self.rigamate {
-            rm.reset_history();
-        }
+        self.rig_ops.reset();
         self.posed = 0;
     }
 
@@ -215,8 +200,8 @@ impl RiderAnimation {
             a.clip_count()
         )];
         v.extend(a.problems.iter().map(|p| format!("clip problem: {p}")));
-        if let Some((r, _)) = &self.rigamate {
-            v.push(format!("rigamate: {}", r.summary()));
+        if let Some(summary) = self.rig_ops.rigamate_summary() {
+            v.push(format!("rigamate: {summary}"));
         }
         v
     }
@@ -225,37 +210,7 @@ impl RiderAnimation {
 impl RiderAnimation {
     pub fn after_step(&mut self, s: &RiderState) {
         self.player_speed = s.player_speed;
-        let mut pose = self.graph.pose().clone();
-        if let Some(legs) = &mut self.legs {
-            let riding = self.graph.path().first().is_some_and(|n| n == "state_riding");
-            let pitch = wrap_pi(s.landing.pitch).abs();
-            let reach = if s.landing.bail_on_landing {
-                0.0
-            } else if pitch <= std::f32::consts::FRAC_PI_2 {
-                1.0
-            } else {
-                pitch.sin()
-            };
-            let c = s.kin.lean.abs().cos().max(0.0);
-            let compression = riding.then_some(Compression {
-                riding_height: s.carving.riding_height,
-                lean_modifier: c + (1.0 - c) * self.lean_curve.eval(s.landing.stable_ticks),
-                chatter: s.carving.chatter_height,
-                reach_value: 1.0,
-                reach,
-                ground_up: s.ground_normal.to_array(),
-            });
-            let placement = s.board_particle.placement;
-            legs.apply_with(&self.rig, &mut pose.nodes, &pose.floats, compression, placement.is_some());
-            if let Some((p, q)) = placement {
-                let t = p - (s.traj - s.correction_shift);
-                legs.place_board(&self.rig, &mut pose.nodes, q.to_array(), [t.x, t.y, t.z, 0.0]);
-            }
-        }
-        if let Some((rm, slots)) = &mut self.rigamate {
-            let floats: Vec<f32> = slots.iter().map(|s| s.map_or(0.0, |i| pose.floats[i])).collect();
-            rm.apply(&mut pose.nodes, &floats);
-        }
+        let pose = self.rig_ops.apply(s, &self.graph);
         self.prev = if self.posed == 0 { pose.clone() } else { std::mem::replace(&mut self.curr, pose.clone()) };
         self.curr = pose;
         self.posed += 1;
@@ -271,9 +226,8 @@ impl RiderAnimation {
         &self.render
     }
 
-    #[allow(dead_code)]
     pub fn posed(&self) -> (&RigPose, &SceneGraph, Option<[ssx_assets::anim_rigops::Effector; 2]>) {
-        (&self.curr, &self.rig, self.legs.as_ref().map(|l| l.effectors))
+        (&self.curr, &self.rig, self.rig_ops.effectors())
     }
 
     pub fn drawn_joint(&self, name: &str) -> Option<JointRecord> {

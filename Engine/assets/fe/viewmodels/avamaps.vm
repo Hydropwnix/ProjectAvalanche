@@ -1,0 +1,7 @@
+{
+	"view": "ava_maps",
+	"dataproviders":
+	[
+		"avamaps", "gamemodes", "globe", "errorscreen", "onlinepass"
+	]
+}

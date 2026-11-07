@@ -7,10 +7,12 @@ use crate::actuator::wrap_angle;
 use crate::rider::grind::tricks::{GRIND_TRICKS, GrindTricks};
 use crate::tuning::Bundle;
 
+mod added;
 mod flow;
 mod gestures;
 mod scene_op;
 
+pub use added::*;
 pub use gestures::*;
 
 pub const RSTICK_ACTIVE: f32 = 0.3;
@@ -23,44 +25,44 @@ pub const MAX_TRANSITIONS_PER_UPDATE: usize = 25;
 pub const MIN_NODE_UPDATE_TICKS: f32 = 0.001;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-#[repr(u8)]
 pub enum TrickType {
     #[default]
-    None = 0,
-    Signature = 1,
-    FlyingSquirrel = 2,
-    Indy = 3,
-    Melon = 4,
-    Mute = 5,
-    Nose = 6,
-    Rocket = 7,
-    Seatbelt = 8,
-    Stalefish = 9,
-    Stiffy = 10,
-    Tail = 11,
-    Truckdriver = 12,
-    Wheelman = 13,
-    Grind1 = 14,
-    Grind1Uber = 15,
-    Grind1SUber = 16,
-    Grind2 = 17,
-    Grind2Uber = 18,
-    Grind2SUber = 19,
-    Grind3 = 20,
-    Grind3Uber = 21,
-    Grind3SUber = 22,
-    Grind4 = 23,
-    Grind4Uber = 24,
-    Grind4SUber = 25,
-    Grind5 = 26,
-    Grind5Uber = 27,
-    Grind5SUber = 28,
-    Grind6 = 29,
-    Grind6Uber = 30,
-    Grind6SUber = 31,
+    None,
+    Signature,
+    FlyingSquirrel,
+    Indy,
+    Melon,
+    Mute,
+    Nose,
+    Rocket,
+    Seatbelt,
+    Stalefish,
+    Stiffy,
+    Tail,
+    Truckdriver,
+    Wheelman,
+    Grind1,
+    Grind1Uber,
+    Grind1SUber,
+    Grind2,
+    Grind2Uber,
+    Grind2SUber,
+    Grind3,
+    Grind3Uber,
+    Grind3SUber,
+    Grind4,
+    Grind4Uber,
+    Grind4SUber,
+    Grind5,
+    Grind5Uber,
+    Grind5SUber,
+    Grind6,
+    Grind6Uber,
+    Grind6SUber,
+    Added(AddedTrick),
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum TrickHand {
     #[default]
     None,
@@ -69,34 +71,69 @@ pub enum TrickHand {
     Both,
 }
 
+const DISC: [TrickType; 32] = {
+    use TrickType::*;
+    [
+        None,
+        Signature,
+        FlyingSquirrel,
+        Indy,
+        Melon,
+        Mute,
+        Nose,
+        Rocket,
+        Seatbelt,
+        Stalefish,
+        Stiffy,
+        Tail,
+        Truckdriver,
+        Wheelman,
+        Grind1,
+        Grind1Uber,
+        Grind1SUber,
+        Grind2,
+        Grind2Uber,
+        Grind2SUber,
+        Grind3,
+        Grind3Uber,
+        Grind3SUber,
+        Grind4,
+        Grind4Uber,
+        Grind4SUber,
+        Grind5,
+        Grind5Uber,
+        Grind5SUber,
+        Grind6,
+        Grind6Uber,
+        Grind6SUber,
+    ]
+};
+
 impl TrickType {
+    pub fn value(self) -> u8 {
+        match self {
+            TrickType::Added(a) => ssx_content::trick::FIRST_VALUE + a.slot,
+            t => DISC.iter().position(|&d| d == t).map_or(0, |i| i as u8),
+        }
+    }
+
+    pub fn disc(v: u8) -> Option<Self> {
+        DISC.get(usize::from(v)).copied()
+    }
+
+    pub fn flow_base(self) -> Self {
+        match self {
+            TrickType::Added(a) => Self::disc(a.base).unwrap_or_default(),
+            t => t,
+        }
+    }
+
     pub fn is_grind(self) -> bool {
-        (14..=31).contains(&(self as u8))
+        (14..=31).contains(&self.value())
     }
 
     pub fn grind(index: u8) -> Option<Self> {
-        use TrickType::*;
-        const G: [TrickType; 18] = [
-            Grind1,
-            Grind1Uber,
-            Grind1SUber,
-            Grind2,
-            Grind2Uber,
-            Grind2SUber,
-            Grind3,
-            Grind3Uber,
-            Grind3SUber,
-            Grind4,
-            Grind4Uber,
-            Grind4SUber,
-            Grind5,
-            Grind5Uber,
-            Grind5SUber,
-            Grind6,
-            Grind6Uber,
-            Grind6SUber,
-        ];
-        index.checked_sub(14).and_then(|i| G.get(usize::from(i)).copied())
+        Self::disc(index).filter(|t| t.is_grind())
     }
 
     pub fn hand(self) -> TrickHand {
@@ -106,20 +143,23 @@ impl TrickType {
             Indy | Stalefish | Tail | Wheelman => TrickHand::Backhand,
             Melon | Mute | Nose | Seatbelt => TrickHand::Forehand,
             Signature | FlyingSquirrel | Rocket | Stiffy | Truckdriver => TrickHand::Both,
+            Added(a) => a.hand,
             _ => TrickHand::Both,
         }
     }
 
     pub fn points(self) -> f32 {
         use TrickType::*;
+        use ssx_rules::scoring as p;
         match self {
             None => 0.0,
-            Signature => 2400.0,
-            Indy | Melon | Rocket | Truckdriver => 1000.0,
-            FlyingSquirrel | Nose | Seatbelt | Stiffy | Tail | Wheelman => 1200.0,
-            Mute | Stalefish => 1400.0,
-            _ if self.is_grind() && (self as u8) < 23 => 1000.0,
-            _ => 1200.0,
+            Signature => p::TRICK_POINTS_SIGNATURE,
+            Indy | Melon | Rocket | Truckdriver => p::TRICK_POINTS_1000,
+            FlyingSquirrel | Nose | Seatbelt | Stiffy | Tail | Wheelman => p::TRICK_POINTS_1200,
+            Mute | Stalefish => p::TRICK_POINTS_1400,
+            Added(a) => f32::from(a.points),
+            _ if self.is_grind() && self.value() < 23 => p::TRICK_POINTS_GRIND_1_3,
+            _ => p::TRICK_POINTS_GRIND_4_6,
         }
     }
 }
@@ -176,6 +216,7 @@ const RIGHT_UP: usize = 10;
 pub struct TrickTuning {
     pub tweak_switch_threshold: f32,
     pub virtual_stick_persist_time: f32,
+    pub added: AddedAirTricks,
 }
 
 impl TrickTuning {
@@ -184,6 +225,7 @@ impl TrickTuning {
         Ok(Self {
             tweak_switch_threshold: a.f32("TweakSwitchThreshold")?,
             virtual_stick_persist_time: a.f32("VirtualStickPersistTime")?,
+            added: AddedAirTricks::load(bundle.data_root()).0,
         })
     }
 }
@@ -209,16 +251,18 @@ pub struct GrabGestures {
     pub stick: [bool; 13],
     pub signature: bool,
     pub tweak: bool,
+    pub added: AddedGestures,
 }
 
 impl GrabGestures {
-    pub fn tick(&mut self, pad: PadSample, gates: &Gates) {
+    pub fn tick(&mut self, pad: PadSample, gates: &Gates, added: &AddedAirTricks) {
         (self.prev, self.cur) = (self.cur, pad);
         let (prev, cur) = (self.prev, self.cur);
         for (i, e) in AIR_TRICKS.iter().enumerate() {
             self.button[i] = e.button.update(&mut self.button_state[i], gates, &prev, &cur);
             self.stick[i] = e.stick.update(&mut self.stick_state[i], gates, &prev, &cur);
         }
+        self.added.tick(added, gates, &prev, &cur);
         self.signature = gates.in_air && cur.l2_r2;
         self.tweak = gates.in_air && cur.r2;
     }
@@ -431,3 +475,5 @@ enum Node {
 mod tests;
 
 type Transition<'a> = (Node, Option<&'a [(f32, f32)]>, bool);
+#[cfg(test)]
+mod added_tests;

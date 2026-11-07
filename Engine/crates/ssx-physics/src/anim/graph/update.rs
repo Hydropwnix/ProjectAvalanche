@@ -1,4 +1,5 @@
 use super::*;
+use ssx_formats::ghost;
 
 impl RiderGraph {
     pub fn update(
@@ -33,12 +34,12 @@ impl RiderGraph {
                     (st.running, st.elapsed) = (true, None);
                 }
                 if let (Some(i), Some(state)) = (&mut st.intro, &ls.intro) {
-                    for a in [&mut i.ready, &mut i.jump] {
+                    for a in i.animators_mut() {
                         a.set("deltaTicks", dt);
                         a.set("BLN_NisActive", 1.0);
                         a.set_physics(None);
                     }
-                    i.update(state.scene, dt);
+                    i.update(state, dt);
                     return;
                 }
                 st.animator.set("deltaTicks", dt);
@@ -85,10 +86,7 @@ impl RiderGraph {
                 st.elapsed = None;
             } else {
                 match &mut st.intro {
-                    Some(i) => {
-                        let scene = crate::nis::Scene::Jump { ticks: 0.0 };
-                        i.update(scene, dt);
-                    }
+                    Some(i) => i.advance(dt),
                     None => st.animator.update(dt),
                 }
                 st.elapsed = Some(e + dt);
@@ -104,7 +102,13 @@ impl RiderGraph {
     }
 
     pub fn root_motion(&self) -> Delta {
-        self.animator().delta()
+        match &self.start {
+            Some(st) if st.running => match &st.intro {
+                Some(i) => i.delta(),
+                None => st.animator.delta(),
+            },
+            _ => self.animator.delta(),
+        }
     }
 
     pub fn running_nodes(&self, dt: f32) -> Vec<String> {
@@ -180,10 +184,10 @@ impl RiderGraph {
             .channels
             .iter()
             .map(|&(n, rotation)| match nodes.get(n) {
-                Some(srt) if rotation => rewind_pack::pack_quaternion(srt.rotation),
-                Some(srt) => rewind_pack::pack_vector(srt.translation, rewind_pack::TRANSLATION_RANGE),
-                None if rotation => rewind_pack::pack_quaternion([0.0, 0.0, 0.0, 1.0]),
-                None => rewind_pack::pack_vector([0.0; 3], rewind_pack::TRANSLATION_RANGE),
+                Some(srt) if rotation => ghost::pack_quaternion(srt.rotation),
+                Some(srt) => ghost::pack_vector(srt.translation, [rewind_pack::TRANSLATION_RANGE; 3]),
+                None if rotation => ghost::pack_quaternion([0.0, 0.0, 0.0, 1.0]),
+                None => ghost::pack_vector([0.0; 3], [rewind_pack::TRANSLATION_RANGE; 3]),
             })
             .collect();
         let records = &mut self.rewind.records;
@@ -225,9 +229,9 @@ impl RiderGraph {
             for (&(n, rotation), &word) in self.rewind.channels.iter().zip(values) {
                 if let Some(srt) = self.pose.nodes.get_mut(n) {
                     if rotation {
-                        srt.rotation = rewind_pack::unpack_quaternion(word);
+                        srt.rotation = ghost::unpack_quaternion(word);
                     } else {
-                        srt.translation = rewind_pack::unpack_vector(word, rewind_pack::TRANSLATION_RANGE);
+                        srt.translation = ghost::unpack_vector(word, [rewind_pack::TRANSLATION_RANGE; 3]);
                     }
                 }
             }

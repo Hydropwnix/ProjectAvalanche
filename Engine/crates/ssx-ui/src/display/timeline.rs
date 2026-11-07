@@ -70,6 +70,7 @@ impl Player {
             }),
             scripted: false,
             created_tick: self.tick,
+            owner: lib.origin(movie).map(|_| movie).or(self.making_for),
         };
         let id = self.alloc(inst);
         self.levels.insert(level, id);
@@ -102,6 +103,7 @@ impl Player {
     }
 
     pub fn advance_frame(&mut self, lib: &Library) {
+        self.relayout_pending(lib);
         self.tick += 1;
         let roots: Vec<InstanceId> = self.levels.values().copied().collect();
         for r in roots {

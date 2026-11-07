@@ -38,7 +38,7 @@ impl HeliPosing {
             return;
         }
         if self.first {
-            // TODO(guess): the seed's source DOF (rig set +0x58) is taken as carrying no tilt, so the seed is the defaults; settle: which rig DOF set +0x58 is and its value at the movement node's entry.
+            // TODO(guess): the seed is the defaults — it reads the `DeltaTrajectory` set's slot at +0x10 (`angularVelocity`) in the trajectory's frame (0x82CBF3D0 → `Quat_ExpressInFrame` 0x83180650), which has no tilt after a yaw-only update (the NIS's TOC, every movement node's `conj(Q)·q_y`); a heli trick's clip may leave a tilted one; settle: the trick nodes' last angular velocity carried into the seed (the port's posing gets no angular velocity).
             crate::guess_hit!();
             *self = Self { first: false, ..Self::default() };
         }

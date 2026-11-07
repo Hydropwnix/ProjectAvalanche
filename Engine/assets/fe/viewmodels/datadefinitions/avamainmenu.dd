@@ -1,0 +1,9 @@
+{
+	"actions":
+		[
+			{ "viewname": "A_AvaMainMenuBack", "actionname": "A_AvaMainMenuBack" }
+		],
+	"data":
+		[
+		]
+}

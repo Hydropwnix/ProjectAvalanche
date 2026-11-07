@@ -1,0 +1,51 @@
+{
+  "format": 1,
+  "view": "ava_hub",
+  "layer": "screen",
+  "stage": [1280, 720],
+  "frame_rate": 30,
+  "imports": [
+    {"name": "Billboards", "url": "components/HUD/BillboardContainer.swf", "symbol": "components.HUD.BillboardContainer"},
+    {"name": "Callouts", "url": "components/ButtonCalloutBar.swf", "symbol": "components.ButtonCalloutBar"},
+    {"name": "Panel", "url": "components/Panel.swf", "symbol": "components.Panel"},
+    {"name": "ListMenu", "url": "components/ListMenu.swf", "symbol": "components.ListMenu"},
+    {"name": "MainMenuCell", "url": "components/MainMenuCell.swf", "symbol": "components.MainMenuCell"}
+  ],
+  "symbols": [
+    {"name": "AvaHubCell", "export": true, "cell": "mcCell", "children": [
+      {"instance": "mcCell", "symbol": "MainMenuCell"}
+    ]},
+    {"name": "AvaHub", "export": true, "children": [
+      {"instance": "mcBillboardContainer", "symbol": "Billboards", "x": -12, "y": -48},
+      {"instance": "mcButtonCalloutBar", "symbol": "Callouts", "x": 82, "y": 587, "visible": false},
+      {"instance": "mcPanel", "symbol": "Panel", "x": 80, "y": 170, "scale_x": 4.53125},
+      {"instance": "mcMenu", "symbol": "ListMenu", "x": 80, "y": 170}
+    ]}
+  ],
+  "view_symbol": {"symbol": "AvaHub", "x": 12, "y": 48},
+  "logic": {
+    "base": "fe_view",
+    "data": ["ava_hub_menu", "ava_hub_menu_index"],
+    "menus": [
+      {"target": "mcMenu", "rows": 6, "cell_width": 303, "cell_height": 80, "spacing": -10, "panel_gaps": [5, -14],
+        "wrap": false, "data": "ava_hub_menu", "index": "ava_hub_menu_index", "cell": "AvaHubCell"}
+    ],
+    "panels": [{"target": "mcPanel", "width": 303, "fit_menu": "mcMenu", "dimmer": 50}],
+    "billboards": [{"target": "mcBillboardContainer", "data": "globe_data", "symbol": "SocialBillboardFeedWrapper"}],
+    "on_enter": {"clear_inputs": true, "event": "ACTIVITY_FEED_NORMAL_INTRO", "sound": "eg_ready_select"},
+    "inputs": [
+      {"key": "ADVANCE", "menu": "mcMenu", "do": "advance", "lock_ms": 200},
+      {"key": "BACK", "menu": "mcMenu", "do": "back"},
+      {"key": "DPAD_UP", "menu": "mcMenu", "do": "up"},
+      {"key": "LAS_UP", "menu": "mcMenu", "do": "up"},
+      {"key": "DPAD_DOWN", "menu": "mcMenu", "do": "down", "blocked_sound": "menu_unhighlightable"},
+      {"key": "LAS_DOWN", "menu": "mcMenu", "do": "down", "blocked_sound": "menu_unhighlightable"},
+      {"key": "DPAD_LEFT", "take": true},
+      {"key": "LAS_LEFT", "take": true},
+      {"key": "DPAD_RIGHT", "take": true},
+      {"key": "LAS_RIGHT", "take": true},
+      {"key": "DIGITAL_THREE", "take": true},
+      {"key": "DIGITAL_FOUR", "take": true}
+    ]
+  }
+}

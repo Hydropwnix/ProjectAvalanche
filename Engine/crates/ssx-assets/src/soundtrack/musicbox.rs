@@ -1,9 +1,15 @@
 use std::path::Path;
 use std::sync::Arc;
 
+mod package;
+mod posts;
 pub mod selection;
 
+pub use package::{FIRST_PACKAGE_SONG, PackageSongs, SongAudio, SongSwitches};
+pub use posts::{RACE_EVENT_PERIOD_MS, RemixClock, remix};
 pub use selection::{RaceEvent, Session, session};
+
+use posts::{RacePosts, ms_frames};
 
 use anyhow::{Context, Result, bail};
 use ssx_formats::eaac::Sps;
@@ -158,6 +164,8 @@ pub struct MusicBox {
     bank: SampleBank,
     bank_data: Vec<u8>,
     sbs: Arc<Bytes>,
+    pub package: PackageSongs,
+    pub package_switches: std::collections::BTreeMap<ssx_content::ContentId, bool>,
 }
 
 impl MusicBox {
@@ -178,7 +186,19 @@ impl MusicBox {
         let bank = SampleBank::parse(&bank_data)?;
         let sbs_path = find_file(big_root, &rel("music_samples.sbs")).context("music_samples.sbs not found")?;
         let sbs = Arc::new(Bytes::open(&sbs_path)?);
-        Ok(Self { songs, selectable, selections, events, graffiti, pools, bank, bank_data, sbs })
+        Ok(Self {
+            songs,
+            selectable,
+            selections,
+            events,
+            graffiti,
+            pools,
+            bank,
+            bank_data,
+            sbs,
+            package: Default::default(),
+            package_switches: Default::default(),
+        })
     }
 
     pub fn song(&self, id: u32) -> Option<&Song> {
@@ -209,6 +229,12 @@ impl MusicBox {
         Some(f64::from(sps.header.num_samples) / f64::from(sps.header.sample_rate.max(1)))
     }
 
+    pub fn decode_song(&self, id: u32) -> Result<(Vec<f32>, u32, u16)> {
+        let sps = Sps::read(&self.sbs, self.sps_offset(id)?)?;
+        let d = ssx_formats::ealayer3_decode::decode_sound(&sps.header, &sps.blocks)?;
+        Ok((d.samples, d.sample_rate, u16::from(d.channels)))
+    }
+
     fn sps_offset(&self, id: u32) -> Result<usize> {
         let s = self.bank.sounds.iter().find(|s| s.id == id).with_context(|| format!("no sound {id:#x}"))?;
         match self.bank.resolve(&self.bank_data, s)? {
@@ -226,9 +252,10 @@ pub struct Playlist {
 
 impl Playlist {
     pub fn new(mb: &MusicBox, race: RaceType, seed: u64) -> Self {
-        let candidates: Vec<u32> = mb
-            .selectable
+        let disc: &[u32] = if mb.package.replace_disc { &[] } else { &mb.selectable };
+        let candidates: Vec<u32> = disc
             .iter()
+            .chain(&mb.package.added)
             .copied()
             .filter(|&id| race.flag().is_none_or(|f| mb.song(id).is_some_and(|s| s.flag(f))))
             .collect();
@@ -263,12 +290,30 @@ pub fn set_paused(on: bool) {
 
 struct SongStream {
     id: u32,
+    source: SongSource,
+    buf: Vec<f32>,
+    pos: usize,
+    gain: f32,
+}
+
+enum SongSource {
+    Disc(Box<DiscSong>),
+    Package(Box<crate::content::audio::stream::MusicStream>),
+}
+
+struct DiscSong {
     blocks: Vec<(usize, usize, u32)>,
     next: usize,
     channels: usize,
     dec: Option<(usize, SectionDecoder)>,
-    buf: Vec<f32>,
-    pos: usize,
+}
+
+const PACKAGE_CHUNK: usize = 1024;
+
+enum Refill {
+    More,
+    Behind,
+    End,
 }
 
 pub struct LicensedMusic {
@@ -282,19 +327,6 @@ pub struct LicensedMusic {
     fade: Option<(f32, f32, u64)>,
 }
 
-struct RacePosts {
-    event: RaceEvent,
-    session: &'static std::sync::Mutex<Session>,
-    clock: u64,
-    next: Option<u64>,
-}
-
-pub const RACE_EVENT_PERIOD_MS: u64 = 500;
-
-fn ms_frames(ms: u64) -> u64 {
-    ms * u64::from(crate::pathfinder::SAMPLE_RATE) / 1000
-}
-
 impl LicensedMusic {
     pub fn new(mb: MusicBox, playlist: Playlist) -> Self {
         Self { mb, playlist, cur: None, tmp: Vec::new(), played: Vec::new(), once: false, game: None, fade: None }
@@ -303,14 +335,58 @@ impl LicensedMusic {
     // TODO(guess): a post's song starts at the check's frame (the game checks on its 60 Hz audio-manager update, then the MusicBox opens the stream with disc latency); settle: the MusicBox's stream start (0x83111DE0 → 0x8310BF18) timed on a console.
     pub fn game(mut mb: MusicBox, race: RaceType) -> Self {
         mb.set_event_class(Some(race));
-        let posts = RacePosts { event: RaceEvent::new(race), session: session(), clock: 0, next: None };
+        let posts = RacePosts::new(RaceEvent::new(race), session(), remix());
         Self { game: Some(posts), ..Self::new(mb, Playlist { ids: Vec::new(), next: 0 }) }
     }
 
+    pub fn menu(mb: MusicBox) -> Self {
+        Self::menu_with(mb, session(), remix())
+    }
+
+    pub fn menu_with(
+        mut mb: MusicBox,
+        session: &'static std::sync::Mutex<Session>,
+        remix: &'static std::sync::Mutex<RemixClock>,
+    ) -> Self {
+        mb.set_event_class(None);
+        let mut posts = RacePosts::new(RaceEvent::new(RaceType::Menu), session, remix);
+        posts.next = posts::first_menu_check(remix.lock().ok().and_then(|r| r.take_over(std::time::Instant::now())));
+        Self { game: Some(posts), ..Self::new(mb, Playlist { ids: Vec::new(), next: 0 }) }
+    }
+
+    pub fn hold_posts(&mut self, held: bool) {
+        if let Some(g) = self.game.as_mut() {
+            g.held = held;
+        }
+    }
+
+    pub fn song_open(&self) -> bool {
+        self.cur.is_some()
+    }
+
+    pub fn song_id(&self) -> Option<u32> {
+        self.cur.as_ref().map(|s| s.id)
+    }
+
+    pub fn replace_packages(&mut self, plan: &crate::content::audio::MusicPlan, race: Option<RaceType>) {
+        let playing_package = self.cur.as_ref().is_some_and(|s| matches!(s.source, SongSource::Package(_)));
+        self.mb.clear_packages();
+        self.mb.add_packages(plan);
+        self.mb.set_event_class(race);
+        if playing_package {
+            self.stop(0.5);
+        }
+    }
+
     pub fn event_setup(&mut self) {
+        let mut remix_of = remix();
         if let Some(g) = self.game.as_mut() {
             let first = (f64::from(crate::sfx_game::tuning::MUSIC_RACE_EVENT_DELAY) * 1000.0) as u64;
             g.next = Some(g.clock + ms_frames(first));
+            remix_of = g.remix;
+        }
+        if let Ok(mut r) = remix_of.lock() {
+            r.arm(std::time::Instant::now());
         }
     }
 
@@ -331,6 +407,14 @@ impl LicensedMusic {
     }
 
     fn open_song(&mut self, id: u32) -> Option<SongStream> {
+        if let Some(a) = self.mb.package_audio(id).cloned() {
+            let label = self.mb.song(id).map_or_else(|| format!("song {id:#x}"), Song::label);
+            ssx_core::eprintln!("musicbox: {label}: {} from {}", a.file.rel, a.label);
+            self.played.push((id, label));
+            let stream = crate::content::audio::stream::MusicStream::open(a.file, a.looping);
+            let source = SongSource::Package(Box::new(stream));
+            return Some(SongStream { id, source, buf: Vec::new(), pos: 0, gain: a.gain });
+        }
         let opened = self.mb.sps_offset(id).and_then(|o| Ok(Sps::read(&self.mb.sbs, o)?));
         match opened {
             Ok(sps) => {
@@ -344,10 +428,11 @@ impl LicensedMusic {
                 let label = self.mb.song(id).map_or_else(|| format!("sound {id:#x}"), Song::label);
                 self.played.push((id, label));
                 let channels = sps.header.channels as usize;
-                Some(SongStream { id, blocks, next: 0, channels, dec: None, buf: Vec::new(), pos: 0 })
+                let source = SongSource::Disc(Box::new(DiscSong { blocks, next: 0, channels, dec: None }));
+                Some(SongStream { id, source, buf: Vec::new(), pos: 0, gain: 1.0 })
             }
             Err(e) => {
-                eprintln!("musicbox: sound {id:#x}: {e:#}");
+                ssx_core::eprintln!("musicbox: sound {id:#x}: {e:#}");
                 None
             }
         }
@@ -378,13 +463,16 @@ impl LicensedMusic {
             return Err(*next - now);
         }
         *next = now + period;
+        if g.held {
+            return Err(period);
+        }
         let (event, session) = (g.event, g.session);
         let pick = session.lock().ok().and_then(|mut s| Some((s.select(&self.mb, &event)?, s.seed(), s.picks.len())));
         match pick.and_then(|(id, seed, n)| Some((self.open_song(id)?, seed, n))) {
             Some((s, seed, n)) => {
                 let t = now as f64 / f64::from(crate::pathfinder::SAMPLE_RATE);
                 let label = self.mb.song(s.id).map_or_else(|| format!("{:#x}", s.id), Song::label);
-                eprintln!(
+                ssx_core::eprintln!(
                     "musicbox: music_race_event {event:?} at {t:.2} s → {:#x} {label} (pick {n}, seed {seed:#x})",
                     s.id
                 );
@@ -410,14 +498,25 @@ impl LicensedMusic {
     fn stop_music(&mut self) {
         if let Some(s) = self.cur.take() {
             let label = self.mb.song(s.id).map_or_else(|| format!("{:#x}", s.id), Song::label);
-            eprintln!("musicbox: StopMusic ({label})");
+            ssx_core::eprintln!("musicbox: StopMusic ({label})");
         }
         self.fade = None;
     }
 
     pub fn level_end(&mut self) {
+        if let Some(g) = &self.game {
+            g.hand_over();
+        }
         (self.game, self.playlist.ids) = (None, Vec::new());
         let secs = if paused() { 0.0 } else { crate::sfx_game::tuning::MUSIC_LEVEL_END_FADE };
+        self.stop(secs);
+    }
+
+    pub fn end_posts(&mut self, secs: f32) {
+        if let Some(g) = &self.game {
+            g.hand_over();
+        }
+        self.game = None;
         self.stop(secs);
     }
 
@@ -477,44 +576,84 @@ impl LicensedMusic {
             if s.pos * 2 >= s.buf.len() {
                 s.buf.clear();
                 s.pos = 0;
-                if !Self::decode_block(s, &self.mb.sbs, &mut self.tmp) {
-                    self.cur = None;
-                    continue;
+                match Self::refill(s, &self.mb.sbs, &mut self.tmp) {
+                    Refill::More => {}
+                    Refill::Behind => {
+                        out[f * 2..].fill(0.0);
+                        return;
+                    }
+                    Refill::End => self.cur = None,
                 }
                 continue;
             }
-            out[2 * f] = s.buf[2 * s.pos] * gain;
-            out[2 * f + 1] = s.buf[2 * s.pos + 1] * gain;
+            let g = gain * s.gain;
+            out[2 * f] = s.buf[2 * s.pos] * g;
+            out[2 * f + 1] = s.buf[2 * s.pos + 1] * g;
             s.pos += 1;
             f += 1;
         }
     }
 
-    fn decode_block(s: &mut SongStream, sbs: &[u8], tmp: &mut Vec<f32>) -> bool {
-        let Some(&(offset, section, samples)) = s.blocks.get(s.next) else { return false };
-        s.next += 1;
-        if s.dec.as_ref().is_none_or(|(x, _)| *x != section) {
-            match SectionDecoder::new(s.channels as u8) {
-                Ok(d) => s.dec = Some((section, d)),
+    fn refill(s: &mut SongStream, sbs: &[u8], tmp: &mut Vec<f32>) -> Refill {
+        let id = s.id;
+        match &mut s.source {
+            SongSource::Disc(d) => {
+                if d.decode_block(id, &mut s.buf, sbs, tmp) {
+                    Refill::More
+                } else {
+                    Refill::End
+                }
+            }
+            SongSource::Package(stream) => {
+                s.buf.resize(PACKAGE_CHUNK * 2, 0.0);
+                let n = stream.render(&mut s.buf);
+                s.buf.truncate(n * 2);
+                if n > 0 {
+                    return Refill::More;
+                }
+                match stream.ended() {
+                    None => Refill::Behind,
+                    Some(Ok(())) => Refill::End,
+                    Some(Err(e)) => {
+                        ssx_core::eprintln!("musicbox: song {id:#x} ended: {e}");
+                        Refill::End
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl DiscSong {
+    fn decode_block(&mut self, id: u32, buf: &mut Vec<f32>, sbs: &[u8], tmp: &mut Vec<f32>) -> bool {
+        let Some(&(offset, section, samples)) = self.blocks.get(self.next) else { return false };
+        self.next += 1;
+        if self.dec.as_ref().is_none_or(|(x, _)| *x != section) {
+            match SectionDecoder::new(self.channels as u8) {
+                Ok(d) => self.dec = Some((section, d)),
                 Err(_) => return false,
             }
         }
         let Ok(block) = ssx_formats::eaac::Block::read(sbs, offset) else { return false };
         tmp.clear();
-        let Ok(n) = s.dec.as_mut().unwrap().1.decode_payload(block.payload, tmp) else {
-            eprintln!("musicbox: sound {:#x}: undecodable block at {offset:#x}", s.id);
+        let Some((_, dec)) = self.dec.as_mut() else { return false };
+        let Ok(n) = dec.decode_payload(block.payload, tmp) else {
+            ssx_core::eprintln!("musicbox: sound {id:#x}: undecodable block at {offset:#x}");
             return false;
         };
+        let ch = self.channels;
         for k in 0..n.min(samples as usize) {
-            if s.channels == 1 {
-                s.buf.extend_from_slice(&[tmp[k], tmp[k]]);
+            if ch == 1 {
+                buf.extend_from_slice(&[tmp[k], tmp[k]]);
             } else {
-                s.buf.extend_from_slice(&tmp[k * s.channels..k * s.channels + 2]);
+                buf.extend_from_slice(&tmp[k * ch..k * ch + 2]);
             }
         }
         true
     }
+}
 
+impl LicensedMusic {
     pub fn now_playing(&self) -> Option<String> {
         self.cur.as_ref().and_then(|s| self.mb.song(s.id)).map(Song::label)
     }

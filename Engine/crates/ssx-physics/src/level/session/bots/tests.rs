@@ -180,6 +180,8 @@ fn explore_rows_become_racers_of_type_two_in_leaderboard_order() {
         loadout: None,
         objectives: None,
         message: Default::default(),
+        places: None,
+        goal: None,
     };
     let reqs = explore_requests(&def);
     assert_eq!(reqs.iter().map(|r| r.ghost_id).collect::<Vec<_>>(), [2, 3, 1]);

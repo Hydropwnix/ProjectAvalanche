@@ -2,13 +2,16 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use bevy::mesh::VertexAttributeValues;
-use bevy::prelude::*;
-use ssx_assets::object_mesh::{self, ObjectMesh};
-use ssx_assets::vault_db::Material as VaultMaterial;
+use bevy::prelude::{Assets, Handle, Image, Mesh, Vec3};
+use ssx_assets::content::GameContent;
+use ssx_assets::content::resolve::ModelUse;
+use ssx_assets::object_mesh::ObjectMesh;
+use ssx_content::ContentId;
+use ssx_content::material::MaterialDef;
 
 use super::MaterialHandle;
 use super::load::to_bevy_mesh;
-use super::specs::{MaterialSpec, prepare_materials};
+use super::specs::{MaterialInput, MaterialSpec, prepare_materials};
 use crate::render::lighting::game::GameLightAssets;
 use crate::render::objects::foreground::ForegroundMaterial;
 use crate::render::objects::material::ObjectMaterial;
@@ -19,26 +22,31 @@ use crate::rider::material::{
 pub struct LoadedPart {
     mesh: Mesh,
     pub bounds: (Vec3, Vec3),
-    images: Vec<Image>,
+    images: crate::render::reload::BuiltImages,
     material: MaterialSpec,
     pub problems: Vec<String>,
 }
 
-pub fn load_part(big_root: &Path, geom: &Path, material: &VaultMaterial) -> Result<LoadedPart> {
-    let mesh = object_mesh::load(geom)?;
-    let stem = geom.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-    part_from_mesh(big_root, mesh, &stem, material)
+pub fn load_part(big_root: &Path, id: &ContentId, use_: ModelUse, material: &MaterialDef) -> Result<LoadedPart> {
+    let found = GameContent::of(big_root).model(id, use_)?;
+    let (mesh, notes) = found.value.lod0_mesh().map_err(|e| anyhow::anyhow!("{id}: {e}"))?;
+    let label = id.path().rsplit('/').next().unwrap_or_default().to_string();
+    let mut part = part_from_mesh(big_root, mesh, &label, material)?;
+    part.problems.extend(notes.into_iter().map(|n| format!("{id} from {}: {n}", found.source)));
+    Ok(part)
 }
 
-pub fn part_from_mesh(big_root: &Path, mesh: ObjectMesh, label: &str, material: &VaultMaterial) -> Result<LoadedPart> {
-    let (lo, hi) = mesh.bounds().with_context(|| format!("{label} has no vertices"))?;
-    let uv1 = CharacterShading::of(material.effect.as_deref().unwrap_or("")).and(mesh.uv1.clone());
+pub fn part_from_mesh(big_root: &Path, mesh: ObjectMesh, label: &str, material: &MaterialDef) -> Result<LoadedPart> {
+    let (lo, hi) = mesh.position_bounds().with_context(|| format!("{label} has no vertices"))?;
+    let uv1 = CharacterShading::of(&material.effect).and(mesh.uv1.clone());
+    let tangent_sign = mesh.tangent_signs.is_some();
     let mut mesh = to_bevy_mesh(mesh, label);
     if let Some(uv1) = uv1 {
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, uv1);
     }
     let mut problems = Vec::new();
-    let (images, mut specs) = prepare_materials(big_root, &[material], &mut problems)?;
+    let (images, mut specs) =
+        prepare_materials(big_root, &[MaterialInput { def: material, tangent_sign }], None, &mut problems)?;
     let material = specs.pop().context("no material prepared")?;
     Ok(LoadedPart { mesh, bounds: (Vec3::from_array(lo), Vec3::from_array(hi)), images, material, problems })
 }
@@ -59,7 +67,7 @@ impl LoadedPart {
         objects: &mut Assets<ObjectMaterial>,
         foreground: &mut Assets<ForegroundMaterial>,
     ) -> (Handle<Mesh>, MaterialHandle) {
-        let handles: Vec<Handle<Image>> = self.images.into_iter().map(|i| images.add(i)).collect();
+        let handles = add_images(images, self.images);
         (meshes.add(self.mesh), self.material.add(&handles, light, objects, foreground))
     }
 
@@ -75,7 +83,7 @@ impl LoadedPart {
         rider: &CharacterLightUniform,
         characters: &mut Assets<CharacterMaterial>,
     ) -> (Handle<Mesh>, Handle<CharacterMaterial>) {
-        let handles: Vec<Handle<Image>> = self.images.into_iter().map(|i| images.add(i)).collect();
+        let handles = add_images(images, self.images);
         let spec = &self.material;
         let image_or =
             |i: Option<usize>, fallback: &Handle<Image>| i.map_or_else(|| fallback.clone(), |i| handles[i].clone());
@@ -101,4 +109,8 @@ impl LoadedPart {
         };
         (meshes.add(self.mesh), characters.add(material))
     }
+}
+
+fn add_images(images: &mut Assets<Image>, built: crate::render::reload::BuiltImages) -> Vec<Handle<Image>> {
+    built.into_iter().map(|(image, recipe)| crate::render::reload::add(images, image, Some(recipe))).collect()
 }

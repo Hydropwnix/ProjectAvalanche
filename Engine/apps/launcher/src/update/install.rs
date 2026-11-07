@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use super::Staged;
+use super::journal::{self, BACKUP, Recovered};
+use super::{Staged, is_staging_name};
+
+pub(crate) const FONTS: &str = "fonts";
 
 pub(crate) fn allowed_files() -> &'static [&'static str] {
     #[cfg(windows)]
@@ -12,6 +15,14 @@ pub(crate) fn allowed_files() -> &'static [&'static str] {
             "THIRD_PARTY_NOTICES.txt",
             "THIRD_PARTY_NOTICES-server.txt",
             "README.txt",
+            "fonts/NotoSans-Regular.ttf",
+            "fonts/NotoSansArabic-Regular.ttf",
+            "fonts/NotoSansHebrew-Regular.ttf",
+            "fonts/NotoSansDevanagari-Regular.ttf",
+            "fonts/NotoSansThai-Regular.ttf",
+            "fonts/NotoSansCJKjp-Regular.otf",
+            "fonts/OFL.txt",
+            "fonts/fonts.toml",
         ]
     }
     #[cfg(not(windows))]
@@ -23,8 +34,24 @@ pub(crate) fn allowed_files() -> &'static [&'static str] {
             "THIRD_PARTY_NOTICES.txt",
             "THIRD_PARTY_NOTICES-server.txt",
             "README.txt",
+            "fonts/NotoSans-Regular.ttf",
+            "fonts/NotoSansArabic-Regular.ttf",
+            "fonts/NotoSansHebrew-Regular.ttf",
+            "fonts/NotoSansDevanagari-Regular.ttf",
+            "fonts/NotoSansThai-Regular.ttf",
+            "fonts/NotoSansCJKjp-Regular.otf",
+            "fonts/OFL.txt",
+            "fonts/fonts.toml",
         ]
     }
+}
+
+pub(crate) fn path_of(base: &Path, name: &str) -> PathBuf {
+    name.split('/').fold(base.to_path_buf(), |path, part| path.join(part))
+}
+
+pub(crate) fn folder_of(name: &str) -> Option<&str> {
+    name.rsplit_once('/').map(|(folder, _)| folder)
 }
 
 #[cfg(windows)]
@@ -47,6 +74,11 @@ pub(crate) fn game_name() -> &'static str {
     "avalanche-game"
 }
 
+#[cfg(unix)]
+pub(crate) fn is_program(name: &str) -> bool {
+    matches!(name, "project-avalanche" | "avalanche-game" | "avalanche-server")
+}
+
 pub fn install_dir() -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot find the launcher's folder: {e}"))?;
     exe.parent().map(Path::to_path_buf).ok_or_else(|| "the launcher has no folder".to_string())
@@ -54,6 +86,11 @@ pub fn install_dir() -> Result<PathBuf, String> {
 
 pub fn apply(staged: &Staged) -> Result<(), String> {
     validate(staged)?;
+    match journal::recover(&staged.install) {
+        Ok(Recovered::Busy) => return Err("another update is being installed into this folder; wait for it".into()),
+        Ok(_) => {}
+        Err(e) => return Err(format!("an earlier update did not finish, and it is left as it is: {e}")),
+    }
     #[cfg(windows)]
     {
         spawn_helper(staged)?;
@@ -61,7 +98,9 @@ pub fn apply(staged: &Staged) -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
-        apply_files(&staged.dir, &staged.install, &staged.files)?;
+        if let Some(note) = journal::install(&staged.dir, &staged.install, &staged.files)? {
+            ssx_core::eprintln!("update: {note}");
+        }
         let _ = std::fs::remove_dir_all(&staged.dir);
         let exe = staged.install.join(launcher_name());
         std::process::Command::new(&exe)
@@ -84,17 +123,28 @@ fn validate(staged: &Staged) -> Result<(), String> {
     let Some(name) = staged.dir.file_name().and_then(|n| n.to_str()) else {
         return Err("the update folder has no name".into());
     };
-    if !name.starts_with(".update-") {
+    if !is_staging_name(name) {
         return Err("the update folder is not one the launcher made".into());
     }
     for f in &staged.files {
         if !allowed_files().contains(&f.as_str()) {
             return Err(format!("the update would replace {f}, which is not a file the launcher may replace"));
         }
-        let src = staged.dir.join(f);
+        if let Some(folder) = folder_of(f) {
+            let meta = std::fs::symlink_metadata(staged.dir.join(folder))
+                .map_err(|e| format!("the update has no {folder} folder: {e}"))?;
+            if !meta.is_dir() || meta.file_type().is_symlink() {
+                return Err(format!("{folder} in the update is not a plain folder"));
+            }
+        }
+        let src = path_of(&staged.dir, f);
         let meta = std::fs::symlink_metadata(&src).map_err(|e| format!("the update has no {f}: {e}"))?;
         if !meta.is_file() || meta.file_type().is_symlink() {
             return Err(format!("{f} in the update is not a plain file"));
+        }
+        #[cfg(unix)]
+        if is_program(f) && std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o100 == 0 {
+            return Err(format!("{f} in the update is not executable"));
         }
     }
     for need in [launcher_name(), game_name()] {
@@ -102,60 +152,6 @@ fn validate(staged: &Staged) -> Result<(), String> {
             return Err(format!("the update has no {need}"));
         }
     }
-    Ok(())
-}
-
-fn apply_files(dir: &Path, install: &Path, files: &[String]) -> Result<(), String> {
-    let backup = install.join(format!(".update-backup-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&backup);
-    std::fs::create_dir(&backup).map_err(|e| format!("cannot make a backup folder: {e}"))?;
-    let mut done: Vec<String> = Vec::new();
-    let mut had_backup: Vec<String> = Vec::new();
-    let result = (|| -> Result<(), String> {
-        for name in files {
-            if !allowed_files().contains(&name.as_str()) {
-                return Err(format!("refusing to replace {name}"));
-            }
-            let src = dir.join(name);
-            let dst = install.join(name);
-            if let Ok(meta) = std::fs::symlink_metadata(&dst) {
-                if !meta.is_file() {
-                    return Err(format!("{} is not a plain file", dst.display()));
-                }
-                move_file(&dst, &backup.join(name)).map_err(|e| format!("cannot move the old {name} aside: {e}"))?;
-                had_backup.push(name.clone());
-            }
-            if let Err(e) = move_file(&src, &dst) {
-                return Err(format!("cannot put the new {name} in place: {e}"));
-            }
-            #[cfg(unix)]
-            {
-                if matches!(name.as_str(), "project-avalanche" | "avalanche-game" | "avalanche-server") {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755));
-                }
-            }
-            done.push(name.clone());
-        }
-        Ok(())
-    })();
-    if let Err(e) = result {
-        for name in done.iter().rev() {
-            let _ = std::fs::remove_file(install.join(name));
-        }
-        for name in had_backup.iter().rev() {
-            let _ = move_file(&backup.join(name), &install.join(name));
-        }
-        let _ = std::fs::remove_dir_all(&backup);
-        return Err(e);
-    }
-    #[cfg(unix)]
-    {
-        if let Ok(d) = std::fs::File::open(install) {
-            let _ = d.sync_all();
-        }
-    }
-    let _ = std::fs::remove_dir_all(&backup);
     Ok(())
 }
 
@@ -178,10 +174,7 @@ fn spawn_helper(staged: &Staged) -> Result<(), String> {
     Ok(())
 }
 
-fn cleanup_staging() {
-    let Ok(dir) = install_dir() else {
-        return;
-    };
+fn cleanup_staging(dir: &Path) {
     let Ok(entries) = dir.read_dir() else {
         return;
     };
@@ -191,7 +184,7 @@ fn cleanup_staging() {
         let Some(name) = name.to_str() else {
             continue;
         };
-        if !name.starts_with(".update-") {
+        if !name.starts_with(".update-") || name.starts_with(BACKUP) {
             continue;
         }
         let path = entry.path();
@@ -225,7 +218,7 @@ pub fn helper(args: &[String]) -> i32 {
     if dir.parent() != Some(install.as_path()) {
         return 2;
     }
-    if !dir.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(".update-")) {
+    if !dir.file_name().and_then(|n| n.to_str()).is_some_and(is_staging_name) {
         return 2;
     }
     let files = &args[4..];
@@ -248,11 +241,17 @@ pub fn helper(args: &[String]) -> i32 {
     note(&format!("helper: installing {} into {} after process {pid}", dir.display(), install.display()));
     wait_for_exit(pid);
     note("helper: the launcher exited");
-    let files: Vec<String> = files.to_vec();
-    if let Err(e) = apply_files(&dir, &install, &files) {
-        note(&format!("helper: {e}"));
-        let _ = std::process::Command::new(install.join(launcher_name())).current_dir(&install).spawn();
-        return 1;
+    match journal::install(&dir, &install, files) {
+        Ok(leftover) => {
+            if let Some(leftover) = leftover {
+                note(&format!("helper: {leftover}"));
+            }
+        }
+        Err(e) => {
+            note(&format!("helper: {e}"));
+            let _ = std::process::Command::new(install.join(launcher_name())).current_dir(&install).spawn();
+            return 1;
+        }
     }
     note("helper: installed");
     let _ = std::fs::remove_dir_all(&dir);
@@ -290,35 +289,17 @@ fn nanos() -> u128 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default()
 }
 
-fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
-    #[cfg(windows)]
-    {
-        let mut last = None;
-        for _ in 0..20 {
-            match std::fs::rename(from, to) {
-                Ok(()) => return Ok(()),
-                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                    last = Some(e);
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                }
-                Err(e) => return Err(e),
-            }
-        }
-        Err(last.unwrap_or_else(|| std::io::Error::other("the file could not be moved")))
-    }
-    #[cfg(not(windows))]
-    {
-        std::fs::rename(from, to)
-    }
-}
-
 #[cfg(not(windows))]
 pub fn helper(_args: &[String]) -> i32 {
     2
 }
 
 pub fn cleanup_leftovers() {
-    cleanup_staging();
+    if let Ok(dir) = install_dir() {
+        for note in leftovers_in(&dir) {
+            ssx_core::eprintln!("update: {note}");
+        }
+    }
     #[cfg(windows)]
     {
         let Ok(dir) = std::env::temp_dir().read_dir() else {
@@ -336,9 +317,37 @@ pub fn cleanup_leftovers() {
     }
 }
 
+fn leftovers_in(dir: &Path) -> Vec<String> {
+    let mut notes = Vec::new();
+    match journal::recover(dir) {
+        Ok(Recovered::Nothing | Recovered::Busy | Recovered::Cleared) => {}
+        Ok(Recovered::Finished) => notes.push("an update cut short after its new files were in place: finished".into()),
+        Ok(Recovered::RolledBack) => notes.push("an update cut short: the files from before it are back".into()),
+        Err(e) => notes.push(format!("an update cut short could not be finished or undone: {e}")),
+    }
+    notes.extend(journal::recover_legacy(dir));
+    if std::fs::symlink_metadata(dir.join(BACKUP)).is_err() {
+        cleanup_staging(dir);
+    }
+    notes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_fonts_allowed_are_the_shipped_set() {
+        use ssx_content::font::shipped::{FOLDER, LICENSE_FILE, MANIFEST_FILE, SHIPPED};
+        assert_eq!(FONTS, FOLDER);
+        let mut fonts: Vec<&str> = allowed_files().iter().filter_map(|n| n.strip_prefix("fonts/")).collect();
+        fonts.sort_unstable();
+        let mut want: Vec<&str> = SHIPPED.iter().map(|s| s.file).chain([LICENSE_FILE, MANIFEST_FILE]).collect();
+        want.sort_unstable();
+        assert_eq!(fonts, want);
+        assert_eq!(path_of(Path::new("a"), "fonts/OFL.txt"), Path::new("a").join("fonts").join("OFL.txt"));
+        assert_eq!((folder_of("fonts/OFL.txt"), folder_of("README.txt")), (Some("fonts"), None));
+    }
 
     fn temp_dir(tag: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
@@ -348,44 +357,112 @@ mod tests {
     }
 
     fn backup_left(install: &Path) -> bool {
-        std::fs::read_dir(install)
-            .unwrap()
-            .flatten()
-            .any(|e| e.file_name().to_string_lossy().starts_with(".update-backup-"))
+        std::fs::read_dir(install).unwrap().flatten().any(|e| e.file_name().to_string_lossy().starts_with(BACKUP))
+    }
+
+    fn folders(tag: &str, names: &[&str]) -> (PathBuf, PathBuf, PathBuf) {
+        let root = temp_dir(tag);
+        let (install, staged) = (root.join("install"), root.join("install/.update-0.3.0-0"));
+        std::fs::create_dir_all(&staged).unwrap();
+        for name in names {
+            std::fs::write(install.join(name), b"old").unwrap();
+            std::fs::write(staged.join(name), b"new").unwrap();
+        }
+        (root, install, staged)
     }
 
     #[test]
     fn a_failed_install_puts_the_old_files_back() {
-        let root = temp_dir("rollback");
-        let (install, staged) = (root.join("install"), root.join(".update-0.2.0-0"));
-        std::fs::create_dir_all(&install).unwrap();
-        std::fs::create_dir_all(&staged).unwrap();
-        std::fs::write(install.join(game_name()), b"old").unwrap();
-        std::fs::write(staged.join(game_name()), b"new").unwrap();
-        let files = vec![game_name().to_string(), "evil.sh".to_string()];
-        assert!(apply_files(&staged, &install, &files).is_err());
+        let (root, install, staged) = folders("rollback", &[launcher_name(), game_name()]);
+        let files = vec![game_name().to_string(), "evil.sh".to_string(), launcher_name().to_string()];
+        assert!(journal::install(&staged, &install, &files).is_err());
+        std::fs::remove_file(staged.join(game_name())).unwrap();
+        let files = vec![game_name().to_string(), launcher_name().to_string()];
+        assert!(journal::install(&staged, &install, &files).unwrap_err().contains("has no"));
         assert_eq!(std::fs::read(install.join(game_name())).unwrap(), b"old");
+        assert_eq!(std::fs::read(install.join(launcher_name())).unwrap(), b"old");
         assert!(!backup_left(&install));
         std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn a_verified_install_replaces_the_files() {
-        let root = temp_dir("replace");
-        let (install, staged) = (root.join("install"), root.join(".update-0.2.0-0"));
-        std::fs::create_dir_all(&install).unwrap();
-        std::fs::create_dir_all(&staged).unwrap();
-        for name in [launcher_name(), game_name()] {
-            std::fs::write(install.join(name), b"old").unwrap();
-            std::fs::write(staged.join(name), b"new").unwrap();
-        }
+        let (root, install, staged) = folders("replace", &[launcher_name(), game_name()]);
         let files = vec![launcher_name().to_string(), game_name().to_string()];
-        apply_files(&staged, &install, &files).unwrap();
+        assert_eq!(journal::install(&staged, &install, &files), Ok(None));
         for name in [launcher_name(), game_name()] {
             assert_eq!(std::fs::read(install.join(name)).unwrap(), b"new");
             assert!(!staged.join(name).exists());
         }
         assert!(!backup_left(&install));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    fn staged(install: &Path, dir: &Path, files: &[&str]) -> Staged {
+        let asset = super::super::Asset { name: String::new(), url: String::new(), size: 0, sha256: [0; 32] };
+        let release = super::super::Release {
+            version: semver::Version::new(0, 3, 0),
+            tag: "v0.3.0".into(),
+            title: String::new(),
+            notes: String::new(),
+            page: String::new(),
+            asset,
+        };
+        let files = files.iter().map(|f| f.to_string()).collect();
+        Staged { release, dir: dir.to_path_buf(), install: install.to_path_buf(), files }
+    }
+
+    #[test]
+    fn an_update_is_validated_before_it_is_installed() {
+        let (root, install, dir) = folders("validate", &[launcher_name(), game_name()]);
+        #[cfg(unix)]
+        for name in [launcher_name(), game_name()] {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        validate(&staged(&install, &dir, &[launcher_name(), game_name()])).unwrap();
+        let backup = install.join(BACKUP);
+        std::fs::rename(&dir, &backup).unwrap();
+        let refused = validate(&staged(&install, &backup, &[launcher_name(), game_name()])).unwrap_err();
+        assert!(refused.contains("not one the launcher made"), "{refused}");
+        std::fs::rename(&backup, &dir).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.join(game_name()), std::fs::Permissions::from_mode(0o644)).unwrap();
+            let refused = validate(&staged(&install, &dir, &[launcher_name(), game_name()])).unwrap_err();
+            assert!(refused.contains("not executable"), "{refused}");
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_cleanup_never_removes_a_backup() {
+        let root = temp_dir("cleanup");
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 24 * 3600);
+        let age = |dir: &Path| std::fs::File::open(dir).unwrap().set_modified(old).unwrap();
+        for name in [".update-0.2.0-0", ".update-backup-4242", ".update-0.3.0-1"] {
+            std::fs::create_dir(root.join(name)).unwrap();
+        }
+        std::fs::write(root.join(".update-backup-4242").join(launcher_name()), b"old").unwrap();
+        std::fs::write(root.join(launcher_name()), b"new").unwrap();
+        for name in [".update-0.2.0-0", ".update-backup-4242"] {
+            age(&root.join(name));
+        }
+        let notes = leftovers_in(&root);
+        assert!(notes.iter().any(|n| n.contains("kept")), "{notes:?}");
+        assert!(!root.join(".update-0.2.0-0").exists());
+        assert!(root.join(".update-0.3.0-1").exists(), "younger than a day");
+        assert_eq!(std::fs::read(root.join(".update-backup-4242").join(launcher_name())).unwrap(), b"old");
+        std::fs::create_dir(root.join(".update-0.2.0-2")).unwrap();
+        age(&root.join(".update-0.2.0-2"));
+        std::fs::create_dir(root.join(BACKUP)).unwrap();
+        std::fs::write(root.join(BACKUP).join("stray"), b"x").unwrap();
+        let notes = leftovers_in(&root);
+        assert!(notes.iter().any(|n| n.contains("could not be finished")), "{notes:?}");
+        assert!(root.join(".update-0.2.0-2").exists());
+        assert!(root.join(BACKUP).join("stray").exists());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

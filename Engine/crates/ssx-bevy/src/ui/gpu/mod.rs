@@ -1,4 +1,3 @@
-mod layers;
 mod pipelines;
 
 use std::collections::HashMap;
@@ -14,13 +13,11 @@ use bevy::render::{Render, RenderApp, RenderStartup, RenderSystems};
 use bevy::shader::Shader;
 
 use super::{GRADIENT_ROWS, UiBlend, UiCamera, UiFrame, UiOp, UiTexture};
-use layers::{LayerPool, LayerTexture, PendingLayer, draw_pending_layers, layer_kit, prepare_layers};
 use pipelines::{UiPipelines, init_pipelines, result_out_pipeline};
 
 const SAMPLES: u32 = 1;
 const UI_FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
 const STENCIL_FORMAT: TextureFormat = TextureFormat::Depth24PlusStencil8;
-const FILTER_PARAMS_BYTES: u64 = 48;
 
 #[derive(Resource)]
 struct UiShaders {
@@ -55,11 +52,11 @@ struct Targets {
 #[derive(Resource, Default)]
 struct UiGpu {
     images: Vec<TextureView>,
+    image_keys: Vec<usize>,
     image_groups: HashMap<(usize, bool), BindGroup>,
     gradients: Option<(TextureView, BindGroup)>,
     white: Option<(TextureView, BindGroup)>,
     glyphs: Option<(u64, UVec2, TextureView, BindGroup)>,
-    clear_texture: Option<TextureView>,
     vertices: Option<Buffer>,
     paint_coords: Option<Buffer>,
     draw_ids: Option<Buffer>,
@@ -67,11 +64,6 @@ struct UiGpu {
     draws: Option<Buffer>,
     draws_group: Option<BindGroup>,
     targets: Option<Targets>,
-    layer_cache: HashMap<u64, (LayerTexture, u64)>,
-    layer_pool: LayerPool,
-    pending_layers: Vec<PendingLayer>,
-    layer_groups: Vec<BindGroup>,
-    frame_counter: u64,
 }
 
 fn texture_2d_desc(
@@ -167,11 +159,20 @@ fn prepare(
         let v = upload_rgba(&device, &queue, "ssx_ui_white", UVec2::ONE, &[255; 4]);
         let g = paint_group(&v, &p.linear);
         gpu.white = Some((v, g));
-        gpu.clear_texture = Some(upload_rgba(&device, &queue, "ssx_ui_clear", UVec2::ONE, &[0; 4]));
     }
-    while gpu.images.len() < frame.images.len() {
-        let img = &frame.images[gpu.images.len()];
-        gpu.images.push(upload_rgba(&device, &queue, "ssx_ui_image", UVec2::new(img.width, img.height), &img.rgba));
+    for (i, img) in frame.images.iter().enumerate() {
+        let key = std::sync::Arc::as_ptr(img) as usize;
+        if gpu.image_keys.get(i) == Some(&key) {
+            continue;
+        }
+        let view = upload_rgba(&device, &queue, "ssx_ui_image", UVec2::new(img.width, img.height), &img.rgba);
+        if i < gpu.images.len() {
+            (gpu.images[i], gpu.image_keys[i]) = (view, key);
+            gpu.image_groups.retain(|(j, _), _| *j != i);
+        } else {
+            gpu.images.push(view);
+            gpu.image_keys.push(key);
+        }
     }
     let rows = UVec2::new(256, GRADIENT_ROWS as u32);
     if gpu.gradients.is_none() {
@@ -281,7 +282,6 @@ fn prepare(
     let used: Vec<(usize, bool)> = frame
         .ops
         .iter()
-        .chain(frame.layers.iter().flat_map(|l| l.ops.iter()))
         .filter_map(|o| match o {
             UiOp::Draw { texture: UiTexture::Image { image, smooth }, .. } => Some((*image, *smooth)),
             _ => None,
@@ -295,7 +295,6 @@ fn prepare(
             gpu.image_groups.insert(key, g);
         }
     }
-    prepare_layers(&frame, &p, &cache, &device, gpu);
 }
 
 struct Full<'a> {
@@ -327,12 +326,11 @@ fn fullscreen(encoder: &mut CommandEncoder, label: &str, target: &TextureView, c
     rp.draw(0..3, 0..1);
 }
 
-fn texture_group<'a>(gpu: &'a UiGpu, layers: &'a [BindGroup], t: UiTexture) -> Option<&'a BindGroup> {
+fn texture_group(gpu: &UiGpu, t: UiTexture) -> Option<&BindGroup> {
     match t {
         UiTexture::None => gpu.white.as_ref().map(|w| &w.1),
         UiTexture::Gradients => gpu.gradients.as_ref().map(|g| &g.1),
         UiTexture::Image { image, smooth } => gpu.image_groups.get(&(image, smooth)),
-        UiTexture::Layer(i) => layers.get(i as usize),
         UiTexture::Glyphs => gpu.glyphs.as_ref().map(|g| &g.3),
     }
 }
@@ -341,7 +339,6 @@ fn replay<'a>(
     rp: &mut TrackedRenderPass<'a>,
     ops: &[UiOp],
     gpu: &'a UiGpu,
-    layers: &'a [BindGroup],
     pick: &dyn Fn(UiBlend, u8) -> Option<&'a RenderPipeline>,
 ) {
     struct Batch<'a> {
@@ -383,7 +380,7 @@ fn replay<'a>(
             }
             UiOp::Draw { first_index, index_count, base_vertex, texture, blend, .. } => {
                 let Some(p) = pick(if mode == 0 { blend } else { UiBlend::Normal }, mode) else { continue };
-                let Some(g) = texture_group(gpu, layers, texture) else { continue };
+                let Some(g) = texture_group(gpu, texture) else { continue };
                 let range = first_index..first_index + index_count;
                 if let Some(b) = batch.as_mut()
                     && std::ptr::eq(b.pipeline, p)
@@ -407,18 +404,12 @@ fn ui_pass(
     view: ViewQuery<&ViewTarget, With<UiCamera>>,
     frame: Option<Res<UiFrame>>,
     pipelines: Option<Res<UiPipelines>>,
-    mut gpu: ResMut<UiGpu>,
+    gpu: Res<UiGpu>,
     cache: Res<PipelineCache>,
     mut ctx: RenderContext,
 ) {
     let (Some(frame), Some(p)) = (frame, pipelines) else { return };
     let target = view.into_inner();
-    if !gpu.pending_layers.is_empty() {
-        let device = ctx.render_device().clone();
-        if let Some(kit) = layer_kit(&p, &cache, &device) {
-            draw_pending_layers(ctx.command_encoder(), &kit, &frame, &mut gpu);
-        }
-    }
     let gpu = &*gpu;
     let Some(t) = gpu.targets.as_ref().filter(|t| t.size == frame.viewport) else { return };
     let (Some(vb), Some(pb), Some(db), Some(ib), Some(draws_group)) =
@@ -474,7 +465,6 @@ fn ui_pass(
             );
         }
     }
-    let layer_groups = &gpu.layer_groups;
     {
         let mut rp = ctx.begin_tracked_render_pass(RenderPassDescriptor {
             label: Some("ssx_ui"),
@@ -499,7 +489,7 @@ fn ui_pass(
         rp.set_index_buffer(ib.slice(..), IndexFormat::Uint32);
         rp.set_bind_group(0, draws_group, &[]);
         rp.set_stencil_reference(0);
-        replay(&mut rp, &frame.ops, gpu, layer_groups, &|b, mode| match mode {
+        replay(&mut rp, &frame.ops, gpu, &|b, mode| match mode {
             0 => content.get(&b),
             1 => Some(&mask_incr),
             _ => Some(&mask_decr),

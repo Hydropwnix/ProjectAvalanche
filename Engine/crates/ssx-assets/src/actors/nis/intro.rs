@@ -19,7 +19,7 @@ pub fn load_sequence_nis(big_root: &Path, binding: &str, character: &str) -> Res
         controller,
         ready: scene.clone(),
         jump: scene,
-        transition_blend: 0.0,
+        transition_blend: Blend::cut(),
         branch_out: None,
         bundles,
         rider,
@@ -187,11 +187,8 @@ fn intro_of_binding(
                 same(t.guid("From"), ready.guid)
                     && walk.names(t, "ConditionsRequiredTrue").iter().any(|s| s == "BLN_NisTriggerTransition")
             })
-            .map(|t| {
-                let blend = t.guid("OverrideBlend").and_then(|g| db.get(g)).and_then(|b| b.f32("BlendTime"));
-                (t.guid("To"), blend.unwrap_or(0.0))
-            })
             .with_context(|| format!("{binding}: no go transition from {}", ready.name()))
+            .and_then(|t| Ok((t.guid("To"), walk.transition_blend(&t, None)?)))
     };
     let (ready, jump, blend, ready_loop, jump_start) = if end.ready_loop {
         if end.start != 0.0 {
@@ -206,7 +203,7 @@ fn intro_of_binding(
             .into_iter()
             .find(|n| walk.names(n, "ActiveSignals").iter().any(|s| s == "BLN_IsNisReadyLoop"))
             .with_context(|| format!("{binding}: no ready-loop node"))?;
-        (ready, end.node, end.blend, false, end.start)
+        (ready, end.node, end.blend.clone(), false, end.start)
     };
     let (ready, jump) = (walk.scene(&ready)?, walk.scene(&jump)?);
     let controller = sf.name().to_string();
@@ -239,7 +236,7 @@ struct ChainEnd<'a> {
     node: Asset<'a>,
     ready_loop: bool,
     start: f32,
-    blend: f32,
+    blend: Blend,
 }
 
 fn cabin_chain<'a>(
@@ -269,7 +266,7 @@ fn cabin_chain<'a>(
             && holds_if(&to, "EntryConditionsRequiredTrue", "EntryConditionsRequiredFalse", skip))
         .then_some(to)
     };
-    let skip_of = |node: &Asset<'a>| -> Result<Option<(Asset<'a>, f32, bool)>> {
+    let skip_of = |node: &Asset<'a>| -> Result<Option<(Asset<'a>, Blend, bool)>> {
         let Some((t, mut to)) = node
             .guids("Transitions")
             .into_iter()
@@ -278,7 +275,7 @@ fn cabin_chain<'a>(
         else {
             return Ok(None);
         };
-        let blend = t.guid("OverrideBlend").and_then(|g| db.get(g)).and_then(|b| b.f32("BlendTime")).unwrap_or(0.0);
+        let mut blend = walk.transition_blend(&t, None)?;
         let mut branch_in = walk.name(&t, "BranchInWindowTypeAsset").as_deref() == Some("NIS_In");
         for _ in 0..8 {
             if !to.bool("IsConduit").unwrap_or(false) {
@@ -291,12 +288,13 @@ fn cabin_chain<'a>(
                 .find_map(|t| passes(&t, true).map(|n| (t, n)))
                 .with_context(|| format!("{}: no transition holds on the skip", to.name()))?;
             branch_in = walk.name(&t2, "BranchInWindowTypeAsset").as_deref() == Some("NIS_In");
+            blend = walk.transition_blend(&t2, None)?;
             to = next;
         }
         bail!("{}: the skip passes more than 8 conduits", node.name())
     };
     let mut node = db.get(sf.guid("StartNode").context("no start node")?).context("start node")?;
-    let (mut out, mut start, mut blend_in) = (Vec::new(), 0.0, 0.0);
+    let (mut out, mut start, mut blend_in) = (Vec::new(), 0.0, Blend::cut());
     let mut nodes: Vec<Asset<'a>> = Vec::new();
     let resolve = |mut out: Vec<CabinScene>, nodes: &[Asset<'a>], end: ChainEnd<'a>| -> Result<_> {
         for (i, n) in nodes.iter().enumerate() {
@@ -353,10 +351,10 @@ fn cabin_chain<'a>(
         }
         let (end, t, window) = best.with_context(|| format!("{}: no transition holds", node.name()))?;
         let next = db.get(t.guid("To").context("transition without target")?).context("target node")?;
-        let blend = t.guid("OverrideBlend").and_then(|g| db.get(g)).and_then(|b| b.f32("BlendTime")).unwrap_or(0.0);
+        let blend = walk.transition_blend(&t, scene.as_ref())?;
         if let Some(sc) = scene {
             let tuning_offset = sc.node_tags.tuning_offset;
-            out.push(CabinScene { tuning_offset, scene: sc, start, end, window, blend, skip: None });
+            out.push(CabinScene { tuning_offset, scene: sc, start, end, window, blend: blend.clone(), skip: None });
             nodes.push(node);
         }
         start = 0.0;

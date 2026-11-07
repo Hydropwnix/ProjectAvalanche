@@ -10,8 +10,8 @@ use bevy::core_pipeline::{Core3d, Core3dSystems};
 use bevy::diagnostic::DiagnosticsStore;
 use bevy::ecs::schedule::ScheduleLabel;
 use bevy::pbr::{
-    EARLY_SHADOW_PASS, LATE_SHADOW_PASS, clear_indirect_parameters_metadata, early_gpu_preprocess,
-    main_build_indirect_parameters, per_view_shadow_pass, shared_shadow_pass,
+    EARLY_SHADOW_PASS, LATE_SHADOW_PASS, allocate_uniforms, early_gpu_preprocess, main_build_indirect_parameters,
+    per_view_shadow_pass, shared_shadow_pass,
 };
 use bevy::prelude::*;
 use bevy::render::diagnostic::RenderDiagnosticsPlugin;
@@ -200,7 +200,7 @@ impl Plugin for PerfPlugin {
         let Some(render) = app.get_sub_app_mut(RenderApp) else { return };
         let pipeline_log = std::fs::File::create(self.out.with_extension("pipelines.tsv")).ok().map(|f| {
             let mut w = std::io::BufWriter::new(f);
-            let _ = writeln!(w, "id\tasked_s\tcreated_s\twait_ms\tlabel");
+            let _ = writeln!(w, "id\tasked_s\tcreated_s\twait_ms\tlabel\tdetail");
             w
         });
         render
@@ -209,20 +209,27 @@ impl Plugin for PerfPlugin {
             .add_systems(RenderStartup, init_marks)
             .add_systems(
                 Render,
-                (render_begin.in_set(RenderSystems::ExtractCommands), render_end.in_set(RenderSystems::PostCleanup)),
+                (
+                    RENDER_SETS[1..]
+                        .iter()
+                        .fold(render_begin.in_set(RENDER_SETS[0].clone()), |s, set| s.before(set.clone())),
+                    RENDER_SETS[..11]
+                        .iter()
+                        .fold(render_end.in_set(RENDER_SETS[11].clone()), |s, set| s.after(set.clone())),
+                ),
             )
             .add_systems(
                 RenderGraph,
                 (
-                    frame_begin.in_set(RenderGraphSystems::Begin),
+                    frame_begin.in_set(RenderGraphSystems::Begin).before(RenderGraphSystems::Render),
                     frame_end_marks.after(RenderGraphSystems::Render).before(RenderGraphSystems::Submit),
-                    map_marks.in_set(RenderGraphSystems::Finish),
+                    map_marks.in_set(RenderGraphSystems::Finish).after(RenderGraphSystems::Submit),
                 ),
             )
             .add_systems(
                 Core3d,
                 (
-                    mark::<VIEW_BEGIN>.before(clear_indirect_parameters_metadata),
+                    mark::<VIEW_BEGIN>.before(allocate_uniforms),
                     mark::<SHADOW_BEGIN>
                         .after(early_gpu_preprocess)
                         .before(per_view_shadow_pass::<EARLY_SHADOW_PASS>)
@@ -369,6 +376,21 @@ fn frame_end(
     s.window_start = now;
 }
 
+const RENDER_SETS: [RenderSystems; 12] = [
+    RenderSystems::ExtractCommands,
+    RenderSystems::PrepareAssets,
+    RenderSystems::PrepareMeshes,
+    RenderSystems::CreateViews,
+    RenderSystems::Specialize,
+    RenderSystems::PrepareViews,
+    RenderSystems::Queue,
+    RenderSystems::PhaseSort,
+    RenderSystems::Prepare,
+    RenderSystems::Render,
+    RenderSystems::Cleanup,
+    RenderSystems::PostCleanup,
+];
+
 fn render_begin(shared: Res<PerfShared>) {
     shared.0.lock().unwrap_or_else(|e| e.into_inner()).render_begin = Some(Instant::now());
 }
@@ -400,12 +422,33 @@ fn render_end(
         }
         if ok && !seen[id].1 {
             seen[id].1 = true;
-            let label = match &p.descriptor {
-                PipelineDescriptor::RenderPipelineDescriptor(d) => d.label.as_deref().unwrap_or("-").to_string(),
-                PipelineDescriptor::ComputePipelineDescriptor(d) => d.label.as_deref().unwrap_or("-").to_string(),
+            let (label, detail) = match &p.descriptor {
+                PipelineDescriptor::RenderPipelineDescriptor(d) => {
+                    let attributes: usize = d.vertex.buffers.iter().map(|b| b.attributes.len()).sum();
+                    let mut defs: Vec<String> = d.vertex.shader_defs.iter().map(|s| format!("{s:?}")).collect();
+                    defs.extend(d.fragment.iter().flat_map(|f| f.shader_defs.iter().map(|s| format!("{s:?}"))));
+                    defs.sort();
+                    defs.dedup();
+                    (
+                        d.label.as_deref().unwrap_or("-").to_string(),
+                        format!("attributes {attributes}; {}", defs.join(" ")),
+                    )
+                }
+                PipelineDescriptor::ComputePipelineDescriptor(d) => {
+                    (d.label.as_deref().unwrap_or("-").to_string(), String::new())
+                }
+                PipelineDescriptor::MeshPipelineDescriptor(d) => {
+                    let mut defs: Vec<String> = d.mesh.shader_defs.iter().map(|s| format!("{s:?}")).collect();
+                    defs.extend(d.task.iter().flat_map(|t| t.shader_defs.iter().map(|s| format!("{s:?}"))));
+                    defs.extend(d.fragment.iter().flat_map(|f| f.shader_defs.iter().map(|s| format!("{s:?}"))));
+                    defs.sort();
+                    defs.dedup();
+                    (d.label.as_deref().unwrap_or("-").to_string(), format!("mesh shader; {}", defs.join(" ")))
+                }
             };
             if let Some(w) = out.as_mut() {
-                let _ = writeln!(w, "{id}\t{:.2}\t{now:.2}\t{:.0}\t{label}", seen[id].0, (now - seen[id].0) * 1000.0);
+                let wait = (now - seen[id].0) * 1000.0;
+                let _ = writeln!(w, "{id}\t{:.2}\t{now:.2}\t{wait:.0}\t{label}\t{detail}", seen[id].0);
                 let _ = w.flush();
             }
         }
@@ -493,12 +536,18 @@ fn frame_begin(
             continue;
         }
         if let Some(records) = slot.pending.take() {
-            let ticks: Vec<u64> = {
-                let view = slot.read.slice(..).get_mapped_range();
-                view.as_chunks::<8>().0.iter().map(|b| u64::from_le_bytes(*b)).collect()
-            };
-            let frame = gpu_frame(&records, &ticks, period);
-            shared.0.lock().unwrap_or_else(|e| e.into_inner()).gpu.push(frame);
+            let ticks: Result<Vec<u64>, _> = slot
+                .read
+                .slice(..)
+                .get_mapped_range()
+                .map(|view| view.as_chunks::<8>().0.iter().map(|b| u64::from_le_bytes(*b)).collect());
+            match ticks {
+                Ok(ticks) => {
+                    let frame = gpu_frame(&records, &ticks, period);
+                    shared.0.lock().unwrap_or_else(|e| e.into_inner()).gpu.push(frame);
+                }
+                Err(e) => error!("SSX_PERF: the GPU marks' read-back failed, the frame's GPU times are dropped: {e}"),
+            }
         }
         slot.read.unmap();
         slot.mapped.store(false, Ordering::Release);

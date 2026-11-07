@@ -1,3 +1,4 @@
+pub mod anim_clip;
 pub mod anim_db;
 pub mod anim_eval;
 pub mod anim_graph;

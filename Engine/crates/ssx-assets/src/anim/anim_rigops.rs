@@ -218,8 +218,7 @@ pub fn extend_character_rig(
     rig: &SceneGraph,
     bind: &[Srt],
 ) -> anyhow::Result<(SceneGraph, Vec<Srt>, Vec<String>)> {
-    let p = big_root.join(crate::rig_anim::ANIM_DIR).join(crate::rig_anim::RIG_BUNDLE);
-    let all = ssx_formats::ant::Stream::parse(&std::fs::read(&p)?)?;
+    let all = crate::content::data::tuning::anim_all(big_root)?;
     let skeleton = Skeleton::of_rig(&all, "genchar_rig")?;
     let defaults = crate::rigamate::rig_defaults(&all, "genchar_rig")?;
     Ok(extend_rig(rig, bind, &skeleton, &defaults))

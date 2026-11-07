@@ -102,6 +102,7 @@ impl LightState {
             vectors: self.vectors.clone(),
             textures: self.textures.clone(),
             sun_node: None,
+            sky: None,
         }
     }
 }

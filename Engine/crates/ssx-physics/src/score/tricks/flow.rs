@@ -73,7 +73,7 @@ impl TrickState {
             Exit(SuperUber) => [t(AirStates, Some(EXIT_30), true), t(Anticipate, None, start), None, None],
             TweakEnter(SuperUber) => [t(TweakLoop(SuperUber), Some(END_30), true), None, None, None],
             TweakExit(SuperUber) => {
-                let short = matches!(self.trick_type_locked, TrickType::Rocket | TrickType::Tail);
+                let short = matches!(self.trick_type_locked.flow_base(), TrickType::Rocket | TrickType::Tail);
                 [t(AirStates, Some(if short { EXIT_20 } else { EXIT_30 }), true), None, None, None]
             }
             TweakLoop(Normal) => {

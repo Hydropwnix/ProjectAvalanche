@@ -14,7 +14,8 @@ fn labels(page: Page, data_ready: bool) -> (&'static str, &'static str) {
     match page {
         Page::Play if data_ready => ("PLAY", "START THE GAME"),
         Page::Play => ("PLAY", "SET UP THE GAME DATA FIRST"),
-        Page::Mods => ("MODS", "NOT AVAILABLE YET"),
+        Page::Host => ("HOST", "A SERVER FOR YOUR FRIENDS"),
+        Page::Mods => ("MODS", "INSTALL, ORDER, SWITCH"),
         Page::Settings => ("SETTINGS", "GRAPHICS, CONTROLS, AUDIO"),
         Page::Extras => ("EXTRAS", "TOOLS, CREDITS, UPDATES"),
     }
@@ -77,7 +78,7 @@ pub fn show(ui: &mut Ui, l: &Layout, cursor: MenuItem, data_ready: bool, forced:
         }
         entry(&painter, l, rect, labels(page, data_ready), Look { selected: cursor == item, hovered });
     }
-    rule(l.entries[3].bottom());
+    rule(l.entries[l.entries.len() - 1].bottom());
     let (hovered, selected) = (sense(ui, MenuItem::Exit, l.exit), cursor == MenuItem::Exit);
     rule(l.exit.top());
     if hovered || selected {

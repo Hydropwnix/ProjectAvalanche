@@ -1,4 +1,4 @@
-use glam::Vec3;
+use glam::{Quat, Vec3};
 
 use crate::bvh::{Bvh, segment_hits_box, sphere_hits_box};
 use crate::surface::{self, TERRAIN_SURFACE_ID, Weights};
@@ -52,6 +52,8 @@ pub struct BuildStats {
     pub prop_missing: usize,
     pub prop_missing_paths: Vec<String>,
     pub prop_cylinders: usize,
+    pub prop_packages: Vec<String>,
+    pub prop_decision: Option<String>,
     pub terrain_class_faces: [usize; 32],
     pub terrain_class_meshes: [usize; 32],
     pub prop_class_clusters: [usize; 32],
@@ -70,6 +72,10 @@ impl BuildStats {
         self.prop_missing += o.prop_missing;
         self.prop_missing_paths.extend(o.prop_missing_paths.iter().cloned());
         self.prop_cylinders += o.prop_cylinders;
+        self.prop_packages.extend(o.prop_packages.iter().cloned());
+        if o.prop_decision.is_some() {
+            self.prop_decision.clone_from(&o.prop_decision);
+        }
         for i in 0..32 {
             self.terrain_class_faces[i] += o.terrain_class_faces[i];
             self.terrain_class_meshes[i] += o.terrain_class_meshes[i];
@@ -100,6 +106,7 @@ pub struct CollisionWorld {
     pub quad_units: Vec<u32>,
     pub cluster_entity: Vec<u32>,
     pub entities: Vec<PropEntity>,
+    pub cluster_frame: Vec<Quat>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -116,7 +123,7 @@ pub struct TriEdges {
 
 pub const TERRAIN_TRIANGLE_FLAGS: u32 = 0x12;
 
-pub const DEFAULT_PART_MATERIAL: [f32; 3] = [0.5, 0.3, 0.4];
+pub use ssx_assets::object_collision::DEFAULT_PART_MATERIAL;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Hit {
@@ -183,6 +190,7 @@ impl CollisionWorld {
         self.cluster_material.push(DEFAULT_PART_MATERIAL);
         self.quad_units.push(0);
         self.cluster_entity.push(0);
+        self.cluster_frame.push(Quat::IDENTITY);
     }
 
     pub fn add_entity(&mut self, e: PropEntity) -> u32 {
@@ -193,6 +201,12 @@ impl CollisionWorld {
     pub fn set_cluster_entity(&mut self, id: u32) {
         if let Some(e) = self.cluster_entity.last_mut() {
             *e = id;
+        }
+    }
+
+    pub fn set_cluster_frame(&mut self, frame: Quat) {
+        if let Some(f) = self.cluster_frame.last_mut() {
+            *f = frame;
         }
     }
 
@@ -283,6 +297,7 @@ impl CollisionWorld {
         let n0 = self.entities.len() as u32;
         self.cluster_entity.extend(other.cluster_entity.into_iter().map(|e| if e == 0 { 0 } else { e + n0 }));
         self.entities.extend(other.entities);
+        self.cluster_frame.extend(other.cluster_frame);
         self.stats.add(&other.stats);
     }
 

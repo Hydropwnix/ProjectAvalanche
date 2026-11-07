@@ -4,14 +4,14 @@ pub mod gpu;
 pub mod movie;
 
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use bevy::prelude::*;
+use bevy::render::RenderApp;
 use bevy::render::extract_component::{ExtractComponent, ExtractComponentPlugin};
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
-use ssx_ui::display::{BlendMode, Player, TextFilter};
-use ssx_ui::geom::{Mat2d, RectF};
+use ssx_ui::display::{BlendMode, Player};
+use ssx_ui::geom::Mat2d;
 use ssx_ui::glyph::GlyphAtlas;
 use ssx_ui::image::ImageData;
 use ssx_ui::library::{ImageId, Library};
@@ -25,6 +25,7 @@ pub const DRAW_FLOATS: usize = 32;
 pub struct UiPassSystems;
 
 #[derive(Component, Clone, Copy, Default, ExtractComponent)]
+#[extract_app(RenderApp)]
 pub struct UiCamera;
 
 #[derive(Resource)]
@@ -35,7 +36,6 @@ pub struct UiScene {
     pub renderer: Renderer,
     pub playing: bool,
     pub scale_mode: ScaleMode,
-    pub filters: bool,
     pub clear: Option<[f32; 3]>,
     pub hidden: bool,
     pub window_hidden: bool,
@@ -52,7 +52,6 @@ impl UiScene {
             renderer: Renderer::new(),
             playing: false,
             scale_mode: ScaleMode::NoBorder,
-            filters: true,
             clear: None,
             hidden: false,
             window_hidden: false,
@@ -94,7 +93,6 @@ pub enum UiTexture {
     None,
     Image { image: ImageId, smooth: bool },
     Gradients,
-    Layer(u32),
     Glyphs,
 }
 
@@ -107,17 +105,8 @@ pub enum UiOp {
     MaskPopEnd,
 }
 
-#[derive(Clone, Debug)]
-pub struct UiLayer {
-    pub origin: UVec2,
-    pub size: UVec2,
-    pub ops: Vec<UiOp>,
-    pub filter: TextFilter,
-    pub px_per_twip: f32,
-    pub key: u64,
-}
-
 #[derive(Resource, Clone, Default, ExtractResource)]
+#[extract_app(RenderApp)]
 pub struct UiFrame {
     pub viewport: UVec2,
     pub vertices: Arc<Vec<[f32; 2]>>,
@@ -126,7 +115,6 @@ pub struct UiFrame {
     pub indices: Arc<Vec<u32>>,
     pub draws: Arc<Vec<[f32; DRAW_FLOATS]>>,
     pub ops: Arc<Vec<UiOp>>,
-    pub layers: Arc<Vec<UiLayer>>,
     pub gradients: Arc<Vec<[u8; 4]>>,
     pub gradient_rows_used: u32,
     pub images: Arc<Vec<Arc<ImageData>>>,
@@ -144,12 +132,21 @@ impl UiFrame {
                 })
                 .sum()
         };
-        count(&self.ops) + self.layers.iter().map(|l| count(&l.ops)).sum::<usize>()
+        count(&self.ops)
     }
+}
+
+#[derive(Resource, Default)]
+pub struct UiOverlay {
+    pub draws: Vec<ssx_ui::render::overlay::OverlayDraw>,
+    pub images: Vec<Arc<ImageData>>,
+    pub font: String,
+    pub cpu: std::time::Duration,
 }
 
 struct FrameBuilder<'a> {
     lib: &'a Library,
+    extra: &'a [Arc<ImageData>],
     vertices: Vec<[f32; 2]>,
     paint_coords: Vec<[f32; 2]>,
     draw_ids: Vec<u32>,
@@ -158,11 +155,6 @@ struct FrameBuilder<'a> {
     gradients: Vec<[u8; 4]>,
     gradient_rows: HashMap<*const GradientPaint, u32>,
     glyph_size: (u32, u32),
-}
-
-// TODO(guess): two box passes for the "high quality" flag (passes > 1), one otherwise; settle: the glyph cache's blur in the executable (raster parameters set by 0x8271CC00).
-pub fn blur_passes(high_quality: bool) -> u32 {
-    if high_quality { 2 } else { 1 }
 }
 
 impl FrameBuilder<'_> {
@@ -189,8 +181,8 @@ impl FrameBuilder<'_> {
         row
     }
 
-    fn draw(&mut self, d: &DrawItem, origin: Vec2, target: Vec2) -> (u32, UiTexture) {
-        let xf = Mat2d::translate(-origin.x, -origin.y).mul(&d.transform);
+    fn draw(&mut self, d: &DrawItem, target: Vec2) -> (u32, UiTexture) {
+        let xf = d.transform;
         let (inv, kind, rect, tex, texture) = match &d.paint {
             Paint::Solid(c) => (Mat2d::IDENTITY, 0.0, *c, [1.0, 1.0], UiTexture::None),
             Paint::Gradient(g) => {
@@ -205,17 +197,21 @@ impl FrameBuilder<'_> {
                 (inv, kind, [v, focal, f32::from(g.spread), 0.0], [256.0, GRADIENT_ROWS as f32], UiTexture::Gradients)
             }
             Paint::Bitmap { bitmap, matrix, repeat, smooth } => {
-                let img = self.lib.image(bitmap.image);
-                let r = bitmap.rect.map(|v| v as f32);
-                let inv = matrix.inverse().unwrap_or(Mat2d::scale(0.0, 0.0));
-                let kind = if *repeat { 5.0 } else { 4.0 };
-                (
-                    inv,
-                    kind,
-                    r,
-                    [img.width as f32, img.height as f32],
-                    UiTexture::Image { image: bitmap.image, smooth: *smooth },
-                )
+                let n = self.lib.images().len();
+                let img = match bitmap.image.checked_sub(n) {
+                    Some(k) => self.extra.get(k),
+                    None => Some(self.lib.image(bitmap.image)),
+                };
+                match img {
+                    Some(img) => {
+                        let r = bitmap.rect.map(|v| v as f32);
+                        let inv = matrix.inverse().unwrap_or(Mat2d::scale(0.0, 0.0));
+                        let kind = if *repeat { 5.0 } else { 4.0 };
+                        let tex = [img.width as f32, img.height as f32];
+                        (inv, kind, r, tex, UiTexture::Image { image: bitmap.image, smooth: *smooth })
+                    }
+                    None => (Mat2d::IDENTITY, 0.0, [0.0; 4], [1.0, 1.0], UiTexture::None),
+                }
             }
             Paint::Glyph { raster, rect, .. } => {
                 let inv = Mat2d::translate(-(raster.x0 as f32), -(raster.y0 as f32));
@@ -268,25 +264,18 @@ impl FrameBuilder<'_> {
         (self.draws.len() as u32 - 1, texture)
     }
 
-    fn op(&mut self, d: &DrawItem, origin: Vec2, target: Vec2) -> Option<UiOp> {
+    fn op(&mut self, d: &DrawItem, target: Vec2) -> Option<UiOp> {
         let blend = UiBlend::from_mode(d.blend)?;
-        let (draw, texture) = self.draw(d, origin, target);
+        let (draw, texture) = self.draw(d, target);
         let (first_index, index_count) = self.mesh(&d.mesh.vertices, &d.mesh.paint, &d.mesh.indices, draw);
         Some(UiOp::Draw { draw, first_index, index_count, base_vertex: 0, texture, blend })
     }
 }
 
-fn filter_margin(f: &TextFilter, px_per_twip: f32) -> f32 {
-    let blur = (f.blur.0.max(f.blur.1) / 2.0) * blur_passes(f.blur_high_quality) as f32;
-    let shadow = f.shadow.map_or(0.0, |s| {
-        (s.blur_x.max(s.blur_y) / 2.0) * blur_passes(s.high_quality) as f32 + s.offset.0.abs().max(s.offset.1.abs())
-    });
-    (blur + shadow) * px_per_twip + 2.0
-}
-
-pub fn flatten(lib: &Library, list: &RenderList, filters: bool, glyphs: Option<Arc<GlyphAtlas>>) -> UiFrame {
+pub fn flatten(lib: &Library, list: &RenderList, glyphs: Option<Arc<GlyphAtlas>>, extra: &[Arc<ImageData>]) -> UiFrame {
     let mut b = FrameBuilder {
         lib,
+        extra,
         vertices: Vec::new(),
         paint_coords: Vec::new(),
         draw_ids: Vec::new(),
@@ -298,74 +287,13 @@ pub fn flatten(lib: &Library, list: &RenderList, filters: bool, glyphs: Option<A
     };
     let vp = Vec2::new(list.viewport.0 as f32, list.viewport.1 as f32);
     let mut ops = Vec::new();
-    let mut layers: Vec<UiLayer> = Vec::new();
-    let mut open: Option<UiLayer> = None;
     for cmd in &list.commands {
         match cmd {
-            Command::Draw(d) => match &mut open {
-                Some(l) => {
-                    let (origin, size) = (l.origin.as_vec2(), l.size.as_vec2());
-                    if let Some(op @ UiOp::Draw { draw, .. }) = b.op(d, origin, size) {
-                        let mut h = std::hash::DefaultHasher::new();
-                        l.key.hash(&mut h);
-                        (Arc::as_ptr(&d.mesh) as usize).hash(&mut h);
-                        b.draws[draw as usize].map(f32::to_bits).hash(&mut h);
-                        l.key = h.finish();
-                        l.ops.push(op);
-                    }
-                }
-                None => ops.extend(b.op(d, Vec2::ZERO, vp)),
-            },
+            Command::Draw(d) => ops.extend(b.op(d, vp)),
             Command::MaskBegin => ops.push(UiOp::MaskBegin),
             Command::MaskEnd => ops.push(UiOp::MaskEnd),
             Command::MaskPopBegin => ops.push(UiOp::MaskPopBegin),
             Command::MaskPopEnd => ops.push(UiOp::MaskPopEnd),
-            Command::FilterBegin { filter, bounds, scale } if filters => {
-                let px_per_twip = *scale;
-                let m = filter_margin(filter, px_per_twip);
-                let r = RectF::new(bounds.x0 - m, bounds.y0 - m, bounds.x1 + m, bounds.y1 + m);
-                let (x0, y0) = (r.x0.floor().max(0.0), r.y0.floor().max(0.0));
-                let (x1, y1) = (r.x1.ceil().min(vp.x), r.y1.ceil().min(vp.y));
-                let size =
-                    if x1 > x0 && y1 > y0 { UVec2::new((x1 - x0) as u32, (y1 - y0) as u32) } else { UVec2::ZERO };
-                let mut h = std::hash::DefaultHasher::new();
-                size.hash(&mut h);
-                format!("{filter:?} {px_per_twip}").hash(&mut h);
-                open = Some(UiLayer {
-                    origin: UVec2::new(x0 as u32, y0 as u32),
-                    size,
-                    ops: Vec::new(),
-                    filter: *filter,
-                    px_per_twip,
-                    key: h.finish(),
-                });
-            }
-            Command::FilterEnd => {
-                let Some(l) = open.take() else { continue };
-                if l.size.x == 0 || l.ops.is_empty() {
-                    continue;
-                }
-                let index = layers.len() as u32;
-                let (o, s) = (l.origin.as_vec2(), l.size.as_vec2());
-                let rec: [f32; DRAW_FLOATS] = [
-                    s.x, 0.0, 0.0, s.y, o.x, o.y, vp.x, vp.y, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, s.x, 0.0, 0.0,
-                    s.y, 0.0, 0.0, 6.0, 0.0, 0.0, 0.0, 0.0, 0.0, s.x, s.y, 0.0, 0.0,
-                ];
-                b.draws.push(rec);
-                let draw = b.draws.len() as u32 - 1;
-                const QUAD: [[f32; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
-                let (first_index, index_count) = b.mesh(&QUAD, &[], &[0, 1, 2, 0, 2, 3], draw);
-                ops.push(UiOp::Draw {
-                    draw,
-                    first_index,
-                    index_count,
-                    base_vertex: 0,
-                    texture: UiTexture::Layer(index),
-                    blend: UiBlend::Normal,
-                });
-                layers.push(l);
-            }
-            Command::FilterBegin { .. } => {}
         }
     }
     UiFrame {
@@ -377,9 +305,8 @@ pub fn flatten(lib: &Library, list: &RenderList, filters: bool, glyphs: Option<A
         indices: Arc::new(b.indices),
         draws: Arc::new(b.draws),
         ops: Arc::new(ops),
-        layers: Arc::new(layers),
         gradients: Arc::new(b.gradients),
-        images: Arc::new(lib.images().to_vec()),
+        images: Arc::new(lib.images().iter().chain(extra).cloned().collect()),
         glyphs,
         clear: None,
     }
@@ -402,6 +329,7 @@ fn build_frame(
     scene: Option<ResMut<UiScene>>,
     cameras: Query<&Camera, With<UiCamera>>,
     mut frame: ResMut<UiFrame>,
+    overlay: Option<ResMut<UiOverlay>>,
 ) {
     let Some(mut scene) = scene else { return };
     let Some(size) = cameras.iter().find_map(|c| c.physical_viewport_size()) else { return };
@@ -417,16 +345,34 @@ fn build_frame(
         scene.last_cpu = t0.elapsed();
         return;
     }
-    let list = if scene.hidden {
+    let mut list = if scene.hidden {
         RenderList { viewport: (size.x, size.y), ..Default::default() }
     } else {
-        scene.renderer.build(&scene.lib, &scene.player, (size.x, size.y), scene.scale_mode)
+        let list = scene.renderer.build(&scene.lib, &scene.player, (size.x, size.y), scene.scale_mode);
+        for note in scene.renderer.take_refused() {
+            warn!("ui: a shape not drawn: {note}");
+        }
+        list
+    };
+    let mut overlay = overlay;
+    let extra = match overlay.as_deref_mut() {
+        Some(o) if !scene.hidden && !o.draws.is_empty() => {
+            let t = std::time::Instant::now();
+            let viewport = (size.x, size.y);
+            let stage = ssx_ui::render::overlay::stage_transform(viewport, scene.scale_mode);
+            let base = scene.lib.images().len();
+            let more = scene.renderer.overlay(&scene.lib, &o.font, &o.draws, stage, viewport, base);
+            list.commands.extend(more);
+            o.cpu = t.elapsed();
+            o.images.clone()
+        }
+        _ => Vec::new(),
     };
     let atlas = &scene.renderer.glyphs.atlas;
     if scene.glyph_atlas.as_ref().is_none_or(|a| a.generation != atlas.generation) {
         scene.glyph_atlas = Some(Arc::new(atlas.clone()));
     }
-    *frame = flatten(&scene.lib, &list, scene.filters, scene.glyph_atlas.clone());
+    *frame = flatten(&scene.lib, &list, scene.glyph_atlas.clone(), &extra);
     frame.clear = scene.clear;
     scene.last_cpu = t0.elapsed();
 }
@@ -446,6 +392,14 @@ mod tests {
 
         fn exists(&self, _: &str) -> bool {
             false
+        }
+
+        fn list(&self, _: &str, _: &str) -> Vec<String> {
+            Vec::new()
+        }
+
+        fn image(&self, path: &str) -> anyhow::Result<ssx_ui::image::ImageData> {
+            anyhow::bail!("{path}: no files")
         }
     }
 
@@ -479,7 +433,7 @@ mod tests {
             viewport: (64, 64),
             background: None,
         };
-        let f = flatten(&lib, &list, true, None);
+        let f = flatten(&lib, &list, None, &[]);
         assert_eq!(f.vertices.len(), 16);
         assert_eq!(f.paint_coords.len(), 16);
         assert_eq!(*f.draw_ids, [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3]);
