@@ -35,21 +35,19 @@ fn a_live_writers_partial_file_is_left_alone() {
         let name = crate::slot::slot_name("servers.json".as_ref(), slot);
         std::fs::write(s.0.join(&name), format!("writer {slot}")).unwrap();
         let f = File::options().read(true).write(true).open(s.0.join(&name)).unwrap();
-        f.try_lock().expect("the test's writer holds the lock");
+        crate::try_lock_writers(&f).expect("the test's writer holds the lock");
         held.push(f);
     }
     replace(&path, b"[]", &Options::new()).unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), b"[]");
-    for (slot, mut f) in held.iter().enumerate() {
-        let mut text = String::new();
-        std::io::Seek::rewind(&mut f).unwrap();
-        std::io::Read::read_to_string(&mut f, &mut text).unwrap();
-        assert_eq!(text, format!("writer {slot}"));
+    for slot in 0..3 {
+        let name = crate::slot::slot_name("servers.json".as_ref(), slot);
+        assert_eq!(std::fs::read_to_string(s.0.join(&name)).unwrap(), format!("writer {slot}"));
     }
     for slot in 3..SLOTS {
         let name = crate::slot::slot_name("servers.json".as_ref(), slot);
         let f = File::create_new(s.0.join(&name)).unwrap();
-        f.try_lock().unwrap();
+        crate::try_lock_writers(&f).unwrap();
         held.push(f);
     }
     let e = replace(&path, b"[1]", &Options::new()).unwrap_err();

@@ -22,6 +22,14 @@ pub use tree::{
 };
 pub use write::{Prepared, create, create_with, prepare_with, replace, replace_with, update};
 
+pub fn try_lock_writers(file: &std::fs::File) -> Result<(), std::fs::TryLockError> {
+    sys::try_lock_writers(file)
+}
+
+pub fn unlock_writers(file: &std::fs::File) -> std::io::Result<()> {
+    sys::unlock_writers(file)
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
     mode: u32,

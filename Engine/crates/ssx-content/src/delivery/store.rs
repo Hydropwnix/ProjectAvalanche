@@ -188,7 +188,7 @@ impl FileStore {
                 o.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
             }
             let file = o.open(&path).map_err(io_at(&path))?;
-            match file.try_lock() {
+            match ssx_files::try_lock_writers(&file) {
                 Ok(()) => {}
                 Err(std::fs::TryLockError::WouldBlock) => return Err(StoreError::Busy(*hash)),
                 Err(std::fs::TryLockError::Error(e)) => return Err(StoreError::Io { path, source: e }),
@@ -314,7 +314,7 @@ impl FileStore {
             let mut o = std::fs::OpenOptions::new();
             o.read(true).write(true).create(true).truncate(false);
             let lock = o.open(&lock_path).map_err(io_at(&lock_path))?;
-            if lock.try_lock().is_err() {
+            if ssx_files::try_lock_writers(&lock).is_err() {
                 continue;
             }
             let slot = Mount { dir: dir.join(n.to_string()), _lock: lock };

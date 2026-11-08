@@ -56,7 +56,7 @@ impl<F: Folder> Drop for Claim<F> {
         if !self.keep {
             let _ = self.folder.remove(&self.name);
         }
-        let _ = self.file.unlock();
+        let _ = sys::unlock_writers(&self.file);
         held().remove(&self.id);
     }
 }
@@ -106,7 +106,7 @@ fn take<F: Folder + Clone>(folder: &F, name: &OsStr, mode: u32) -> io::Result<Sl
     ids.insert(id);
     drop(ids);
     let mut claim = Claim { folder: folder.clone(), name: name.to_os_string(), file, id, keep: false };
-    match claim.file.try_lock() {
+    match sys::try_lock_writers(&claim.file) {
         Ok(()) => {}
         Err(TryLockError::WouldBlock) => {
             claim.done();
@@ -128,7 +128,7 @@ fn reclaim<F: Folder>(folder: &F, name: &OsStr, ids: &BTreeSet<FileId>) -> bool 
         Err(e) => return e.kind() == io::ErrorKind::NotFound,
     };
     let Ok(id) = sys::id(&file) else { return false };
-    if ids.contains(&id) || file.try_lock().is_err() {
+    if ids.contains(&id) || sys::try_lock_writers(&file).is_err() {
         return false;
     }
     let gone = folder.id_of(name).ok().flatten() == Some(id)
@@ -136,6 +136,6 @@ fn reclaim<F: Folder>(folder: &F, name: &OsStr, ids: &BTreeSet<FileId>) -> bool 
             Ok(()) => true,
             Err(e) => e.kind() == io::ErrorKind::NotFound,
         };
-    let _ = file.unlock();
+    let _ = sys::unlock_writers(&file);
     gone
 }

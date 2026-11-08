@@ -1,10 +1,18 @@
-use std::fs::{File, Metadata, OpenOptions};
+use std::fs::{File, Metadata, OpenOptions, TryLockError};
 use std::io;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FileId(pub(crate) u64, pub(crate) u64);
+
+pub fn try_lock_writers(file: &File) -> Result<(), TryLockError> {
+    file.try_lock()
+}
+
+pub fn unlock_writers(file: &File) -> io::Result<()> {
+    file.unlock()
+}
 
 pub fn id(file: &File) -> io::Result<FileId> {
     file.metadata().map(|m| id_of_metadata(&m))

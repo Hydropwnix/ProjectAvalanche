@@ -1,16 +1,49 @@
-use std::fs::{File, OpenOptions};
+use std::fs::{File, OpenOptions, TryLockError};
 use std::io;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 
-use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER};
+use windows_sys::Win32::Foundation::{
+    ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, ERROR_LOCK_VIOLATION, ERROR_NOT_LOCKED,
+};
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
     FILE_ID_128, FILE_ID_INFO, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdInfo,
-    GetFileInformationByHandleEx, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    GetFileInformationByHandleEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
+    MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, UnlockFile,
 };
+use windows_sys::Win32::System::IO::{OVERLAPPED, OVERLAPPED_0, OVERLAPPED_0_0};
+
+const WRITERS_BYTE: u64 = 1 << 62;
+
+pub fn try_lock_writers(file: &File) -> Result<(), TryLockError> {
+    let mut at = OVERLAPPED {
+        Anonymous: OVERLAPPED_0 {
+            Anonymous: OVERLAPPED_0_0 { Offset: WRITERS_BYTE as u32, OffsetHigh: (WRITERS_BYTE >> 32) as u32 },
+        },
+        ..Default::default()
+    };
+    let flags = LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY;
+    if unsafe { LockFileEx(file.as_raw_handle(), flags, 0, 1, 0, &mut at) } != 0 {
+        return Ok(());
+    }
+    let e = io::Error::last_os_error();
+    if e.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) {
+        Err(TryLockError::WouldBlock)
+    } else {
+        Err(TryLockError::Error(e))
+    }
+}
+
+pub fn unlock_writers(file: &File) -> io::Result<()> {
+    if unsafe { UnlockFile(file.as_raw_handle(), WRITERS_BYTE as u32, (WRITERS_BYTE >> 32) as u32, 1, 0) } != 0 {
+        return Ok(());
+    }
+    let e = io::Error::last_os_error();
+    if e.raw_os_error() == Some(ERROR_NOT_LOCKED as i32) { Ok(()) } else { Err(e) }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FileId(u64, [u8; 16]);
