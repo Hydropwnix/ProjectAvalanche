@@ -6,7 +6,7 @@ use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 
 use windows_sys::Win32::Foundation::{
-    ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, ERROR_LOCK_VIOLATION, ERROR_NOT_LOCKED,
+    ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER, ERROR_LOCK_VIOLATION, ERROR_NOT_LOCKED, ERROR_NOT_SUPPORTED,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
@@ -129,19 +129,25 @@ fn move_file(from: &Path, to: &Path, flags: u32) -> io::Result<()> {
 }
 
 pub fn rename_replace(from: &Path, to: &Path) -> io::Result<()> {
-    match move_file(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) {
-        Err(e) if e.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) => match posix_replace(from, to) {
-            Ok(()) => Ok(()),
-            Err(p) if p.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) => Err(e),
-            Err(p) => Err(p),
-        },
+    match posix_replace(from, to) {
+        // TODO(guess): a Windows or a file system without the POSIX rename answers with one of the three errors std's
+        // POSIX delete falls back on (std library/std/src/sys/fs/windows.rs `delete`: ERROR_INVALID_PARAMETER,
+        // ERROR_NOT_SUPPORTED, ERROR_INVALID_FUNCTION; documented there for the delete, not for the rename); settle:
+        // the error of FileRenameInfoEx with FILE_RENAME_FLAG_POSIX_SEMANTICS on FAT32, exFAT and an SMB share.
+        Err(e)
+            if [ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED, ERROR_INVALID_FUNCTION]
+                .iter()
+                .any(|&code| e.raw_os_error() == Some(code as i32)) =>
+        {
+            move_file(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
+        }
         r => r,
     }
 }
 
-// TODO(guess): the rename through a write-through handle is taken to be on the disk when it returns, as
-// MOVEFILE_WRITE_THROUGH's is (ReactOS's MoveFileWithProgressW opens its source with FILE_WRITE_THROUGH and renames
-// through that handle; Microsoft documents write-through for writes only); settle: Microsoft documentation of
+// TODO(guess): the rename through a write-through handle (every replace's first way) is taken to be on the disk when it
+// returns, as MOVEFILE_WRITE_THROUGH's is (ReactOS's MoveFileWithProgressW opens its source with FILE_WRITE_THROUGH and
+// renames through that handle; Microsoft documents write-through for writes only); settle: Microsoft documentation of
 // write-through for FileRenameInfoEx, or a power-cut test on NTFS.
 fn posix_replace(from: &Path, to: &Path) -> io::Result<()> {
     use windows_sys::Win32::Storage::FileSystem::{
