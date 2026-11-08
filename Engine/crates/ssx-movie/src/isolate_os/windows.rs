@@ -33,7 +33,7 @@ use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows_sys::Win32::System::SystemServices::PROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY;
 use windows_sys::Win32::System::Threading::{
-    CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
+    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DETACHED_PROCESS, DeleteProcThreadAttributeList,
     EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, InitializeProcThreadAttributeList,
     PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
     PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION,
@@ -417,6 +417,13 @@ pub fn spawn(exe: &Path, arg: &str) -> Result<Spawned, String> {
         return Err(last("the system folder"));
     }
     let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+    // TODO(guess): the child's exit with 0xC0000142 (STATUS_DLL_INIT_FAILED) at its start, every start of the Windows
+    // CI's second sandbox run (run 42449421464, CREATE_NO_WINDOW then), was its console host refused, and a detached
+    // child starts; the other candidate, the AppContainer refused by the runner's non-interactive window station (no
+    // entry for the container's SID), is not excluded. Settled by the Windows CI step `cargo test --release -p
+    // ssx-movie --test sandbox` (the child's start and its mitigations read from outside).
+    // SAFETY: every pointer is to a live, NUL-terminated or sized buffer of this frame; the attribute values live
+    // until after the call; handles are inherited from the list only.
     let ok = unsafe {
         CreateProcessW(
             app.as_ptr(),
@@ -424,7 +431,7 @@ pub fn spawn(exe: &Path, arg: &str) -> Result<Spawned, String> {
             std::ptr::null(),
             std::ptr::null(),
             1,
-            EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+            EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | DETACHED_PROCESS | CREATE_UNICODE_ENVIRONMENT,
             env.as_ptr().cast(),
             sys.as_ptr(),
             &si.StartupInfo,
