@@ -15,6 +15,10 @@ use other as imp;
 
 pub use imp::{Process, Status, spawn};
 pub(crate) use imp::{measure_from_here, prepare, seal};
+#[cfg(windows)]
+pub use windows::{
+    ImageAccess, OuterJob, container_may_run, grant_image_access, outer_job, passed_environment, windows_build,
+};
 
 pub const MEMORY_LIMIT: u64 = 768 << 20;
 

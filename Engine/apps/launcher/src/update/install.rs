@@ -11,6 +11,7 @@ pub(crate) fn allowed_files() -> &'static [&'static str] {
         &[
             "Project Avalanche.exe",
             "avalanche-game.exe",
+            "avalanche-movie.exe",
             "avalanche-server.exe",
             "THIRD_PARTY_NOTICES.txt",
             "THIRD_PARTY_NOTICES-server.txt",
@@ -30,6 +31,7 @@ pub(crate) fn allowed_files() -> &'static [&'static str] {
         &[
             "project-avalanche",
             "avalanche-game",
+            "avalanche-movie",
             "avalanche-server",
             "THIRD_PARTY_NOTICES.txt",
             "THIRD_PARTY_NOTICES-server.txt",
@@ -74,9 +76,19 @@ pub(crate) fn game_name() -> &'static str {
     "avalanche-game"
 }
 
+#[cfg(windows)]
+pub(crate) fn decoder_name() -> &'static str {
+    "avalanche-movie.exe"
+}
+
+#[cfg(not(windows))]
+pub(crate) fn decoder_name() -> &'static str {
+    "avalanche-movie"
+}
+
 #[cfg(unix)]
 pub(crate) fn is_program(name: &str) -> bool {
-    matches!(name, "project-avalanche" | "avalanche-game" | "avalanche-server")
+    matches!(name, "project-avalanche" | "avalanche-game" | "avalanche-movie" | "avalanche-server")
 }
 
 pub fn install_dir() -> Result<PathBuf, String> {
@@ -147,7 +159,7 @@ fn validate(staged: &Staged) -> Result<(), String> {
             return Err(format!("{f} in the update is not executable"));
         }
     }
-    for need in [launcher_name(), game_name()] {
+    for need in [launcher_name(), game_name(), decoder_name()] {
         if !staged.files.iter().any(|f| f == need) {
             return Err(format!("the update has no {need}"));
         }
@@ -387,10 +399,11 @@ mod tests {
 
     #[test]
     fn a_verified_install_replaces_the_files() {
-        let (root, install, staged) = folders("replace", &[launcher_name(), game_name()]);
-        let files = vec![launcher_name().to_string(), game_name().to_string()];
+        let names = [launcher_name(), game_name(), decoder_name()];
+        let (root, install, staged) = folders("replace", &names);
+        let files = names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
         assert_eq!(journal::install(&staged, &install, &files), Ok(None));
-        for name in [launcher_name(), game_name()] {
+        for name in names {
             assert_eq!(std::fs::read(install.join(name)).unwrap(), b"new");
             assert!(!staged.join(name).exists());
         }
@@ -414,24 +427,28 @@ mod tests {
 
     #[test]
     fn an_update_is_validated_before_it_is_installed() {
-        let (root, install, dir) = folders("validate", &[launcher_name(), game_name()]);
+        let names = [launcher_name(), game_name(), decoder_name()];
+        let (root, install, dir) = folders("validate", &names);
         #[cfg(unix)]
-        for name in [launcher_name(), game_name()] {
+        for name in names {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(dir.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        validate(&staged(&install, &dir, &[launcher_name(), game_name()])).unwrap();
+        validate(&staged(&install, &dir, &names)).unwrap();
+        let refused = validate(&staged(&install, &dir, &[launcher_name(), game_name()])).unwrap_err();
+        assert!(refused.contains(&format!("has no {}", decoder_name())), "{refused}");
         let backup = install.join(BACKUP);
         std::fs::rename(&dir, &backup).unwrap();
-        let refused = validate(&staged(&install, &backup, &[launcher_name(), game_name()])).unwrap_err();
+        let refused = validate(&staged(&install, &backup, &names)).unwrap_err();
         assert!(refused.contains("not one the launcher made"), "{refused}");
         std::fs::rename(&backup, &dir).unwrap();
         #[cfg(unix)]
-        {
+        for name in [game_name(), decoder_name()] {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(dir.join(game_name()), std::fs::Permissions::from_mode(0o644)).unwrap();
-            let refused = validate(&staged(&install, &dir, &[launcher_name(), game_name()])).unwrap_err();
-            assert!(refused.contains("not executable"), "{refused}");
+            std::fs::set_permissions(dir.join(name), std::fs::Permissions::from_mode(0o644)).unwrap();
+            let refused = validate(&staged(&install, &dir, &names)).unwrap_err();
+            assert!(refused.contains(&format!("{name} in the update is not executable")), "{refused}");
+            std::fs::set_permissions(dir.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -467,10 +484,14 @@ mod tests {
     }
 
     #[test]
-    fn the_allowlist_names_the_launcher_and_the_game() {
-        assert!(allowed_files().contains(&launcher_name()));
-        assert!(allowed_files().contains(&game_name()));
+    fn the_allowlist_names_the_launcher_the_game_and_the_movie_decoder() {
+        for name in [launcher_name(), game_name(), decoder_name()] {
+            assert!(allowed_files().contains(&name), "{name}");
+            #[cfg(unix)]
+            assert!(is_program(name), "{name}");
+        }
         assert!(!allowed_files().contains(&"evil.sh"));
+        assert!(!allowed_files().iter().any(|f| f.contains("probe")));
     }
 
     #[test]

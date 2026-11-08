@@ -25,8 +25,9 @@ writing Luau scripts and making mods, maps and gamemodes.
 ## Play on Windows
 
 1. Download the Windows build (the `ProjectAvalanche-windows-x64` artifact of a CI run, or a release) and
-   unpack it anywhere: `Project Avalanche.exe`, `avalanche-game.exe` (the game) and the `fonts` folder must stay in
-   the same folder.
+   unpack it anywhere: `Project Avalanche.exe`, `avalanche-game.exe` (the game), `avalanche-movie.exe` (the game's
+   decoder of mods' movies, which it starts in a sandbox of its own) and the `fonts` folder must stay in the same
+   folder.
 2. Start **Project Avalanche.exe**. On the first start, click the large **SET UP GAME DATA** tile, then
    **Select SSX (2012) Xbox 360 ISO…**, and pick your own disc image (an `.iso` dumped from the retail Xbox 360
    disc). The image is only read, never changed.
@@ -48,8 +49,8 @@ replace them.
 1. Download the Linux build (the `ProjectAvalanche-linux-x64` artifact of a CI run, or a release) and
    unpack `ProjectAvalanche-linux-x64.tar.gz` into a folder of its own (it has no top-level folder:
    `mkdir ProjectAvalanche && tar -xzf ProjectAvalanche-linux-x64.tar.gz -C ProjectAvalanche`):
-   `project-avalanche` (the launcher), `avalanche-game` (the game) and the `fonts` folder must stay in the same
-   folder.
+   `project-avalanche` (the launcher), `avalanche-game` (the game), `avalanche-movie` (the game's decoder of mods'
+   movies) and the `fonts` folder must stay in the same folder.
 2. Start `./project-avalanche` and set up the game data as on Windows (steps 2 to 4 above). The data goes to
    `~/.local/share/project-avalanche/GameData` (`$XDG_DATA_HOME/project-avalanche`; `PROJECT_AVALANCHE_HOME`
    overrides it), the progress to `~/.local/share/project-avalanche/Saves/ssxvprofile`.
@@ -124,13 +125,14 @@ On Windows: `winget install NASM.NASM` (or `choco install nasm`), then add `C:\P
 Then, in `Engine/`:
 
 ```sh
-cargo build --release -p avalanche-game -p avalanche-launcher   # the game and the launcher
+cargo build --release -p avalanche-game -p avalanche-launcher -p ssx-movie   # the game, the launcher, the movie decoder
 cargo build --release -p asset-viewer                           # optional: the asset viewer
 cargo build --release -p avalanche-server                       # optional: the dedicated server (headless)
 target/release/project-avalanche                                # the launcher: set up the game data, then Play
 ```
 
-The launcher expects `avalanche-game` (and `asset-viewer`) next to it in `target/release/`. On Linux it keeps
+The launcher expects `avalanche-game` (and `asset-viewer`) next to it in `target/release/`, and the game its movie
+decoder `avalanche-movie` (without it a mod's movie is refused with that reason). On Linux it keeps
 its data in `~/.local/share/project-avalanche` (`$XDG_DATA_HOME/project-avalanche`; `PROJECT_AVALANCHE_HOME`
 overrides it). Once the data is set up, the game also starts on its own:
 `target/release/avalanche-game --big-root <data folder>/GameData/big` (`--help` lists the options).
@@ -141,7 +143,9 @@ release with both):
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy -p ssx-movie --all-targets --features sandbox-probe -- -D warnings
 cargo test --workspace
+cargo test -p ssx-movie --features sandbox-probe --test sandbox   # the movie decoder's sandbox (Linux x64, Windows)
 ```
 
 ## Open questions in the code
@@ -177,7 +181,7 @@ The Rust workspace is in `Engine/`:
 | `crates/ssx-ui` | the Scaleform player: the menus and the HUD |
 | `crates/ssx-bevy` | the game on Bevy: rendering, audio, the game shell |
 | `crates/ssx-content` | the content system for mods: content ids, the layered registry, package manifests (`resource.toml`), record patches, the packages' checks |
-| `crates/ssx-movie` | the mods' movies: AV1 pictures through rav1d in a child process inside the operating system's sandbox, Vorbis sound through symphonia, read by `ssx-content`'s WebM reader |
+| `crates/ssx-movie` | the mods' movies: AV1 pictures through rav1d in a program of its own (`avalanche-movie`) inside the operating system's sandbox, Vorbis sound through symphonia, read by `ssx-content`'s WebM reader |
 | `crates/ssx-gameplay` | the multiplayer rules the server applies: instances and their rounds, the chat's and the poses' checks |
 | `crates/ssx-script` | the mods' Luau scripts: the sandboxed runtime on `mlua` (Luau), the budgets, the API, the client host the game runs |
 | `crates/ssx-net-proto` | the multiplayer wire: the pose sample, the join's sealed request and answer, the keys, the names |

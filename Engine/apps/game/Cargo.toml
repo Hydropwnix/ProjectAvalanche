@@ -11,7 +11,6 @@ publish.workspace = true
 ssx-bevy = { workspace = true, features = ["net", "scripts"] }
 ssx-assets.workspace = true
 ssx-core.workspace = true
-ssx-movie.workspace = true
 bevy.workspace = true
 anyhow.workspace = true
 clap.workspace = true

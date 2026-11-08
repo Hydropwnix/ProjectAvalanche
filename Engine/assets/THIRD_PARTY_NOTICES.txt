@@ -1,10 +1,11 @@
 Project Avalanche — third-party notices
 
-Project Avalanche (the launcher) and avalanche-game (the game) contain the third-party software listed below, for
-Windows x64 and Linux x64. Each entry names the package, its version, its license expression and the license it is
-used under (one side of an "OR"), its authors and repository, and reproduces the license texts the package ships;
-where a package ships no text for its license, the standard text follows with the package's authors as the copyright
-holders. Texts that occur more than once are printed once, at the end, and referred to by their number.
+Project Avalanche (the launcher), avalanche-game (the game) and avalanche-movie (its movie decoder) contain the
+third-party software listed below, for Windows x64 and Linux x64. Each entry names the package, its version, its
+license expression and the license it is used under (one side of an "OR"), its authors and repository, and reproduces
+the license texts the package ships; where a package ships no text for its license, the standard text follows with the
+package's authors as the copyright holders. Texts that occur more than once are printed once, at the end, and referred
+to by their number.
 
 SSX is (c) Electronic Arts. Project Avalanche is an unofficial port; it needs your own copy of the game, and contains
 none of its data.

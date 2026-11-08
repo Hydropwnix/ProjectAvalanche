@@ -153,7 +153,6 @@ struct Cli {
 }
 
 fn main() -> AppExit {
-    ssx_movie::isolate::serve_if_child();
     match game_args(Cli::parse()).and_then(game_mode::run) {
         Ok(exit) => exit,
         Err(e) => {

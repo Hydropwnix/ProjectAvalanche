@@ -10,6 +10,7 @@ publish.workspace = true
 [features]
 default = ["asm"]
 asm = ["rav1d/asm"]
+sandbox-probe = []
 
 [dependencies]
 ssx-content.workspace = true
@@ -23,14 +24,20 @@ seccompiler.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = [
+    "Wdk_System_SystemServices",
+    "Wdk_System_Threading",
     "Win32_Foundation",
+    "Win32_Networking_WinSock",
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Security_Isolation",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_Diagnostics_Debug",
+    "Win32_System_IO",
     "Win32_System_JobObjects",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
     "Win32_System_Pipes",
     "Win32_System_SystemInformation",
     "Win32_System_SystemServices",
@@ -42,22 +49,19 @@ windows-sys = { version = "=0.61.2", features = [
 [dev-dependencies]
 libtest-mimic.workspace = true
 
-[target.'cfg(windows)'.dev-dependencies]
-windows-sys = { version = "=0.61.2", features = [
-    "Win32_Foundation",
-    "Win32_Security",
-    "Win32_Storage_FileSystem",
-    "Win32_System_IO",
-    "Win32_System_JobObjects",
-    "Win32_System_Memory",
-    "Win32_System_Pipes",
-    "Win32_System_Threading",
-    "Win32_UI_WindowsAndMessaging",
-] }
+[[bin]]
+name = "avalanche-movie"
+path = "src/bin/avalanche-movie.rs"
+
+[[bin]]
+name = "avalanche-movie-probe"
+path = "src/bin/avalanche-movie-probe/main.rs"
+required-features = ["sandbox-probe"]
 
 [[test]]
 name = "sandbox"
 harness = false
+required-features = ["sandbox-probe"]
 
 [lints]
 workspace = true

@@ -28,6 +28,7 @@ defaults:
 jobs:
   check:
     name: fmt, clippy, tests (Linux)
+    if: github.ref_type != 'tag'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -45,7 +46,14 @@ jobs:
           workspaces: Engine
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # the movie decoder's sandbox probe and the targets that start it (feature `sandbox-probe`), which the workspace's
+      # targets above leave out
+      - run: cargo clippy -p ssx-movie --all-targets --features sandbox-probe -- -D warnings
       - run: cargo test --workspace
+      # the movie decoder's sandbox on Linux (crates/ssx-movie/tests/sandbox.rs): its program read from outside while
+      # it decodes the test card; each attempt of the probe stopped by the seccomp filter or its limits
+      - name: The movie decoder's sandbox (Linux)
+        run: cargo test -p ssx-movie --features sandbox-probe --test sandbox
       # ssx-core as the release programs build it: the workspace's tests turn its `dev-master` on, this run does not
       - run: cargo test -p ssx-core --lib
       # one failed job ends the whole run: the other jobs are cancelled instead of building on to a run that cannot pass
@@ -60,6 +68,7 @@ jobs:
 
   windows:
     name: Windows build (launcher + game)
+    if: github.ref_type != 'tag'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -73,8 +82,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: Engine
+      # ssx-movie: the movie decoder's program `avalanche-movie`, which the game starts from beside itself for a mod's
+      # movie (its sandbox probe needs the feature `sandbox-probe` and is not built here)
       - name: Build
-        run: cargo build --release -p avalanche-game -p avalanche-launcher
+        run: cargo build --release -p avalanche-game -p avalanche-launcher -p ssx-movie
       # its own cargo invocation: the game's and the launcher's features stay resolved as without the server
       - name: Build the dedicated server
         run: cargo build --release -p avalanche-server
@@ -85,8 +96,10 @@ jobs:
         run: |
           rustup component add llvm-tools
           $objdump = Join-Path (rustc --print sysroot) "lib/rustlib/x86_64-pc-windows-msvc/bin/llvm-objdump.exe"
+          # (llvm-objdump for the later steps too)
+          Split-Path $objdump | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           $found = @()
-          foreach ($exe in "project-avalanche", "avalanche-game", "avalanche-server") {
+          foreach ($exe in "project-avalanche", "avalanche-game", "avalanche-movie", "avalanche-server") {
             $dlls = & $objdump -p "target/release/$exe.exe" | Select-String "DLL Name:" |
               ForEach-Object { ($_.Line -split "DLL Name:")[1].Trim() }
             if ($LASTEXITCODE -ne 0 -or -not $dlls) { "llvm-objdump read no imports of $exe.exe"; exit 1 }
@@ -95,10 +108,47 @@ jobs:
               ForEach-Object { "$exe.exe imports $_" }
           }
           if ($found) { $found; exit 1 }
-      # the movie decoder's sandbox run on Windows (crates/ssx-movie/tests/sandbox.rs): the child in its AppContainer,
-      # its job and its mitigation policies, read from outside; each escape attempt refused; a movie decoded inside
+      # the sandbox proof's probe and the decoder's program it runs beside, in a target folder of their own: the shipped
+      # build above never has the feature
+      - name: Build the movie decoder's sandbox probe
+        run: cargo build --release -p ssx-movie --features sandbox-probe --bins --target-dir target/sandbox-probe
+      # the decoder's process loads no window library (win32k is off from its creation; user32 and gdi32 would need
+      # it): its programs import exactly these system DLLs, the probe Winsock besides (its connect attempt); the shipped
+      # program carries none of the probe's attempts
+      # TODO(guess): the MSVC release build imports only these four DLLs (std's ws2_32 and userenv, which a
+      # windows-gnu build keeps because std there has no function sections, dropped by link.exe's /OPT:REF); a gnu
+      # build with -Zfunction-sections=yes linked by lld calls no advapi32, authz, shell32 or combase function and has
+      # no parent function in it (GNU ld keeps them all); no MSVC linker here; settle: this step's first run on
+      # windows-latest prints the tables
+      - name: The movie decoder's imports
+        shell: bash
+        run: |
+          allowed="kernel32.dll ntdll.dll bcryptprimitives.dll api-ms-win-core-synch-l1-2-0.dll"
+          failed=0
+          check() {
+            local exe=$1 extra=$2 dlls dll
+            dlls=$(llvm-objdump -p "$exe" | sed -n 's/^ *DLL Name: *//p' | tr -d '\r') || dlls=
+            if [ -z "$dlls" ]; then echo "llvm-objdump read no imports of $exe"; failed=1; return; fi
+            echo "$exe imports: $(echo "$dlls" | paste -sd, - | sed 's/,/, /g')"
+            for dll in $dlls; do
+              case " $allowed $extra " in
+                *" ${dll,,} "*) ;;
+                *) echo "$exe imports $dll, which the movie decoder's process must not load"; failed=1 ;;
+              esac
+            done
+          }
+          check target/release/avalanche-movie.exe ""
+          check target/sandbox-probe/release/avalanche-movie.exe ""
+          check target/sandbox-probe/release/avalanche-movie-probe.exe "ws2_32.dll"
+          if grep -aq "NOT STOPPED" target/release/avalanche-movie.exe; then
+            echo "target/release/avalanche-movie.exe carries the sandbox probe's attempts"; failed=1
+          fi
+          exit $failed
+      # the movie decoder's sandbox run on Windows (crates/ssx-movie/tests/sandbox.rs): its program in its AppContainer,
+      # its job, token and mitigation policies, read from outside while it decodes the test card; each attempt of the
+      # probe refused or ended by the code of what stopped it
       - name: The movie decoder's sandbox
-        run: cargo test --release -p ssx-movie --test sandbox
+        run: cargo test --release -p ssx-movie --features sandbox-probe --test sandbox --target-dir target/sandbox-probe
       # the crash-safe writes on Windows (crates/ssx-files): each step's failure leaving the old file, a crash's partial
       # file taken back and a live writer's left alone, writers in threads and in processes at once (the write-through
       # rename and, over an open file, the POSIX-semantics rename), a write inside a folder handle
@@ -109,10 +159,10 @@ jobs:
       - name: No development master in the release programs
         shell: bash
         run: |
-          if cargo tree -e features,normal,build -p avalanche-game -p avalanche-launcher -p avalanche-server | grep -q dev-master; then
+          if cargo tree -e features,normal,build -p avalanche-game -p avalanche-launcher -p ssx-movie -p avalanche-server | grep -q dev-master; then
             echo "a release program's build turns on ssx-core/dev-master"; exit 1
           fi
-          for exe in project-avalanche avalanche-game avalanche-server; do
+          for exe in project-avalanche avalanche-game avalanche-movie avalanche-server; do
             if grep -aq SSX_DEV_MASTER "target/release/$exe.exe"; then echo "$exe.exe carries the development master's switch"; exit 1; fi
           done
       - name: Package
@@ -122,6 +172,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
           Copy-Item target/release/project-avalanche.exe "$dist/Project Avalanche.exe"
           Copy-Item target/release/avalanche-game.exe "$dist/avalanche-game.exe"
+          Copy-Item target/release/avalanche-movie.exe "$dist/avalanche-movie.exe"
           Copy-Item target/release/avalanche-server.exe "$dist/avalanche-server.exe"
           Copy-Item assets/THIRD_PARTY_NOTICES.txt "$dist/THIRD_PARTY_NOTICES.txt"
           Copy-Item assets/server/THIRD_PARTY_NOTICES.txt "$dist/THIRD_PARTY_NOTICES-server.txt"
@@ -132,9 +183,10 @@ jobs:
           @"
           Project Avalanche — native PC port of SSX (2012), test build $env:GITHUB_SHA
 
-          1. Start "Project Avalanche.exe" (keep "avalanche-game.exe" and the "fonts" folder in the
-             same folder: the game, which the launcher starts, and the fonts both draw names and
-             chat in other scripts with).
+          1. Start "Project Avalanche.exe" (keep "avalanche-game.exe", "avalanche-movie.exe" and the
+             "fonts" folder in the same folder: the game, which the launcher starts; the movie
+             decoder, which the game starts in a sandbox of its own for a mod's movie; the fonts,
+             which both draw names and chat in other scripts with).
           2. Click the large SET UP GAME DATA tile, select your own SSX (2012) Xbox 360 ISO once
              and click Extract game data; the launcher unpacks the game data
              (about 4.7 GB) into %LOCALAPPDATA%\Project Avalanche\GameData. A folder made by an
@@ -213,6 +265,7 @@ jobs:
 
   linux:
     name: Linux build (launcher + game)
+    if: github.ref_type != 'tag'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -226,28 +279,35 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: Engine
+      # ssx-movie: the movie decoder's program `avalanche-movie` (as in the Windows job)
       - name: Build
-        run: cargo build --release -p avalanche-game -p avalanche-launcher
+        run: cargo build --release -p avalanche-game -p avalanche-launcher -p ssx-movie
       # its own cargo invocation: the game's and the launcher's features stay resolved as without the server
       - name: Build the dedicated server
         run: cargo build --release -p avalanche-server
+      # the shipped movie decoder carries none of the sandbox probe's attempts (only the check job builds the probe)
+      - name: The movie decoder is the shipped one
+        run: |
+          if grep -aq "NOT STOPPED" target/release/avalanche-movie; then
+            echo "avalanche-movie carries the sandbox probe's attempts"; exit 1
+          fi
       # the master is fixed in every release program: the development switch (ssx-core's `dev-master`, which the crates'
       # tests and examples turn on) is in neither their builds' features nor their binaries
       - name: No development master in the release programs
         shell: bash
         run: |
-          if cargo tree -e features,normal,build -p avalanche-game -p avalanche-launcher -p avalanche-server | grep -q dev-master; then
+          if cargo tree -e features,normal,build -p avalanche-game -p avalanche-launcher -p ssx-movie -p avalanche-server | grep -q dev-master; then
             echo "a release program's build turns on ssx-core/dev-master"; exit 1
           fi
-          for exe in project-avalanche avalanche-game avalanche-server; do
+          for exe in project-avalanche avalanche-game avalanche-movie avalanche-server; do
             if grep -aq SSX_DEV_MASTER "target/release/$exe"; then echo "$exe carries the development master's switch"; exit 1; fi
           done
       - name: Package
         run: |
           dist=../dist/ProjectAvalanche
           mkdir -p "$dist"
-          cp target/release/project-avalanche target/release/avalanche-game target/release/avalanche-server \
-            assets/THIRD_PARTY_NOTICES.txt "$dist/"
+          cp target/release/project-avalanche target/release/avalanche-game target/release/avalanche-movie \
+            target/release/avalanche-server assets/THIRD_PARTY_NOTICES.txt "$dist/"
           cp assets/server/THIRD_PARTY_NOTICES.txt "$dist/THIRD_PARTY_NOTICES-server.txt"
           # the fallback fonts, one copy for the game and the launcher (each file checked against the manifest the
           # programs carry); a test keeps assets/fonts to exactly the set, its license and its manifest
@@ -256,9 +316,10 @@ jobs:
           cat > "$dist/README.txt" <<EOF
           Project Avalanche — native PC port of SSX (2012), test build $GITHUB_SHA
 
-          1. Start ./project-avalanche (keep avalanche-game and the fonts folder in the same
-             folder: the game, which the launcher starts, and the fonts both draw names and chat
-             in other scripts with).
+          1. Start ./project-avalanche (keep avalanche-game, avalanche-movie and the fonts folder in
+             the same folder: the game, which the launcher starts; the movie decoder, which the game
+             starts in a sandbox of its own for a mod's movie; the fonts, which both draw names and
+             chat in other scripts with).
           2. Click the large SET UP GAME DATA tile, select your own SSX (2012) Xbox 360 ISO once
              and click Extract game data; the launcher unpacks the game data (about 4.7 GB) into
              ~/.local/share/project-avalanche/GameData (\$XDG_DATA_HOME/project-avalanche;
@@ -344,6 +405,7 @@ jobs:
 
   server-headless:
     name: Server without desktop packages (Linux)
+    if: github.ref_type != 'tag'
     runs-on: ubuntu-24.04
     # a bare Ubuntu: no ALSA, udev, Wayland, xkbcommon, GTK or X11 development packages (the check job installs them)
     container: ubuntu:24.04
@@ -395,17 +457,42 @@ jobs:
           curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json"
           "${{ github.api_url }}/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/cancel"
 
+  # A tag builds nothing: it releases the packages its commit's run on main built and checked, the same files (the
+  # building jobs above skip a tag). Push main, wait until its run is green, then push the tag on that commit.
   release:
     name: Release (tags only)
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, linux, server-headless]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      actions: read
     steps:
+      - name: The commit's green run on main
+        id: main_run
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # the commit the tag names (an annotated tag's object is not the commit)
+          commit=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF" --jq .sha)
+          workflow=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .workflow_id)
+          query="head_sha=$commit&branch=main&event=push&status=success&per_page=1"
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?$query" --jq '.workflow_runs[0].id // empty')
+          if [ -z "$run" ]; then
+            echo "$GITHUB_REF_NAME names $commit, which has no successful push run on main: push main, wait for its run"
+            echo "to pass, then tag that commit"
+            exit 1
+          fi
+          echo "$GITHUB_REF_NAME names $commit: releasing the packages of its run on main, $run"
+          echo "($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run)"
+          echo "run=$run" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v8
         with:
           path: dist
+          run-id: ${{ steps.main_run.outputs.run }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          digest-mismatch: error
       - name: Release
         working-directory: dist
         run: |
@@ -426,10 +513,9 @@ jobs:
             rules from your own disc image (`setup`), and its README.txt says how to run it (a systemd unit and a Windows
             service note inside). The game's downloads carry it too, for the launcher's HOST.
 
-          The launcher, `avalanche-game` and the `fonts` folder must stay in the same folder. You need your own copy
-          of the game: the
-          launcher sets the game data up from an ISO image of your retail Xbox 360 disc of SSX (2012), and no game
-          data is included. The port is a work in progress; the README says what runs and how to report problems.
+          The launcher, `avalanche-game`, `avalanche-movie` and the `fonts` folder must stay in the same folder. You
+          need your own copy of the game: the launcher sets the game data up from an ISO image of your retail Xbox 360
+          disc of SSX (2012), and no game data is included. The port is a work in progress; the README says what runs and how to report problems.
           EOF
           gh release create "$GITHUB_REF_NAME" ProjectAvalanche-windows-x64.zip \
             ProjectAvalanche-windows-x64.tar.gz \

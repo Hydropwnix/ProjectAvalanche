@@ -41,16 +41,16 @@ impl std::fmt::Display for Status {
     }
 }
 
-pub fn spawn(exe: &Path, arg: &str) -> Result<Spawned, String> {
+pub fn spawn(exe: &Path, mode: Option<&str>) -> Result<Spawned, String> {
     let mut child = Command::new(exe)
-        .arg(arg)
+        .args(mode)
         .env_clear()
         .current_dir("/")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("the movie decoder's process did not start: {e}"))?;
+        .map_err(|e| format!("the movie decoder's program {} did not start: {e}", exe.display()))?;
     let (Some(i), Some(o), Some(e)) = (child.stdin.take(), child.stdout.take(), child.stderr.take()) else {
         let _ = child.kill();
         let _ = child.wait();
