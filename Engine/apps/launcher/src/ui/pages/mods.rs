@@ -64,6 +64,9 @@ impl Launcher {
         if let Some((ok, text)) = &self.mods.message {
             widgets::status(ui, if *ok { theme::GOOD } else { theme::ERROR }, text.clone());
         }
+        if self.mods.remarks.count > mod_list::INLINE_REMARKS {
+            remarks(ui, &self.mods.remarks);
+        }
         if self.mods_confirm(ui) {
             self.refresh_mods(&ctx);
         }
@@ -87,9 +90,10 @@ impl Launcher {
             widgets::heading(ui, "No mods installed");
             widgets::paragraph(
                 ui,
-                "A mod is a package — a folder or a .zip with a resource.toml — made of your own files: textures in this \
-                 version, more kinds as they come. Install one with the buttons above; make one with \
-                 `ssx-assets mod new`, check it with `mod check`, pack it with `mod pack`.",
+                "A mod is a package — a folder or a .zip with a resource.toml — made of your own files: textures, \
+                 models, skies, sounds, music, riders, screens, strings, maps, gamemodes, scripts and more. Install \
+                 one with the buttons above: it is checked as it is installed. To make one, see \"Making a Mod\" in \
+                 the Project Avalanche wiki; the game's --mod-dev <folder> shows your package live while you edit it.",
             );
             widgets::path(ui, &app.join(MODS_DIR));
             return;
@@ -185,6 +189,22 @@ impl Launcher {
             None => false,
         }
     }
+}
+
+fn remarks(ui: &mut Ui, remarks: &mod_list::Remarks) {
+    egui::CollapsingHeader::new(format!("Remarks of the install ({})", remarks.count)).id_salt("install-remarks").show(
+        ui,
+        |ui| {
+            egui::ScrollArea::vertical().id_salt("install-remarks-list").max_height(220.0).show(ui, |ui| {
+                for r in &remarks.kept {
+                    ui.label(RichText::new(ssx_core::text::Text::new(r).into_string()).color(theme::TEXT_SOFT));
+                }
+                if remarks.count > remarks.kept.len() {
+                    widgets::note(ui, &format!("… and {} more", remarks.count - remarks.kept.len()));
+                }
+            });
+        },
+    );
 }
 
 pub(super) fn below_mods(text: &str) -> String {

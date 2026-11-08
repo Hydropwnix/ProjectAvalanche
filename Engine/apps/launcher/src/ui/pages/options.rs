@@ -143,69 +143,8 @@ impl Launcher {
         ui.add_space(8.0);
         widgets::heading(ui, "Your name on servers");
         widgets::note(ui, "Set in the game: Options, Player Name.");
-        ui.add_space(8.0);
-        self.masters_section(ui);
-    }
-
-    fn masters_section(&mut self, ui: &mut Ui) {
-        widgets::heading(ui, "Master servers");
-        let mut remove = None;
-        for (i, url) in self.settings.masters.iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(url).color(theme::TEXT_SOFT));
-                if ui.small_button("Remove").clicked() {
-                    remove = Some(i);
-                }
-            });
-        }
-        if let Some(i) = remove {
-            self.settings.masters.remove(i);
-        }
-        if self.settings.masters.is_empty() {
-            widgets::note(
-                ui,
-                "None: the game's Internet list stays empty. LAN, favourites, recent servers and an address work without one.",
-            );
-        }
-        ui.horizontal(|ui| {
-            let field = ui.add(
-                egui::TextEdit::singleline(&mut self.master_input)
-                    .hint_text("https://master.example.org")
-                    .desired_width(320.0),
-            );
-            let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if ui.button("Add").clicked() || enter {
-                match crate::masters::add(&self.settings.masters, &self.master_input) {
-                    Ok(list) => {
-                        self.settings.masters = list;
-                        self.master_input.clear();
-                        self.master_note = None;
-                    }
-                    Err(e) => self.master_note = Some(e),
-                }
-            }
-        });
-        if !self.settings.masters.iter().any(|m| m == ssx_core::OFFICIAL_MASTER)
-            && ui.button("Add the project's master server").clicked()
-        {
-            match crate::masters::add(&self.settings.masters, ssx_core::OFFICIAL_MASTER) {
-                Ok(list) => {
-                    self.settings.masters = list;
-                    self.master_note = None;
-                }
-                Err(e) => self.master_note = Some(e),
-            }
-        }
-        if let Some(note) = &self.master_note {
-            ui.label(RichText::new(note).color(theme::TEXT_SOFT));
-        }
-        widgets::note(ui, MASTERS_NOTE);
     }
 }
-
-const MASTERS_NOTE: &str = "A master lists public servers; the game asks two at once and merges their lists. Add only \
-     masters you trust: they choose which servers you see (each server still proves its key when you join). \
-     https://… for a master on the Internet, http://… for one on your LAN or for tests.";
 
 const LINK_NOTE: &str = if cfg!(windows) {
     "For your user only: the key HKCU\\Software\\Classes\\avalanche with the command \"<this launcher>\" --link \"%1\". \

@@ -15,13 +15,10 @@ pub enum Family {
     Character,
 }
 
-pub const LATER_FAMILIES: [(&str, &str); 3] = [
-    ("terrain", "M8 (maps)"),
-    ("geotag", "a later phase (the geotags' family; M3 brought the riders' character family)"),
-    (
-        "midground",
-        "a later phase (M4 brought skies, lighting, post-FX, particles and shader hooks, not the mid-ground)",
-    ),
+pub const UNREAD_FAMILIES: [(&str, &str); 3] = [
+    ("terrain", "a map's terrain is drawn with the disc's terrain materials"),
+    ("geotag", "the geotags are drawn with the disc's materials"),
+    ("midground", "the mid-ground mountains are drawn with the disc's materials"),
 ];
 
 pub const OBJECT_EFFECTS: [&str; 9] = [
@@ -117,18 +114,18 @@ pub fn missing_tiles(
 
 pub const TECHNIQUES: [&str; 3] = ["prelight", "forward", "translucent"];
 
-pub fn effect_phase(effect: &str) -> &'static str {
+pub fn unread_effect(effect: &str) -> &'static str {
     let e = effect.strip_suffix(".fx").unwrap_or(effect);
     if e == "object_geotag" || e == "object_default_skinned" {
-        "a later phase (the geotags' and the skinned objects' materials; M3 brought the riders' character family)"
+        "the geotags' and the skinned objects' materials"
     } else if e.starts_with("terrain_midground") || e.starts_with("terrain_oceanwave") {
-        "a later phase (the mid-ground mountains' family)"
+        "the mid-ground mountains' materials"
     } else if e.starts_with("terrain_") {
-        "M8 (maps: the terrain's materials)"
+        "the terrain's materials"
     } else if e.starts_with("globe_") || e.starts_with("ui_") {
-        "M6 (the front end's materials)"
+        "the front end's materials"
     } else {
-        "a later phase"
+        "a family packages do not provide"
     }
 }
 
@@ -139,12 +136,11 @@ impl Family {
             "foreground" => Ok(Family::Foreground),
             "sky" => Ok(Family::Sky),
             "character" => Ok(Family::Character),
-            _ => match LATER_FAMILIES.iter().find(|(n, _)| *n == name) {
-                Some((n, phase)) => {
-                    Err(format!("the {n} family is not read from packages yet: it comes with phase {phase}"))
-                }
+            _ => match UNREAD_FAMILIES.iter().find(|(n, _)| *n == name) {
+                Some((n, why)) => Err(format!("the {n} family is not read from packages ({why})")),
                 None => Err(format!(
-                    "family {}: not one of object, foreground, sky, character (terrain, geotag, midground come with their phases)",
+                    "family {}: not one of object, foreground, sky, character (terrain, geotag and midground are not \
+                     read from packages)",
                     ssx_core::text::quoted(name)
                 )),
             },
@@ -375,8 +371,7 @@ pub fn parse_toml(bytes: &[u8], name: &str) -> Result<MaterialDef, Vec<Problem>>
             at(
                 f.span(),
                 format!(
-                    "the {} family has no shader hooks (the object family's and the sky dome's have; the terrain's come \
-                     with M8; the character family has none yet)",
+                    "the {} family has no shader hooks (the object family's and the sky dome's have)",
                     family.as_str()
                 ),
             );
@@ -573,7 +568,7 @@ glowColour = [1, 1, 1]
         let lines: Vec<usize> = p.iter().map(|(l, _, _)| *l).collect();
         assert_eq!(lines, [2, 3, 5, 6, 10, 9, 8], "{p:?}");
         let later = parse_toml(b"family = \"geotag\"\neffect = \"object_geotag\"\n", "m").unwrap_err();
-        assert!(later[0].2.contains("later phase"), "{later:?}");
+        assert!(later[0].2.contains("the geotag family is not read from packages (the geotags"), "{later:?}");
         let rider = parse_toml(
             b"family = \"character\"\neffect = \"player_apparel\"\n[parameters]\nglowColour = [1.0, 0.5, 0.0]\n",
             "m",

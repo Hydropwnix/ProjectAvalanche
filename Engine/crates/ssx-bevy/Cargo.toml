@@ -43,6 +43,7 @@ ssx-gameplay = { workspace = true, optional = true }
 ssx-script = { workspace = true, optional = true }
 
 [dev-dependencies]
+ssx-core = { workspace = true, features = ["dev-master"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["noop", "wgsl"] }
 
 [lints]

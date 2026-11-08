@@ -2,6 +2,7 @@ use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use crate::address::{canonical, never_a_server};
+pub use crate::trust::Holder;
 
 // TODO(guess): 64 networks (a proxy's network or two, IPv4 and IPv6, with room); settle: none (an operator's choice).
 pub const MAX_TRUSTED: usize = 64;
@@ -112,6 +113,20 @@ impl Trusted {
     }
 }
 
+pub trait TrustsPeer {
+    fn holder(&self, peer: IpAddr) -> Option<Holder<'_>>;
+
+    fn trusts(&self, peer: IpAddr) -> bool {
+        self.holder(peer).is_some()
+    }
+}
+
+impl TrustsPeer for Trusted {
+    fn holder(&self, peer: IpAddr) -> Option<Holder<'_>> {
+        self.0.iter().find(|n| n.contains(peer)).map(Holder::Network)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     Direct(IpAddr),
@@ -152,11 +167,11 @@ impl fmt::Display for Refusal {
 
 pub fn source<'a>(
     peer: IpAddr,
-    trusted: &Trusted,
+    trusted: &impl TrustsPeer,
     lines: impl IntoIterator<Item = &'a [u8]>,
 ) -> Result<Source, Refusal> {
     let peer = canonical(peer);
-    if !trusted.contains(peer) {
+    if !trusted.trusts(peer) {
         return Ok(Source::Direct(peer));
     }
     let (mut bytes, mut entries, mut last) = (0usize, 0usize, None);

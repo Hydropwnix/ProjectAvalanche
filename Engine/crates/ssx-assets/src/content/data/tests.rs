@@ -50,6 +50,52 @@ fn the_policy_switches_client_mods_off_for_the_simulation() {
 }
 
 #[test]
+fn the_join_compares_under_the_id_basis_on_its_thread_alone() {
+    let id: ContentId = "ssx:tuning/a/d".parse().unwrap();
+    let content = store(
+        "basis",
+        &id,
+        vec![
+            (Layer::ClientMods, 0, MemorySource::new("mydata").with_patch(id.clone(), patch("x = 5.0"))),
+            (Layer::Server, 0, MemorySource::new("rules").with_patch(id.clone(), patch("y = 3"))),
+        ],
+    );
+    let x_y = |c: &GameContent| {
+        let t = c.sim_record(&id, disc()).unwrap().0;
+        (t["x"].as_float().unwrap(), t["y"].as_integer().unwrap())
+    };
+    content.set_sim_policy(ClientMods::Any);
+    assert_eq!(ClientMods::Any.id_basis(), ClientMods::Presentation);
+    assert_eq!(content.layer_of(&id), "the game's disc, patched by your mod mydata, the server's resource rules");
+    let (inside, layer, ride) = content.with_sim_policy(ClientMods::Any.id_basis(), || {
+        let ride = std::thread::scope(|s| s.spawn(|| x_y(&content)).join().unwrap());
+        (x_y(&content), content.layer_of(&id), ride)
+    });
+    assert_eq!(inside, (1.0, 3), "the join's thread reads the server's content");
+    assert_eq!(layer, "the game's disc, patched by the server's resource rules");
+    assert_eq!(ride, (5.0, 3), "the ride's thread keeps the session's policy");
+    assert_eq!(x_y(&content), (5.0, 3), "the policy before is back");
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        content.with_sim_policy(ClientMods::None, || panic!("a comparison that unwinds"))
+    }));
+    assert!(unwound.is_err());
+    assert_eq!(content.sim_policy(), ClientMods::Any, "back after an unwind too");
+}
+
+#[test]
+fn a_tracks_decision_is_kept_per_policy() {
+    let content = store("decisions", &"ssx:tuning/a/e".parse().unwrap(), Vec::new());
+    let generation = content.generation();
+    let cell = |p: ClientMods| content.track_decision("alps0101", generation, p as u8);
+    let (any, basis) = (cell(ClientMods::Any), cell(ClientMods::Any.id_basis()));
+    assert!(!std::sync::Arc::ptr_eq(&any, &basis), "one cell per policy");
+    assert!(std::sync::Arc::ptr_eq(&any, &cell(ClientMods::Any)), "the same policy's cell again");
+    assert!(std::sync::Arc::ptr_eq(&basis, &cell(ClientMods::Presentation)));
+    assert!(!std::sync::Arc::ptr_eq(&basis, &cell(ClientMods::None)));
+    assert!(content.decisions().is_empty(), "no decision made yet");
+}
+
+#[test]
 fn patches_of_one_record_merge_in_priority_order() {
     let id: ContentId = "ssx:tuning/a/c".parse().unwrap();
     let content = store(

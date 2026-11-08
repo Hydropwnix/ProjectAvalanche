@@ -195,7 +195,7 @@ pub fn render(state: &HttpState, ops: &OperationHttp) -> String {
     for g in lists.iter().filter(|g| g.age_secs.is_some()) {
         p.sample("ssxa_blocklist_age_seconds", &[("source", &g.source)], g.age_secs.unwrap_or_default());
     }
-    p.head("ssxa_script_seconds_total", "counter", "Script time per resource (phase 6's resources; none before them).");
+    p.head("ssxa_script_seconds_total", "counter", "Script time per resource (its server scripts).");
     for (resource, us) in ops.script_us.lock().unwrap_or_else(PoisonError::into_inner).iter() {
         p.sample("ssxa_script_seconds_total", &[("resource", resource)], *us as f64 / 1e6);
     }

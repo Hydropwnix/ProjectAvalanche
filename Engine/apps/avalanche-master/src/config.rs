@@ -7,6 +7,7 @@ use ssx_net_proto::master::MAX_LIST_SERVERS;
 use toml::Spanned;
 
 use crate::forwarded::{MAX_TRUSTED, Network, Trusted};
+use crate::names::{HostName, MAX_TRUSTED_HOSTS};
 
 // TODO(guess): a port choice — 27900, away from the game ports (27450 and up, each with its query port + 1) and LAN
 // discovery's 35450; a public master behind a name usually takes 443; settle: none (the operator's choice).
@@ -29,6 +30,7 @@ pub struct Config {
     pub blocked_servers: Option<PathBuf>,
     pub blocked_resources: Option<PathBuf>,
     pub trusted: Trusted,
+    pub trusted_hosts: Vec<HostName>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,7 +52,12 @@ impl Config {
             blocked_servers: None,
             blocked_resources: None,
             trusted: Trusted::default(),
+            trusted_hosts: Vec::new(),
         }
+    }
+
+    pub fn behind_proxy(&self) -> bool {
+        !self.trusted.is_empty() || !self.trusted_hosts.is_empty()
     }
 
     pub fn addr(&self) -> SocketAddr {
@@ -81,6 +88,7 @@ struct RawFile {
 #[serde(deny_unknown_fields)]
 struct RawProxy {
     trusted: Option<Spanned<Vec<Spanned<String>>>>,
+    trusted_hosts: Option<Spanned<Vec<Spanned<String>>>>,
 }
 
 #[derive(Deserialize)]
@@ -195,7 +203,8 @@ pub fn parse(path: &Path, text: &str) -> Result<Config, ConfigError> {
         c.blocked_servers = b.server_keys.as_ref().map(|p| file_path(&base, p, &at)).transpose()?;
         c.blocked_resources = b.resources.as_ref().map(|p| file_path(&base, p, &at)).transpose()?;
     }
-    if let Some(trusted) = raw.proxy.and_then(|p| p.trusted) {
+    let (trusted, hosts) = raw.proxy.map_or((None, None), |p| (p.trusted, p.trusted_hosts));
+    if let Some(trusted) = trusted {
         if trusted.get_ref().len() > MAX_TRUSTED {
             return Err(at(trusted.span(), format!("trusted: at most {MAX_TRUSTED} networks")));
         }
@@ -208,6 +217,18 @@ pub fn parse(path: &Path, text: &str) -> Result<Config, ConfigError> {
             networks.push(network);
         }
         c.trusted = Trusted::new(networks);
+    }
+    if let Some(hosts) = hosts {
+        if hosts.get_ref().len() > MAX_TRUSTED_HOSTS {
+            return Err(at(hosts.span(), format!("trusted_hosts: at most {MAX_TRUSTED_HOSTS} names")));
+        }
+        for raw in hosts.get_ref() {
+            let name = HostName::parse(raw.get_ref()).map_err(|e| at(raw.span(), format!("trusted_hosts: {e}")))?;
+            if c.trusted_hosts.contains(&name) {
+                return Err(at(raw.span(), format!("trusted_hosts: {name} twice")));
+            }
+            c.trusted_hosts.push(name);
+        }
     }
     Ok(c)
 }
@@ -276,5 +297,27 @@ mod tests {
         assert!(err("[proxy]\ntrusted_proxies = []\n").starts_with("conf/master.toml:2:1"));
         let many: Vec<String> = (0..=MAX_TRUSTED).map(|i| format!("\"10.0.{i}.0/24\"")).collect();
         assert!(err(&format!("[proxy]\ntrusted = [{}]\n", many.join(", "))).contains("at most 64"));
+    }
+
+    #[test]
+    fn the_trusted_names() {
+        let c =
+            parse(Path::new("m.toml"), "[proxy]\ntrusted_hosts = [\"coolify-proxy\", \"Traefik\"]\n").expect("valid");
+        let names: Vec<&str> = c.trusted_hosts.iter().map(HostName::as_str).collect();
+        assert_eq!(names, ["coolify-proxy", "traefik"]);
+        assert!(c.trusted.is_empty() && c.behind_proxy(), "names alone put the master behind a proxy");
+        let both = parse(Path::new("m.toml"), "[proxy]\ntrusted = [\"10.0.9.0/24\"]\ntrusted_hosts = [\"p\"]\n");
+        assert!(both.expect("valid").behind_proxy());
+        for none in ["", "[proxy]\n", "[proxy]\ntrusted_hosts = []\n"] {
+            assert!(!parse(Path::new("m.toml"), none).expect("valid").behind_proxy(), "{none:?}");
+        }
+        assert!(err("[proxy]\ntrusted_hosts = [\"10.0.0.1\"]\n").starts_with("conf/master.toml:2:18: trusted_hosts:"));
+        assert!(err("[proxy]\ntrusted_hosts = [\"coolify-proxy:8080\"]\n").contains("letters, digits"));
+        assert!(err("[proxy]\ntrusted_hosts = [\"p\", \"P\"]\n").contains("p twice"));
+        assert!(err("[proxy]\ntrusted_hosts = \"coolify-proxy\"\n").starts_with("conf/master.toml:2:"));
+        assert!(err("[proxy]\ntrusted_hosts = [7]\n").starts_with("conf/master.toml:2:"));
+        assert!(err("[proxy]\ntrusted_names = [\"p\"]\n").starts_with("conf/master.toml:2:1"));
+        let many: Vec<String> = (0..=MAX_TRUSTED_HOSTS).map(|i| format!("\"proxy{i}.lan\"")).collect();
+        assert!(err(&format!("[proxy]\ntrusted_hosts = [{}]\n", many.join(", "))).contains("at most 8 names"));
     }
 }

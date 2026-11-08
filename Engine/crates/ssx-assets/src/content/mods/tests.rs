@@ -205,3 +205,11 @@ fn a_hand_placed_package_over_the_caps_is_refused_at_the_mount() {
     assert!(reason("fine").is_none(), "{report:?}");
     assert!(registry.has(&rock()));
 }
+
+#[test]
+fn routed_kinds_are_the_kinds_the_check_calls_read() {
+    let read: Vec<Kind> = Kind::ALL.into_iter().filter(|k| k.read_from_packages()).collect();
+    let mut routed = ROUTED_KINDS.to_vec();
+    routed.sort_by_key(|k| Kind::ALL.iter().position(|a| a == k));
+    assert_eq!(routed, read);
+}

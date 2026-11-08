@@ -74,7 +74,9 @@ impl PackageSource {
         let Entry::File(rel) = entry else { return Err(failed("a movie is one file, not files by role".into())) };
         let ext = rel.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
         if !super::MOVIE_EXTENSIONS.contains(&ext.as_str()) {
-            return Err(failed(format!("{rel}: a screen is a movie (.swf / .gfx); layouts (.json) come with phase 7")));
+            return Err(failed(format!(
+                "{rel}: a screen is a movie (.swf / .gfx); layouts (.json) are not read from packages"
+            )));
         }
         self.declares_movie(rel).map_err(failed)?;
         let cap = ssx_formats::gfx::Limits::default().max_file_bytes as u64;

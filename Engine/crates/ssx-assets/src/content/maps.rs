@@ -78,9 +78,9 @@ impl GameContent {
         }
         let fits = |o: &ObjectDef| match (&o.controller, &o.rigid_body) {
             (Some(c), _) => Some(format!(
-                "its controller script {c} makes it an entity with a controller, which a map does not place yet (M8c)"
+                "its controller script {c} makes it an entity with a controller, which a map does not place"
             )),
-            (None, Some(_)) => Some("a rigid body (a controlled entity's) is not placed by a map yet (M8c)".into()),
+            (None, Some(_)) => Some("a rigid body (a controlled entity's) is not placed by a map".into()),
             (None, None) => None,
         };
         self.strongest(id, fits)

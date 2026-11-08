@@ -28,9 +28,6 @@ pub const FUTURE_SLACK: Duration = Duration::from_secs(24 * 3600);
 // TODO(guess): 10 minutes, a port choice (a list changes when an operator edits a file; masters answer a 304 cheaply);
 // settle: the request rates real masters see.
 pub const REFRESH_INTERVAL: Duration = Duration::from_secs(10 * 60);
-pub const SETTINGS_FILE: &str = "settings.json";
-pub const MAX_SETTINGS_BYTES: u64 = 1024 * 1024;
-pub const MAX_MASTERS: usize = 8;
 
 pub fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
@@ -187,49 +184,14 @@ impl Followed {
     }
 }
 
-pub fn followed_masters(member: Option<&serde_json::Value>) -> Result<Vec<String>, String> {
-    let Some(value) = member else { return Ok(vec![ssx_core::OFFICIAL_MASTER.to_string()]) };
-    let list = value.as_array().ok_or("`masters` is not a list of addresses")?;
-    if list.len() > MAX_MASTERS {
-        return Err(format!("`masters` names {} masters, at most {MAX_MASTERS}", list.len()));
-    }
-    let mut out: Vec<String> = Vec::with_capacity(list.len());
-    for v in list {
-        let text = v.as_str().ok_or("`masters` holds something that is not an address")?;
-        if text.is_empty() || text.len() > cache::MAX_MASTER || !text.bytes().all(|b| (0x21..=0x7E).contains(&b)) {
-            return Err(format!("`masters`: {} is not an address", quoted_max(text, VALUE_CHARS)));
-        }
-        if out.iter().any(|m| m == text) {
-            return Err(format!("`masters` names {} twice", quoted_max(text, VALUE_CHARS)));
-        }
-        out.push(text.to_string());
-    }
-    Ok(out)
-}
-
-pub fn settings_masters(app_dir: &Path) -> Result<Vec<String>, String> {
-    use std::io::Read;
-    let path = app_dir.join(SETTINGS_FILE);
-    let file = match ssx_files::open_plain(&path) {
-        Ok(Some(f)) => f,
-        Ok(None) => return followed_masters(None),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return followed_masters(None),
-        Err(e) => return Err(e.to_string()),
-    };
-    let mut bytes = Vec::new();
-    file.take(MAX_SETTINGS_BYTES + 1).read_to_end(&mut bytes).map_err(|e| format!("{SETTINGS_FILE}: {e}"))?;
-    if bytes.len() as u64 > MAX_SETTINGS_BYTES {
-        return Err(format!("{SETTINGS_FILE}: larger than {MAX_SETTINGS_BYTES} bytes"));
-    }
-    let value: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|e| format!("{SETTINGS_FILE} does not read: {}", shown_max(&e.to_string(), VALUE_CHARS * 2)))?;
-    let object = value.as_object().ok_or_else(|| format!("{SETTINGS_FILE}: not a JSON object"))?;
-    followed_masters(object.get("masters")).map_err(|e| format!("{SETTINGS_FILE}: {e}"))
+pub fn player_master() -> Result<String, String> {
+    let master = ssx_core::master::master();
+    master.url().map(str::to_string).ok_or_else(|| format!("no master: {}", master.describe()))
 }
 
 pub fn for_player(app_dir: &Path, now: u64) -> Followed {
-    match settings_masters(app_dir) {
-        Ok(masters) => load(&app_dir.join(CACHE_FOLDER), &masters, now),
+    match player_master() {
+        Ok(master) => load(&app_dir.join(CACHE_FOLDER), &[master], now),
         Err(problem) => Followed { problem: Some(problem), ..Followed::default() },
     }
 }
@@ -254,11 +216,11 @@ impl Follow {
         }
     }
 
-    pub fn masters(&self) -> Result<(std::path::PathBuf, Vec<String>), String> {
+    pub fn masters(&self) -> (std::path::PathBuf, Vec<String>) {
         match self {
-            Follow::Nothing => Ok((std::path::PathBuf::new(), Vec::new())),
-            Follow::Player(app_dir) => Ok((app_dir.join(CACHE_FOLDER), settings_masters(app_dir)?)),
-            Follow::Masters { dir, masters } => Ok((dir.clone(), masters.clone())),
+            Follow::Nothing => (std::path::PathBuf::new(), Vec::new()),
+            Follow::Player(app_dir) => (app_dir.join(CACHE_FOLDER), player_master().into_iter().collect()),
+            Follow::Masters { dir, masters } => (dir.clone(), masters.clone()),
         }
     }
 }

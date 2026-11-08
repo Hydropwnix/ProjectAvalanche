@@ -299,7 +299,7 @@ fn run_command(
                     say_to_operator(line);
                 }
                 say_to_operator(if b.ask_now() {
-                    "blocklists: every master asked now"
+                    "blocklists: the master asked now"
                 } else {
                     "blocklists: asked within the last 10 s; not asked again"
                 });

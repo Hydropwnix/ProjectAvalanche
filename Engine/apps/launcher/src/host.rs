@@ -73,7 +73,7 @@ impl Default for HostSettings {
             drop: "exp_alps_vorassay_drop_3".into(),
             listen: Listen::All,
             lan: true,
-            public: false,
+            public: true,
             port_mapping: false,
             written: None,
             map: None,
@@ -130,7 +130,7 @@ pub fn problems(h: &HostSettings) -> Vec<String> {
     out
 }
 
-pub fn config_text(h: &HostSettings, masters: &[String], map: Option<&HostedMap>) -> Result<String, String> {
+pub fn config_text(h: &HostSettings, map: Option<&HostedMap>) -> Result<String, String> {
     use toml::{Table, Value};
     let mut server = Table::new();
     server.insert("name".into(), Value::String(h.name.clone()));
@@ -163,13 +163,10 @@ pub fn config_text(h: &HostSettings, masters: &[String], map: Option<&HostedMap>
         }
     }
     let mut discovery = Table::new();
-    let public = h.public && !masters.is_empty();
+    let public = h.public && h.listen != Listen::Local;
     discovery.insert("query".into(), Value::Boolean(h.lan || public));
     discovery.insert("lan".into(), Value::Boolean(h.lan && h.listen != Listen::Local));
     discovery.insert("public".into(), Value::Boolean(public));
-    if public {
-        discovery.insert("masters".into(), Value::Array(masters.iter().map(|m| Value::String(m.clone())).collect()));
-    }
     let mut mapping = Table::new();
     mapping.insert("enabled".into(), Value::Boolean(h.port_mapping));
     let mut stop = Table::new();
@@ -268,7 +265,7 @@ pub fn run(h: &HostSettings) -> Invocation {
 }
 
 // TODO(guess): 2 000 lines (the viewer's output list's), 400 characters a line, 6 s for the server's own stop (its 2 s
-// grace, the masters' goodbye at most 3 s, a second's margin); settle: a busy server's stop measured.
+// grace, the master's goodbye at most 3 s, a second's margin); settle: a busy server's stop measured.
 const LINES: usize = 2000;
 const LINE: usize = 400;
 pub const STOP_WAIT: Duration = Duration::from_secs(6 + HOST_ROUND_END_SECS as u64 + 5 + 2);
@@ -809,11 +806,21 @@ mod tests {
         let mut h =
             HostSettings { folder: Some(dir.clone()), name: "Ann \"the\" Rider's".into(), ..HostSettings::default() };
         h.password = "a\"b\\c".into();
-        let text = config_text(&h, &[], None).expect("toml");
+        let text = config_text(&h, None).expect("toml");
         let parsed: toml::Table = text.parse().expect("reads back");
         assert_eq!(parsed["server"]["name"].as_str(), Some("Ann \"the\" Rider's"));
         assert_eq!(parsed["server"]["password"].as_str(), Some("a\"b\\c"));
-        assert_eq!(parsed["discovery"]["public"].as_bool(), Some(false), "no masters: not public");
+        let discovery = |h: &HostSettings| -> toml::Table {
+            let t: toml::Table = config_text(h, None).expect("toml").parse().expect("reads back");
+            t["discovery"].as_table().expect("[discovery]").clone()
+        };
+        let listed = discovery(&h);
+        assert_eq!((listed["public"].as_bool(), listed["query"].as_bool()), (Some(true), Some(true)));
+        assert!(!listed.contains_key("masters"), "{listed:?}");
+        let unlisted = discovery(&HostSettings { public: false, lan: false, ..h.clone() });
+        assert_eq!((unlisted["public"].as_bool(), unlisted["query"].as_bool()), (Some(false), Some(false)));
+        let local = discovery(&HostSettings { listen: Listen::Local, lan: false, ..h.clone() });
+        assert_eq!((local["public"].as_bool(), local["query"].as_bool()), (Some(false), Some(false)));
         assert_eq!(parsed["stop"]["round_end"].as_integer(), Some(i64::from(HOST_ROUND_END_SECS)));
         let path = h.config_path();
         let Written::Yes(hash) = write_config(&path, &text, None, false).unwrap() else { panic!() };
@@ -864,7 +871,7 @@ mod tests {
         assert!(problems(&h).is_empty(), "{:?}", problems(&h));
         let hosted = found.hosted(h.map.as_ref().expect("a map")).expect("hosted");
         assert_eq!((hosted.mode(), hosted.server_mode()), ("race", "race"));
-        let parsed: toml::Table = config_text(&h, &[], Some(&hosted)).expect("toml").parse().expect("reads back");
+        let parsed: toml::Table = config_text(&h, Some(&hosted)).expect("toml").parse().expect("reads back");
         assert_eq!(parsed["game"]["map"].as_str(), Some("dep:map/course"));
         assert_eq!(parsed["game"]["mode"].as_str(), Some("race"));
         assert!(parsed["game"].get("drop").is_none());
@@ -872,7 +879,7 @@ mod tests {
         let start: Vec<&str> =
             parsed["resources"]["start"].as_array().expect("start").iter().filter_map(|v| v.as_str()).collect();
         assert_eq!(start, ["tpl", "dep"]);
-        assert!(config_text(&h, &[], None).is_err(), "a map not installed");
+        assert!(config_text(&h, None).is_err(), "a map not installed");
         for _ in 0..2 {
             let done = stage_map(&h, &hosted, &app).expect("staged");
             assert_eq!(done.len(), 2, "{done:?}");
@@ -930,14 +937,14 @@ mod tests {
         assert!(problems(&h).is_empty(), "{:?}", problems(&h));
         let hosted = found.hosted(h.map.as_ref().expect("a map")).expect("hosted");
         assert_eq!(hosted.server_mode(), "race");
-        let parsed: toml::Table = config_text(&h, &[], Some(&hosted)).expect("toml").parse().expect("reads back");
+        let parsed: toml::Table = config_text(&h, Some(&hosted)).expect("toml").parse().expect("reads back");
         assert_eq!(parsed["game"]["map"].as_str(), Some("gm:map/course"));
         assert_eq!(parsed["game"]["mode"].as_str(), Some("race"));
         assert_eq!(parsed["game"]["gamemode"].as_str(), Some("gm:gamemode/gully_race"));
         h.map = Some(HostMap { id: gm_map.id.clone(), mode: "anyone:gamemode/gully_race".into() });
         let hosted = found.hosted(h.map.as_ref().expect("a map")).expect("hosted");
         assert_eq!(hosted.server_mode(), "survive", "survive to death is a survive instance");
-        let parsed: toml::Table = config_text(&h, &[], Some(&hosted)).expect("toml").parse().expect("reads back");
+        let parsed: toml::Table = config_text(&h, Some(&hosted)).expect("toml").parse().expect("reads back");
         let start: Vec<&str> =
             parsed["resources"]["start"].as_array().expect("start").iter().filter_map(|v| v.as_str()).collect();
         assert_eq!(start, ["gm", "tpl", "anyone"]);
@@ -947,7 +954,7 @@ mod tests {
         assert!(e.contains("does not take the map tpl:map/course"), "{e}");
         let e = found.hosted(&HostMap { id: tpl.id.clone(), mode: "x:gamemode/none".into() }).unwrap_err();
         assert!(e.contains("no installed gamemode is"), "{e}");
-        assert!(config_text(&h, &[], None).is_err(), "a gamemode not installed");
+        assert!(config_text(&h, None).is_err(), "a gamemode not installed");
         std::fs::remove_dir_all(&app).expect("cleaned");
     }
 

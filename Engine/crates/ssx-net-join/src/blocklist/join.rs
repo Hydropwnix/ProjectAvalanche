@@ -5,6 +5,8 @@ use ssx_content::blocklist::{Blocked, Follow, Hit, describe, now_secs};
 use ssx_content::delivery::{ClientManifest, FileStore};
 use ssx_core::text::quoted;
 
+use super::Outcome;
+
 pub fn hits(manifest: &ClientManifest, blocked: &Blocked) -> Vec<(String, Vec<Hit>)> {
     if blocked.is_empty() {
         return Vec::new();
@@ -25,12 +27,11 @@ pub struct Checked {
 }
 
 pub fn check(manifest: &ClientManifest, follow: &Follow, store: &FileStore, cancel: &Arc<AtomicBool>) -> Checked {
-    let asked = match super::refresh_until(follow, &None, false, now_secs(), Some(Arc::clone(cancel))) {
-        Ok(outcomes) => {
-            outcomes.iter().filter(|o| o.result != Ok(super::Refreshed::NotDue)).map(|o| o.line()).collect()
-        }
-        Err(e) => vec![format!("blocklists: none refreshed: {e}")],
-    };
+    let asked = super::refresh_until(follow, &None, false, now_secs(), Some(Arc::clone(cancel)))
+        .iter()
+        .filter(|o| o.result != Ok(super::Refreshed::NotDue))
+        .map(Outcome::line)
+        .collect();
     let verdict =
         if cancel.load(Ordering::Acquire) { Err("cancelled".into()) } else { refuse_blocked(manifest, follow, store) };
     Checked { asked, verdict }

@@ -91,7 +91,7 @@ fn speech_and_added_sounds_take_no_voice_fields() {
         assert!(has(&ps, line, "only for the game's effects; a speech line"), "{line} {ps:?}");
     }
     let ps = problems(sounds::parse_toml(b"files = [\"a.ogg\"]\nbus = \"SFX_BUS\"\n", SoundClass::Added));
-    assert!(has(&ps, 2, "phase M7"), "{ps:?}");
+    assert!(has(&ps, 2, "a package's own sound has no game voices (scripts, markers"), "{ps:?}");
     let ok =
         sounds::parse_toml(b"files = [\"a.ogg\", \"b.ogg\"]\nvolume = 2.0\npitch = [1, 1.2]\n", SoundClass::Speech);
     assert_eq!(ok.unwrap().volume, 2.0);

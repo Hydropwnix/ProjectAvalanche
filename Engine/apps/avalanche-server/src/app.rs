@@ -177,7 +177,7 @@ fn run_with(options: ServerOptions, on_started: impl FnOnce(&Started)) -> Result
     app.set_error_handler(errors::handler);
     if options.logging {
         if options.log_to_file {
-            app.insert_resource(LogFile(options.data_dir.join("logs").join("server.log")));
+            app.insert_resource(LogFile(options.data_dir.join(crate::logging::LOG_FOLDER).join("server.log")));
         }
         app.add_plugins(LogPlugin {
             filter: LOG_FILTER.into(),
@@ -191,6 +191,12 @@ fn run_with(options: ServerOptions, on_started: impl FnOnce(&Started)) -> Result
     }
     if picks > 1 {
         info!("the game port {} after {picks} picks (UDP on the earlier picks was another process's)", local.port());
+    }
+    for notice in &config.notices {
+        warn!("{notice}");
+    }
+    for line in config.discovery.lines() {
+        info!("{}", line.trim_start());
     }
     app.add_plugins((MinimalPlugins.set(ScheduleRunnerPlugin::run_loop(tick_duration())), StatesPlugin));
     app.add_plugins(NetServerPlugin);

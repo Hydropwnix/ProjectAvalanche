@@ -138,8 +138,10 @@ impl RulesData {
             bail!("{name} is a tutorial drop, which multiplayer does not play");
         }
         if !kind.fits(e.event_type) {
-            let t = e.event_type.map_or("none".to_string(), |t| t.name().to_string());
-            bail!("{name} is not a {} event (its event type is {t})", kind.name());
+            let t = e
+                .event_type
+                .map_or("an event of no type".to_string(), |t| format!("a {} event ({})", t.kind_word(), t.name()));
+            bail!("{name} is not a {} event: it is {t}", kind.name());
         }
         Ok(e)
     }

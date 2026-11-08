@@ -13,11 +13,15 @@ Project Avalanche; read their own documentation and licences.
 2. With NSSM (from an administrator's console):
      nssm install AvalancheServer C:\AvalancheServer\avalanche-server.exe run --config C:\AvalancheServer\server.toml --data C:\AvalancheServer\data
      nssm set AvalancheServer AppDirectory C:\AvalancheServer
-     nssm set AvalancheServer AppStopMethodConsole 15000
+     nssm set AvalancheServer AppStopMethodConsole 110000
      nssm set AvalancheServer AppStdout C:\AvalancheServer\data\logs\service-output.log
      nssm set AvalancheServer AppStderr C:\AvalancheServer\data\logs\service-output.log
      nssm start AvalancheServer
-   (AppStopMethodConsole sends Ctrl-C and waits 15 s: the server tells its riders and the masters, then ends.)
+   (AppStopMethodConsole sends Ctrl-C and waits up to 110 s for the graceful stop: a round under way ends within
+   server.toml's [stop] round_end (60 s by default) and its results stay up 5 s (2 s more at most), the riders get
+   2 s to go, the server scripts up to 30 s to stop and write their storage, the port mappings up to 4 s to be
+   removed and the master up to 3 s to be told: 106.1 s with the default round_end, and a margin. With another
+   round_end, wait round_end + 50 s. A shorter wait ends the server before it is done: NSSM then ends the process.)
 3. Run the service as its own account (not LocalSystem): give that account full control of C:\AvalancheServer\data
    only. The key files in data\ are the server's identity: back them up, never share them.
 4. Open UDP 27450, TCP 27450 and UDP 27451 in Windows Defender Firewall for avalanche-server.exe.

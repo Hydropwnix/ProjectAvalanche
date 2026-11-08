@@ -35,7 +35,7 @@ pub struct GameContent {
     encoding: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
     generation: AtomicU64,
     changes: Mutex<VecDeque<(u64, BTreeSet<ContentId>)>>,
-    tracks: Mutex<BTreeMap<(String, u64), Arc<TrackCell>>>,
+    tracks: Mutex<BTreeMap<(String, u64, u8), Arc<TrackCell>>>,
     pub(super) presets: super::presets::PresetCache,
     pub(super) levels: super::level::LevelCache,
     pub(super) audio: super::audio::AudioCache,
@@ -263,10 +263,10 @@ impl GameContent {
         &self.big_root
     }
 
-    pub(super) fn track_decision(&self, track: &str, generation: u64) -> Arc<TrackCell> {
+    pub(super) fn track_decision(&self, track: &str, generation: u64, policy: u8) -> Arc<TrackCell> {
         let mut tracks = self.tracks.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        tracks.retain(|(_, g), _| *g == generation);
-        tracks.entry((track.to_string(), generation)).or_default().clone()
+        tracks.retain(|(_, g, _), _| *g == generation);
+        tracks.entry((track.to_string(), generation, policy)).or_default().clone()
     }
 
     pub(super) fn clear_track_decisions(&self) {
@@ -276,7 +276,12 @@ impl GameContent {
     pub fn decisions(&self) -> Vec<Arc<TrackPackages>> {
         let generation = self.generation();
         let tracks = self.tracks.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        tracks.iter().filter(|((_, g), _)| *g == generation).filter_map(|(_, cell)| cell.get().cloned()).collect()
+        let policy = self.sim_policy() as u8;
+        tracks
+            .iter()
+            .filter(|((_, g, p), _)| *g == generation && *p == policy)
+            .filter_map(|(_, cell)| cell.get().cloned())
+            .collect()
     }
 
     pub fn priority_of(&self, source: &str, layer: Layer) -> i32 {

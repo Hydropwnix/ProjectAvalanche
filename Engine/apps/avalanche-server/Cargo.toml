@@ -59,6 +59,7 @@ libc.workspace = true
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
+ssx-core = { workspace = true, features = ["dev-master"] }
 ssx-net-join.workspace = true
 ssx-assets.workspace = true
 ureq.workspace = true

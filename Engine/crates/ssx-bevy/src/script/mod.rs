@@ -256,17 +256,38 @@ impl Plugin for ScriptPlugin {
 }
 
 fn policy(mut bridge: ResMut<ScriptBridge>, live: Option<Res<crate::shell::live::LiveSession>>) {
+    use ssx_content::policy::ClientScripts;
     let content = live.as_ref().map(|l| &l.content);
     let hold = content.map(|c| c.client_scripts).filter(|p| !p.runs());
     match (&bridge.suspended, hold) {
         (None, Some(policy)) => {
             let why = policy.reason().to_string();
-            warn!("scripts: {why}: the client mods' scripts are stopped for the session");
+            match policy {
+                ClientScripts::Pending => {
+                    info!(
+                        "scripts: the client mods' scripts wait for the server's client_scripts policy (the join reads it)"
+                    )
+                }
+                ClientScripts::Unstated => {
+                    warn!("scripts: {why}: the client mods' scripts are stopped for the session")
+                }
+                _ => info!("scripts: {why}: the client mods' scripts are stopped for the session"),
+            }
             if bridge.send(worker::Job::Suspend(why.clone())) {
                 bridge.suspended = Some(why);
                 bridge.epoch += 1;
                 bridge.clear = true;
             }
+        }
+        (Some(was), Some(policy)) if *was != policy.reason() => {
+            let why = policy.reason().to_string();
+            match policy {
+                ClientScripts::Unstated => {
+                    warn!("scripts: {why}: the client mods' scripts stay stopped for the session")
+                }
+                _ => info!("scripts: {why}: the client mods' scripts stay stopped for the session"),
+            }
+            bridge.suspended = Some(why);
         }
         (Some(_), None) => {
             match live.is_some() {

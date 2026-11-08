@@ -16,6 +16,8 @@ use bevy::log::tracing_subscriber::fmt::MakeWriter;
 use bevy::log::tracing_subscriber::layer::{Context, Filter};
 use bevy::log::{BoxedFmtLayer, BoxedLayer, tracing_subscriber};
 
+pub const LOG_FOLDER: &str = "logs";
+
 // TODO(guess): 16 MiB per file; settle: the log volume of phase 4's servers over a week.
 pub const MAX_LOG_BYTES: u64 = 16 * 1024 * 1024;
 

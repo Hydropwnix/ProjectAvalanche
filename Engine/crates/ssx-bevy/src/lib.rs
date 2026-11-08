@@ -64,7 +64,7 @@ pub fn find_default_track() -> Result<PathBuf> {
     cwd.ancestors().map(|dir| dir.join(DEFAULT_TRACK)).chain([setup.clone()]).find(|p| p.is_dir()).with_context(|| {
         format!(
             "neither {DEFAULT_TRACK} (in {} or any parent directory) nor {} exists; \
-             run the launcher (project-avalanche) or `ssx-assets setup` first",
+             set the game data up with the launcher (Project Avalanche) first",
             cwd.display(),
             setup.display()
         )

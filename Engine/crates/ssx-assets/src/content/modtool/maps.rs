@@ -96,7 +96,7 @@ pub(super) fn check(c: &mut Checked, big: &Path, base: Option<&BTreeSet<ContentI
             if def.controller.is_some() || def.rigid_body.is_some() {
                 let message = format!(
                     "node \"{}\" ava_object {oid}: an entity with a controller or a rigid body, which a map does not \
-                     place yet (M8c)",
+                     place",
                     p.node
                 );
                 push(c, Severity::Error, &scene, (0, 0), message);

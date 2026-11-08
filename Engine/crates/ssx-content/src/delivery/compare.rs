@@ -13,12 +13,14 @@ pub enum Difference {
 
 impl std::fmt::Display for Difference {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use ssx_core::text::quoted;
+        use ssx_core::text::{MESSAGE_CHARS, quoted, shown_max};
         match self {
             Difference::Files => f.write_str("the disc files differ from the server's"),
-            Difference::Changed { id, ours } => write!(f, "{} differs (yours from {})", quoted(id), quoted(ours)),
+            Difference::Changed { id, ours } => {
+                write!(f, "{} differs (yours from {})", quoted(id), shown_max(ours, MESSAGE_CHARS))
+            }
             Difference::OnlyOurs { id, ours } => {
-                write!(f, "{} is changed only on your side (by {})", quoted(id), quoted(ours))
+                write!(f, "{} is changed only on your side (by {})", quoted(id), shown_max(ours, MESSAGE_CHARS))
             }
             Difference::OnlyTheirs { id } => write!(f, "{} is changed only on the server's side", quoted(id)),
         }

@@ -11,6 +11,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# the jobs read the code; `actions: write` lets a failed job cancel its own run (the release job asks for more itself)
+permissions:
+  contents: read
+  actions: write
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
@@ -41,6 +46,17 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # ssx-core as the release programs build it: the workspace's tests turn its `dev-master` on, this run does not
+      - run: cargo test -p ssx-core --lib
+      # one failed job ends the whole run: the other jobs are cancelled instead of building on to a run that cannot pass
+      # (GitHub's own fail-fast covers a matrix only); a run cancelled this way runs no further cancel (failure() is false)
+      - name: A failed job cancels the run
+        if: failure()
+        continue-on-error: true
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run cancel ${{ github.run_id }} --repo ${{ github.repository }}
 
   windows:
     name: Windows build (launcher + game)
@@ -88,6 +104,17 @@ jobs:
       # rename and, over an open file, the POSIX-semantics rename), a write inside a folder handle
       - name: Crash-safe file writes
         run: cargo test --release -p ssx-files --features cap-std
+      # the master is fixed in every release program: the development switch (ssx-core's `dev-master`, which the crates'
+      # tests and examples turn on) is in neither their builds' features nor their binaries
+      - name: No development master in the release programs
+        shell: bash
+        run: |
+          if cargo tree -e features,normal,build -p avalanche-game -p avalanche-launcher -p avalanche-server | grep -q dev-master; then
+            echo "a release program's build turns on ssx-core/dev-master"; exit 1
+          fi
+          for exe in project-avalanche avalanche-game avalanche-server; do
+            if grep -aq SSX_DEV_MASTER "target/release/$exe.exe"; then echo "$exe.exe carries the development master's switch"; exit 1; fi
+          done
       - name: Package
         shell: pwsh
         run: |
@@ -129,7 +156,7 @@ jobs:
           Extras, Tools starts the asset viewer or a test ride on a single track: development tools,
           not the game and not in this download (asset-viewer.exe, built from the source, next to
           the launcher). If a start fails, its output is shown under Extras, Output and kept in
-          %LOCALAPPDATA%\Project Avalanche\viewer.log.
+          %LOCALAPPDATA%\Project Avalanche\game.log (the tools': asset-viewer.log).
 
           No game data is included in this download.
           "@ | Set-Content -Encoding utf8 "$dist/README.txt"
@@ -162,7 +189,9 @@ jobs:
           in data\ (netcode.key, identity.key): keep them; players' games remember the identity key and refuse a
           server whose key changed. The log is data\logs\server.log.
 
-          Console: status, kick <rider number | player id | name> [reason], say <text>, stop.
+          Console: status, instances, say <text>, kick <rider> [reason], stop; start / stop / restart / ensure
+          <resource>, refresh, blocklists, scripts; ban, unban, bans, mute, unmute, mutes, acl, aclrequest.
+          help lists each with its arguments.
           Ctrl-C (or closing the console) stops it gracefully; a second Ctrl-C ends it at once.
 
           No game data is included: setup reads your own disc image.
@@ -172,6 +201,15 @@ jobs:
           name: ProjectAvalanche-server-windows-x64
           path: dist/ProjectAvalancheServer
           if-no-files-found: error
+      # one failed job ends the whole run: the other jobs are cancelled instead of building on to a run that cannot pass
+      # (GitHub's own fail-fast covers a matrix only); a run cancelled this way runs no further cancel (failure() is false)
+      - name: A failed job cancels the run
+        if: failure()
+        continue-on-error: true
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run cancel ${{ github.run_id }} --repo ${{ github.repository }}
 
   linux:
     name: Linux build (launcher + game)
@@ -193,6 +231,17 @@ jobs:
       # its own cargo invocation: the game's and the launcher's features stay resolved as without the server
       - name: Build the dedicated server
         run: cargo build --release -p avalanche-server
+      # the master is fixed in every release program: the development switch (ssx-core's `dev-master`, which the crates'
+      # tests and examples turn on) is in neither their builds' features nor their binaries
+      - name: No development master in the release programs
+        shell: bash
+        run: |
+          if cargo tree -e features,normal,build -p avalanche-game -p avalanche-launcher -p avalanche-server | grep -q dev-master; then
+            echo "a release program's build turns on ssx-core/dev-master"; exit 1
+          fi
+          for exe in project-avalanche avalanche-game avalanche-server; do
+            if grep -aq SSX_DEV_MASTER "target/release/$exe"; then echo "$exe carries the development master's switch"; exit 1; fi
+          done
       - name: Package
         run: |
           dist=../dist/ProjectAvalanche
@@ -232,7 +281,7 @@ jobs:
           are THIRD_PARTY_NOTICES-server.txt) and joins it with the game.
 
           If a start fails, its output is shown under Extras, Output and kept in
-          ~/.local/share/project-avalanche/viewer.log.
+          ~/.local/share/project-avalanche/game.log.
 
           No game data is included in this download.
           EOF
@@ -270,7 +319,9 @@ jobs:
           the identity key and refuse a server whose key changed. The log is data/logs/server.log. It needs no
           GPU, sound, display or input libraries.
 
-          Console: status, kick <rider number | player id | name> [reason], say <text>, stop.
+          Console: status, instances, say <text>, kick <rider> [reason], stop; start / stop / restart / ensure
+          <resource>, refresh, blocklists, scripts; ban, unban, bans, mute, unmute, mutes, acl, aclrequest.
+          help lists each with its arguments.
           SIGINT / SIGTERM stop it gracefully; a second signal ends it at once.
 
           No game data is included: setup reads your own disc image.
@@ -281,6 +332,15 @@ jobs:
           name: ProjectAvalanche-server-linux-x64
           path: dist/ProjectAvalanche-server-linux-x64.tar.gz
           if-no-files-found: error
+      # one failed job ends the whole run: the other jobs are cancelled instead of building on to a run that cannot pass
+      # (GitHub's own fail-fast covers a matrix only); a run cancelled this way runs no further cancel (failure() is false)
+      - name: A failed job cancels the run
+        if: failure()
+        continue-on-error: true
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run cancel ${{ github.run_id }} --repo ${{ github.repository }}
 
   server-headless:
     name: Server without desktop packages (Linux)
@@ -288,24 +348,32 @@ jobs:
     # a bare Ubuntu: no ALSA, udev, Wayland, xkbcommon, GTK or X11 development packages (the check job installs them)
     container: ubuntu:24.04
     steps:
-      - name: A compiler and rustup, nothing else
+      - name: The compilers and rustup, nothing else
         working-directory: /
+        # g++: the server's script host builds Luau from its C++ source (mlua-sys)
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends ca-certificates curl gcc libc6-dev git
+          apt-get install -y --no-install-recommends ca-certificates curl gcc g++ libc6-dev git
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - uses: actions/checkout@v7
       - name: Build
         run: cargo build --release -p avalanche-server
+      - name: No development master in the server
+        run: |
+          if cargo tree -e features,normal,build -p avalanche-server | grep -q dev-master; then
+            echo "the server's build turns on ssx-core/dev-master"; exit 1
+          fi
+          if grep -aq SSX_DEV_MASTER target/release/avalanche-server; then echo "the server carries the development master's switch"; exit 1; fi
       - name: No desktop library in the build or the binary
         run: |
           if cargo tree -p avalanche-server -e normal --prefix none | grep -E '^(alsa(-sys)?|libudev(-sys)?|wayland-[a-z_-]+|x11[a-z_-]*|xkbcommon[a-z_-]*|gilrs[a-z_-]*|winit|wgpu[a-z_-]*|naga|ash|cpal|rodio|bevy_(render|winit|window|audio|gilrs)) v'; then
             echo "the server's build names a desktop library"; exit 1
           fi
           ldd target/release/avalanche-server
-          if ldd target/release/avalanche-server | grep -vE 'linux-vdso|libc\.so|libm\.so|libgcc_s\.so|ld-linux'; then
-            echo "the server links a library beyond libc, libm and libgcc_s"; exit 1
+          # libstdc++: Luau's C++ runtime (the server's scripts); part of every Linux base system
+          if ldd target/release/avalanche-server | grep -vE 'linux-vdso|libc\.so|libm\.so|libgcc_s\.so|libstdc\+\+\.so|ld-linux'; then
+            echo "the server links a library beyond libc, libm, libgcc_s and libstdc++"; exit 1
           fi
           # without the rules data (no disc on a runner) the check must run, find the folder empty and say so
           set +e
@@ -316,6 +384,16 @@ jobs:
           if [ "$code" -ne 2 ] || ! grep -q "no rules data yet" check.txt; then
             echo "the check did not run as expected (exit $code)"; exit 1
           fi
+      # one failed job ends the whole run (as in the other jobs; this container has curl, not gh)
+      - name: A failed job cancels the run
+        if: failure()
+        continue-on-error: true
+        working-directory: /
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json"
+          "${{ github.api_url }}/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/cancel"
 
   release:
     name: Release (tags only)

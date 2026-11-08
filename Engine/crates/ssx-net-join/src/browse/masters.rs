@@ -1,5 +1,4 @@
 use core::time::Duration;
-use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
@@ -21,9 +20,6 @@ use super::resolve::Lookup;
 
 pub type Roots = Option<Arc<Vec<ureq::tls::Certificate<'static>>>>;
 
-// TODO(guess): 8 (the plan's federation: a project master and a few community ones); settle: the masters players add.
-pub const MAX_MASTERS: usize = 8;
-pub const AT_ONCE: usize = 2;
 pub const STEP: Duration = Duration::from_millis(2500);
 // TODO(guess): 2 s for the lookup, 3 s to connect, 15 s in all; settle: the lists of real masters over real links.
 pub const RESOLVE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -33,28 +29,6 @@ const MAX_HEADERS: usize = 8 * 1024;
 const MAX_ETAG: usize = 128;
 pub const MAX_RUNNING: usize = 16;
 static RUNNING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-pub fn from_settings(value: Option<&serde_json::Value>) -> Result<Vec<MasterUrl>, String> {
-    let Some(value) = value else { return official().map(|m| vec![m]) };
-    let list = value.as_array().ok_or("`masters` is not a list of addresses")?;
-    if list.len() > MAX_MASTERS {
-        return Err(format!("`masters` names {} masters, at most {MAX_MASTERS}", list.len()));
-    }
-    let mut out: Vec<MasterUrl> = Vec::with_capacity(list.len());
-    for v in list {
-        let text = v.as_str().ok_or("`masters` holds something that is not an address")?;
-        let url = MasterUrl::parse(text).map_err(|e| format!("`masters`: {e}"))?;
-        if out.contains(&url) {
-            return Err(format!("`masters` names {url} twice"));
-        }
-        out.push(url);
-    }
-    Ok(out)
-}
-
-pub fn official() -> Result<MasterUrl, String> {
-    MasterUrl::parse(ssx_core::OFFICIAL_MASTER).map_err(|e| format!("the project's master: {e}"))
-}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Fetched {
@@ -166,46 +140,42 @@ fn fetch_until(
     Ok(Fetched::List { list, etag: tag })
 }
 
-pub struct Masters {
-    masters: Vec<MasterUrl>,
+pub struct MasterList {
+    master: MasterUrl,
     roots: Roots,
-    started: Option<Instant>,
-    asked: usize,
-    answered_ok: usize,
-    running: usize,
+    asked: Option<Instant>,
+    running: bool,
     answers: Mutex<Receiver<MasterAnswer>>,
     send: Sender<MasterAnswer>,
     generation: Arc<AtomicBool>,
-    pub kept: HashMap<MasterUrl, (ServerList, Option<String>)>,
-    pub status: Vec<(MasterUrl, Result<usize, String>)>,
+    pub kept: Option<(ServerList, Option<String>)>,
+    pub status: Option<Result<usize, String>>,
 }
 
-impl Masters {
-    pub fn new(masters: Vec<MasterUrl>, roots: Option<Vec<Vec<u8>>>) -> Self {
+impl MasterList {
+    pub fn new(master: MasterUrl, roots: Option<Vec<Vec<u8>>>) -> Self {
         let (send, answers) = std::sync::mpsc::channel();
         let roots = roots
             .map(|r| Arc::new(r.into_iter().map(|der| ureq::tls::Certificate::from_der(&der).to_owned()).collect()));
         Self {
-            masters,
+            master,
             roots,
-            started: None,
-            asked: 0,
-            answered_ok: 0,
-            running: 0,
+            asked: None,
+            running: false,
             answers: Mutex::new(answers),
             send,
             generation: Arc::new(AtomicBool::new(false)),
-            kept: HashMap::new(),
-            status: Vec::new(),
+            kept: None,
+            status: None,
         }
     }
 
-    pub fn masters(&self) -> &[MasterUrl] {
-        &self.masters
+    pub fn master(&self) -> &MasterUrl {
+        &self.master
     }
 
     pub fn refresh(&mut self, now: Instant) -> bool {
-        if self.started.is_some_and(|t| now.duration_since(t) < STEP) {
+        if self.asked.is_some_and(|t| now.duration_since(t) < STEP) {
             return false;
         }
         self.generation.store(true, Ordering::Release);
@@ -213,23 +183,21 @@ impl Masters {
         let (send, answers) = std::sync::mpsc::channel();
         self.send = send;
         self.answers = Mutex::new(answers);
-        self.started = None;
-        self.asked = 0;
-        self.answered_ok = 0;
-        self.running = 0;
-        self.status.clear();
+        self.asked = None;
+        self.running = false;
+        self.status = None;
         true
     }
 
-    fn ask(&mut self, i: usize) {
-        let Some(url) = self.masters.get(i).cloned() else { return };
-        self.asked = self.asked.max(i + 1);
+    fn ask(&mut self, now: Instant) {
+        self.asked = Some(now);
         if RUNNING.fetch_add(1, Ordering::AcqRel) >= MAX_RUNNING {
             RUNNING.fetch_sub(1, Ordering::AcqRel);
-            self.status.push((url, Err(format!("not asked: {MAX_RUNNING} lists are under way already"))));
+            self.status = Some(Err(format!("not asked: {MAX_RUNNING} lists are under way already")));
             return;
         }
-        let etag = self.kept.get(&url).and_then(|(_, t)| t.clone());
+        let url = self.master.clone();
+        let etag = self.kept.as_ref().and_then(|(_, t)| t.clone());
         let (send, roots, dropped) = (self.send.clone(), self.roots.clone(), Arc::clone(&self.generation));
         let spawned = std::thread::Builder::new().name("master list".into()).spawn(move || {
             let t0 = Instant::now();
@@ -241,23 +209,17 @@ impl Masters {
             }
         });
         match spawned {
-            Ok(_) => self.running += 1,
-            Err(_) => {
+            Ok(_) => self.running = true,
+            Err(e) => {
                 RUNNING.fetch_sub(1, Ordering::AcqRel);
+                self.status = Some(Err(format!("not asked: no thread ({e})")));
             }
         }
     }
 
     pub fn poll(&mut self, now: Instant) -> bool {
-        let started = *self.started.get_or_insert(now);
-        if self.asked == 0 {
-            for i in 0..AT_ONCE.min(self.masters.len()) {
-                self.ask(i);
-            }
-        }
-        let steps = (now.duration_since(started).as_millis() / STEP.as_millis()) as usize;
-        while self.asked < self.masters.len() && self.answered_ok < AT_ONCE && self.asked < AT_ONCE + steps {
-            self.ask(self.asked);
+        if self.asked.is_none() {
+            self.ask(now);
         }
         let got: Vec<MasterAnswer> = match self.answers.lock() {
             Ok(rx) => rx.try_iter().collect(),
@@ -265,37 +227,30 @@ impl Masters {
         };
         let changed = !got.is_empty();
         for a in got {
-            self.running = self.running.saturating_sub(1);
-            let note = match a.result {
+            self.running = false;
+            self.status = Some(match a.result {
                 Ok(Fetched::List { list, etag }) => {
                     let n = list.servers.len();
-                    self.kept.insert(a.url.clone(), (list, etag));
+                    self.kept = Some((list, etag));
                     Ok(n)
                 }
-                Ok(Fetched::NotModified) => Ok(self.kept.get(&a.url).map_or(0, |(l, _)| l.servers.len())),
+                Ok(Fetched::NotModified) => Ok(self.kept.as_ref().map_or(0, |(l, _)| l.servers.len())),
                 Err(e) => Err(e),
-            };
-            if note.is_ok() {
-                self.answered_ok += 1;
-            }
-            self.status.retain(|(u, _)| *u != a.url);
-            self.status.push((a.url, note));
+            });
         }
         changed
     }
 
-    pub fn waiting(&self) -> usize {
+    pub fn waiting(&self) -> bool {
         self.running
     }
 
-    pub fn merged(&self) -> (Vec<Listed>, usize) {
-        let lists: Vec<(&MasterUrl, &ServerList)> =
-            self.masters.iter().filter_map(|m| self.kept.get(m).map(|(l, _)| (m, l))).collect();
-        merge(&lists)
+    pub fn listed(&self) -> (Vec<Listed>, usize) {
+        self.kept.as_ref().map_or((Vec::new(), 0), |(l, _)| listed(l))
     }
 }
 
-impl Drop for Masters {
+impl Drop for MasterList {
     fn drop(&mut self) {
         self.generation.store(true, Ordering::Release);
     }
@@ -306,39 +261,25 @@ pub struct Listed {
     pub address: ServerAddress,
     pub key: [u8; 32],
     pub server: ListedServer,
-    pub masters: Vec<MasterUrl>,
 }
 
-pub fn merge(lists: &[(&MasterUrl, &ServerList)]) -> (Vec<Listed>, usize) {
+pub fn listed(list: &ServerList) -> (Vec<Listed>, usize) {
     let mut out: Vec<Listed> = Vec::new();
-    let mut by_key: HashMap<[u8; 32], usize> = HashMap::new();
-    let mut places: HashMap<(IpAddr, u16), usize> = HashMap::new();
+    let mut keys: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+    let mut places: std::collections::HashSet<(IpAddr, u16)> = std::collections::HashSet::new();
     let mut left_out = 0;
-    for (url, list) in lists {
-        for s in &list.servers {
-            let (Ok(ip), Ok(raw)) = (s.ip(), from_hex(&s.key)) else {
-                left_out += 1;
-                continue;
-            };
-            if let Some(&i) = by_key.get(&raw) {
-                if !out[i].masters.contains(url) {
-                    out[i].masters.push((*url).clone());
-                }
-                continue;
-            }
-            if places.contains_key(&(ip, s.port)) {
-                left_out += 1;
-                continue;
-            }
-            by_key.insert(raw, out.len());
-            places.insert((ip, s.port), out.len());
-            out.push(Listed {
-                address: ServerAddress { host: Host::Ip(ip), port: s.port },
-                key: raw,
-                server: s.clone(),
-                masters: vec![(*url).clone()],
-            });
+    for s in &list.servers {
+        let (Ok(ip), Ok(raw)) = (s.ip(), from_hex(&s.key)) else {
+            left_out += 1;
+            continue;
+        };
+        if keys.contains(&raw) || places.contains(&(ip, s.port)) {
+            left_out += 1;
+            continue;
         }
+        keys.insert(raw);
+        places.insert((ip, s.port));
+        out.push(Listed { address: ServerAddress { host: Host::Ip(ip), port: s.port }, key: raw, server: s.clone() });
     }
     (out, left_out)
 }

@@ -122,24 +122,6 @@ fn locate_key_in(tree: &PackageTree, file: &str, key: &str) -> (usize, usize) {
         .map_or((0, 0), |t| locate_key(&t, key))
 }
 
-fn phase(kind: Kind) -> &'static str {
-    match kind {
-        Kind::Texture => "M1",
-        Kind::Model | Kind::Object | Kind::Material => "M2",
-        Kind::Character | Kind::Gear | Kind::Board => "M3",
-        Kind::Sky | Kind::Lighting | Kind::Postfx | Kind::Particles => "M4",
-        Kind::Sound | Kind::Music => "M5",
-        Kind::Ui | Kind::Font | Kind::String | Kind::Movie => "M6",
-        Kind::Script | Kind::Marker => "M7",
-        Kind::Map => "M8b",
-        Kind::Gamemode => "M8c",
-        Kind::Track => "M8",
-        Kind::Drop | Kind::Event | Kind::Tuning | Kind::Scoring => "M9",
-        Kind::Anim => "M10a",
-        Kind::Trick => "M10b",
-    }
-}
-
 pub fn check_package(root: &Path, limits: &texture::Limits) -> Checked {
     let mut c = Checked::default();
     let tree = match PackageTree::open(root) {
@@ -320,32 +302,7 @@ fn check_manifest_files(
                 _ => {}
             }
         }
-        if !matches!(
-            id.kind(),
-            Kind::Texture
-                | Kind::Model
-                | Kind::Object
-                | Kind::Material
-                | Kind::Sky
-                | Kind::Lighting
-                | Kind::Postfx
-                | Kind::Particles
-                | Kind::Sound
-                | Kind::Music
-                | Kind::Ui
-                | Kind::Font
-                | Kind::String
-                | Kind::Marker
-                | Kind::Movie
-                | Kind::Map
-                | Kind::Anim
-                | Kind::Trick
-                | Kind::Gamemode
-                | Kind::Tuning
-                | Kind::Scoring
-                | Kind::Event
-                | Kind::Drop
-        ) {
+        if !id.kind().read_from_packages() {
             *idle.entry(id.kind()).or_default() += 1;
         }
     }
@@ -355,10 +312,9 @@ fn check_manifest_files(
     trick::cross_check(c, tree);
     for (kind, n) in idle {
         let message = format!(
-            "{n} {kind} entr{}: the game reads this kind from packages from phase {}; until then only the files' \
-             presence and records are checked",
+            "{n} {kind} entr{}: the game does not read this kind from packages; only the files' presence and records \
+             are checked",
             if n == 1 { "y" } else { "ies" },
-            phase(kind)
         );
         c.push(Severity::Note, MANIFEST_FILE, (0, 0), message);
     }
@@ -438,8 +394,8 @@ fn check_manifest_files(
         }
     }
     if !(s.client.is_empty() && s.server.is_empty() && s.shared.is_empty()) {
-        let message = "scripts: each side's Luau files are compiled and their `require`s resolved by `mod check`'s \
-                       script check (`ssx-script-check`)";
+        let message = "scripts: each side's Luau files are compiled and their `require`s resolved when the scripts are \
+                       loaded";
         c.push(Severity::Note, MANIFEST_FILE, m.positions.scripts, message);
     }
     let unnamed: Vec<&str> = files

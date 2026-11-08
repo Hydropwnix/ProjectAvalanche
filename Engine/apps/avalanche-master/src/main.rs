@@ -70,22 +70,22 @@ fn main() -> ExitCode {
     }
 }
 
-fn mode(c: &config::Config) -> Vec<String> {
-    let trusted = avalanche_master::trusted_list(&c.trusted);
+fn mode(c: &config::Config, trust: &avalanche_master::trust::Moment) -> Vec<String> {
+    let trusted = trust.set.describe(trust.at);
     let rule = avalanche_master::forwarded_rule();
-    let mut lines = vec![match (c.tls.is_some(), c.trusted.is_empty()) {
-        (true, true) => "mode: direct TLS (the master serves HTTPS itself; no proxy)".to_string(),
-        (false, false) => format!("mode: plain HTTP behind trusted proxies {trusted} (they terminate TLS); {rule}"),
-        (true, false) => format!(
+    let mut lines = vec![match (c.tls.is_some(), c.behind_proxy()) {
+        (true, false) => "mode: direct TLS (the master serves HTTPS itself; no proxy)".to_string(),
+        (false, true) => format!("mode: plain HTTP behind trusted proxies {trusted} (they terminate TLS); {rule}"),
+        (true, true) => format!(
             "mode: HTTPS behind trusted proxies {trusted} (they connect over TLS; a TCP pass-through adds no \
              X-Forwarded-For and every request through it is refused); {rule}"
         ),
-        (false, true) => "mode: plain HTTP with no proxy".to_string(),
+        (false, false) => "mode: plain HTTP with no proxy".to_string(),
     }];
-    if c.tls.is_none() && c.trusted.is_empty() && !c.bind.is_loopback() {
+    if c.tls.is_none() && !c.behind_proxy() && !c.bind.is_loopback() {
         lines.push(format!(
             "warning: plain HTTP on {} with no proxy: a master on the Internet serves HTTPS ([tls]) or sits behind a \
-             TLS-terminating proxy ([proxy] trusted); plain HTTP is for a LAN or test master",
+             TLS-terminating proxy ([proxy] trusted_hosts or trusted); plain HTTP is for a LAN or test master",
             c.addr()
         ));
     }
@@ -97,9 +97,12 @@ fn mode(c: &config::Config) -> Vec<String> {
             ));
         }
     }
-    if !c.trusted.is_empty() {
+    for (name, state) in trust.set.names() {
+        lines.push(avalanche_master::trust::name_line(name, state));
+    }
+    if c.behind_proxy() {
         let route = avalanche_master::route::default_gateways();
-        lines.extend(avalanche_master::route::gateway_lines(&route, &c.trusted));
+        lines.extend(avalanche_master::route::gateway_lines(&route, trust));
     }
     lines
 }
@@ -111,7 +114,13 @@ fn check(path: &Path, c: &config::Config) -> ExitCode {
         None => println!("{}: missing, the defaults are used", path.display()),
     }
     println!("  address {} ({})", c.addr(), if c.tls.is_some() { "HTTPS" } else { "plain HTTP" });
-    mode(c).iter().for_each(|l| println!("  {l}"));
+    match avalanche_master::trust::looked_up(c, std::sync::Arc::new(avalanche_master::names::SystemResolver)) {
+        Ok(trust) => mode(c, &trust).iter().for_each(|l| println!("  {l}")),
+        Err(e) => {
+            println!("  the trusted names were not looked up: {}", ssx_core::text::Text::new(&e));
+            ok = false;
+        }
+    }
     println!("  at most {} servers, {} per address", c.max_servers, c.max_per_address);
     println!(
         "  {}",

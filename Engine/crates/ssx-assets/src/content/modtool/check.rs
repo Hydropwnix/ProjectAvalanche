@@ -282,7 +282,7 @@ fn fit_base_textures(c: &mut Checked, m: &Manifest, disc: &DiscTextures) {
         let want = match layout {
             (Shape::Volume, _) => {
                 let message = format!(
-                    "{id}: the post-FX colour cube is a volume, the postfx kind's data (phase M4), not a texture a file replaces"
+                    "{id}: the post-FX colour cube is a volume, the postfx kind's data, not a texture a file replaces"
                 );
                 push(c, Severity::Error, MANIFEST_FILE, at, message);
                 continue;

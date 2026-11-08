@@ -101,6 +101,29 @@ fn a_console_word_reaches_only_a_script_that_registered_it() {
 }
 
 #[test]
+fn a_print_line_reaches_the_log_whole_up_to_the_vms_bound() {
+    let dir = folder("print");
+    let s = ServerScripts::spawn(&dir.0).unwrap();
+    let long = "a welcome line of a server resource that is longer than sixty-four characters, as players write";
+    let src = format!(
+        r#"addCommandHandler("say", function() print("{long}"); print(string.rep("x", 9000)); print("a\27[2Jb"); print(string.rep("\27", 5000)) end)"#
+    );
+    let (tx, rx) = sync_channel(0);
+    s.handle.send(Job::Transact(Transaction::starting(vec![package_with("words", &src)]), tx)).unwrap();
+    rx.recv_timeout(Duration::from_secs(30)).unwrap().unwrap();
+    super::console(&s, "say", None).unwrap();
+    let lines = said(&s, Duration::from_millis(500));
+    assert_eq!(lines.len(), 5, "{lines:?}");
+    assert_eq!(lines[1], format!("scripts: words: {long}"));
+    let x = "x".repeat(ssx_script::MAX_OUTPUT_LINE);
+    assert_eq!(lines[2], format!("scripts: words: {x}… ({} bytes cut)", 9000 - ssx_script::MAX_OUTPUT_LINE));
+    assert_eq!(lines[3], "scripts: words: a\\u{1b}[2Jb");
+    let hostile = lines[4].strip_prefix("scripts: words: ").unwrap();
+    assert!(hostile.starts_with("\\u{1b}\\u{1b}") && hostile.ends_with(" bytes)"), "{hostile:.80}");
+    assert!(hostile.chars().count() <= super::thread::PRINT_CHARS + 32, "{}", hostile.chars().count());
+}
+
+#[test]
 fn many_slow_clients_stay_within_the_bound() {
     use std::collections::BTreeSet;
 

@@ -54,7 +54,7 @@ impl Stats {
 #[derive(Resource, Clone)]
 pub struct Status {
     pub stats: Arc<Stats>,
-    pub masters: Arc<Mutex<Vec<(String, String)>>>,
+    pub master: Arc<Mutex<Option<(String, String)>>>,
     pub query: bool,
     pub lan: bool,
     pub portmap: Option<Arc<Mutex<ssx_net_portmap::Status>>>,
@@ -85,10 +85,10 @@ impl Status {
             n(&s.heartbeats_refused),
             n(&s.heartbeats_failed),
         )];
-        if let Ok(m) = self.masters.lock() {
+        if let Ok(m) = self.master.lock() {
             out.extend(m.iter().map(|(url, last)| format!("  master {url}: {last}")));
             if let Some(map) = &self.portmap {
-                out.extend(crate::portmap::lines(map, &m));
+                out.extend(crate::portmap::lines(map, m.as_ref()));
             }
         }
         out
@@ -262,12 +262,12 @@ impl Discovery {
     ) -> Result<Self, StartError> {
         let d = &config.discovery;
         let stats = Arc::new(Stats::default());
-        let masters = Arc::new(Mutex::new(Vec::new()));
-        let beat = if d.public {
+        let last = Arc::new(Mutex::new(None));
+        let beat = if let (true, Some(master)) = (d.public, &d.master) {
             let tls = heartbeat::tls_config(&extras.roots).map_err(StartError::Other)?;
             let source: Option<IpAddr> = (!config.bind.is_unspecified()).then_some(config.bind);
             Some(Arc::new(heartbeat::Beat {
-                masters: d.masters.clone(),
+                master: master.clone(),
                 identity,
                 http: Arc::clone(&http),
                 shared,
@@ -280,14 +280,14 @@ impl Discovery {
                 interval: extras.interval.unwrap_or(HEARTBEAT_INTERVAL),
                 after_change: extras.after_change.unwrap_or(HEARTBEAT_AFTER_CHANGE),
                 stats: Arc::clone(&stats),
-                last: Arc::clone(&masters),
+                last: Arc::clone(&last),
             }))
         } else {
             None
         };
         let responders = Responders::start(sockets, http, game.port(), Arc::clone(&stats))
             .map_err(|e| StartError::Other(format!("the query and LAN responders: {e}")))?;
-        let status = Status { stats, masters, query: d.query, lan: d.lan, portmap: None };
+        let status = Status { stats, master: last, query: d.query, lan: d.lan, portmap: None };
         Ok(Self { beat, responders, status })
     }
 
@@ -297,28 +297,20 @@ impl Discovery {
 
     pub fn start(self) -> Running {
         let (stop, stopped) = watch::channel(false);
-        let beats = self
-            .beat
-            .map(|b| {
-                b.masters
-                    .iter()
-                    .map(|url| tokio::spawn(heartbeat::run(Arc::clone(&b), url.clone(), stopped.clone())))
-                    .collect()
-            })
-            .unwrap_or_default();
-        Running { responders: self.responders, beats, stop }
+        let beat = self.beat.map(|b| tokio::spawn(heartbeat::run(b, stopped)));
+        Running { responders: self.responders, beat, stop }
     }
 }
 
 pub struct Running {
     responders: Option<Responders>,
-    beats: Vec<JoinHandle<()>>,
+    beat: Option<JoinHandle<()>>,
     stop: watch::Sender<bool>,
 }
 
 impl Running {
     pub fn abort(self) {
-        for t in &self.beats {
+        if let Some(t) = &self.beat {
             t.abort();
         }
         drop(self.responders);
@@ -329,10 +321,10 @@ impl Running {
             r.stop().await;
         }
         let _ = self.stop.send(true);
-        let deadline = tokio::time::Instant::now() + heartbeat::LEAVE_TIMEOUT + Duration::from_secs(1);
-        for b in self.beats {
+        if let Some(b) = self.beat {
             let abort = b.abort_handle();
-            if tokio::time::timeout_at(deadline, b).await.is_err() {
+            let wait = heartbeat::LEAVE_TIMEOUT + Duration::from_secs(1);
+            if tokio::time::timeout(wait, b).await.is_err() {
                 abort.abort();
             }
         }

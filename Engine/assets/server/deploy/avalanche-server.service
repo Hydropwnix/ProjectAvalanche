@@ -24,10 +24,12 @@ Group=avalanche
 WorkingDirectory=/var/lib/avalanche-server
 ExecStart=/opt/avalanche-server/avalanche-server run --config /etc/avalanche-server/server.toml --data /var/lib/avalanche-server/data
 # The first SIGTERM is the graceful stop (a round under way ends within server.toml's [stop] round_end, 60 s by
-# default, and its results stay up 5 s; then the riders are told and the masters told it leaves); a second ends it at
-# once. The bound covers the default: 60 + 5 + 2 s for the rounds, 2 s for the riders, 3 s for the masters, a margin.
+# default, and its results stay up 5 s; then the riders are told, the server scripts stopped, the port mappings
+# removed and the master told it leaves); a second ends it at once. The bound covers the default: 60 + 5 + 2 s for
+# the rounds, 2.1 s for the riders, 30 s for the scripts, 4 s for the port mappings, 3 s for the master (106.1 s),
+# a margin; with another round_end, round_end + 50.
 KillSignal=SIGTERM
-TimeoutStopSec=90
+TimeoutStopSec=110
 Restart=on-failure
 RestartSec=5
 # The console reads stdin: a service has none (the console ends, the server runs on).

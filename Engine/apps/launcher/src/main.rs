@@ -48,6 +48,9 @@ fn main() -> eframe::Result {
     };
     update::install::cleanup_leftovers();
     let settings = settings::Settings::load();
+    if let Some(note) = masters::old_member_note(settings.old_masters) {
+        ssx_core::eprintln!("note: {note}");
+    }
     if args.print {
         std::process::exit(print(&settings));
     }

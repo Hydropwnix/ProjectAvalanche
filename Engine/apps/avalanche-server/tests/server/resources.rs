@@ -6,7 +6,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use avalanche_server::config::Config;
 use avalanche_server::{ServerOptions, ServerThread};
 use ssx_content::ContentHash;
 use ssx_content::delivery::{ClientManifest, FileStore, Mirror};
@@ -31,7 +30,7 @@ fn bytes(tag: u8, n: usize) -> Vec<u8> {
 }
 
 fn server(folder: &Path, start: &[&str], mirrors: Vec<Mirror>) -> (ServerThread, std::io::PipeWriter) {
-    let mut config = Config::defaults();
+    let mut config = crate::common::defaults();
     config.bind = std::net::Ipv4Addr::LOCALHOST.into();
     config.port = 0;
     config.resources.folder = folder.to_path_buf();

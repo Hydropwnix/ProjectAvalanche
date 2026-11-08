@@ -7,6 +7,7 @@ use crate::challenge::Challenges;
 use crate::config::Config;
 use crate::limits::{AddressLimiter, Connections, GlobalLimiter, Limiter, Rate};
 use crate::registry::Registry;
+use crate::trust::{Trust, TrustSet};
 
 // TODO(guess): challenge and heartbeat 2 a second with a burst of 32, the list 1 a second (burst 8), the blocklist 1 a
 // second (burst 4), anything else 2 a second (burst 4); settle: a public master's measured request pattern.
@@ -103,12 +104,15 @@ pub struct Master {
     pub checks: tokio::sync::Semaphore,
     pub stats: Stats,
     pub stopping: AtomicBool,
+    pub trust: Trust,
 }
 
 impl Master {
     pub fn new(config: Config, blocklists: Blocklists) -> Self {
+        let trust = Trust::new(TrustSet::new(config.trusted.networks().to_vec(), config.trusted_hosts.clone()));
         Self {
             registry: Mutex::new(Registry::new(config.max_servers, config.max_per_address)),
+            trust,
             config,
             started: Instant::now(),
             challenges: Challenges::default(),

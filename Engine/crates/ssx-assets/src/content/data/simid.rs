@@ -122,9 +122,12 @@ impl GameContent {
         let mut missing = Vec::new();
         for path in session_files(track, &ghosts) {
             match index.entries.get(&path) {
-                Some((_, hash)) => {
-                    rows.push(SimRow { id: file_id(&path), class: "file".into(), hash: *hash, layer: "L0".into() })
-                }
+                Some((_, hash)) => rows.push(SimRow {
+                    id: file_id(&path),
+                    class: "file".into(),
+                    hash: *hash,
+                    layer: Layer::Base.source_text("ssx"),
+                }),
                 None => missing.push(path),
             }
         }
@@ -234,7 +237,7 @@ impl GameContent {
             if now != was {
                 let key = routed.iter().find(|d| d.key == ge).and_then(|d| d.lighting_key).unwrap_or(0);
                 let named = self.disc_records().and_then(|r| r.names().ok()).and_then(|n| n.lighting(key).cloned());
-                let layer = named.as_ref().map_or_else(|| "L0 ssx".into(), |id| self.layer_of(id));
+                let layer = named.as_ref().map_or_else(|| Layer::Base.source_text("ssx"), |id| self.layer_of(id));
                 let id = named.map_or_else(|| format!("lighting:0x{key:08x}"), |id| id.to_string());
                 let t = now.unwrap_or_default();
                 rows.push(SimRow { id, class: "simulation".into(), hash: record_hash(&t), layer });
@@ -287,16 +290,16 @@ impl GameContent {
         let below = self.sim_policy() != ssx_content::policy::ClientMods::Any;
         let keep = |l: Layer| !(below && l == Layer::ClientMods);
         self.with_registry(|r| {
-            let winner = r.providers(id).find(|(m, _)| keep(m.layer)).map(|(m, _)| format!("{} {}", m.layer, m.name));
+            let winner = r.providers(id).find(|(m, _)| keep(m.layer)).map(|(m, _)| m.layer.source_text(m.name));
             let patches: Vec<String> = r
                 .patches_in(id, keep)
-                .map(|p| p.into_iter().map(|(n, l, _)| format!("{l} {n}")).collect())
+                .map(|p| p.into_iter().map(|(n, l, _)| l.source_text(&n)).collect())
                 .unwrap_or_default();
             let mut out = winner.unwrap_or_else(|| "none".into());
             if !patches.is_empty() {
                 out.push_str(&format!(", patched by {}", patches.join(", ")));
             }
-            ssx_core::text::shown(&out).to_string()
+            ssx_core::text::shown_max(&out, ssx_core::text::MESSAGE_CHARS).to_string()
         })
     }
 }

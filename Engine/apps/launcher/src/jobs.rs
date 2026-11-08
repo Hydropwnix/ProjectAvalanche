@@ -1,5 +1,5 @@
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -94,6 +94,9 @@ impl SetupJob {
 
 const LOG_LINES: usize = 2000;
 
+pub const GAME_LOG: &str = "game.log";
+pub const VIEWER_LOG: &str = "asset-viewer.log";
+
 pub struct Viewer {
     pub log: Arc<Mutex<Vec<String>>>,
     pub status: Arc<Mutex<Option<String>>>,
@@ -101,10 +104,13 @@ pub struct Viewer {
 }
 
 impl Viewer {
-    pub fn spawn(ctx: &egui::Context, inv: &Invocation) -> std::io::Result<Self> {
-        let dir = crate::settings::app_dir();
-        std::fs::create_dir_all(&dir)?;
-        let path = dir.join("viewer.log");
+    pub fn spawn(ctx: &egui::Context, inv: &Invocation, log: &str) -> std::io::Result<Self> {
+        Self::spawn_in(ctx, inv, &crate::settings::app_dir(), log)
+    }
+
+    fn spawn_in(ctx: &egui::Context, inv: &Invocation, dir: &Path, log: &str) -> std::io::Result<Self> {
+        std::fs::create_dir_all(dir)?;
+        let path = dir.join(log);
         let mut file = std::fs::File::create(&path)?;
         writeln!(file, "$ {}", inv.display())?;
         let mut cmd = inv.command();
@@ -200,9 +206,40 @@ fn strip_ansi(line: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::{GAME_LOG, VIEWER_LOG, Viewer};
+    use crate::command::Invocation;
+
     #[test]
     fn strips_colours() {
         let line = "\u{1b}[2m2026-10-07\u{1b}[0m \u{1b}[32m INFO\u{1b}[0m viewer";
         assert_eq!(super::strip_ansi(line), "2026-10-07  INFO viewer");
+    }
+
+    #[test]
+    fn a_starts_output_goes_to_its_log() {
+        let dir = std::env::temp_dir().join(format!("launcher-jobs-{}", std::process::id()));
+        let inv = Invocation {
+            program: std::env::current_exe().expect("the test binary"),
+            args: vec!["--list".into()],
+            env: Vec::new(),
+        };
+        let ctx = eframe::egui::Context::default();
+        for log in [GAME_LOG, VIEWER_LOG] {
+            let started = Viewer::spawn_in(&ctx, &inv, &dir, log).expect("the start");
+            let listed =
+                || started.log.lock().is_ok_and(|l| l.iter().any(|l| l.contains("a_starts_output_goes_to_its_log")));
+            let since = Instant::now();
+            while started.status().is_none() || !listed() {
+                assert!(since.elapsed() < Duration::from_secs(60), "{log}: {:?}", started.status());
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            assert_eq!(started.status().as_deref(), Some("exited normally"));
+            let text = std::fs::read_to_string(dir.join(log)).expect("the log");
+            assert!(text.starts_with("$ ") && text.contains("--list"), "{text}");
+        }
+        assert!(!dir.join("viewer.log").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

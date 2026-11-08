@@ -52,7 +52,7 @@ pub fn add(c: &mut Catalogue, dirs: &DataDirs<'_>, want: &dyn Fn(Kind) -> bool) 
             let path = format!("{}{name}", ssx_content::particles::SPRAY_PREFIX);
             c.add(Kind::Particles, &path, format!("{vault}#ge_snowspray/{name}"));
         }
-        c.note(Kind::Particles, "the .lnx systems by path, and the two snow-spray tables as snowspray/<name> (M4)");
+        c.note(Kind::Particles, "the .lnx systems by path, and the two snow-spray tables as snowspray/<name>");
     }
     if want(Kind::Movie) {
         movies(c, dirs)?;

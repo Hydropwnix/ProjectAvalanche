@@ -35,8 +35,8 @@ pub fn server_refusal(manifest: &Manifest, tree: &PackageTree) -> Option<String>
     }
     if manifest.actionscript() {
         return Some(
-            "it declares movies with ActionScript ([actionscript]); a server's movies are not run until \
-                     resource delivery decides them (multiplayer phase 6)"
+            "it declares movies with ActionScript ([actionscript]); movies with code come only from client mods the \
+             player installs"
                 .into(),
         );
     }
@@ -44,7 +44,7 @@ pub fn server_refusal(manifest: &Manifest, tree: &PackageTree) -> Option<String>
         *k == crate::path::EntryKind::File
             && p.rsplit_once('.').is_some_and(|(_, e)| MOVIE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
     });
-    movie.map(|(p, _)| format!("{p}: a movie; a server's movies are not run until resource delivery decides them"))
+    movie.map(|(p, _)| format!("{p}: a movie; movies come only from client mods the player installs"))
 }
 
 pub struct PackageSource {

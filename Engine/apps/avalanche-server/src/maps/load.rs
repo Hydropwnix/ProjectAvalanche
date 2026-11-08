@@ -243,7 +243,9 @@ fn shown_folder(folder: &Path) -> String {
 
 pub fn check_toml(folder: &Path, content: &GameContent, id: &str, toml: &MapToml) -> Result<(), String> {
     if toml.intro == Intro::Heli {
-        return Err(format!("{id} starts in the helicopter, which a server does not run yet (the intro of round M8d)"));
+        return Err(format!(
+            "{id} starts in the helicopter (intro = \"heli\"), which a server does not run: a server's map starts at its spawn"
+        ));
     }
     if let Some(base) = &toml.base {
         let b = content

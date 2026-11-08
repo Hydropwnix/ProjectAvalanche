@@ -37,7 +37,7 @@ const HEADROOM: u64 = 4 << 20;
 pub fn run(
     source: &Source,
     out: &Path,
-    resources: &Path,
+    configured: &guard::Configured<'_>,
     classes: &BTreeSet<Class>,
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(&Progress),
@@ -49,7 +49,7 @@ pub fn run(
         return Err("the class not-server is never taken (the simulation does not read it)".into());
     }
     let wanted: BTreeSet<String> = entries.iter().map(|e| e.member.data_path()).collect();
-    guard::prepare(out, &wanted, resources)?;
+    guard::prepare(out, &wanted, configured)?;
     match std::fs::remove_file(out.join(INDEX_FILE)) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
             return Err(format!("{}: {e}", out.join(INDEX_FILE).display()));

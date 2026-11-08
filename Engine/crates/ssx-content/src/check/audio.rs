@@ -54,8 +54,8 @@ pub(super) fn check_entry(
                 MANIFEST_FILE,
                 at,
                 format!(
-                    "{id}: a sound of the package's own: registered and checked; a character's [voice_lines] play it \
-                     (M3), scripts and markers from phase M7"
+                    "{id}: a sound of the package's own: registered and checked; a character's [voice_lines], scripts \
+                     and markers play it"
                 ),
             ),
             _ => {}

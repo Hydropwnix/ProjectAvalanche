@@ -25,6 +25,17 @@ impl fmt::Display for Layer {
     }
 }
 
+impl Layer {
+    pub fn source_text(self, name: &str) -> String {
+        match self {
+            Layer::Base => "the game's disc".to_string(),
+            Layer::Port => "Project Avalanche".to_string(),
+            Layer::ClientMods => format!("your mod {name}"),
+            Layer::Server => format!("the server's resource {name}"),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub enum Asset {
     Bytes(Arc<[u8]>),

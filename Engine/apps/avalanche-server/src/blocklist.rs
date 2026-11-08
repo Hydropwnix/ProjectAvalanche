@@ -15,8 +15,8 @@ use ssx_net_proto::master::MasterUrl;
 
 pub const LOCAL_SOURCE: &str = "the server's own list";
 const MAX_PATH: usize = 4096;
-// TODO(guess): 10 s, a port choice: an operator's repeated command does not ask every master again each time; nothing
-// measured; settle: the request rates real masters accept (a master answers 1 a second, burst 4, per address).
+// TODO(guess): 10 s, a port choice: an operator's repeated command does not ask the master again each time; nothing
+// measured; settle: the request rate the master accepts (it answers 1 a second, burst 4, per address).
 const MIN_ASK: Duration = Duration::from_secs(10);
 // TODO(guess): 120 s, a port choice above the queue's longest job seen (a copy's read and mount, seconds); settle: the
 // queue's times on a server with many resources.
@@ -36,7 +36,7 @@ pub fn cache_dir(data_dir: &Path) -> PathBuf {
 #[derive(Clone, Debug)]
 pub struct Sources {
     pub dir: PathBuf,
-    pub masters: Vec<MasterUrl>,
+    pub master: Option<MasterUrl>,
     pub local: Option<PathBuf>,
 }
 
@@ -44,11 +44,11 @@ impl Sources {
     pub fn of(config: &crate::config::Config, data_dir: &Path) -> Self {
         let local =
             config.discovery.blocklist.as_ref().map(|p| if p.is_absolute() { p.clone() } else { data_dir.join(p) });
-        Sources { dir: cache_dir(data_dir), masters: config.discovery.masters.clone(), local }
+        Sources { dir: cache_dir(data_dir), master: config.discovery.master.clone(), local }
     }
 
     fn master_keys(&self) -> Vec<String> {
-        self.masters.iter().map(ToString::to_string).collect()
+        self.master.iter().map(ToString::to_string).collect()
     }
 }
 
@@ -110,8 +110,8 @@ pub fn load(sources: &Sources, now: u64, previous: Option<&List>) -> Result<List
         lists.push(list.clone());
         local = Some(list);
     }
-    if sources.masters.is_empty() && sources.local.is_none() {
-        lines.push("blocklists: none followed (no [discovery] masters, no [discovery] blocklist)".into());
+    if sources.master.is_none() && sources.local.is_none() {
+        lines.push("blocklists: none followed (a development build without a master; no [discovery] blocklist)".into());
     }
     Ok(Lists { blocked: Arc::new(Blocked::new(lists)), lines, gauges, local })
 }
@@ -209,7 +209,7 @@ pub fn follow(
         .build()
         .map_err(|e| format!("the blocklists' runtime: {e}"))?;
     let mut follower = Follower { runtime, sources: sources.clone(), local: start.local.clone(), tls, source };
-    let (first, fetched) = if sources.masters.is_empty() {
+    let (first, fetched) = if sources.master.is_none() {
         (start, Vec::new())
     } else {
         match follower.round() {

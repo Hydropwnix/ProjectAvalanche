@@ -226,11 +226,14 @@ pub(super) fn check_drop(ui: &GameUiRes, drop: &str, mode: ssx_net_proto::Mode) 
         Mode::Survive => (3..=4).contains(&event.event_type),
     };
     if !fits {
-        return Err(format!(
-            "the server's drop {drop} is not a {} event (its event type is {})",
-            mode.name(),
-            event.event_type
-        ));
+        let is = match event.event_type {
+            0..=2 => "a trick event",
+            3..=4 => "a survive event",
+            5..=7 => "a race event",
+            8 => "a freeride event",
+            _ => "an event of no known type",
+        };
+        return Err(format!("the server's drop {drop} is not a {} event: it is {is}", mode.name()));
     }
     Ok(())
 }
@@ -269,6 +272,10 @@ pub fn drive(
         State::Joining(task) => match task.poll() {
             Some(Ok(joined)) => {
                 log_blocklists(s.joining.as_ref());
+                #[cfg(feature = "scripts")]
+                if joined.resources.is_none() {
+                    live.content.client_scripts = ssx_content::policy::ClientScripts::Unstated;
+                }
                 if let (Some(j), Some(fetched)) = (s.joining.take(), joined.resources) {
                     #[cfg(feature = "scripts")]
                     let server_key = joined.granted.info.identity_key.clone();

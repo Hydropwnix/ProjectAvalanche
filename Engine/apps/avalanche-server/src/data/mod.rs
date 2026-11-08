@@ -33,7 +33,11 @@ fn marker_classes(m: &serde_json::Value) -> Option<BTreeSet<Class>> {
     out.contains(&Class::Rules).then_some(out)
 }
 
-pub fn check_subset(data: &Path, hash: bool, resources: &Path) -> Result<(Subset, Vec<Finding>), Vec<Finding>> {
+pub fn check_subset_configured(
+    data: &Path,
+    hash: bool,
+    configured: &guard::Configured<'_>,
+) -> Result<(Subset, Vec<Finding>), Vec<Finding>> {
     let f = |place: &Path, what: String| Finding { place: place.display().to_string(), what };
     let marker_path = data.join(ssx_assets::subset::MARKER);
     let Some(marker) = ssx_assets::subset::read_marker(data) else {
@@ -92,7 +96,7 @@ pub fn check_subset(data: &Path, hash: bool, resources: &Path) -> Result<(Subset
             findings.push(f(&data.join(index::INDEX_FILE), format!("{extra}: not a member of the marker's classes")));
         }
     }
-    if let Err(why) = guard::prepare(data, &wanted, resources) {
+    if let Err(why) = guard::prepare(data, &wanted, configured) {
         findings.push(f(data, why));
     }
     Ok((Subset { classes, members: entries.len(), bytes, known_pressing }, findings))

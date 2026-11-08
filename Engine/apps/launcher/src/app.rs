@@ -51,8 +51,6 @@ pub struct Launcher {
     pub link: Option<String>,
     pub link_note: Option<String>,
     pub link_status: Option<crate::link_handler::Status>,
-    pub master_input: String,
-    pub master_note: Option<String>,
     pub forced_hover: Option<String>,
     pub scripted_keys: std::collections::VecDeque<(egui::Key, bool)>,
     pub window_pixels: Option<[f32; 2]>,
@@ -107,8 +105,6 @@ impl Launcher {
             link: None,
             link_note: None,
             link_status: None,
-            master_input: String::new(),
-            master_note: None,
             forced_hover: None,
             scripted_keys: Default::default(),
             window_pixels: None,
@@ -171,7 +167,7 @@ impl Launcher {
             });
             return;
         }
-        match Viewer::spawn(ctx, inv) {
+        match Viewer::spawn(ctx, inv, if game { jobs::GAME_LOG } else { jobs::VIEWER_LOG }) {
             Ok(v) => (self.viewer, self.started_game) = (Some(v), game),
             Err(e) => self.launch_error = Some(format!("could not start {}: {e}", inv.program.display())),
         }

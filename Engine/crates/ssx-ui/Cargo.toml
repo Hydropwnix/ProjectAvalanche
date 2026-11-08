@@ -27,5 +27,8 @@ zeroize = { workspace = true, optional = true }
 [features]
 net = ["dep:ssx-net-join", "dep:ssx-net-proto", "dep:zeroize"]
 
+[dev-dependencies]
+ssx-core = { workspace = true, features = ["dev-master"] }
+
 [lints]
 workspace = true

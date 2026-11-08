@@ -188,10 +188,7 @@ fn unreferenced_models(c: &mut Catalogue, files: &BTreeMap<String, Vec<(String, 
             added += 1;
         }
     }
-    c.note(
-        Kind::Model,
-        format!("{before} named by ge_geometry records; {added} more .geom files no record names (M2)"),
-    );
+    c.note(Kind::Model, format!("{before} named by ge_geometry records; {added} more .geom files no record names"));
 }
 
 fn add_lighting_names(idx: &mut VaultIndex) -> Result<()> {

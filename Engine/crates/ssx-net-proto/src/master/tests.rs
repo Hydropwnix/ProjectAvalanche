@@ -371,6 +371,19 @@ fn master_addresses_are_read_strictly_and_written_one_way() {
 }
 
 #[test]
+fn the_master_reads() {
+    let official = MasterUrl::parse(ssx_core::OFFICIAL_MASTER).expect("the project's master");
+    assert_eq!(official.to_string(), ssx_core::OFFICIAL_MASTER);
+    assert!(official.tls && official.port == 443);
+    for given in ["http://127.0.0.1:27900", "http://127.255.255.254:1", "http://[::1]:65535", "http://[0::1]:2"] {
+        let dev = ssx_core::master::dev_master(Some(std::ffi::OsStr::new(given)));
+        let url = dev.url().expect("a development master");
+        assert_eq!(MasterUrl::parse(url).map(|u| u.to_string()).as_deref(), Ok(url), "{given}");
+    }
+    assert_eq!(the_master().map(|m| m.to_string()).as_deref(), ssx_core::master::master().url());
+}
+
+#[test]
 fn the_widest_heartbeat_fits_its_cap() {
     let json_len = |s: &str| serde_json::to_string(s).map_or(0, |j| j.len());
     let widest = (0..=0x10_FFFF_u32)

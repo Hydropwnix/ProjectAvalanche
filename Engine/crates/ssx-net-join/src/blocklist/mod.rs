@@ -54,7 +54,7 @@ fn claim(master: &str, now: Instant, force: bool) -> bool {
     true
 }
 
-pub fn refresh(follow: &Follow, roots: &Roots, force: bool, now: u64) -> Result<Vec<Outcome>, String> {
+pub fn refresh(follow: &Follow, roots: &Roots, force: bool, now: u64) -> Vec<Outcome> {
     refresh_until(follow, roots, force, now, None)
 }
 
@@ -66,10 +66,10 @@ pub fn refresh_until(
     force: bool,
     now: u64,
     cancel: Option<Arc<AtomicBool>>,
-) -> Result<Vec<Outcome>, String> {
-    let (dir, masters) = follow.masters()?;
+) -> Vec<Outcome> {
+    let (dir, masters) = follow.masters();
     if masters.is_empty() {
-        return Ok(Vec::new());
+        return Vec::new();
     }
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let started = Instant::now();
@@ -111,13 +111,13 @@ pub fn refresh_until(
             Err(_) => out.push(Outcome { master: String::new(), result: Err("its thread panicked".into()) }),
         }
     }
-    Ok(out)
+    out
 }
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
 
 pub struct Refresh {
-    answer: Mutex<Receiver<Result<Vec<Outcome>, String>>>,
+    answer: Mutex<Receiver<Vec<Outcome>>>,
 }
 
 impl Refresh {
@@ -138,7 +138,7 @@ impl Refresh {
         Some(Refresh { answer: Mutex::new(answer) })
     }
 
-    pub fn take(&self) -> Option<Result<Vec<Outcome>, String>> {
+    pub fn take(&self) -> Option<Vec<Outcome>> {
         self.answer.lock().ok()?.try_recv().ok()
     }
 }

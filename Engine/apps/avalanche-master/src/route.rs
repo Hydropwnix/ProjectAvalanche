@@ -1,7 +1,7 @@
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use crate::forwarded::Trusted;
+use crate::forwarded::{Holder, TrustsPeer};
 
 pub const ROUTE_V4: &str = "/proc/net/route";
 pub const ROUTE_V6: &str = "/proc/net/ipv6_route";
@@ -107,10 +107,10 @@ pub fn default_gateways() -> Result<Vec<IpAddr>, RouteError> {
 }
 
 const INSIDE_HAZARD: &str = "Docker hands a published port's loopback and IPv6 connections, and the host's own, to \
-                             the master from it, and they can name any client: publish no port, and trust a range \
-                             that leaves the gateway out";
+                             the master from it, and they can name any client: publish no port, and trust only the \
+                             proxy (its name, or a range that leaves the gateway out)";
 
-pub fn gateway_lines(found: &Result<Vec<IpAddr>, RouteError>, trusted: &Trusted) -> Vec<String> {
+pub fn gateway_lines(found: &Result<Vec<IpAddr>, RouteError>, trusted: &impl TrustsPeer) -> Vec<String> {
     let gateways = match found {
         Ok(g) => g,
         Err(e) => return vec![format!("note: {}", not_read(e))],
@@ -120,11 +120,14 @@ pub fn gateway_lines(found: &Result<Vec<IpAddr>, RouteError>, trusted: &Trusted)
     }
     gateways
         .iter()
-        .map(|g| match trusted.networks().iter().find(|n| n.contains(*g)) {
-            Some(net) => {
+        .map(|g| match trusted.holder(*g) {
+            Some(Holder::Network(net)) => {
                 format!("warning: the default gateway {g} lies inside the trusted network {net}: {INSIDE_HAZARD}")
             }
-            None => format!("default gateway {g}: outside the trusted networks"),
+            Some(Holder::Name(name)) => {
+                format!("warning: the default gateway {g} is an address of the trusted name {name}: {INSIDE_HAZARD}")
+            }
+            None => format!("default gateway {g}: not a trusted proxy's address"),
         })
         .collect()
 }
@@ -135,7 +138,7 @@ pub enum StartLine {
     NotRead { text: String, unsupported: bool },
 }
 
-pub fn start_line(found: &Result<Vec<IpAddr>, RouteError>, trusted: &Trusted) -> Option<StartLine> {
+pub fn start_line(found: &Result<Vec<IpAddr>, RouteError>, trusted: &impl TrustsPeer) -> Option<StartLine> {
     let gateways = match found {
         Ok(g) => g,
         Err(e) => {
@@ -144,16 +147,19 @@ pub fn start_line(found: &Result<Vec<IpAddr>, RouteError>, trusted: &Trusted) ->
     };
     let inside: Vec<String> = gateways
         .iter()
-        .filter_map(|g| trusted.networks().iter().find(|n| n.contains(*g)).map(|net| (g, net)))
-        .map(|(g, net)| format!("{g} (in {net})"))
+        .filter_map(|g| trusted.holder(*g).map(|holder| (g, holder)))
+        .map(|(g, holder)| match holder {
+            Holder::Network(net) => format!("{g} (in {net})"),
+            Holder::Name(name) => format!("{g} (an address of {name})"),
+        })
         .collect();
     match inside.as_slice() {
         [] => None,
-        [one] => Some(StartLine::Warning(format!(
-            "the default gateway {one} lies inside a trusted network: {INSIDE_HAZARD}"
-        ))),
+        [one] => {
+            Some(StartLine::Warning(format!("the default gateway {one} is a trusted proxy's address: {INSIDE_HAZARD}")))
+        }
         many => Some(StartLine::Warning(format!(
-            "the default gateways {} lie inside trusted networks: {INSIDE_HAZARD}",
+            "the default gateways {} are trusted proxies' addresses: {INSIDE_HAZARD}",
             many.join(", ")
         ))),
     }

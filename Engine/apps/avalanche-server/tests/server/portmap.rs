@@ -2,24 +2,20 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::time::{Duration, Instant};
 
 use avalanche_master::MasterOptions;
-use avalanche_server::config::Config;
 use avalanche_server::discovery::Extras;
 use avalanche_server::portmap::PortmapTargets;
 use avalanche_server::{ServerOptions, ServerThread};
 use ssx_net_portmap::fake::{self, IgdMode};
 use ssx_net_portmap::{Method, SsdpTarget, Targets};
-use ssx_net_proto::master::MasterUrl;
 
 use crate::common::*;
 
 fn server(ip: IpAddr, gateway: Ipv4Addr, targets: Targets, master: &str) -> ServerThread {
     assert!(targets.loopback_only(gateway));
-    let mut config = Config::defaults();
+    let mut config = crate::common::defaults();
     config.bind = ip;
     config.port = 0;
-    config.discovery.public = true;
-    config.discovery.query = true;
-    config.discovery.masters = vec![MasterUrl::parse(master).expect("a master's address")];
+    config.discovery = listed_on(master);
     config.port_mapping.enabled = true;
     config.port_mapping.methods = vec![Method::Upnp];
     config.port_mapping.gateway = Some(gateway);

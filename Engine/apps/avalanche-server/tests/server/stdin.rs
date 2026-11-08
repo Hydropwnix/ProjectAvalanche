@@ -4,13 +4,12 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use avalanche_server::config::Config;
 use avalanche_server::{ServerOptions, ServerThread};
 
 use crate::common::temp_dir;
 
 fn start(input: std::io::PipeReader, stop_at_end: bool) -> ServerThread {
-    let mut config = Config::defaults();
+    let mut config = crate::common::defaults();
     config.bind = Ipv4Addr::LOCALHOST.into();
     config.port = 0;
     let options = ServerOptions {

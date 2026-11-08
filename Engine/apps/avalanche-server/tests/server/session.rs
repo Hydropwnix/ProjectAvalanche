@@ -1,7 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::{Duration, Instant};
 
-use avalanche_server::config::Config;
 use avalanche_server::{STOP_GRACE, ServerOptions};
 use ssx_net::ServerSaid;
 use ssx_net::lightyear::prelude::Disconnect;
@@ -81,7 +80,7 @@ fn foreign_and_open_key_files_stop_the_start() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(data.join("identity.key"), std::fs::Permissions::from_mode(0o600)).expect("chmod");
     }
-    let mut config = Config::defaults();
+    let mut config = crate::common::defaults();
     config.bind = LOCAL;
     config.port = 0;
     let options = |data: &std::path::Path| ServerOptions {

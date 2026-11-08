@@ -59,8 +59,8 @@ pub struct Settings {
     pub boost_meter: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub player_name: Option<String>,
-    #[serde(deserialize_with = "masters_leniently")]
-    pub masters: Vec<String>,
+    #[serde(rename = "masters", deserialize_with = "crate::masters::present", skip_serializing)]
+    pub old_masters: bool,
     #[serde(deserialize_with = "host_leniently", skip_serializing_if = "host_is_default")]
     pub host: crate::host::HostSettings,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -74,16 +74,6 @@ fn host_is_default(h: &crate::host::HostSettings) -> bool {
 fn host_leniently<'de, D: serde::Deserializer<'de>>(d: D) -> Result<crate::host::HostSettings, D::Error> {
     let value = serde_json::Value::deserialize(d)?;
     Ok(serde_json::from_value(value).unwrap_or_default())
-}
-
-fn masters_leniently<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
-    let value = serde_json::Value::deserialize(d)?;
-    Ok(match value {
-        serde_json::Value::Array(list) => {
-            list.into_iter().filter_map(|v| v.as_str().map(str::to_string)).take(crate::masters::MAX_MASTERS).collect()
-        }
-        _ => Vec::new(),
-    })
 }
 
 impl Default for Settings {
@@ -113,7 +103,7 @@ impl Default for Settings {
             game_sky: true,
             boost_meter: 0.0,
             player_name: None,
-            masters: vec![ssx_core::OFFICIAL_MASTER.into()],
+            old_masters: false,
             resources: None,
             host: crate::host::HostSettings::default(),
         }
@@ -195,22 +185,19 @@ mod tests {
     }
 
     #[test]
-    fn the_master_list_survives_and_a_wrong_one_spoils_nothing_else() {
-        let s: Settings = serde_json::from_str(r#"{"vsync": false, "masters": ["https://m.example.org"]}"#).unwrap();
-        assert_eq!(s.masters, ["https://m.example.org"]);
-        assert!(serde_json::to_string(&s).unwrap().contains(r#""masters":["https://m.example.org"]"#));
-        let wrong: Settings = serde_json::from_str(r#"{"vsync": false, "masters": "https://m.example.org"}"#).unwrap();
-        assert!(!wrong.vsync && wrong.masters.is_empty(), "the rest of the file kept");
-        let mixed: Settings = serde_json::from_str(r#"{"masters": [1, "https://a.example.org", null]}"#).unwrap();
-        assert_eq!(mixed.masters, ["https://a.example.org"]);
-        let preset = Settings::default();
-        assert_eq!(preset.masters, [ssx_core::OFFICIAL_MASTER]);
-        assert_eq!(crate::masters::canonical(ssx_core::OFFICIAL_MASTER).as_deref(), Ok(ssx_core::OFFICIAL_MASTER));
-        let old: Settings = serde_json::from_str(r#"{"vsync": false}"#).unwrap();
-        assert_eq!(old.masters, [ssx_core::OFFICIAL_MASTER], "a file without the member gets the preset");
-        let emptied = Settings { masters: Vec::new(), ..Settings::default() };
-        let text = serde_json::to_string(&emptied).unwrap();
-        assert!(text.contains(r#""masters":[]"#), "{text}");
-        assert!(serde_json::from_str::<Settings>(&text).unwrap().masters.is_empty(), "an emptied list stays empty");
+    fn an_old_master_list_is_read_noted_and_dropped_at_the_save() {
+        for old in [r#"["https://m.example.org"]"#, "[]", r#""https://m.example.org""#, r#"[1, null]"#, "null"] {
+            let text = format!(r#"{{"vsync": false, "player_name": "Elise", "masters": {old}}}"#);
+            let s: Settings = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{old}: {e}"));
+            assert!(s.old_masters && !s.vsync && s.player_name.as_deref() == Some("Elise"), "{old}: the rest kept");
+            let back = serde_json::to_string(&s).unwrap();
+            assert!(!back.contains("masters") && back.contains(r#""vsync":false"#), "{old}: {back}");
+        }
+        let fresh: Settings = serde_json::from_str(r#"{"vsync": false}"#).unwrap();
+        assert!(!fresh.old_masters);
+        assert!(!Settings::default().old_masters);
+        assert!(!serde_json::to_string(&Settings::default()).unwrap().contains("masters"));
+        assert!(crate::masters::old_member_note(true).is_some_and(|n| n.contains(ssx_core::OFFICIAL_MASTER)));
+        assert_eq!(crate::masters::old_member_note(false), None);
     }
 }

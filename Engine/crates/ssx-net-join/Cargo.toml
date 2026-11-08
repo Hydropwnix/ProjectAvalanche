@@ -25,6 +25,7 @@ ssx-content.workspace = true
 [dev-dependencies]
 avalanche-master.workspace = true
 rcgen.workspace = true
+ssx-core = { workspace = true, features = ["dev-master"] }
 
 [lints]
 workspace = true

@@ -139,36 +139,26 @@ fn hits_and_their_reason() {
 }
 
 #[test]
-fn the_masters_a_player_follows() {
-    use serde_json::json;
-    assert_eq!(followed_masters(None).unwrap(), vec![ssx_core::OFFICIAL_MASTER.to_string()]);
-    assert!(followed_masters(Some(&json!([]))).unwrap().is_empty());
-    let two = json!(["http://127.0.0.1:1", "https://m.example.org/"]);
-    assert_eq!(followed_masters(Some(&two)).unwrap(), ["http://127.0.0.1:1", "https://m.example.org/"]);
-    for bad in [
-        json!("http://a"),
-        json!([1]),
-        json!(["http://a", "http://a"]),
-        json!([""]),
-        json!(["http://a b"]),
-        json!([format!("http://{}", "a".repeat(260))]),
-        json!(["http://\u{1b}[2J"]),
-        json!((0..9).map(|i| format!("http://m{i}")).collect::<Vec<_>>()),
-    ] {
-        assert!(followed_masters(Some(&bad)).is_err(), "{bad}");
+fn the_player_follows_the_fixed_master_whatever_the_settings_say() {
+    let dir = TestDir::new("blocklist-player");
+    dir.write("settings.json", r#"{"vsync": true, "masters": ["https://m.example.org", "http://127.0.0.1:9"]}"#);
+    let kept_by_old = |m: &str| cache::write(&dir.0.join(CACHE_FOLDER), &kept(m, vec![h(9)], 1)).unwrap();
+    kept_by_old("https://m.example.org");
+    let f = for_player(&dir.0, 2);
+    assert_eq!(f.blocked.source_of(&h(9)), None, "an old settings' master is not followed");
+    match player_master() {
+        Ok(m) => {
+            assert_eq!(f.states.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), [m.as_str()]);
+            assert!(m != "https://m.example.org");
+        }
+        Err(why) => {
+            assert!(why.contains("SSX_DEV_MASTER"), "{why}");
+            assert_eq!(f.problem.as_deref(), Some(why.as_str()));
+            assert!(f.states.is_empty() && f.lines().iter().any(|l| l.contains("none followed")));
+        }
     }
-    let dir = TestDir::new("blocklist-settings");
-    assert_eq!(settings_masters(&dir.0).unwrap(), vec![ssx_core::OFFICIAL_MASTER.to_string()], "no file");
-    dir.write(SETTINGS_FILE, r#"{"vsync": true, "masters": ["http://127.0.0.1:9"]}"#);
-    assert_eq!(settings_masters(&dir.0).unwrap(), ["http://127.0.0.1:9"]);
-    dir.write(SETTINGS_FILE, r#"{"masters": []}"#);
-    assert!(settings_masters(&dir.0).unwrap().is_empty());
-    dir.write(SETTINGS_FILE, "[1, 2]");
-    assert!(settings_masters(&dir.0).is_err());
-    dir.write_bytes(SETTINGS_FILE, &vec![b' '; MAX_SETTINGS_BYTES as usize + 1]);
-    assert!(settings_masters(&dir.0).unwrap_err().contains("larger"));
-    let f = for_player(&dir.0, 1);
-    assert!(f.problem.is_some() && f.blocked.is_empty() && f.lines().iter().any(|l| l.contains("none followed")));
+    let (cache_dir, followed) = Follow::Player(dir.0.clone()).masters();
+    assert_eq!((cache_dir, followed), (dir.0.join(CACHE_FOLDER), player_master().into_iter().collect::<Vec<_>>()));
 }
 
 #[test]

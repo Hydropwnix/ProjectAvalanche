@@ -4,10 +4,10 @@ use std::path::Path;
 
 use crate::keys::{IDENTITY_FILE, NETCODE_FILE};
 
-pub const OWN: [&str; 10] = [
+pub const OWN: [&str; 12] = [
     IDENTITY_FILE,
     NETCODE_FILE,
-    "logs",
+    crate::logging::LOG_FOLDER,
     "big",
     ssx_assets::subset::MARKER,
     super::index::INDEX_FILE,
@@ -15,7 +15,39 @@ pub const OWN: [&str; 10] = [
     crate::operation::store::ACL_FILE,
     crate::resources::config::DEFAULT_FOLDER,
     crate::resources::STATE_FOLDER,
+    crate::scripts::STORAGE_FOLDER,
+    ssx_content::blocklist::CACHE_FOLDER,
 ];
+
+#[derive(Clone, Copy, Debug)]
+pub struct Configured<'a> {
+    pub resources: &'a Path,
+    pub rules: Option<&'a Path>,
+    pub blocklist: Option<&'a Path>,
+}
+
+impl<'a> Configured<'a> {
+    pub fn of(config: &'a crate::config::Config) -> Self {
+        Configured {
+            resources: &config.resources.folder,
+            rules: Some(&config.data_folder),
+            blocklist: config.discovery.blocklist.as_deref(),
+        }
+    }
+
+    pub fn resources(resources: &'a Path) -> Self {
+        Configured { resources, rules: None, blocklist: None }
+    }
+
+    fn names(&self, out: &Path) -> Vec<&'a std::ffi::OsStr> {
+        [Some(self.resources), self.rules, self.blocklist]
+            .into_iter()
+            .flatten()
+            .filter_map(|p| top_name(out, p))
+            .collect()
+    }
+}
+
 const SHOWN: usize = 8;
 // TODO(guess): 20 000 entries looked at (the whole list makes 1 925 files in about 300 folders); settle: none needed
 // unless the list grows (resources' files are elsewhere).
@@ -25,9 +57,9 @@ pub fn shown(name: &std::ffi::OsStr) -> String {
     ssx_core::text::shown_max(&name.to_string_lossy(), 80).to_string()
 }
 
-fn resources_name<'a>(out: &Path, resources: &'a Path) -> Option<&'a std::ffi::OsStr> {
+fn top_name<'a>(out: &Path, configured: &'a Path) -> Option<&'a std::ffi::OsStr> {
     use std::path::Component;
-    let below = if resources.is_absolute() { resources.strip_prefix(out).ok()? } else { resources };
+    let below = if configured.is_absolute() { configured.strip_prefix(out).ok()? } else { configured };
     let mut parts = below.components();
     match (parts.next(), parts.next()) {
         (Some(Component::Normal(name)), None) => Some(name),
@@ -35,8 +67,8 @@ fn resources_name<'a>(out: &Path, resources: &'a Path) -> Option<&'a std::ffi::O
     }
 }
 
-pub fn prepare(out: &Path, wanted: &BTreeSet<String>, resources: &Path) -> Result<(), String> {
-    let configured = resources_name(out, resources);
+pub fn prepare(out: &Path, wanted: &BTreeSet<String>, configured: &Configured<'_>) -> Result<(), String> {
+    let configured = configured.names(out);
     match fs::symlink_metadata(out) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return fs::create_dir(out).map_err(|e| format!("{}: cannot be made: {e}", out.display()));
@@ -48,11 +80,11 @@ pub fn prepare(out: &Path, wanted: &BTreeSet<String>, resources: &Path) -> Resul
         Ok(m) if !m.is_dir() => return Err(format!("{} is not a folder", out.display())),
         Ok(_) => {}
     }
-    let mut foreign = Vec::new();
+    let (mut foreign, mut foreign_count) = (BTreeSet::new(), 0usize);
     for e in fs::read_dir(out).map_err(|e| format!("{}: {e}", out.display()))? {
         let e = e.map_err(|e| format!("{}: {e}", out.display()))?;
         let name = e.file_name();
-        let own = configured == Some(name.as_os_str())
+        let own = configured.contains(&name.as_os_str())
             || name.to_str().is_some_and(|n| {
                 OWN.contains(&n) || ssx_files::partial_target(n).is_some_and(|stem| OWN.contains(&stem))
             });
@@ -63,16 +95,19 @@ pub fn prepare(out: &Path, wanted: &BTreeSet<String>, resources: &Path) -> Resul
             ));
         }
         if !own {
-            foreign.push(shown(&name));
+            foreign_count += 1;
+            foreign.insert(shown(&name));
+            if foreign.len() > SHOWN {
+                foreign.pop_last();
+            }
         }
     }
-    if !foreign.is_empty() {
-        let more = foreign.len().saturating_sub(SHOWN);
-        foreign.truncate(SHOWN);
+    if foreign_count > 0 {
+        let more = foreign_count.saturating_sub(foreign.len());
         return Err(format!(
             "{} holds files that are not a server's ({}{}): choose an empty folder or the server's data folder",
             out.display(),
-            foreign.join(", "),
+            foreign.into_iter().collect::<Vec<_>>().join(", "),
             if more > 0 { format!(" and {more} more") } else { String::new() }
         ));
     }
@@ -172,7 +207,7 @@ mod tests {
     #[test]
     fn foreign_and_game_folders_are_refused() {
         let wanted: BTreeSet<String> = ["big/bootcache/a.bin".to_string()].into();
-        let r = Path::new(crate::resources::config::DEFAULT_FOLDER);
+        let r = &Configured::resources(Path::new(crate::resources::config::DEFAULT_FOLDER));
         let d = folder("foreign");
         prepare(&d, &wanted, r).expect("a missing folder is made");
         fs::write(d.join(IDENTITY_FILE), "k").unwrap();
@@ -189,6 +224,16 @@ mod tests {
         fs::remove_file(d.join("big/bootcache/b.bin")).unwrap();
         fs::write(d.join("notes.txt"), "x").unwrap();
         assert!(prepare(&d, &wanted, r).unwrap_err().contains("not a server's (notes.txt)"));
+        for n in 0..20 {
+            fs::write(d.join(format!("other-{n:02}")), "x").unwrap();
+        }
+        let e = prepare(&d, &wanted, r).unwrap_err();
+        let first: Vec<String> =
+            std::iter::once("notes.txt".to_string()).chain((0..SHOWN - 1).map(|n| format!("other-{n:02}"))).collect();
+        assert!(e.contains(&format!("not a server's ({} and 13 more)", first.join(", "))), "{e}");
+        for n in 0..20 {
+            fs::remove_file(d.join(format!("other-{n:02}"))).unwrap();
+        }
         fs::write(d.join("setup.json"), "{}").unwrap();
         assert!(prepare(&d, &wanted, r).unwrap_err().contains("the game's data"));
         fs::remove_dir_all(&d).unwrap();
@@ -199,17 +244,28 @@ mod tests {
     fn the_resources_folders_are_the_servers() {
         let wanted: BTreeSet<String> = BTreeSet::new();
         let d = folder("resources");
-        prepare(&d, &wanted, Path::new("resources")).expect("a missing folder is made");
+        let at = |resources: &Path| prepare(&d, &wanted, &Configured::resources(resources));
+        at(Path::new("resources")).expect("a missing folder is made");
         fs::create_dir_all(d.join("resources/slope/maps")).unwrap();
         fs::create_dir_all(d.join("resource-state/store")).unwrap();
-        prepare(&d, &wanted, Path::new("resources")).expect("the default resources folder and the server's state");
+        at(Path::new("resources")).expect("the default resources folder and the server's state");
         fs::create_dir_all(d.join("maps")).unwrap();
-        assert!(prepare(&d, &wanted, Path::new("resources")).unwrap_err().contains("not a server's (maps)"));
-        prepare(&d, &wanted, Path::new("maps")).expect("the configured folder");
-        prepare(&d, &wanted, &d.join("maps")).expect("the configured folder, absolute");
+        assert!(at(Path::new("resources")).unwrap_err().contains("not a server's (maps)"));
+        at(Path::new("maps")).expect("the configured folder");
+        at(&d.join("maps")).expect("the configured folder, absolute");
         for elsewhere in [Path::new("maps/x"), Path::new("../maps"), Path::new("/srv/maps"), Path::new(".")] {
-            assert!(prepare(&d, &wanted, elsewhere).unwrap_err().contains("not a server's (maps)"), "{elsewhere:?}");
+            assert!(at(elsewhere).unwrap_err().contains("not a server's (maps)"), "{elsewhere:?}");
         }
+        fs::create_dir_all(d.join("rules")).unwrap();
+        fs::write(d.join("my-blocklist.txt"), "").unwrap();
+        let configured = |rules: &'static str, blocklist: &'static str| Configured {
+            resources: Path::new("maps"),
+            rules: Some(Path::new(rules)),
+            blocklist: Some(Path::new(blocklist)),
+        };
+        prepare(&d, &wanted, &configured("rules", "my-blocklist.txt")).expect("the configured rules folder and list");
+        let e = prepare(&d, &wanted, &configured("big", "lists/my-blocklist.txt")).unwrap_err();
+        assert!(e.contains("not a server's (my-blocklist.txt, rules)"), "{e}");
         fs::remove_dir_all(&d).unwrap();
     }
 
@@ -217,7 +273,7 @@ mod tests {
     #[test]
     fn links_are_refused() {
         let wanted: BTreeSet<String> = BTreeSet::new();
-        let r = Path::new(crate::resources::config::DEFAULT_FOLDER);
+        let r = &Configured::resources(Path::new(crate::resources::config::DEFAULT_FOLDER));
         let d = folder("links");
         fs::create_dir_all(d.join("real/big")).unwrap();
         std::os::unix::fs::symlink(d.join("real"), d.join("link")).unwrap();

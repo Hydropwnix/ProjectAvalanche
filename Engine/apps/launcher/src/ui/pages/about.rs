@@ -241,7 +241,8 @@ impl Launcher {
             ("Settings", Settings::path(), "every choice made here"),
             ("Game data", self.settings.game_data(), "the unpacked archives (big/)"),
             ("Profile save", save, save_note),
-            ("Log", app.join("viewer.log"), "the output of the last start"),
+            ("Game log", app.join(crate::jobs::GAME_LOG), "the game's output since Play last started it"),
+            ("Tools log", app.join(crate::jobs::VIEWER_LOG), "the asset viewer's output (Extras, Tools)"),
             ("Your pictures", app.join("LauncherArt"), "your own <slot>.png replaces a picture below"),
             ("Picture cache", app.join("LauncherCache"), "decoded from the game data; safe to delete"),
         ];

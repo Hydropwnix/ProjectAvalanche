@@ -61,7 +61,7 @@ body:
     attributes:
       label: Log
       description: |
-        The launcher shows the game's output under Extras, Output; it is also kept in viewer.log
+        The launcher shows the game's output under Extras, Output; it is also kept in game.log
         (Windows: %LOCALAPPDATA%\Project Avalanche\, Linux: ~/.local/share/project-avalanche/).
       render: text
   - type: textarea

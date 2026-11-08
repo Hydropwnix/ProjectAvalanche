@@ -57,7 +57,7 @@ fn missing_mis_cased_and_broken_files_are_errors_at_their_line() {
     has(&c, Severity::Error, "resource.toml:8: ssx:texture/c: textures/c.png: named .png, but its content is JPEG");
     has(&c, Severity::Error, "resource.toml:9: ssx:texture/d: textures/d.png: 65×1 is larger than 64×64");
     has(&c, Severity::Error, "data/x.toml:");
-    has(&c, Severity::Note, "the game reads this kind from packages from phase M8;");
+    has(&c, Severity::Note, "the game does not read this kind from packages; only the files' presence and records");
     has(&c, Severity::Warning, "textures/b.png:0: named by no entry");
 }
 
@@ -120,7 +120,7 @@ fn patterns_that_match_nothing_or_cost_too_much() {
     let c = run(&d);
     has(&c, Severity::Warning, "resource.toml:5: [scripts.client] \"none/*.luau\" matches no file");
     has(&c, Severity::Error, "resource.toml:7: [files.include]");
-    has(&c, Severity::Note, "compiled and their `require`s resolved by `mod check`'s script check");
+    has(&c, Severity::Note, "compiled and their `require`s resolved when the scripts are loaded");
     assert!(!texts(&c, Severity::Warning).iter().any(|t| t.contains("hud.luau")), "matched by a pattern");
 }
 

@@ -1,5 +1,9 @@
-# Project Avalanche master server with Docker Compose (see the Dockerfile beside it for the steps). master.toml beside
-# this file is mounted read-only: copy master.toml.example and set `port = 8443` and the [tls] paths to
+# Project Avalanche master server with Docker Compose on a plain host, serving HTTPS itself (direct TLS, published on
+# 443; behind Coolify use docker-compose.yaml at the repository's root instead). From the repository's root:
+#   docker compose -f Engine/assets/master/deploy/compose.yaml build
+#   docker compose -f Engine/assets/master/deploy/compose.yaml up -d
+# The image is the Dockerfile at the repository's root; its built-in configuration is Coolify's, so master.toml beside
+# this file is mounted over it, read-only: copy master.toml.example and set `port = 8443` and the [tls] paths to
 # /srv/avalanche-master/tls/fullchain.pem and /srv/avalanche-master/tls/privkey.pem. The folder ./tls holds them: the
 # host's certbot deploy hook copies them there (certbot-deploy-hook.sh with AVALANCHE_MASTER_TLS=<this folder>/tls,
 # AVALANCHE_MASTER_GROUP=10002 and AVALANCHE_MASTER_RELOAD="docker compose -f <this file> kill -s HUP avalanche-master":
@@ -11,7 +15,7 @@ services:
   avalanche-master:
     build:
       context: ../../../..
-      dockerfile: Engine/assets/master/deploy/Dockerfile
+      dockerfile: Dockerfile
     image: project-avalanche-master:local
     restart: unless-stopped
     stop_signal: SIGTERM

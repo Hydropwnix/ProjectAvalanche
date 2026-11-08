@@ -276,6 +276,39 @@ fn parse_game(
     Ok(GameConfig { spec, capacity, rounds })
 }
 
+pub type DropPlace = (String, Option<Range<usize>>);
+
+pub fn drop_places(text: &str) -> Option<Vec<Vec<DropPlace>>> {
+    #[derive(Deserialize)]
+    struct Instances {
+        game: Option<RawGame>,
+        instance: Option<Vec<RawGame>>,
+    }
+    let raw: Instances = toml::from_str(text).ok()?;
+    let games: Vec<RawGame> = match (raw.game, raw.instance) {
+        (Some(g), None) => vec![g],
+        (None, Some(list)) => list,
+        (None, None) => return Some(vec![vec![(crate::config::DEFAULT_DROP.to_string(), None)]]),
+        (Some(_), Some(_)) => return None,
+    };
+    let drops = |g: &RawGame| -> Vec<DropPlace> {
+        match (&g.drop, &g.map, &g.rotation) {
+            (Some(d), _, _) => vec![(d.get_ref().clone(), Some(d.span()))],
+            (None, None, Some(r)) => r
+                .get_ref()
+                .iter()
+                .filter_map(|e| match e.get_ref() {
+                    toml::Value::String(name) if !name.contains(':') => Some((name.clone(), Some(e.span()))),
+                    _ => None,
+                })
+                .collect(),
+            (None, Some(_), _) => Vec::new(),
+            (None, None, None) => vec![(crate::config::DEFAULT_DROP.to_string(), None)],
+        }
+    };
+    Some(games.iter().map(drops).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -354,6 +387,28 @@ mod tests {
         let nine = "[[instance]]\n".repeat(MAX_INSTANCES + 1);
         assert!(err(&nine).contains("1 to 8 instances"));
         assert!(err("[[instance]]\nregion = \"eu\"\n").starts_with("server.toml:2:1"));
+    }
+
+    #[test]
+    fn the_drops_places_follow_the_instances() {
+        let text = "[[instance]]\nmode = \"race\"\nrotation = [\"one_drop\", \"a:map/b\", { map = \"c:map/d\", gamemode = \
+                    \"c:gamemode/e\" }, \"two_drop\"]\n\n[[instance]]\ndrop = \"three_drop\"\n\n[[instance]]\nmode = \"freeride\"\n";
+        let places = drop_places(text).expect("instances");
+        let named = |i: usize| -> Vec<(&str, Option<&str>)> {
+            places[i].iter().map(|(d, s)| (d.as_str(), s.clone().map(|s| &text[s]))).collect()
+        };
+        assert_eq!(named(0), [("one_drop", Some("\"one_drop\"")), ("two_drop", Some("\"two_drop\""))]);
+        assert_eq!(named(1), [("three_drop", Some("\"three_drop\""))]);
+        assert_eq!(named(2), [(crate::config::DEFAULT_DROP, None)]);
+        assert_eq!(places.len(), 3);
+        let one = drop_places("[game]\nmap = \"a:map/b\"\n").expect("a map");
+        assert_eq!(one, [Vec::<DropPlace>::new()]);
+        assert_eq!(
+            drop_places("[server]\nname = \"x\"\n"),
+            Some(vec![vec![(crate::config::DEFAULT_DROP.into(), None)]])
+        );
+        assert_eq!(drop_places("[game]\n[[instance]]\n"), None);
+        assert_eq!(drop_places("[game\n"), None);
     }
 }
 

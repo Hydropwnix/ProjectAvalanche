@@ -1,7 +1,7 @@
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -9,7 +9,6 @@ use avalanche_server::config::Config;
 use avalanche_server::{ServerOptions, ServerThread};
 use ssx_content::ContentHash;
 use ssx_net_join::resources::fetch_manifest;
-use ssx_net_proto::master::MasterUrl;
 
 use crate::common::temp_dir;
 
@@ -22,18 +21,25 @@ fn package(root: &Path, name: &str, file: &[u8]) {
 }
 
 fn master(list: Arc<Mutex<Vec<ContentHash>>>) -> String {
+    counting_master(list).0
+}
+
+fn counting_master(list: Arc<Mutex<Vec<ContentHash>>>) -> (String, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
+    let (asks, others) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let counts = (Arc::clone(&asks), Arc::clone(&others));
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let list = Arc::clone(&list);
-            std::thread::spawn(move || serve(stream, &list));
+            let counts = (Arc::clone(&counts.0), Arc::clone(&counts.1));
+            std::thread::spawn(move || serve(stream, &list, &counts));
         }
     });
-    format!("http://{addr}")
+    (format!("http://{addr}"), asks, others)
 }
 
-fn serve(mut s: TcpStream, list: &Mutex<Vec<ContentHash>>) {
+fn serve(mut s: TcpStream, list: &Mutex<Vec<ContentHash>>, counts: &(Arc<AtomicUsize>, Arc<AtomicUsize>)) {
     let mut head = Vec::new();
     let mut byte = [0u8; 1];
     while !head.ends_with(b"\r\n\r\n") && head.len() < 16 * 1024 {
@@ -44,9 +50,11 @@ fn serve(mut s: TcpStream, list: &Mutex<Vec<ContentHash>>) {
     }
     let head = String::from_utf8_lossy(&head).to_ascii_lowercase();
     if !head.starts_with("get /v1/blocklist ") {
+        counts.1.fetch_add(1, Ordering::SeqCst);
         let _ = s.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         return;
     }
+    counts.0.fetch_add(1, Ordering::SeqCst);
     let mut hashes: Vec<String> = list.lock().unwrap().iter().map(ToString::to_string).collect();
     hashes.sort();
     let body = format!("{{\"blocklist_version\":1,\"resources\":[{}]}}", {
@@ -86,7 +94,7 @@ fn options(config: Config, data_dir: &Path, console: Option<std::io::PipeReader>
 }
 
 fn config(folder: &Path, start: &[&str]) -> Config {
-    let mut config = Config::defaults();
+    let mut config = crate::common::defaults();
     config.bind = std::net::Ipv4Addr::LOCALHOST.into();
     config.port = 0;
     config.resources.folder = folder.to_path_buf();
@@ -137,13 +145,55 @@ fn a_resource_the_servers_own_list_names_does_not_start() {
 }
 
 #[test]
+fn an_unlisted_server_follows_the_masters_blocklist_and_sends_no_heartbeat() {
+    use avalanche_server::config::Discovery;
+    let folder = temp_dir("blocklist-resources");
+    let blocked = b"a file a master blocks".to_vec();
+    package(&folder, "pack", &blocked);
+    package(&folder, "other", b"a file no list names");
+    let (url, asks, others) = counting_master(Arc::new(Mutex::new(vec![ContentHash::of(&blocked)])));
+    let unlisted = || Discovery { public: false, query: false, ..crate::common::listed_on(&url) };
+    let mut c = config(&folder, &["pack"]);
+    c.discovery = unlisted();
+    assert!(c.discovery.master.is_some() && c.discovery.heartbeat().is_none());
+    let error = match avalanche_server::spawn(options(c, &temp_dir("blocklist-data"), None)) {
+        Ok(s) => {
+            s.stop();
+            let _ = s.join();
+            panic!("an unlisted server started a resource the master blocks");
+        }
+        Err(e) => e.to_string(),
+    };
+    for part in ["[resources] start", "\"pack\"", url.as_str()] {
+        assert!(error.contains(part), "{part} in: {error}");
+    }
+    let mut c = config(&folder, &["other"]);
+    c.discovery = unlisted();
+    let data = temp_dir("blocklist-data");
+    let s = avalanche_server::spawn(options(c, &data, None)).expect("an unlisted server starts");
+    let addr = s.started.addr;
+    wait_for("other runs", || names(addr) == ["other"]);
+    std::thread::sleep(Duration::from_millis(1000));
+    assert!(asks.load(Ordering::SeqCst) >= 2, "the blocklist asked at each start");
+    assert_eq!(others.load(Ordering::SeqCst), 0, "no challenge or heartbeat reached the master");
+    s.stop();
+    let _ = s.join();
+    let mut c = config(&folder, &["other"]);
+    c.discovery = crate::common::listed_on(&url);
+    let s = avalanche_server::spawn(options(c, &temp_dir("blocklist-data"), None)).expect("a listed server starts");
+    wait_for("the listed server's challenge", || others.load(Ordering::SeqCst) > 0);
+    s.stop();
+    let _ = s.join();
+}
+
+#[test]
 fn a_resource_a_master_names_does_not_start_on_a_first_start() {
     let folder = temp_dir("blocklist-resources");
     let file = b"a file a master blocks".to_vec();
     package(&folder, "pack", &file);
     let url = master(Arc::new(Mutex::new(vec![ContentHash::of(&file)])));
     let mut c = config(&folder, &["pack"]);
-    c.discovery.masters = vec![MasterUrl::parse(&url).unwrap()];
+    c.discovery = crate::common::listed_on(&url);
     let data = temp_dir("blocklist-data");
     let error = match avalanche_server::spawn(options(c, &data, None)) {
         Ok(s) => {
@@ -168,7 +218,7 @@ fn a_running_resource_a_master_comes_to_name_is_stopped_at_the_next_fetch() {
     let list = Arc::new(Mutex::new(Vec::new()));
     let url = master(Arc::clone(&list));
     let mut c = config(&folder, &["pack", "other"]);
-    c.discovery.masters = vec![MasterUrl::parse(&url).unwrap()];
+    c.discovery = crate::common::listed_on(&url);
     let data = temp_dir("blocklist-data");
     let (input, mut console) = std::io::pipe().unwrap();
     let s: ServerThread = avalanche_server::spawn(options(c, &data, Some(input))).expect("the server starts");

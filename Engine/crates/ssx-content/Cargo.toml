@@ -38,5 +38,8 @@ sha2.workspace = true
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
+[dev-dependencies]
+ssx-core = { workspace = true, features = ["dev-master"] }
+
 [lints]
 workspace = true

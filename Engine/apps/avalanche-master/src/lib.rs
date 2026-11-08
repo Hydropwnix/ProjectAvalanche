@@ -10,10 +10,12 @@ pub mod heartbeat;
 pub mod http;
 pub mod limits;
 pub mod logging;
+pub mod names;
 pub mod registry;
 pub mod route;
 pub mod state;
 pub mod tls;
+pub mod trust;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -76,13 +78,20 @@ impl MasterThread {
 }
 
 pub fn spawn(options: MasterOptions) -> Result<MasterThread, StartError> {
+    spawn_with_resolver(options, Arc::new(names::SystemResolver))
+}
+
+pub fn spawn_with_resolver(
+    options: MasterOptions,
+    resolver: Arc<dyn names::Resolve>,
+) -> Result<MasterThread, StartError> {
     let shutdown = Arc::new(Notify::new());
     let (tx, rx) = std::sync::mpsc::channel();
     let stop = Arc::clone(&shutdown);
     let handle = std::thread::Builder::new()
         .name("master".into())
         .spawn(move || {
-            let result = run_with(options, stop, |s| {
+            let result = run_with(options, stop, resolver, |s| {
                 let _ = tx.send(Ok(s.clone()));
             });
             if let Err(e) = &result {
@@ -99,12 +108,13 @@ pub fn spawn(options: MasterOptions) -> Result<MasterThread, StartError> {
 }
 
 pub fn run(options: MasterOptions) -> Result<(), StartError> {
-    run_with(options, Arc::new(Notify::new()), |_| {})
+    run_with(options, Arc::new(Notify::new()), Arc::new(names::SystemResolver), |_| {})
 }
 
 fn run_with(
     options: MasterOptions,
     shutdown: Arc<Notify>,
+    resolver: Arc<dyn names::Resolve>,
     on_started: impl FnOnce(&Started),
 ) -> Result<(), StartError> {
     let config = options.config;
@@ -144,9 +154,18 @@ fn run_with(
             master.blocklists.read().map_or(0, |b| b.servers.len()),
             master.blocklists.read().map_or(0, |b| b.resources.len()),
         );
-        if !master.config.trusted.is_empty() {
-            info!("behind trusted proxies {}: {}", trusted_list(&master.config.trusted), forwarded_rule());
-            match route::start_line(&route::default_gateways(), &master.config.trusted) {
+        let names = (!master.config.trusted_hosts.is_empty()).then(|| trust::Lookups::new(resolver));
+        let names = match names {
+            Some(mut lookups) => {
+                trust::refresh(&master.trust, &mut lookups).await;
+                Some(tokio::spawn(trust::keep_fresh(Arc::clone(&master), lookups)))
+            }
+            None => None,
+        };
+        if master.config.behind_proxy() {
+            let now = master.trust.now();
+            info!("behind trusted proxies {}: {}", now.set.describe(now.at), forwarded_rule());
+            match route::start_line(&route::default_gateways(), &now) {
                 Some(route::StartLine::Warning(line)) => warn!("{line}"),
                 Some(route::StartLine::NotRead { text, unsupported: true }) => info!("{text}"),
                 Some(route::StartLine::NotRead { text, unsupported: false }) => warn!("{text}"),
@@ -163,7 +182,7 @@ fn run_with(
         let hangups: Option<tokio::task::JoinHandle<()>> = None;
         http::run(listener, Arc::clone(&master), tls, shutdown).await;
         sweeper.abort();
-        for task in console.into_iter().chain(signals).chain(hangups) {
+        for task in console.into_iter().chain(signals).chain(hangups).chain(names) {
             task.abort();
         }
         info!("stopped");
@@ -193,10 +212,6 @@ async fn sweep(master: Arc<Master>) {
     }
 }
 
-pub fn trusted_list(trusted: &forwarded::Trusted) -> String {
-    trusted.networks().iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
-}
-
 pub fn forwarded_rule() -> &'static str {
     "a request from them names its client in the right-most X-Forwarded-For entry; any other peer is its own client"
 }
@@ -205,11 +220,12 @@ fn status(master: &Master) -> Vec<String> {
     let s = &master.stats;
     let n = |c: &std::sync::atomic::AtomicU64| c.load(Ordering::Relaxed);
     let listed = master.registry.lock().map_or(0, |r| r.len());
-    let proxy = (!master.config.trusted.is_empty()).then(|| {
+    let proxy = master.config.behind_proxy().then(|| {
+        let now = master.trust.now();
         format!(
             "behind trusted proxies ({}): requests named by them {}, refused for their X-Forwarded-For {}; their \
              connections open {} (at most {}), closed at a full pool {}; addresses with open requests {}",
-            trusted_list(&master.config.trusted),
+            now.set.describe(now.at),
             n(&s.proxied),
             n(&s.forwarded_refused),
             master.limits.connections.proxied_now(),

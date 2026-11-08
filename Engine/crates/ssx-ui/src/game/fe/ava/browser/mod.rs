@@ -72,8 +72,9 @@ pub struct Browser {
     pub message_up: bool,
     pub download_up: bool,
     pub panel: Option<(String, Option<crate::game::values::DropPanel>)>,
-    pub masters: Option<ssx_net_join::browse::masters::Masters>,
-    pub masters_problem: Option<String>,
+    pub master: Option<ssx_net_join::browse::masters::MasterList>,
+    pub said_old_masters: bool,
+    pub source_problem: Option<String>,
     pub left_out: usize,
     pub pinger: Option<ssx_net_join::browse::ping::Pinger>,
     pub lan: Option<ssx_net_join::browse::lan::LanSearch>,
@@ -151,7 +152,7 @@ pub fn deactivate(fe: &mut FrontEnd) {
     b.active = false;
     b.refresher = None;
     b.pinger = None;
-    b.masters = None;
+    b.master = None;
     b.lan = None;
     b.icons.forget_asked();
 }

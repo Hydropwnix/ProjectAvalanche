@@ -1,0 +1,26 @@
+# Project Avalanche master server on Coolify, with nothing to fill in: a resource from this repository,
+# build pack "Docker Compose" (this file is Coolify's default, /docker-compose.yaml), the domain on the service master,
+# Deploy. The image (the Dockerfile beside this file) is configured for Coolify: plain HTTP on 8443, Coolify's proxy
+# (the container coolify-proxy, Traefik or Caddy) trusted by its name, which Coolify connects to this resource's network
+# and which terminates TLS with the domain's certificate. Coolify adds the container's name, its restart policy, its
+# network and the proxy's labels itself.
+services:
+  master:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      # Coolify's magic variable: the service gets a domain, routed to the master's port 8443 (the value is the URL
+      # Coolify generates; the master does not read it)
+      - SERVICE_URL_MASTER_8443
+    # the port the proxy reaches inside the network. Never `ports:`: a published port bypasses the proxy
+    expose:
+      - "8443"
+    volumes:
+      # the master's logs; a named volume outlives each deployment's container
+      - master-data:/srv/avalanche-master/data
+    # the image's HEALTHCHECK (`avalanche-master health`) is the check: Coolify shows its state
+    stop_grace_period: 15s
+
+volumes:
+  master-data:

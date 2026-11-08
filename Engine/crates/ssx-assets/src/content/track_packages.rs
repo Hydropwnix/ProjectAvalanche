@@ -158,7 +158,7 @@ impl TrackPackages {
                 ObjectCollision::None => None,
             };
             text.push_str(&format!("{key:08x}\t{}\t{}\t{}\n", f.id, f.source, model.unwrap_or_default()));
-            from.insert(format!("{} {}", f.layer, f.source));
+            from.insert(f.layer.source_text(&f.source));
         }
         let from: Vec<String> = from.into_iter().collect();
         Some((ssx_content::ContentHash::of(text.as_bytes()), from.join(", ")))
@@ -475,7 +475,7 @@ fn world_triangles(big_root: &Path, track: &str, objects: &TrackObjects, placeme
 impl GameContent {
     pub fn track_packages(self: &Arc<Self>, track: &str) -> Arc<TrackPackages> {
         let generation = self.generation();
-        let cell = self.track_decision(track, generation);
+        let cell = self.track_decision(track, generation, self.sim_policy() as u8);
         cell.get_or_init(|| Arc::new(decide(self, self.big_root(), track, generation))).clone()
     }
 }

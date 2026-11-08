@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::time::{Duration, Instant};
 
-use ssx_core::text::shown;
+use ssx_core::text::{MESSAGE_CHARS, shown, shown_max};
 use ssx_net::server::Shared;
 use ssx_net_proto::scripts::ScriptItem;
 use ssx_script::host::game::Catalog;
@@ -67,6 +67,8 @@ pub(super) struct Done {
 
 const MAX_SAID: usize = 64;
 
+pub(super) const PRINT_CHARS: usize = ssx_script::MAX_OUTPUT_LINE + 128;
+
 const MAX_LATENT: usize = 4096;
 
 struct State {
@@ -111,7 +113,11 @@ pub(super) fn run(
                 {
                     let mut d = Done::default();
                     d.said.push((true, "scripts: a resource change was given up by the server: undone".into()));
-                    d.said.extend(undo.run(&s.host).into_iter().map(|l| (true, format!("scripts: {}", shown(&l)))));
+                    d.said.extend(
+                        undo.run(&s.host)
+                            .into_iter()
+                            .map(|l| (true, format!("scripts: {}", shown_max(&l, MESSAGE_CHARS)))),
+                    );
                     if done.send(d).is_err() {
                         return;
                     }
@@ -123,14 +129,27 @@ pub(super) fn run(
                 let name = line.split_ascii_whitespace().next().unwrap_or_default();
                 let said = if !s.host.has_command(name) {
                     let help = crate::console::HELP;
-                    (true, format!("unknown command {}: no server script registered it; {help}", shown(&line)))
+                    (
+                        true,
+                        format!(
+                            "unknown command {}: no server script registered it; {help}",
+                            shown_max(&line, MESSAGE_CHARS)
+                        ),
+                    )
                 } else {
                     match s.host.execute_command(CommandOrigin::Console, &line) {
-                        Ok(0) => {
-                            (true, format!("scripts: {}: every handler failed (the lines above say why)", shown(&line)))
-                        }
-                        Ok(_) => (false, format!("scripts: ran {}", shown(&line))),
-                        Err(e) => (true, format!("scripts: {}: {}", shown(&line), shown(&e))),
+                        Ok(0) => (
+                            true,
+                            format!(
+                                "scripts: {}: every handler failed (the lines above say why)",
+                                shown_max(&line, MESSAGE_CHARS)
+                            ),
+                        ),
+                        Ok(_) => (false, format!("scripts: ran {}", shown_max(&line, MESSAGE_CHARS))),
+                        Err(e) => (
+                            true,
+                            format!("scripts: {}: {}", shown_max(&line, MESSAGE_CHARS), shown_max(&e, MESSAGE_CHARS)),
+                        ),
                     }
                 };
                 if let Some(reply) = reply {
@@ -165,7 +184,7 @@ impl State {
             if let Err(e) = self.host.deliver(Peer::Client(ClientId(c)), package.as_deref(), body)
                 && d.said.len() < MAX_SAID
             {
-                d.said.push((true, format!("scripts: client {c}: refused: {}", shown(&e))));
+                d.said.push((true, format!("scripts: client {c}: refused: {}", shown_max(&e, MESSAGE_CHARS))));
             }
         }
         for (c, n) in &t.flooded {
@@ -180,9 +199,10 @@ impl State {
                     let first = first.iter().filter_map(|m| encode(m, &mut d)).collect();
                     d.firsts.push((*c, first));
                 }
-                Err(e) => {
-                    d.said.push((true, format!("scripts: {} does not join the scripts: {}", shown(name), shown(&e))))
-                }
+                Err(e) => d.said.push((
+                    true,
+                    format!("scripts: {} does not join the scripts: {}", shown(name), shown_max(&e, MESSAGE_CHARS)),
+                )),
             }
         }
         for c in &t.resync {
@@ -203,14 +223,17 @@ impl State {
             let Some(host_id) = self.held.iter().find(|(_, (w, ..))| w == id).map(|(h, _)| *h) else { continue };
             self.held.remove(&host_id);
             if let Some(waiting) = self.host.join_expired(host_id) {
-                let what =
-                    if waiting.is_empty() { String::new() } else { format!(" (it waited for {})", shown(&waiting)) };
+                let what = if waiting.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (it waited for {})", shown_max(&waiting, MESSAGE_CHARS))
+                };
                 d.said.push((false, format!("scripts: join {id} was given up before the scripts decided{what}")));
             }
         }
         match self.host.server_frame(t.frame) {
             Ok(orders) => d.orders = orders,
-            Err(e) => d.said.push((true, format!("scripts: the frame: {}", shown(&e)))),
+            Err(e) => d.said.push((true, format!("scripts: the frame: {}", shown_max(&e, MESSAGE_CHARS)))),
         }
         self.decide_held(&mut d);
         self.drain(&mut d, &[]);
@@ -313,7 +336,7 @@ impl State {
         for (name, o) in outputs {
             for line in o.lines {
                 if d.said.len() < MAX_SAID {
-                    d.said.push((false, format!("scripts: {}: {}", shown(&name), shown(&line))));
+                    d.said.push((false, format!("scripts: {}: {}", shown(&name), shown_max(&line, PRINT_CHARS))));
                 } else {
                     more += 1;
                 }
@@ -331,7 +354,10 @@ fn encode(m: &Message, d: &mut Done) -> Option<Shared> {
         Err(e) => {
             d.unencodable += 1;
             if d.said.len() < MAX_SAID {
-                d.said.push((true, format!("scripts: a message that does not encode: {}", shown(&e.to_string()))));
+                d.said.push((
+                    true,
+                    format!("scripts: a message that does not encode: {}", shown_max(&e.to_string(), MESSAGE_CHARS)),
+                ));
             }
             None
         }

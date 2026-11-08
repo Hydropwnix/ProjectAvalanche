@@ -8,7 +8,6 @@ use avalanche_server::discovery::Extras;
 use avalanche_server::discovery::query::TRACKED;
 use avalanche_server::{ServerOptions, ServerThread};
 use ssx_net_join::fetch_info;
-use ssx_net_proto::master::MasterUrl;
 use ssx_net_proto::query::{
     CHALLENGE_SIZE, Challenge, LAN_PORT, LanAnswer, LanProbe, QUERY_ANSWER_SIZE, QueryAnswer, QueryRequest, info_hash,
 };
@@ -23,7 +22,7 @@ fn next_ip() -> IpAddr {
 }
 
 fn server_on(ip: IpAddr, edit: impl FnOnce(&mut Config), extras: Extras) -> ServerThread {
-    let mut config = Config::defaults();
+    let mut config = crate::common::defaults();
     config.bind = ip;
     config.port = 0;
     edit(&mut config);
@@ -178,46 +177,131 @@ fn test_tls(dir: &std::path::Path) -> (avalanche_master::config::Tls, rustls::pk
     (avalanche_master::config::Tls { certificate: cert, key: key_path }, ca.der().clone())
 }
 
+fn listed_within(m: &MasterThread, key: &str) -> bool {
+    let end = Instant::now() + Duration::from_secs(15);
+    loop {
+        if listed(m).iter().any(|s| s.3 == key) {
+            return true;
+        }
+        if Instant::now() > end {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
 #[test]
-fn a_public_server_is_listed_on_two_masters_one_https_and_leaves_both() {
+fn a_public_server_is_listed_on_its_master_over_http_and_https_and_leaves_it() {
     let dir = temp_dir("tls");
     let (tls, ca) = test_tls(&dir);
     let plain = master(None);
     let secure = master(Some(tls));
-    let urls = [format!("http://{}", plain.started.addr), format!("https://127.0.0.1:{}", secure.started.addr.port())];
-    let ip = next_ip();
-    let extras = Extras { roots: vec![ca], ..Extras::default() };
-    let server = server_on(
-        ip,
-        |c| {
-            c.discovery.public = true;
-            c.discovery.query = true;
-            c.discovery.region = "eu-central".into();
-            c.discovery.masters = urls.iter().map(|u| MasterUrl::parse(u).expect("a master's address")).collect();
-        },
-        extras,
-    );
-    let key = server.started.identity_key.to_hex();
-    let end = Instant::now() + Duration::from_secs(15);
-    let on_both = loop {
-        let both = [&plain, &secure].iter().all(|m| listed(m).iter().any(|s| s.3 == key));
-        if both || Instant::now() > end {
-            break both;
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    };
-    assert!(on_both, "listed on both masters within 15 s");
-    for m in [&plain, &secure] {
+    for (m, url) in [
+        (&plain, format!("http://{}", plain.started.addr)),
+        (&secure, format!("https://127.0.0.1:{}", secure.started.addr.port())),
+    ] {
+        let ip = next_ip();
+        let extras = Extras { roots: vec![ca.clone()], ..Extras::default() };
+        let server = server_on(
+            ip,
+            |c| {
+                c.discovery = crate::common::listed_on(&url);
+                c.discovery.region = "eu-central".into();
+            },
+            extras,
+        );
+        let key = server.started.identity_key.to_hex();
+        assert!(listed_within(m, &key), "listed on {url} within 15 s");
         assert_eq!(listed(m), [(ip.to_string(), server.started.addr.port(), "eu-central".to_string(), key.clone())]);
+        let said = server.started.discovery.master.lock().map(|m| m.clone()).unwrap_or_default();
+        assert_eq!(said, Some((url.clone(), "listed".to_string())), "the status names the master");
+        server.stop();
+        server.join().expect("stops");
+        std::thread::sleep(Duration::from_millis(1200));
+        assert!(listed(m).is_empty(), "the stop's leave from {url}");
     }
-    server.stop();
-    server.join().expect("stops");
-    std::thread::sleep(Duration::from_millis(1200));
-    assert!(listed(&plain).is_empty() && listed(&secure).is_empty(), "the stop's leave");
     for m in [plain, secure] {
         m.stop();
         m.join().expect("stops");
     }
+}
+
+const CHILD: &str = "SSX_SERVER_DEFAULT_DISCOVERY_CHILD";
+
+#[test]
+fn child_runs_a_server_with_the_default_discovery() {
+    if std::env::var_os(CHILD).is_none() {
+        return;
+    }
+    let mut config = Config::defaults();
+    config.bind = Ipv4Addr::LOCALHOST.into();
+    config.port = 0;
+    let options = ServerOptions {
+        config,
+        data_dir: temp_dir("default-discovery"),
+        console: false,
+        logging: false,
+        log_to_file: false,
+        signals: false,
+        conditions: None,
+        relay_rates: None,
+        extend: None,
+        rules: avalanche_server::rules::RulesSource::Unchecked,
+    };
+    let server = avalanche_server::spawn(options).expect("the server starts");
+    println!("KEY={}", server.started.identity_key.to_hex());
+    let mut rest = Vec::new();
+    let _ = std::io::Read::read_to_end(&mut std::io::stdin(), &mut rest);
+    server.stop();
+    server.join().expect("stops");
+}
+
+#[test]
+fn a_default_server_heartbeats_to_the_master_the_build_names() {
+    use std::io::BufRead;
+    use std::process::{Command, Stdio};
+    let m = master(None);
+    let url = format!("http://{}", m.started.addr);
+    let mut child = Command::new(std::env::current_exe().expect("the test binary"))
+        .args(["discovery::child_runs_a_server_with_the_default_discovery", "--exact", "--nocapture"])
+        .args(["--test-threads=1"])
+        .env(CHILD, "1")
+        .env("SSX_DEV_MASTER", &url)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("the child starts");
+    let stdout = child.stdout.take().expect("its output");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+            if let Some((_, key)) = line.split_once("KEY=") {
+                let _ = tx.send(key.to_string());
+            }
+        }
+    });
+    let key = rx.recv_timeout(Duration::from_secs(30));
+    let on = key.as_ref().is_ok_and(|k| listed_within(&m, k));
+    drop(child.stdin.take());
+    let end = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Ok(Some(status)) = child.try_wait() {
+            break Some(status);
+        }
+        if Instant::now() > end {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let key = key.expect("the child's server started");
+    assert!(on, "a default server listed on SSX_DEV_MASTER's {url} within 15 s");
+    assert!(status.is_some_and(|s| s.success()), "the child stops: {status:?}");
+    assert!(!listed(&m).iter().any(|s| s.3 == key), "the stop's leave");
+    m.stop();
+    m.join().expect("stops");
 }
 
 #[test]
@@ -226,7 +310,7 @@ fn a_busy_query_port_fails_the_start_and_a_refusing_master_is_told_in_the_status
     let port =
         std::net::TcpListener::bind(SocketAddr::new(ip, 0)).expect("a free port").local_addr().expect("addr").port();
     let _held = UdpSocket::bind(SocketAddr::new(ip, port + 1)).expect("the query port held");
-    let mut config = Config::defaults();
+    let mut config = crate::common::defaults();
     config.bind = ip;
     config.port = port;
     config.discovery.query = true;
@@ -257,21 +341,13 @@ fn a_busy_query_port_fails_the_start_and_a_refusing_master_is_told_in_the_status
         signals: false,
     })
     .expect("the master starts");
-    let url = MasterUrl::parse(&format!("http://{}", m.started.addr)).expect("url");
-    let server = server_on(
-        next_ip(),
-        |c| {
-            c.discovery.public = true;
-            c.discovery.query = true;
-            c.discovery.masters = vec![url];
-        },
-        Extras::default(),
-    );
+    let url = format!("http://{}", m.started.addr);
+    let server = server_on(next_ip(), |c| c.discovery = crate::common::listed_on(&url), Extras::default());
     let end = Instant::now() + Duration::from_secs(10);
     let said = loop {
-        let last = server.started.discovery.masters.lock().map(|m| m.clone()).unwrap_or_default();
-        if let Some((_, text)) = last.first() {
-            break text.clone();
+        let last = server.started.discovery.master.lock().map(|m| m.clone()).unwrap_or_default();
+        if let Some((_, text)) = last {
+            break text;
         }
         assert!(Instant::now() < end, "no word from the master within 10 s");
         std::thread::sleep(Duration::from_millis(100));

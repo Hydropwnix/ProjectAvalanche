@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use ssx_content::material::{MaterialDef, TextureRef, effect_phase};
+use ssx_content::material::{MaterialDef, TextureRef, unread_effect};
 use ssx_content::model::collision::SURFACES;
 use ssx_content::model::write::{WriteModel, glb};
 use ssx_content::object::{ObjectCollision, ObjectDef, ObjectLods};
@@ -19,7 +19,7 @@ fn leaf(id: &ContentId) -> &str {
 
 pub fn material_toml(def: &MaterialDef) -> Result<String, String> {
     let family = def.family.ok_or_else(|| {
-        format!("its effect {} is replaced by packages from phase {}", def.effect, effect_phase(&def.effect))
+        format!("its effect {} is not replaced by packages ({})", def.effect, unread_effect(&def.effect))
     })?;
     let stem = def.effect.strip_suffix(".fx").unwrap_or(&def.effect);
     let mut out = format!(

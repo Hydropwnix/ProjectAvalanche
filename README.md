@@ -19,6 +19,9 @@ approximated and marked in the code
 **You need your own copy of the game:** an ISO image dumped from your retail Xbox 360 disc of SSX (2012). No
 game data is included in this repository or in its builds.
 
+**Servers, scripts and mods:** the [wiki](https://github.com/MnkyArts/ProjectAvalanche/wiki) covers hosting a server,
+writing Luau scripts and making mods, maps and gamemodes.
+
 ## Play on Windows
 
 1. Download the Windows build (the `ProjectAvalanche-windows-x64` artifact of a CI run, or a release) and
@@ -72,7 +75,8 @@ The downloads above always take the latest release: the Windows `.zip` for a man
 
 **On your computer:** the launcher's **HOST** page sets up a server folder (the rules it needs come from your own game
 data, about 21 MB), starts the dedicated server as its own program, shows its output, joins it with the game and stops
-it with the launcher. Friends on your network find it in the game's LAN tab; others join by your address.
+it with the launcher. It is on the game's Internet tab (the project's master server) unless you switch off **Listed on
+the public server list**; friends on your network find it in the LAN tab, and anyone can join by your address.
 
 **On a server machine:** the dedicated server (`ProjectAvalanche-server-windows-x64` / `ProjectAvalanche-server-linux-x64`,
 or `cargo build --release -p avalanche-server`) runs headless: no GPU, sound or display.
@@ -81,10 +85,17 @@ or `cargo build --release -p avalanche-server`) runs headless: no GPU, sound or 
 2. Copy `server.toml.example` to `server.toml`, edit it, and run `avalanche-server check`.
 3. Start `avalanche-server`. It listens on port 27450 (UDP for the game, TCP for the join) and 27451 (UDP, the query);
    `bind = "::"` listens on IPv6 and IPv4; `[port_mapping] enabled = true` maps the ports on your router (off by
-   default). It makes its keys in `data/` at the first start and logs to `data/logs/server.log`.
+   default). It is listed on the public server list unless `[discovery] public = false` (then it sends the master
+   server no heartbeat; every server follows the master's resource blocklist). It makes its keys in `data/` at the first start and logs to `data/logs/server.log`.
 
 A systemd unit, a Windows service note and a Docker example are in `Engine/assets/server/deploy/` (the systemd unit
 and the Windows note are in the server downloads too).
+
+**A master server** (the list of public servers; built from the source, not in the downloads): on
+[Coolify](https://coolify.io), create a resource from this repository, keep the build pack **Docker Compose** (or
+choose **Dockerfile**), set the domain, and press Deploy. `docker-compose.yaml` and `Dockerfile` at the root are
+configured for Coolify's proxy, which holds the certificate. On a plain host, `Engine/assets/master/deploy/` has a
+systemd unit, a certbot hook and a Compose file for direct TLS.
 
 ## Controls
 
@@ -155,7 +166,7 @@ The Rust workspace is in `Engine/`:
 | `apps/launcher` | the launcher, `project-avalanche`: the game data setup from your disc image, the options, Play |
 | `apps/asset-viewer` | the asset viewer, `asset-viewer`: a track's terrain and objects with a fly camera, test rides (a development tool) |
 | `apps/avalanche-server` | the dedicated multiplayer server, `avalanche-server`: headless, the join over HTTP, the game over UDP, `setup` of the rules from your own disc image, `check`, IPv6, port mapping (opt-in) |
-| `apps/avalanche-master` | the master server, `avalanche-master`: the list of public servers (authenticated heartbeats, a reachability check, expiry, blocklists), self-hostable |
+| `apps/avalanche-master` | the master server, `avalanche-master`: the list of public servers (authenticated heartbeats, a reachability check, expiry, blocklists); the project runs it at `https://masterlist.liamrbsn.com`, the one master every program uses (no setting names another) |
 | `crates/ssx-core` | the foundations every other crate shares: the world's conventions and units, common identifiers, how text from outside the program is shown (no Bevy) |
 | `crates/ssx-files` | the files the programs write, replaced whole or not at all across a crash or a power cut: a partial file synced, renamed over the old one, the folder synced |
 | `crates/ssx-formats` | parsers for the disc's file formats |

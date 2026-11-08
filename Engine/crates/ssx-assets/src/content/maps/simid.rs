@@ -37,7 +37,7 @@ impl GameContent {
     ) -> Result<SessionId> {
         let file_row = |path: &str| -> Result<SimRow> {
             let (_, hash) = index.entries.get(path).with_context(|| format!("the data folder lacks {path}"))?;
-            Ok(SimRow { id: file_id(path), class: "file".into(), hash: *hash, layer: "L0".into() })
+            Ok(SimRow { id: file_id(path), class: "file".into(), hash: *hash, layer: Layer::Base.source_text("ssx") })
         };
         let mut rows = match base {
             Some(b) => self.sim_content_id_with(index, &b.track, &b.ui_drop)?.rows,
@@ -81,7 +81,7 @@ impl GameContent {
                         let h = hash.map_or_else(String::new, |h| h.to_string());
                         t.insert("collision_hash".into(), toml::Value::String(h));
                     }
-                    let layer = if o.layer == Layer::Base { "L0".to_string() } else { self.layer_of(&o.id) };
+                    let layer = if o.layer == Layer::Base { o.layer.source_text("ssx") } else { self.layer_of(&o.id) };
                     rows.push(SimRow { id: o.id.to_string(), class: "collision".into(), hash: record_hash(&t), layer });
                 }
             }

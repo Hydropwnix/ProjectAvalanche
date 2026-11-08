@@ -108,6 +108,10 @@ impl Kind {
         Kind::ALL.into_iter().find(|k| k.as_str() == s)
     }
 
+    pub const fn read_from_packages(self) -> bool {
+        !matches!(self, Kind::Track | Kind::Script)
+    }
+
     pub const fn patchable(self) -> bool {
         matches!(
             self,

@@ -1,5 +1,6 @@
 use ssx_net_join::browse::{Entry, SortKey, State, ViewParams, view};
 
+use super::sources::MasterState;
 use super::{Browser, DP, DP_DETAILS, DP_DROP, DP_ROWS, DP_ROWS_INDEX, TABS};
 use crate::avm1::Ctx;
 use crate::avm1::value::Value;
@@ -291,26 +292,24 @@ pub fn header(fe: &FrontEnd, cx: &mut Ctx, loc: &mut Localization) -> Value {
     if b.fake.is_some() {
         status.push_str(&loc.text("TXT_AVA_BROWSER_FAKE"));
     }
-    if let Some((answered, of, failure)) = super::sources::masters_status(b) {
-        status.push_str(&loc.format("TXT_AVA_BROWSER_MASTERS", &[&answered.to_string(), &of.to_string()]));
-        if let Some(f) = failure {
-            status.push_str(&loc.format("TXT_AVA_BROWSER_MASTER_FAILED", &[&f]));
-        }
-        if b.left_out > 0 {
-            status.push_str(&loc.format("TXT_AVA_BROWSER_LEFT_OUT", &[&b.left_out.to_string()]));
-        }
+    let master = super::sources::master_state(b);
+    match &master {
+        Some(MasterState::Waiting) => status.push_str(&loc.text("TXT_AVA_BROWSER_MASTER_WAITING")),
+        Some(MasterState::Failed(why)) => status.push_str(&loc.format("TXT_AVA_BROWSER_MASTER_FAILED", &[why])),
+        Some(MasterState::Answered) | None => {}
     }
-    let empty = match (b.entries.is_empty(), b.tab, &b.masters_problem) {
+    if master.is_some() && b.left_out > 0 {
+        status.push_str(&loc.format("TXT_AVA_BROWSER_LEFT_OUT", &[&b.left_out.to_string()]));
+    }
+    let empty = match (b.entries.is_empty(), b.tab, &b.source_problem) {
         (false, _, _) => String::new(),
         (true, super::Tab::Internet | super::Tab::Lan, Some(why)) => {
             loc.format("TXT_AVA_BROWSER_SOURCE_PROBLEM", &[why])
         }
-        (true, super::Tab::Internet, None) if b.masters.is_none() => loc.text("TXT_AVA_BROWSER_NO_MASTERS"),
-        (true, super::Tab::Internet, None) => match super::sources::masters_status(b) {
-            Some((_, _, _)) if b.masters.as_ref().is_some_and(|m| m.waiting() > 0) => {
-                loc.text("TXT_AVA_BROWSER_ASKING_MASTERS")
-            }
-            _ => loc.text("TXT_AVA_BROWSER_EMPTY_INTERNET"),
+        (true, super::Tab::Internet, None) => match master {
+            None => loc.text("TXT_AVA_BROWSER_NO_MASTER"),
+            Some(MasterState::Waiting) => loc.text("TXT_AVA_BROWSER_ASKING_MASTER"),
+            Some(_) => loc.text("TXT_AVA_BROWSER_EMPTY_INTERNET"),
         },
         (true, super::Tab::Lan, None) => loc.text("TXT_AVA_BROWSER_EMPTY_LAN"),
         (true, super::Tab::Favourites, _) => loc.text("TXT_AVA_BROWSER_EMPTY_FAVOURITES"),

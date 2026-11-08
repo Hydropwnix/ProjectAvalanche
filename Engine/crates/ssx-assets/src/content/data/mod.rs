@@ -40,6 +40,10 @@ pub struct DataCache {
     pub(in crate::content) session: AtomicU8,
 }
 
+thread_local! {
+    static POLICY_HERE: std::cell::Cell<Option<(usize, u8)>> = const { std::cell::Cell::new(None) };
+}
+
 fn policy_value(p: ClientMods) -> u8 {
     match p {
         ClientMods::Any => 0,
@@ -63,11 +67,27 @@ impl GameContent {
     }
 
     pub fn sim_policy(&self) -> ClientMods {
-        match self.data.policy.load(Ordering::Acquire) {
+        let here = POLICY_HERE.with(std::cell::Cell::get).filter(|(at, _)| *at == self.address()).map(|(_, v)| v);
+        match here.unwrap_or_else(|| self.data.policy.load(Ordering::Acquire)) {
             0 => ClientMods::Any,
             1 => ClientMods::Presentation,
             _ => ClientMods::None,
         }
+    }
+
+    pub fn with_sim_policy<R>(&self, policy: ClientMods, f: impl FnOnce() -> R) -> R {
+        struct Restore(Option<(usize, u8)>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                POLICY_HERE.with(|c| c.set(self.0));
+            }
+        }
+        let _restore = Restore(POLICY_HERE.with(|c| c.replace(Some((self.address(), policy_value(policy))))));
+        f()
+    }
+
+    fn address(&self) -> usize {
+        std::ptr::from_ref(self) as usize
     }
 
     pub fn set_sim_policy(&self, p: ClientMods) {

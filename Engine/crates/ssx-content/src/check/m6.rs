@@ -34,8 +34,7 @@ fn check_movie(c: &mut Checked, tree: &PackageTree, m: &Manifest, id: &ContentId
     let ext = f.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
     if ext == "json" {
         let message = format!(
-            "{id}: a layout of a generated view (JSON) is not read from packages yet: new screens' layouts come with \
-             phase 7 (resources' own screens); this round reads movies (.swf / .gfx)"
+            "{id}: a layout of a generated view (JSON) is not read from packages: a screen is a movie (.swf / .gfx)"
         );
         c.push(Severity::Note, MANIFEST_FILE, at, message);
         return;

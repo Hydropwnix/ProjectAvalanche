@@ -46,14 +46,14 @@ enum Command {
         /// The folder to write (default: the data folder, --data).
         #[arg(long)]
         out: Option<PathBuf>,
-        /// Optional classes besides the rules: collision, ghosts, verify (comma separated). Maps (round net8): a map
-        /// in a round mode needs verify (the start is checked with a rider's animation), a layout needs collision (its
-        /// base drop's terrain).
+        /// Optional classes besides the rules: collision, ghosts, verify (comma separated). Maps: a map in a round mode
+        /// needs verify (the start is checked with a rider's animation), a layout needs collision (its base drop's
+        /// terrain).
         #[arg(long, value_delimiter = ',')]
         with: Vec<String>,
     },
-    /// Check the configuration, the data folder's keys and its rules subset (every member and hash), and say what the
-    /// server would do.
+    /// Check the configuration, the data folder's keys, its rules subset (every member and hash) and the configured
+    /// drops against the rules, and say what the server would do.
     Check,
     /// Run a console command on a server with an operator key (the remote console) and print its answer.
     Rcon {
@@ -196,13 +196,14 @@ fn run_rcon(options: &avalanche_server::operation::rcon_client::RconOptions) -> 
 
 fn run_setup(source: &Source, out: &std::path::Path, config_path: &std::path::Path, with: &[String]) -> ExitCode {
     use avalanche_server::data::Class;
-    let resources = match config::load(config_path) {
-        Ok(c) => c.resources.folder,
+    let config = match config::load(config_path) {
+        Ok(c) => c,
         Err(e) => {
             eprintln!("setup refused: {e}");
             return ExitCode::from(2);
         }
     };
+    let configured = avalanche_server::data::guard::Configured::of(&config);
     let mut classes = std::collections::BTreeSet::from([Class::Rules]);
     for w in with {
         match Class::from_option(w) {
@@ -223,7 +224,7 @@ fn run_setup(source: &Source, out: &std::path::Path, config_path: &std::path::Pa
             eprintln!("  {} {}/{} files", p.archive, p.files_done, p.files_total);
         }
     };
-    match setup::run(source, out, &resources, &classes, &cancel, &mut progress) {
+    match setup::run(source, out, &configured, &classes, &cancel, &mut progress) {
         Ok(r) => {
             println!(
                 "{}: {} members, {:.1} MB ({} written, {} kept) in {:.1} s; {}",

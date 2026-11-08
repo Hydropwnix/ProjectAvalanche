@@ -5,11 +5,10 @@ use crate::{config, data, keys};
 pub fn run(config_path: &Path, data_dir: &Path, out: &mut dyn FnMut(String)) -> bool {
     let mut ok = true;
     let mut icon = None;
-    let mut resources = std::path::PathBuf::from(crate::resources::config::DEFAULT_FOLDER);
-    match config::load(config_path) {
+    let loaded = config::load(config_path);
+    match &loaded {
         Ok(c) => {
-            icon = crate::operation::config::icon_file(&c);
-            resources.clone_from(&c.resources.folder);
+            icon = crate::operation::config::icon_file(c);
             match &c.path {
                 Some(p) if p.exists() => out(format!("{}: valid", p.display())),
                 _ => out(format!("{}: missing, the defaults are used", config_path.display())),
@@ -20,14 +19,12 @@ pub fn run(config_path: &Path, data_dir: &Path, out: &mut dyn FnMut(String)) -> 
             out(format!("  max players {}", c.max_players));
             out(format!("  password {}", if c.password.is_empty() { "none (an open server)" } else { "set" }));
             out(format!("  chat {}", if c.chat { "on" } else { "off" }));
-            let d = &c.discovery;
-            let masters: Vec<String> = d.masters.iter().map(ToString::to_string).collect();
-            out(format!(
-                "  discovery: public {} (masters {masters:?}), the UDP query {}, LAN discovery {}",
-                d.public,
-                if d.query { "on" } else { "off" },
-                if d.lan { "on" } else { "off" }
-            ));
+            for line in c.discovery.lines() {
+                out(line);
+            }
+            for notice in &c.notices {
+                out(format!("  note: {notice}"));
+            }
             out(format!("  port mapping: {}", c.port_mapping.describe()));
             let m = &c.operation;
             let allow: Vec<String> = m.metrics_allow.iter().map(ToString::to_string).collect();
@@ -84,7 +81,12 @@ pub fn run(config_path: &Path, data_dir: &Path, out: &mut dyn FnMut(String)) -> 
         }
     }
     ok &= check_operation(data_dir, icon.as_deref(), out);
-    match data::check_subset(data_dir, true, &resources) {
+    let default_resources = std::path::PathBuf::from(crate::resources::config::DEFAULT_FOLDER);
+    let configured = match &loaded {
+        Ok(c) => data::guard::Configured::of(c),
+        Err(_) => data::guard::Configured::resources(&default_resources),
+    };
+    let subset_read = match data::check_subset_configured(data_dir, true, &configured) {
         Ok((subset, findings)) => {
             let classes: Vec<&str> = subset.classes.iter().map(|c| c.name()).collect();
             out(format!(
@@ -99,12 +101,32 @@ pub fn run(config_path: &Path, data_dir: &Path, out: &mut dyn FnMut(String)) -> 
                 out(format!("{}: {}", f.place, f.what));
             }
             ok &= findings.is_empty();
+            true
         }
         Err(findings) => {
             for f in &findings {
                 out(format!("{}: {}", f.place, f.what));
             }
             ok = false;
+            false
+        }
+    };
+    if let (Ok(c), true) = (&loaded, subset_read) {
+        match crate::rules::check_configured(c, data_dir) {
+            Ok(findings) if findings.is_empty() => out("  the configured drops: each a drop of the rules".into()),
+            Ok(findings) => {
+                for f in &findings {
+                    out(format!("{}: {}", f.place, f.what));
+                    ok &= !f.problem;
+                }
+            }
+            Err(e) => {
+                out(format!(
+                    "the configured drops: not checked: {}",
+                    ssx_core::text::shown_max(&e, ssx_core::text::MESSAGE_CHARS)
+                ));
+                ok = false;
+            }
         }
     }
     ok

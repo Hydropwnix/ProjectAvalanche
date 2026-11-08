@@ -158,6 +158,11 @@ impl GameContent {
     }
 
     pub fn check_levels(self: &Arc<Self>, index: &ContentIndex, levels: &[LevelId]) -> Result<SimContentId, String> {
+        let basis = self.session_policy().unwrap_or_else(|| self.sim_policy()).id_basis();
+        self.with_sim_policy(basis, || self.check_levels_now(index, levels))
+    }
+
+    fn check_levels_now(self: &Arc<Self>, index: &ContentIndex, levels: &[LevelId]) -> Result<SimContentId, String> {
         let mut ours = Vec::with_capacity(levels.len());
         let mut differ: Vec<String> = Vec::new();
         let mut count = 0usize;

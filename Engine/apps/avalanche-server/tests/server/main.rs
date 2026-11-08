@@ -1,5 +1,6 @@
 mod blocklist;
 mod common;
+mod data_guard;
 mod discovery;
 mod http;
 mod ipv6;

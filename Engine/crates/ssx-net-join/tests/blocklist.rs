@@ -102,7 +102,7 @@ fn two_masters_united_and_a_304_keeps_the_list() {
     let cache_dir = dir.join("Blocklists");
     let f = follow(&cache_dir, &[&u1, &u2]);
     let now = now_secs();
-    let first = refresh(&f, &None, true, now).expect("refreshed");
+    let first = refresh(&f, &None, true, now);
     assert!(first.iter().all(|o| matches!(o.result, Ok(Refreshed::Kept(2)))), "{first:?}");
     let united = load(&cache_dir, &[u1.clone(), u2.clone()], now);
     assert_eq!(united.blocked.entries(), 4);
@@ -110,15 +110,15 @@ fn two_masters_united_and_a_304_keeps_the_list() {
     assert_eq!(united.blocked.source_of(&h(3)), Some(u2.as_str()));
     assert_eq!(united.blocked.source_of(&h(4)), None, "no false refusal");
     let later = now + 86_400;
-    let again = refresh(&f, &None, true, later).expect("refreshed");
+    let again = refresh(&f, &None, true, later);
     assert!(again.iter().all(|o| matches!(o.result, Ok(Refreshed::Current(2)))), "{again:?}");
     let kept = cache::read(&cache_dir, &u1).unwrap().unwrap();
     assert_eq!((kept.fetched, kept.checked), (now, later));
-    let quiet = refresh(&f, &None, false, later + 60).expect("refreshed");
+    let quiet = refresh(&f, &None, false, later + 60);
     assert!(quiet.iter().all(|o| o.result == Ok(Refreshed::NotDue)), "{quiet:?}");
     m1.stop();
     m2.stop();
-    let gone = refresh(&f, &None, true, later + 120).expect("refreshed");
+    let gone = refresh(&f, &None, true, later + 120);
     assert!(gone.iter().all(|o| o.result.is_err()), "{gone:?}");
     assert_eq!(load(&cache_dir, &[u1, u2], later + 120).blocked.entries(), 4);
     let _ = std::fs::remove_dir_all(&dir);
@@ -185,8 +185,8 @@ fn hostile_masters_are_refused_and_the_kept_list_stays() {
     }
     let masters: Vec<&str> = cases.iter().map(|(_, u)| u.as_str()).collect();
     let t0 = Instant::now();
-    let mut outcomes = refresh(&follow(&cache_dir, &masters[..5]), &None, true, now).expect("refreshed");
-    outcomes.extend(refresh(&follow(&cache_dir, &masters[5..]), &None, true, now).expect("refreshed"));
+    let mut outcomes = refresh(&follow(&cache_dir, &masters[..5]), &None, true, now);
+    outcomes.extend(refresh(&follow(&cache_dir, &masters[5..]), &None, true, now));
     let took = t0.elapsed();
     assert!(took < Duration::from_secs(40), "within the bounds: {took:?}");
     for (what, url) in &cases {

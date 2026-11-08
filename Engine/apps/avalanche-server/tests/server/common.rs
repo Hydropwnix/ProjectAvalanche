@@ -22,8 +22,22 @@ pub fn temp_dir(what: &str) -> PathBuf {
     dir
 }
 
+pub fn defaults() -> Config {
+    Config { discovery: avalanche_server::config::Discovery::unlisted(), ..Config::defaults() }
+}
+
+pub fn listed_on(url: &str) -> avalanche_server::config::Discovery {
+    let master = Some(ssx_net_proto::master::MasterUrl::parse(url).expect("a master's address"));
+    avalanche_server::config::Discovery {
+        public: true,
+        query: true,
+        master,
+        ..avalanche_server::config::Discovery::unlisted()
+    }
+}
+
 pub fn server_with(edit: impl FnOnce(&mut Config), conditions: Option<Conditions>) -> ServerThread {
-    let mut config = Config::defaults();
+    let mut config = defaults();
     config.bind = Ipv4Addr::LOCALHOST.into();
     config.port = 0;
     edit(&mut config);

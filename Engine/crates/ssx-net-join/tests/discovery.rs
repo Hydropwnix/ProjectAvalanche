@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use ssx_net_join::browse::lan::{LanSearch, Targets};
-use ssx_net_join::browse::masters::{Fetched, Masters, STEP, fetch};
+use ssx_net_join::browse::masters::{Fetched, MasterList, STEP, fetch};
 use ssx_net_join::browse::ping::{Pinger, TIMEOUT};
 use ssx_net_proto::keys::{ServerSecret, to_hex};
 use ssx_net_proto::master::{LIST_VERSION, ListedServer, MasterUrl, ServerList};
@@ -84,43 +84,49 @@ fn list_of(servers: Vec<ListedServer>) -> Vec<u8> {
     ServerList { list_version: LIST_VERSION, protocol_version: ssx_net_proto::PROTOCOL_VERSION, servers }.to_json()
 }
 
-#[test]
-fn two_masters_at_once_a_third_after_the_step_merged_by_key() {
-    let keys: Vec<String> = (0..4).map(|_| ServerSecret::generate().public().to_hex()).collect();
-    let silent = fake_master(|_| {
-        std::thread::sleep(Duration::from_secs(20));
-        ("200 OK".into(), String::new(), Vec::new())
-    });
-    let (k0, k1, k2, k3) = (keys[0].clone(), keys[1].clone(), keys[2].clone(), keys[3].clone());
-    let k1b = k1.clone();
-    let second = fake_master(move |_| {
-        ("200 OK".into(), "ETag: \"a\"\r\n".into(), list_of(vec![server(1, &k0), server(2, &k1)]))
-    });
-    let third = fake_master(move |_| {
-        ("200 OK".into(), String::new(), list_of(vec![server(1, &k2), server(3, &k1b), server(4, &k3)]))
-    });
-    let mut m = Masters::new(vec![silent.clone(), second.clone(), third.clone()], None);
+fn poll_until_answered(m: &mut MasterList, within: Duration) {
     let t0 = Instant::now();
-    let mut third_seen_at = None;
-    while t0.elapsed() < Duration::from_secs(10) {
-        m.poll(Instant::now());
-        if third_seen_at.is_none() && m.status.iter().any(|(u, _)| *u == third) {
-            third_seen_at = Some(t0.elapsed());
-        }
-        if m.kept.len() == 2 {
-            break;
+    while t0.elapsed() < within {
+        if m.poll(Instant::now()) {
+            return;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    let at = third_seen_at.expect("the third master asked and answered");
-    assert!(at >= STEP, "the third is asked after the step, not at once: {at:?}");
-    let (merged, left_out) = m.merged();
-    let names: Vec<&str> = merged.iter().map(|l| l.server.name.as_str()).collect();
-    assert_eq!(names, ["Server 1", "Server 2", "Server 4"], "{merged:?}");
-    assert_eq!(left_out, 1);
-    let k1 = merged.iter().find(|l| to_hex(&l.key) == keys[1]).expect("k1");
-    assert_eq!(k1.masters, [second.clone(), third.clone()]);
-    assert!(m.status.iter().all(|(u, _)| *u != silent), "the silent master has not answered");
+    panic!("the master did not answer within {within:?}");
+}
+
+#[test]
+fn the_masters_list_asked_once_kept_and_asked_again_with_its_etag() {
+    let keys: Vec<String> = (0..3).map(|_| ServerSecret::generate().public().to_hex()).collect();
+    let (k0, k1, k2) = (keys[0].clone(), keys[1].clone(), keys[2].clone());
+    let asked = std::sync::Arc::new(AtomicU32::new(0));
+    let count = std::sync::Arc::clone(&asked);
+    let master = fake_master(move |head| {
+        count.fetch_add(1, Ordering::AcqRel);
+        if head.to_ascii_lowercase().contains("if-none-match: \"a\"") {
+            return ("304 Not Modified".into(), String::new(), Vec::new());
+        }
+        let list = list_of(vec![server(1, &k0), server(2, &k1), server(3, &k2)]);
+        ("200 OK".into(), "ETag: \"a\"\r\n".into(), list)
+    });
+    let mut m = MasterList::new(master.clone(), None);
+    assert_eq!(m.master(), &master);
+    let t0 = Instant::now();
+    if !m.poll(t0) {
+        poll_until_answered(&mut m, Duration::from_secs(10));
+    }
+    assert!(!m.waiting());
+    assert_eq!(m.status, Some(Ok(3)));
+    let (listed, left_out) = m.listed();
+    let names: Vec<&str> = listed.iter().map(|l| l.server.name.as_str()).collect();
+    assert_eq!((names, left_out), (vec!["Server 1", "Server 2", "Server 3"], 0));
+    assert_eq!(asked.load(Ordering::Acquire), 1, "asked once");
+    assert!(!m.refresh(t0 + STEP / 2));
+    assert!(m.refresh(t0 + STEP));
+    poll_until_answered(&mut m, Duration::from_secs(10));
+    assert_eq!(m.status, Some(Ok(3)), "the 304 keeps the list");
+    assert_eq!(m.listed().0.len(), 3);
+    assert_eq!(asked.load(Ordering::Acquire), 2);
 }
 
 #[test]

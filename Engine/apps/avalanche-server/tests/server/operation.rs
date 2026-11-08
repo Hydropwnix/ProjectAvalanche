@@ -54,7 +54,7 @@ pub fn ops_with_data(
     std::fs::write(data.join("bans.toml"), bans).expect("bans.toml");
     let conf = temp_dir("config");
     prepare(&data, &conf);
-    let mut config = Config::defaults();
+    let mut config = crate::common::defaults();
     config.path = Some(conf.join("server.toml"));
     config.bind = Ipv4Addr::LOCALHOST.into();
     config.port = 0;

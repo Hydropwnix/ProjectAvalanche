@@ -6,7 +6,6 @@ use avalanche_server::config::Config;
 use avalanche_server::discovery::Extras;
 use avalanche_server::{ServerOptions, ServerThread};
 use ssx_net_join::browse::ping::Pinger;
-use ssx_net_proto::master::MasterUrl;
 
 use crate::common::*;
 
@@ -14,7 +13,7 @@ const V6: IpAddr = IpAddr::V6(Ipv6Addr::LOCALHOST);
 
 fn server_on(bind: IpAddr, edit: impl FnOnce(&mut Config)) -> Option<ServerThread> {
     std::net::UdpSocket::bind((Ipv6Addr::LOCALHOST, 0)).ok()?;
-    let mut config = Config::defaults();
+    let mut config = crate::common::defaults();
     config.bind = bind;
     config.port = 0;
     edit(&mut config);
@@ -109,11 +108,7 @@ fn the_query_the_ping_and_a_master_over_ipv6() {
     })
     .expect("a master on ::1");
     let url = format!("http://[::1]:{}", master.started.addr.port());
-    let Some(server) = server_on(V6, |c| {
-        c.discovery.public = true;
-        c.discovery.query = true;
-        c.discovery.masters = vec![MasterUrl::parse(&url).expect("an IPv6 master's address")];
-    }) else {
+    let Some(server) = server_on(V6, |c| c.discovery = listed_on(&url)) else {
         return;
     };
     let game = server.started.addr;

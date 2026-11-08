@@ -190,6 +190,16 @@ impl PortSettings {
     }
 }
 
+#[cfg(feature = "net")]
+pub fn old_masters_line(m: &Map<String, Json>) -> Option<String> {
+    m.contains_key("masters").then(|| {
+        format!(
+            "settings.json: `masters` is not read any more: the master server is fixed ({})",
+            ssx_core::OFFICIAL_MASTER
+        )
+    })
+}
+
 #[derive(Debug)]
 pub enum SaveError {
     Unreadable(String),

@@ -15,6 +15,9 @@ use toml::Spanned;
 use crate::config::{Config, ConfigError};
 use crate::resources::Settled;
 
+mod configured;
+pub use configured::{DropFinding, check_configured};
+
 // TODO(guess): "big" below `--data`, a port choice (the layout of the game's extraction); settle: the folder phase 4's
 // `setup` writes (round net4a), merged with this.
 pub const DEFAULT_DATA_FOLDER: &str = "big";

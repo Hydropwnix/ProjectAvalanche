@@ -3,7 +3,6 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use avalanche_server::config::Config;
 use avalanche_server::{ServerOptions, ServerThread};
 use ssx_net_join::{JoinFailure, JoinParams, join_showing};
 use ssx_net_proto::join::{CHALLENGE_SIZE, HeldAsk, JoinAnswer, JoinContent, JoinRequest, RefusalCode};
@@ -43,7 +42,7 @@ fn gate(root: &Path) {
 }
 
 fn server(folder: &Path) -> ServerThread {
-    let mut config = Config::defaults();
+    let mut config = crate::common::defaults();
     config.bind = Ipv4Addr::LOCALHOST.into();
     config.port = 0;
     config.resources.folder = folder.to_path_buf();

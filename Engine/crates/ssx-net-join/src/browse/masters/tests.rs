@@ -66,10 +66,56 @@ fn a_masters_name_is_looked_up_bounded_counted_and_cancellable() {
     assert_eq!(under_way(), 0, "the late lookups' threads have ended");
 }
 
+fn entry(address: &str, port: u16, key: &str, name: &str) -> ListedServer {
+    ListedServer {
+        address: address.into(),
+        port,
+        key: key.into(),
+        name: name.into(),
+        mode: "freeride".into(),
+        drop: "exp_alps_vorassay_drop_3".into(),
+        map: None,
+        players: 0,
+        max_players: 16,
+        password: false,
+        region: String::new(),
+        tags: Vec::new(),
+        build: BUILD_ID.into(),
+        api_level: 0,
+        info_version: ssx_net_proto::info::INFO_VERSION,
+        info_hash: "ab".repeat(32),
+        resources: ssx_net_proto::resources::ResourceSummary {
+            content_id: String::new(),
+            client_mods: "presentation".into(),
+            client_scripts: false,
+            count: 0,
+            download: 0,
+            manifest: "ab".repeat(32),
+            manifest_bytes: 200,
+        },
+    }
+}
+
 #[test]
-fn a_missing_member_is_the_projects_master_and_an_empty_list_none() {
-    let official = official().expect("the project's master reads by the masters' rule");
-    assert_eq!(official.to_string(), ssx_core::OFFICIAL_MASTER);
-    assert_eq!(from_settings(None), Ok(vec![official]));
-    assert_eq!(from_settings(Some(&serde_json::json!([]))), Ok(Vec::new()));
+fn the_masters_list_takes_each_key_and_each_place_once() {
+    let (k0, k1, k2) = ("01".repeat(32), "02".repeat(32), "03".repeat(32));
+    let servers = vec![
+        entry("203.0.113.1", 27450, &k0, "first"),
+        entry("203.0.113.2", 27450, &k0, "the same key again"),
+        entry("203.0.113.1", 27450, &k1, "the first's place again"),
+        entry("203.0.113.1", 27451, &k1, "another port"),
+        entry("not an address", 27450, &k2, "no address"),
+        entry("203.0.113.3", 27450, "zz", "no key"),
+        entry("2001:db8::7", 27450, &k2, "IPv6"),
+    ];
+    let list =
+        ServerList { list_version: ssx_net_proto::master::LIST_VERSION, protocol_version: PROTOCOL_VERSION, servers };
+    let (taken, left_out) = listed(&list);
+    let names: Vec<&str> = taken.iter().map(|l| l.server.name.as_str()).collect();
+    assert_eq!(names, ["first", "another port", "IPv6"]);
+    assert_eq!(left_out, 4);
+    assert_eq!(socket(&taken[1]), Some(SocketAddr::from(([203, 0, 113, 1], 27451))));
+    let m = MasterList::new(MasterUrl::parse("http://127.0.0.1:9").unwrap(), None);
+    assert_eq!(m.listed(), (Vec::new(), 0));
+    assert!(!m.waiting() && m.status.is_none());
 }

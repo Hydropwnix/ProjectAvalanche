@@ -40,6 +40,18 @@ impl EventType {
         ][self as usize]
     }
 
+    pub fn kind_word(self) -> &'static str {
+        if self.is_race() {
+            "race"
+        } else if self.is_trick() {
+            "trick"
+        } else if self.is_survive() {
+            "survive"
+        } else {
+            "freeride"
+        }
+    }
+
     pub fn is_race(self) -> bool {
         matches!(self, EventType::RaceClock | EventType::RaceGhosts | EventType::RaceBots)
     }
@@ -220,4 +232,16 @@ pub fn load_ui_drops(big_root: &Path) -> Result<Vec<UiDropRecord>> {
     let cols = collection::collections(&vault)?;
     let decoded = cols.iter().map(|c| c.decode(&vault, &schema)).collect::<ssx_formats::Result<Vec<_>>>()?;
     ui_drop_records(&cols, &decoded, &collection::index(&cols))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EventType;
+
+    #[test]
+    fn each_event_type_has_its_kind_word() {
+        let words: Vec<&str> = (0..9).map(|v| EventType::from_raw(v).expect("a type").kind_word()).collect();
+        assert_eq!(words, ["trick", "trick", "trick", "survive", "survive", "race", "race", "race", "freeride"]);
+        assert_eq!(EventType::from_raw(9), None);
+    }
 }

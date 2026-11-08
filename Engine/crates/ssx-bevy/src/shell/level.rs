@@ -41,8 +41,8 @@ pub struct LevelScope {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum ShadingArg {
     /// The game's terrain material: tri-planar base surfaces and six snow
-    /// layers from the vault, blended by the `.subd` attributes (terrain_default.fxo
-    /// microcode port, Docs/research/terrain-shader.md §10).
+    /// layers from the vault, blended by the `.subd` attributes (the game's
+    /// terrain_default shader, ported).
     Textured,
     /// Height tint (bluish grey low, white high).
     Height,

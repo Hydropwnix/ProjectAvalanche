@@ -11,8 +11,9 @@ services:
     image: project-avalanche-server:local
     restart: unless-stopped
     stop_signal: SIGTERM
-    # the graceful stop's bound ([stop] round_end, 60 s by default, and the results, the riders, the masters)
-    stop_grace_period: 90s
+    # the graceful stop's bound ([stop] round_end, 60 s by default, + 50 s: the results, the riders, the server
+    # scripts, the port mappings, the master; avalanche-server.service says how)
+    stop_grace_period: 110s
     ports:
       - "27450:27450/udp"
       - "27450:27450/tcp"

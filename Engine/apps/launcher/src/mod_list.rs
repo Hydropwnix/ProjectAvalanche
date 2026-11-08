@@ -25,9 +25,31 @@ pub enum Confirm {
 }
 
 pub enum InstallEnd {
-    Done(Vec<String>),
+    Done(Vec<String>, Remarks),
     Exists { package: PathBuf, name: String, installed: String },
     Failed(String),
+}
+
+pub const INLINE_REMARKS: usize = 3;
+pub const KEPT_REMARKS: usize = 40;
+
+#[derive(Default)]
+pub struct Remarks {
+    pub kept: Vec<String>,
+    pub count: usize,
+}
+
+impl Remarks {
+    fn of(findings: &[ssx_content::check::Finding]) -> Self {
+        let mut out = Self::default();
+        for f in findings.iter().filter(|f| f.severity != ssx_content::check::Severity::Error) {
+            out.count += 1;
+            if out.kept.len() < KEPT_REMARKS {
+                out.kept.push(f.to_string());
+            }
+        }
+        out
+    }
 }
 
 #[derive(Default)]
@@ -37,6 +59,7 @@ pub struct ModsPage {
     stale: bool,
     pub install: Option<Background<InstallEnd>>,
     pub message: Option<(bool, String)>,
+    pub remarks: Remarks,
     pub confirm: Option<Confirm>,
     base: Option<Option<PathBuf>>,
 }
@@ -106,8 +129,14 @@ impl ModsPage {
             self.install = None;
             due = true;
             match end {
-                InstallEnd::Done(lines) => self.message = Some((true, lines.join("\n"))),
-                InstallEnd::Failed(e) => self.message = Some((false, e)),
+                InstallEnd::Done(lines, remarks) => {
+                    self.message = Some((true, lines.join("\n")));
+                    self.remarks = remarks;
+                }
+                InstallEnd::Failed(e) => {
+                    self.message = Some((false, e));
+                    self.remarks = Remarks::default();
+                }
                 InstallEnd::Exists { package, name, installed } => {
                     self.confirm = Some(Confirm::Replace { package, name, installed });
                 }
@@ -195,6 +224,7 @@ impl ModsPage {
 
     pub fn start_install(&mut self, ctx: &egui::Context, app_dir: PathBuf, package: PathBuf, replace: bool) {
         self.message = None;
+        self.remarks = Remarks::default();
         self.install =
             Some(Background::spawn(ctx, move || match modtool::install(&package, &app_dir, replace, false) {
                 Ok(done) => {
@@ -205,17 +235,12 @@ impl ModsPage {
                         "Installed {title} {} ({} files{index}) and switched it on.",
                         r.version, done.files
                     )];
-                    let notes: Vec<String> = done
-                        .findings
-                        .iter()
-                        .filter(|f| f.severity != ssx_content::check::Severity::Error)
-                        .map(ToString::to_string)
-                        .collect();
-                    lines.extend(notes.iter().take(3).cloned());
-                    if notes.len() > 3 {
+                    let notes = Remarks::of(&done.findings);
+                    lines.extend(notes.kept.iter().take(INLINE_REMARKS).cloned());
+                    if notes.count > INLINE_REMARKS {
                         lines.push(format!(
-                            "… and {} more remarks (`ssx-assets mod check` lists them)",
-                            notes.len() - 3
+                            "… and {} more remarks (listed under \"Remarks of the install\" below)",
+                            notes.count - INLINE_REMARKS
                         ));
                     }
                     if let Some((_, aside)) = &done.previous {
@@ -230,7 +255,7 @@ impl ModsPage {
                             lines.push("the replaced version is in the trash".into());
                         }
                     }
-                    InstallEnd::Done(lines)
+                    InstallEnd::Done(lines, notes)
                 }
                 Err(e) => match e.downcast_ref::<InstallError>() {
                     Some(InstallError::Exists { name, version, .. }) => InstallEnd::Exists {
@@ -254,4 +279,36 @@ pub fn open_folder(dir: &Path) -> Result<(), String> {
         "xdg-open"
     };
     std::process::Command::new(program).arg(dir).spawn().map(drop).map_err(|e| format!("{program}: {e}"))
+}
+
+#[cfg(test)]
+mod remarks_tests {
+    use ssx_content::check::{Finding, Severity};
+    use ssx_core::text::Text;
+
+    use super::{KEPT_REMARKS, Remarks};
+
+    #[test]
+    fn the_remarks_kept_are_bounded_and_the_rest_counted() {
+        let finding = |severity, n: usize| Finding {
+            severity,
+            file: format!("f{n}.png"),
+            line: 0,
+            column: 0,
+            message: Text::new(format!("remark {n}")),
+        };
+        let mut findings: Vec<Finding> = (0..100).map(|n| finding(Severity::Note, n)).collect();
+        findings.insert(5, finding(Severity::Error, 1000));
+        findings.push(finding(Severity::Warning, 100));
+        let r = Remarks::of(&findings);
+        assert_eq!(r.count, 101);
+        assert_eq!(r.kept.len(), KEPT_REMARKS);
+        assert!(
+            r.kept[0].contains("remark 0")
+                && r.kept[KEPT_REMARKS - 1].contains(&format!("remark {}", KEPT_REMARKS - 1))
+        );
+        assert!(!r.kept.iter().any(|k| k.contains("remark 1000")), "errors are not remarks");
+        let few = Remarks::of(&findings[..3]);
+        assert_eq!((few.count, few.kept.len()), (3, 3));
+    }
 }

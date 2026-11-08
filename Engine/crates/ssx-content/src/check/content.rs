@@ -228,7 +228,8 @@ pub(super) fn cross_check(c: &mut Checked, tree: &PackageTree, m: &Manifest) {
                 });
             } else {
                 let message = format!(
-                    "controller {s}: a controller is one of the game's own Lua scripts (ssx:script/…); Luau controllers come with phase M7"
+                    "controller {s}: a controller is one of the game's own Lua scripts (ssx:script/…); a package's Luau \
+                     scripts are not controllers"
                 );
                 c.push(Severity::Error, &f, locate(&text, s.as_str()), message);
             }

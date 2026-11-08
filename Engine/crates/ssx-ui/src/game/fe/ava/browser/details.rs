@@ -97,9 +97,6 @@ pub fn build(fe: &FrontEnd, cx: &mut Ctx, loc: &mut Localization) -> Value {
     if !tags.is_empty() {
         address.push_str(&format!(" \u{2022} {}", tags.join(", ")));
     }
-    if let Some(l) = &e.listed {
-        address.push_str(&loc.format("TXT_AVA_BROWSER_LISTED_BY", &[&l.masters.len().to_string()]));
-    }
     set(cx, "address", &address);
     let icon = fe.ava.browser.icons.path(e, cx);
     let _ = cx.set_member(&o, "strIcon", Value::str(&icon));

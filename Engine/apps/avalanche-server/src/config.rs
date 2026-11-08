@@ -5,11 +5,14 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use ssx_net::limits::MAX_CLIENTS;
 use ssx_net_proto::join::MAX_PASSWORD_BYTES;
-use ssx_net_proto::master::MasterUrl;
 use ssx_net_proto::name::server_name;
 use ssx_net_proto::{GhostStyle, InstanceSpec, Mode, Rewinds};
 use toml::Spanned;
 use zeroize::Zeroizing;
+
+mod discovery;
+pub use discovery::Discovery;
+use discovery::{RawDiscovery, parse_discovery};
 
 pub const DEFAULT_PORT: u16 = ssx_net_proto::DEFAULT_PORT;
 pub const DEFAULT_MAX_PLAYERS: u16 = 16;
@@ -37,6 +40,7 @@ pub struct Config {
     pub resources: crate::resources::config::Resources,
     pub mods: crate::resources::config::Mods,
     pub operation: crate::operation::config::OperationConfig,
+    pub notices: Vec<String>,
 }
 
 impl Config {
@@ -58,6 +62,7 @@ impl Config {
             resources: Default::default(),
             mods: Default::default(),
             operation: crate::operation::config::OperationConfig::default(),
+            notices: Vec::new(),
         }
     }
 
@@ -168,7 +173,7 @@ pub fn parse(path: &Path, text: &str) -> Result<Config, ConfigError> {
         config.chat = enabled.into_inner();
     }
     if let Some(d) = raw.discovery {
-        config.discovery = parse_discovery(d, &at)?;
+        config.discovery = parse_discovery(d, &at, &mut config.notices)?;
     }
     if let Some(r) = raw.resources {
         config.resources = crate::resources::config::parse_resources(r, &at)?;
@@ -227,84 +232,6 @@ pub fn parse(path: &Path, text: &str) -> Result<Config, ConfigError> {
         config.operation.icon = Some(crate::operation::config::parse_icon(icon, &at)?);
     }
     finish(config, port_mapping, &at)
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Discovery {
-    pub public: bool,
-    pub masters: Vec<MasterUrl>,
-    pub region: String,
-    pub tags: Vec<String>,
-    pub contact: String,
-    pub query: bool,
-    pub lan: bool,
-    pub blocklist: Option<std::path::PathBuf>,
-}
-
-// TODO(guess): 8 (the plan's federation: a project master and a few community ones); settle: the masters operators
-// list.
-pub const MAX_MASTERS: usize = 8;
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawDiscovery {
-    public: Option<Spanned<bool>>,
-    masters: Option<Spanned<Vec<Spanned<String>>>>,
-    region: Option<Spanned<String>>,
-    tags: Option<Spanned<Vec<Spanned<String>>>>,
-    contact: Option<Spanned<String>>,
-    query: Option<Spanned<bool>>,
-    lan: Option<Spanned<bool>>,
-    blocklist: Option<Spanned<String>>,
-}
-
-fn parse_discovery(
-    d: RawDiscovery,
-    at: &dyn Fn(Range<usize>, String) -> ConfigError,
-) -> Result<Discovery, ConfigError> {
-    let mut out = Discovery::default();
-    let mut public_at = 0..0;
-    if let Some(p) = d.public {
-        public_at = p.span();
-        out.public = p.into_inner();
-    }
-    if let Some(list) = d.masters {
-        if list.get_ref().len() > MAX_MASTERS {
-            return Err(at(list.span(), format!("masters: at most {MAX_MASTERS}")));
-        }
-        for m in list.into_inner() {
-            let url = MasterUrl::parse(m.get_ref()).map_err(|e| at(m.span(), format!("masters: {e}")))?;
-            if out.masters.contains(&url) {
-                return Err(at(m.span(), format!("masters: {url} twice")));
-            }
-            out.masters.push(url);
-        }
-    }
-    if let Some(r) = d.region {
-        ssx_net_proto::master::region(r.get_ref()).map_err(|e| at(r.span(), e))?;
-        out.region = r.into_inner();
-    }
-    if let Some(t) = d.tags {
-        let span = t.span();
-        out.tags = t.into_inner().into_iter().map(Spanned::into_inner).collect();
-        ssx_net_proto::master::tags(&out.tags).map_err(|e| at(span, e))?;
-    }
-    if let Some(c) = d.contact {
-        ssx_net_proto::master::contact(c.get_ref()).map_err(|e| at(c.span(), e))?;
-        out.contact = c.into_inner();
-    }
-    out.query = d.query.is_some_and(|q| q.into_inner());
-    out.lan = d.lan.is_some_and(|l| l.into_inner());
-    if let Some(b) = d.blocklist {
-        out.blocklist = Some(crate::blocklist::local_path(b.get_ref()).map_err(|e| at(b.span(), e))?);
-    }
-    if out.public && out.masters.is_empty() {
-        return Err(at(public_at, "public = true: name the masters to announce to (masters = [\"https://…\"])".into()));
-    }
-    if out.public && !out.query {
-        return Err(at(public_at, "public = true: the masters check the UDP query, so set query = true".into()));
-    }
-    Ok(out)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -510,45 +437,6 @@ mod tests {
         assert!(err("[chat]\nenabled = 0\n").starts_with("server.toml:2:11"));
         assert!(err("[chat]\nrate = 5\n").starts_with("server.toml:2:1"));
         assert!(err("[chat]\nenabled = true\nenabled = false\n").starts_with("server.toml:3:"));
-    }
-
-    #[test]
-    fn discovery_is_off_by_default_and_checked() {
-        assert_eq!(parse(Path::new("s.toml"), "").expect("empty").discovery, Discovery::default());
-        let d = parse(
-            Path::new("s.toml"),
-            "[discovery]\npublic = true\nmasters = [\"https://master.example.org\", \"http://127.0.0.1:27900\"]\n\
-             region = \"eu-central\"\ntags = [\"race\", \"vanilla\"]\ncontact = \"admin@example.org\"\nquery = true\nlan = true\n",
-        )
-        .expect("valid")
-        .discovery;
-        assert!(d.public && d.query && d.lan);
-        assert_eq!(
-            d.masters.iter().map(ToString::to_string).collect::<Vec<_>>(),
-            ["https://master.example.org", "http://127.0.0.1:27900"]
-        );
-        assert_eq!((d.region.as_str(), d.tags.len(), d.contact.as_str()), ("eu-central", 2, "admin@example.org"));
-        assert!(
-            err("[discovery]\npublic = true\nquery = true\n")
-                .starts_with("server.toml:2:10: public = true: name the masters")
-        );
-        assert!(err("[discovery]\npublic = true\nmasters = [\"https://m.example.org\"]\n").contains("query = true"));
-        assert!(err("[discovery]\nmasters = [\"ftp://m\"]\n").starts_with("server.toml:2:12: masters: the scheme"));
-        assert!(
-            err("[discovery]\nmasters = [\"https://m.example.org\", \"HTTPS://M.example.org/\"]\n").contains("twice")
-        );
-        assert!(
-            err(&format!(
-                "[discovery]\nmasters = [{}]\n",
-                (0..9).map(|i| format!("\"https://m{i}.example.org\"")).collect::<Vec<_>>().join(", ")
-            ))
-            .contains("at most 8")
-        );
-        assert!(err("[discovery]\nregion = \"EU\"\n").contains("region"));
-        assert!(err("[discovery]\ntags = [\"a\", \"a\"]\n").contains("twice"));
-        assert!(err("[discovery]\ncontact = \"a\\nb\"\n").contains("contact"));
-        assert!(err("[discovery]\nlan = \"no\"\n").starts_with("server.toml:2:7"));
-        assert!(err("[discovery]\nlan_port = 1\n").starts_with("server.toml:2:1"));
     }
 
     #[test]

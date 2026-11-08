@@ -88,7 +88,8 @@ impl Launcher {
         widgets::paragraph(
             ui,
             "A multiplayer server on this computer: the same dedicated server as on a rented machine, as its own \
-             program. Your network finds it in the game's LAN tab; others join by your address or your master servers.",
+             program. Your network finds it in the game's LAN tab; others join by your address, or find it on the \
+             public server list while it is listed there.",
         );
         let exe = command::server_exe();
         if !exe.is_file() {
@@ -105,6 +106,12 @@ impl Launcher {
             self.host_setup_column(&mut left[0], exe.is_file());
             self.host_run_column(&mut right[0], exe.is_file());
         });
+        let ctx = ui.ctx().clone();
+        if let Some(focused) =
+            ctx.memory(|m| m.focused()).and_then(|id| ctx.read_response(id)).filter(egui::Response::gained_focus)
+        {
+            focused.scroll_to_me(None);
+        }
     }
 
     fn host_setup_column(&mut self, ui: &mut Ui, have_server: bool) {
@@ -212,7 +219,6 @@ impl Launcher {
         let drops = self.host.drops.clone();
         let maps = self.host.maps.clone();
         let mut read_again = false;
-        let masters = self.settings.masters.len();
         let h = &mut self.settings.host;
         ui.add_enabled_ui(enabled, |ui| {
             egui::Grid::new("host_fields").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
@@ -257,7 +263,12 @@ impl Launcher {
                 ui.end_row();
             });
             ui.checkbox(&mut h.lan, "Answer the LAN tab and the server query");
-            ui.checkbox(&mut h.public, format!("Announce it to my master servers ({masters} set)"));
+            if h.listen == Listen::Local {
+                ui.add_enabled(false, egui::Checkbox::new(&mut false, "Listed on the public server list"));
+                widgets::note(ui, "A server for this computer only is not listed.");
+            } else {
+                ui.checkbox(&mut h.public, "Listed on the public server list");
+            }
             ui.checkbox(&mut h.port_mapping, "Map the ports on my router (UPnP, PCP, NAT-PMP)");
         });
         for p in host::problems(h) {
@@ -282,7 +293,7 @@ impl Launcher {
             }
         };
         let h = &self.settings.host;
-        let text = match host::config_text(h, &self.settings.masters, map.as_ref()) {
+        let text = match host::config_text(h, map.as_ref()) {
             Ok(t) => t,
             Err(e) => {
                 self.host.note = Some((false, e));

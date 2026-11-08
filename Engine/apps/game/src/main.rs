@@ -5,8 +5,8 @@ use bevy::prelude::AppExit;
 use clap::Parser;
 use ssx_bevy::{RenderArgs, WINDOW_SIZE, game_mode, terrain_look};
 
-/// The game: the front end from the boot movie to a drop and back in one window, the profile loaded and saved
-/// (`Docs/architecture/game-shell.md`). The data come from --big-root (or the default search). Keys: Enter START,
+/// The game: the front end from the boot movie to a drop and back in one window, the profile loaded and saved. The
+/// data come from --big-root (or the default search). Keys: Enter START,
 /// Space A, Backspace B, X, Y, arrows the D-pad, Q / E the bumpers, Z / C or Page Up / Page Down the triggers, W / A /
 /// S / D the globe's stick (or a gamepad); riding: the ride's controls, Esc the pause menu.
 #[derive(Parser, Debug)]
@@ -19,7 +19,7 @@ struct Cli {
 
     /// Extracted archive root holding cache1/ (vaults) and cache3/ (textures).
     /// Defaults to the one above Game-Data/Extracted/big/data0/data/xenon/gameexplorer/alps0101, searched for upwards
-    /// from the current directory, then in the launcher's data folder (`ssx-assets setup` output).
+    /// from the current directory, then in the game data folder the launcher set up.
     #[arg(long, value_name = "DIR")]
     big_root: Option<PathBuf>,
 
@@ -119,19 +119,17 @@ struct Cli {
     #[arg(long)]
     classic_front_end: bool,
 
-    /// A test option: a screen of the Project Avalanche menu (keyboard, credits, options) opened once the menu is up
-    /// (`Docs/architecture/multiplayer.md` §10).
+    /// A test option: a screen of the Project Avalanche menu (keyboard, credits, options) opened once the menu is up.
     #[arg(long, value_name = "VIEW", conflicts_with = "classic_front_end")]
     open_view: Option<String>,
 
     /// A test option: a movie played by its id at the start, before the boot movie (`ssx:movie/<name>`, or a package's
-    /// added movie `<package>:movie/<path>`; `Docs/architecture/content.md` §20.1).
+    /// added movie `<package>:movie/<path>`).
     #[arg(long, value_name = "ID")]
     play_movie: Option<String>,
 
     /// Join this multiplayer server (`host:port`, an address, or a name; the port 27450 when none is given) and ride
-    /// its drop with the others (`Docs/architecture/multiplayer.md` §6.2); a refusal or the session's end shows its
-    /// reason on the Project Avalanche menu.
+    /// its drop with the others; a refusal or the session's end shows its reason on the Project Avalanche menu.
     #[arg(long, value_name = "ADDR", conflicts_with = "classic_front_end")]
     connect: Option<String>,
 

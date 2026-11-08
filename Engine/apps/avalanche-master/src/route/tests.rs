@@ -1,5 +1,5 @@
 use super::*;
-use crate::forwarded::Network;
+use crate::forwarded::{Network, Trusted};
 
 fn padded(lines: &[&str]) -> String {
     lines.iter().map(|l| format!("{l:<127}\n")).collect()
@@ -113,8 +113,8 @@ fn checks_lines_name_a_gateway_inside_a_trusted_network() {
     assert_eq!(
         gateway_lines(&Ok(vec![ip("172.17.0.1"), ip("fd00:4c:44::1")]), &trusted),
         vec![
-            "default gateway 172.17.0.1: outside the trusted networks",
-            "default gateway fd00:4c:44::1: outside the trusted networks"
+            "default gateway 172.17.0.1: not a trusted proxy's address",
+            "default gateway fd00:4c:44::1: not a trusted proxy's address"
         ]
     );
     assert_eq!(gateway_lines(&Ok(vec![]), &trusted), vec!["default gateway: none (no default route)"]);
@@ -138,14 +138,14 @@ fn runs_start_line_warns_only_for_a_gateway_inside() {
     let Some(StartLine::Warning(one)) = start_line(&Ok(vec![ip("172.17.0.1"), ip("10.233.46.1")]), &trusted) else {
         panic!("a warning for the gateway inside");
     };
-    assert!(one.starts_with("the default gateway 10.233.46.1 (in 10.233.46.0/24) lies inside a trusted network: "));
+    assert!(one.starts_with("the default gateway 10.233.46.1 (in 10.233.46.0/24) is a trusted proxy's address: "));
     assert!(one.ends_with(INSIDE_HAZARD));
     let Some(StartLine::Warning(two)) = start_line(&Ok(vec![ip("10.233.46.1"), ip("fd00:4c:46::1")]), &trusted) else {
         panic!("one warning for both");
     };
     assert!(two.starts_with(
-        "the default gateways 10.233.46.1 (in 10.233.46.0/24), fd00:4c:46::1 (in fd00:4c:46::/64) lie inside trusted \
-         networks: "
+        "the default gateways 10.233.46.1 (in 10.233.46.0/24), fd00:4c:46::1 (in fd00:4c:46::/64) are trusted \
+         proxies' addresses: "
     ));
     assert_eq!(
         start_line(&Err(RouteError::Header), &trusted),

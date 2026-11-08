@@ -36,7 +36,7 @@ fn regular_files(root: &Path, skipped: &mut Vec<PathBuf>) -> Result<Vec<PathBuf>
 pub fn hash_data(data: &Path, threads: usize) -> Result<HashRun> {
     let big = data.join("big");
     if !big.is_dir() {
-        bail!("{} is not a data folder: no big/ in it (made by `ssx-assets setup`)", data.display());
+        bail!("{} is not a data folder: no big/ in it (the game data setup makes it)", data.display());
     }
     let mut skipped = Vec::new();
     let mut files = regular_files(&big, &mut skipped)?;

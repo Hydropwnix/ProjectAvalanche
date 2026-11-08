@@ -14,15 +14,10 @@ pub fn start(fe: &mut FrontEnd) {
 
 pub fn poll(fe: &mut FrontEnd) {
     let Some(r) = fe.ava.browser.blocklists.as_ref() else { return };
-    let Some(result) = r.take() else { return };
+    let Some(outcomes) = r.take() else { return };
     fe.ava.browser.blocklists = None;
-    match result {
-        Ok(outcomes) => {
-            for o in outcomes {
-                fe.note(format!("browser: {}", o.line()));
-            }
-        }
-        Err(e) => fe.note(format!("browser: the blocklists: {e}")),
+    for o in outcomes {
+        fe.note(format!("browser: {}", o.line()));
     }
 }
 

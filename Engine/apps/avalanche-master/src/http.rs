@@ -24,6 +24,7 @@ use crate::address::{address_key, canonical};
 use crate::forwarded::{self, Source};
 use crate::limits::Verdict;
 use crate::state::{self, Master, Stats};
+use crate::trust::Moment;
 
 pub const X_FORWARDED_FOR: HeaderName = HeaderName::from_static("x-forwarded-for");
 const LOGGED_HEADER: usize = 120;
@@ -145,11 +146,11 @@ fn health(master: &Master) -> Reply {
     Reply::text(200, "ok")
 }
 
-async fn handle(master: &Master, peer: SocketAddr, request: Request<Incoming>) -> Reply {
+async fn handle(master: &Master, peer: SocketAddr, trust: &Moment, request: Request<Incoming>) -> Reply {
     Stats::count(&master.stats.requests);
     let now = Instant::now();
     let lines = request.headers().get_all(X_FORWARDED_FOR);
-    let source = match forwarded::source(peer.ip(), &master.config.trusted, lines.iter().map(HeaderValue::as_bytes)) {
+    let source = match forwarded::source(peer.ip(), trust, lines.iter().map(HeaderValue::as_bytes)) {
         Ok(s) => s,
         Err(forwarded::Refusal::Missing) if request.method() == Method::GET && request.uri().path() == "/v1/health" => {
             Source::Direct(peer.ip().to_canonical())
@@ -225,13 +226,13 @@ async fn handle(master: &Master, peer: SocketAddr, request: Request<Incoming>) -
     }
 }
 
-async fn serve_io<I>(master: Arc<Master>, io: I, peer: SocketAddr)
+async fn serve_io<I>(master: Arc<Master>, io: I, peer: SocketAddr, trust: Moment)
 where
     I: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
 {
     let service = service_fn(|request| {
-        let master = Arc::clone(&master);
-        async move { Ok::<_, Infallible>(handle(&master, peer, request).await.into_response()) }
+        let (master, trust) = (Arc::clone(&master), trust.clone());
+        async move { Ok::<_, Infallible>(handle(&master, peer, &trust, request).await.into_response()) }
     });
     let mut builder = http1::Builder::new();
     builder
@@ -245,7 +246,8 @@ where
 
 async fn serve(master: Arc<Master>, stream: tokio::net::TcpStream, peer: SocketAddr, tls: Option<TlsAcceptor>) {
     let connections = &master.limits.connections;
-    let trusted = master.config.trusted.contains(peer.ip());
+    let trust = master.trust.now();
+    let trusted = forwarded::TrustsPeer::trusts(&trust, peer.ip());
     let (direct, proxied) =
         if trusted { (None, connections.open_proxied()) } else { (connections.open(address_key(peer.ip())), None) };
     if direct.is_none() && proxied.is_none() {
@@ -258,10 +260,10 @@ async fn serve(master: Arc<Master>, stream: tokio::net::TcpStream, peer: SocketA
     let work = async {
         match tls {
             Some(acceptor) => match tokio::time::timeout(state::HEAD_TIMEOUT, acceptor.accept(stream)).await {
-                Ok(Ok(s)) => serve_io(Arc::clone(&master), TokioIo::new(s), peer).await,
+                Ok(Ok(s)) => serve_io(Arc::clone(&master), TokioIo::new(s), peer, trust).await,
                 _ => Stats::count(&master.stats.limited),
             },
-            None => serve_io(Arc::clone(&master), TokioIo::new(stream), peer).await,
+            None => serve_io(Arc::clone(&master), TokioIo::new(stream), peer, trust).await,
         }
     };
     if tokio::time::timeout(state::CONNECTION_TIMEOUT, work).await.is_err() {

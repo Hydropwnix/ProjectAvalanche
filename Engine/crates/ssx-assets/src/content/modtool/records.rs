@@ -3,7 +3,7 @@ use std::path::Path;
 
 use ssx_content::check::{Checked, Severity, locate_key};
 use ssx_content::manifest::{MANIFEST_FILE, Manifest};
-use ssx_content::material::{MaterialDef, VECTOR_PARAMETERS, effect_phase, missing_tiles};
+use ssx_content::material::{MaterialDef, VECTOR_PARAMETERS, missing_tiles, unread_effect};
 use ssx_content::{BASE_NAMESPACE, ContentId, Kind};
 use ssx_formats::fxo::Effect;
 
@@ -99,9 +99,9 @@ pub(super) fn check(c: &mut Checked, m: &Manifest, big: &Path, base: Option<&BTr
             Kind::Material => match ssx_content::Source::load(&records, &id).map(|a| a.into_value::<MaterialDef>()) {
                 Ok(Some(d)) if d.family.is_none() => {
                     let message = format!(
-                        "{id}: the disc's material is drawn with {}, which packages replace from phase {}",
+                        "{id}: the disc's material is drawn with {}, which packages do not replace ({})",
                         d.effect,
-                        effect_phase(&d.effect)
+                        unread_effect(&d.effect)
                     );
                     push(c, Severity::Error, MANIFEST_FILE, at, message);
                 }

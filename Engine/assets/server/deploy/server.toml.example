@@ -20,12 +20,13 @@ drop = "exp_alps_vorassay_drop_3"
 enabled = true
 
 [discovery]
-# answer the game's LAN tab and the UDP query (the masters need the query)
+# listed on the public server list (the default): heartbeats to the project's master server, which is fixed (no
+# setting names it); false: not listed, no heartbeat (players join by its address, a link or the LAN tab). Every
+# server follows the master's resource blocklist, listed or not (a failed fetch never stops the start)
+public = true
+# the UDP query on the game port + 1 (a listed server needs it: the master checks it) and the game's LAN tab
 query = true
 lan = true
-# announce to master servers (each "https://host[:port]"); the project's own is https://masterlist.liamrbsn.com
-public = false
-masters = ["https://masterlist.liamrbsn.com"]
 
 [port_mapping]
 # map the game's and the query's ports on the router: UPnP IGD, PCP and NAT-PMP, tried in this order; off by default

@@ -37,7 +37,7 @@ const MAX_HEAD: usize = 8192;
 const MAX_TEXT: usize = 512;
 
 pub struct Beat {
-    pub masters: Vec<MasterUrl>,
+    pub master: MasterUrl,
     pub identity: ServerSecret,
     pub http: Arc<HttpState>,
     pub shared: Arc<Shared>,
@@ -50,7 +50,7 @@ pub struct Beat {
     pub interval: Duration,
     pub after_change: Duration,
     pub stats: Arc<Stats>,
-    pub last: Arc<Mutex<Vec<(String, String)>>>,
+    pub last: Arc<Mutex<Option<(String, String)>>>,
 }
 
 enum Outcome {
@@ -238,16 +238,13 @@ impl Beat {
 
     fn note(&self, url: &MasterUrl, text: String) {
         if let Ok(mut last) = self.last.lock() {
-            let key = url.to_string();
-            match last.iter_mut().find(|(m, _)| *m == key) {
-                Some(entry) => entry.1 = text,
-                None => last.push((key, text)),
-            }
+            *last = Some((url.to_string(), text));
         }
     }
 }
 
-pub async fn run(beat: Arc<Beat>, url: MasterUrl, mut stop: watch::Receiver<bool>) {
+pub async fn run(beat: Arc<Beat>, mut stop: watch::Receiver<bool>) {
+    let url = beat.master.clone();
     let mut next = Instant::now();
     let mut change_due: Option<Instant> = None;
     let mut sent_players: Option<u32> = None;

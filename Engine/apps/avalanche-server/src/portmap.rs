@@ -47,21 +47,21 @@ pub fn start(config: &Config, game: SocketAddr, targets: Targets) -> Result<Opti
     Mapper::start(cfg, targets, log).map(Some).map_err(|e| format!("the port mapping's thread: {e}"))
 }
 
-pub fn lines(status: &Mutex<Status>, masters: &[(String, String)]) -> Vec<String> {
+pub fn lines(status: &Mutex<Status>, master: Option<&(String, String)>) -> Vec<String> {
     let Ok(s) = status.lock() else { return Vec::new() };
     let mut out = vec![format!(
         "port mapping: {} (maps {}, renewals {}, failures {}, removed {})",
         s.summary, s.maps, s.renewals, s.failures, s.removals
     )];
-    if s.mapped {
-        for (url, last) in masters {
-            let verdict = if last.starts_with("listed") {
-                "mapped, and reachable from the master"
-            } else {
-                "mapped, but the master did not list the server"
-            };
-            out.push(format!("  {verdict} {url}: {last}"));
-        }
+    if s.mapped
+        && let Some((url, last)) = master
+    {
+        let verdict = if last.starts_with("listed") {
+            "mapped, and reachable from the master"
+        } else {
+            "mapped, but the master did not list the server"
+        };
+        out.push(format!("  {verdict} {url}: {last}"));
     }
     out
 }

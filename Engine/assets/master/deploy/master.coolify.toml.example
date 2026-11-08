@@ -1,15 +1,17 @@
-# master.toml for the master behind Coolify's proxy (round net4c; server-procedure.md, "The master on Coolify"): the
-# proxy (Traefik or Caddy) holds 80 and 443, gets the Let's Encrypt certificate and terminates TLS; the master serves
-# plain HTTP on 8443 inside the proxy's Docker network and takes each client's address from the proxy's
-# X-Forwarded-For. Coolify mounts this file at /srv/avalanche-master/master.toml (Persistent Storage, a file mount).
-# `avalanche-master check --config master.toml` says what is wrong and which mode it sees.
+# The master image's built-in master.toml (the Dockerfile at the repository's root copies this file to
+# /srv/avalanche-master/master.toml): the master behind Coolify's proxy, ready as it is. The proxy (Traefik or Caddy,
+# the container coolify-proxy) holds 80 and 443, gets the Let's Encrypt certificate and terminates TLS; the master
+# serves plain HTTP on 8443 inside the Docker network it shares with the proxy and takes each client's address from the
+# proxy's X-Forwarded-For. A master.toml mounted at /srv/avalanche-master/master.toml replaces this one (a Coolify file
+# mount, a compose bind mount). `avalanche-master check --config /srv/avalanche-master/master.toml`, run in the
+# container (`docker exec <container> avalanche-master check …`), says which mode it sees and what the proxy's name
+# resolves to there.
 
 [master]
-# every address of the container (dual stack); "0.0.0.0" where the container has no IPv6 at all
+# every address of the container (dual stack); "0.0.0.0" where the kernel has no IPv6 at all
 bind = "::"
-# Coolify's "Ports Exposes": the port the proxy forwards to inside the container. No "Ports Mappings": Docker hands a
-# published port's loopback and IPv6 connections to the master from the network's gateway, an address inside the
-# trusted network below, so such a client could name any address in X-Forwarded-For
+# the port the proxy forwards to inside the container (docker-compose.yaml's `expose`, Coolify's "Ports Exposes").
+# Publish no port: a published port bypasses the proxy, and its clients reach the master from the network's gateway
 port = 8443
 max_servers = 4096
 max_servers_per_address = 16
@@ -19,16 +21,22 @@ allow_private_addresses = false
 # no [tls]: the proxy terminates TLS
 
 [proxy]
-# the addresses the proxy's Docker network gives its containers, and nothing wider: a request from them names its
-# client in the right-most X-Forwarded-For entry (the one the proxy appended); any other peer is its own client. Make
-# the master's network on the server first, with a range that leaves its gateway (the host) out:
-#   docker network create --subnet 10.0.9.0/24 --ip-range 10.0.9.128/25 avalanche-master
-# and add it as the master's destination, which Coolify connects its proxy to; trust the range. Every container in it
-# is trusted: the network is the master's own. `check`, run on that network, warns when the default gateway lies in a
-# trusted network, and the master's log says so at its start. At most 64 networks, IPv4 and IPv6, no /0.
-trusted = ["10.0.9.128/25"]
+# The proxy by name: the master looks the name up through the container's resolver (Docker's DNS) at its start and
+# every 2 s, and trusts the addresses it resolves to on the master's networks: a request from one of them names its
+# client in the right-most X-Forwarded-For entry (the one the proxy appended); any other peer is its own client.
+# Coolify's proxy container is coolify-proxy, whether Traefik or Caddy, and Coolify connects it to the master's network
+# (the resource's own network with Docker Compose, the destination's with a Dockerfile). Only addresses the Internet
+# does not route to are taken from a name (an answer with any other is refused whole, with a warning); a name that
+# stops resolving keeps its last addresses at most 10 s. Every container that answers to the name on the master's
+# networks is trusted: on a shared network an alias coolify-proxy given to another container would be too. At most 8
+# names, 8 addresses each.
+trusted_hosts = ["coolify-proxy"]
+# the proxies' networks instead of (or beside) names: every address in them is trusted, the network's gateway (the
+# host) included unless the range leaves it out (`check` warns); at most 64 networks, IPv4 and IPv6, no /0
+# trusted = ["10.0.9.128/25"]
 
 [blocklists]
-# server keys taken off the list and resource hashes published, one per line (read again on the console's `reload`)
+# server keys taken off the list and resource hashes published, one per line (read again on SIGHUP); files beside a
+# mounted master.toml
 # server_keys = "blocked-servers.txt"
 # resources = "blocked-resources.txt"

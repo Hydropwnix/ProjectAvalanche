@@ -651,6 +651,10 @@ impl MasterUrl {
     }
 }
 
+pub fn the_master() -> Option<MasterUrl> {
+    ssx_core::master::master().url().and_then(|u| MasterUrl::parse(u).ok())
+}
+
 impl core::fmt::Display for MasterUrl {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}://{}", if self.tls { "https" } else { "http" }, self.authority())

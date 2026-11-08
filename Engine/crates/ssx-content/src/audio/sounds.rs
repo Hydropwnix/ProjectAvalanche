@@ -177,7 +177,9 @@ pub fn parse_toml(bytes: &[u8], class: SoundClass) -> Result<SoundDef, Vec<Probl
         if class != SoundClass::Effect {
             let why = match class {
                 SoundClass::Speech => "a speech line plays on its event's voice (its bus and 3-D path are the voice's)",
-                SoundClass::Added => "a package's own sound has no game voices (scripts play it, phase M7)",
+                SoundClass::Added => {
+                    "a package's own sound has no game voices (scripts, markers and voice lines play it)"
+                }
                 _ => "not a sound of the game's effects",
             };
             at(span, format!("{what}: only for the game's effects; {why}"));

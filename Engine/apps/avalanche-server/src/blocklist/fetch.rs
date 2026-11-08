@@ -15,8 +15,8 @@ use tokio::time::timeout;
 
 use super::Sources;
 
-// TODO(guess): 15 s, the browser's bound for a master's list (an 8 MiB list at about 4.5 Mbit/s); settle: the lists
-// of real masters over real links.
+// TODO(guess): 15 s, the browser's bound for a master's list (an 8 MiB list at about 4.5 Mbit/s); settle: the
+// master's list over real links.
 pub const TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_HEAD: usize = 8192;
 const MAX_TEXT: usize = 512;
@@ -84,34 +84,20 @@ async fn ask(
 }
 
 pub async fn all(sources: &Sources, tls: &Arc<rustls::ClientConfig>, source: Option<IpAddr>, now: u64) -> Vec<String> {
-    let mut set = tokio::task::JoinSet::new();
-    for (i, url) in sources.masters.iter().enumerate() {
-        let (url, dir, tls) = (url.clone(), sources.dir.clone(), Arc::clone(tls));
-        set.spawn(async move {
-            let key = url.to_string();
-            let etag = ssx_content::blocklist::etag_of(&dir, &key);
-            let shown = shown_max(&key, PATH_CHARS).to_string();
-            let line = match fetch(&url, etag.as_deref(), &tls, source).await {
-                Ok(answer) => {
-                    let current = answer == Answer::NotModified;
-                    match ssx_content::blocklist::record(&dir, &key, answer, now) {
-                        Ok(n) if current => format!("{shown}: {n} blocked files (unchanged)"),
-                        Ok(n) => format!("{shown}: {n} blocked files (a new list)"),
-                        Err(e) => format!("{shown}: its answer is not kept ({e})"),
-                    }
-                }
-                Err(e) => format!("{shown}: not refreshed ({e}); the list kept still applies while young enough"),
-            };
-            (i, line)
-        });
-    }
-    let mut out: Vec<(usize, String)> = Vec::new();
-    while let Some(done) = set.join_next().await {
-        match done {
-            Ok(line) => out.push(line),
-            Err(e) => out.push((usize::MAX, format!("a fetch's task ended: {e}"))),
+    let Some(url) = &sources.master else { return Vec::new() };
+    let key = url.to_string();
+    let etag = ssx_content::blocklist::etag_of(&sources.dir, &key);
+    let shown = shown_max(&key, PATH_CHARS).to_string();
+    let line = match fetch(url, etag.as_deref(), tls, source).await {
+        Ok(answer) => {
+            let current = answer == Answer::NotModified;
+            match ssx_content::blocklist::record(&sources.dir, &key, answer, now) {
+                Ok(n) if current => format!("{shown}: {n} blocked files (unchanged)"),
+                Ok(n) => format!("{shown}: {n} blocked files (a new list)"),
+                Err(e) => format!("{shown}: its answer is not kept ({e})"),
+            }
         }
-    }
-    out.sort_by_key(|(i, _)| *i);
-    out.into_iter().map(|(_, l)| l).collect()
+        Err(e) => format!("{shown}: not refreshed ({e}); the list kept still applies while young enough"),
+    };
+    vec![line]
 }
