@@ -312,3 +312,27 @@ mod remarks_tests {
         assert_eq!((few.count, few.kept.len()), (3, 3));
     }
 }
+
+#[cfg(test)]
+mod install_tests {
+    use std::path::Path;
+
+    use ssx_assets::content::modtool::{self, Template, new_package};
+    use ssx_content::check::Severity;
+
+    #[test]
+    fn a_shader_mod_installs_with_its_hook_checked() {
+        let root = std::env::temp_dir().join(format!("avalanche-launcher-shader-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let package = new_package("glow", Template::Shader, &root.join("src"), Path::new("")).expect("the template");
+        let app = root.join("app");
+        let done = modtool::install(&package, &app, false, false).expect("installed");
+        let accepted = done.findings.iter().any(|f| {
+            f.severity == Severity::Note
+                && f.file == "shaders/glow.wgsl"
+                && f.message.starts_with("accepted: object family hooks, surface: at most")
+        });
+        assert!(accepted, "{:#?}", done.findings);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+}

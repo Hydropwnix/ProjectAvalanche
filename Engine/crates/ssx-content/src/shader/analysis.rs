@@ -4,15 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use naga::valid::ModuleInfo;
 use naga::{Block, Expression, Function, Handle, MathFunction, Module, Span, Statement, TypeInner};
 
-use super::Limits;
 use super::terminate::{self, LoopProofs};
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Cost {
-    pub operations: u64,
-    pub texture_reads: u64,
-    pub frame_bytes: u64,
-}
+use super::{Cost, Limits};
 
 impl Cost {
     fn add(self, o: Cost) -> Cost {
@@ -144,7 +137,7 @@ impl<'a> Hook<'a> {
     }
 
     fn value(&self, inner: &TypeInner, at: Span, what: &str) -> Result<u64, Refusal> {
-        if let Some(why) = super::forbidden_type(inner) {
+        if let Some(why) = super::check::forbidden_type(inner) {
             return Err((at, why));
         }
         let bytes = value_bytes(self.module, inner);

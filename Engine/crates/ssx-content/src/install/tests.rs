@@ -176,3 +176,76 @@ fn a_failed_first_install_leaves_no_mods_folder() {
     assert!(install_zip(&t.0.join("p.zip"), &mods, false).is_err());
     assert!(!mods.exists(), "the mods folder this install made is gone again");
 }
+
+#[test]
+fn a_servers_install_refuses_gpu_code_and_movies_before_its_check() {
+    let t = TestDir::new("install-server");
+    let mods = t.0.join("Mods");
+    std::fs::create_dir_all(&mods).unwrap();
+    let endless = "fn surface(input: SurfaceIn, base: Surface, d: texture_2d<f32>, s: sampler, n: texture_2d<f32>, \
+                   sp: texture_2d<f32>, m: sampler) -> Surface {\n    var out = base;\n    loop { out.specular += 1.0; \
+                   if out.specular > 2.0 { break; } }\n    return out;\n}\n";
+    let gpu: Vec<(String, Vec<u8>)> = vec![
+        (
+            "resource.toml".into(),
+            b"[resource]\nname = \"gpu\"\nversion = \"1.0.0\"\napi = 1\n[shaders]\nfiles = [\"shaders/*.wgsl\"]\n\
+              [add]\n\"material/glow\" = \"materials/glow.toml\"\n"
+                .to_vec(),
+        ),
+        (
+            "materials/glow.toml".into(),
+            b"family = \"object\"\neffect = \"object_default\"\nshader = \"shaders/glow.wgsl\"\n".to_vec(),
+        ),
+        ("shaders/glow.wgsl".into(), endless.as_bytes().to_vec()),
+    ];
+    for (n, b) in &gpu {
+        t.write_bytes(&format!("gpu/{n}"), b);
+    }
+    t.write_bytes("gpu.zip", &packed(gpu, false));
+    let declared = "a server's package with GPU code or movies is refused: it declares GPU code ([shaders]); shader \
+                    code comes only from client mods the player installs";
+    for r in [
+        install_folder_as(&t.0.join("gpu"), &mods, false, Origin::Server),
+        install_zip_as(&t.0.join("gpu.zip"), &mods, false, Origin::Server),
+    ] {
+        match r {
+            Err(InstallError::Refused(m)) => assert_eq!(m, declared),
+            r => panic!("{r:?}"),
+        }
+        assert!(listing(&mods).is_empty(), "{:?}", listing(&mods));
+    }
+    let Err(InstallError::Check(findings)) = install_folder(&t.0.join("gpu"), &mods, false) else { panic!() };
+    let text: Vec<String> = findings.iter().map(ToString::to_string).collect();
+    #[cfg(feature = "shader")]
+    assert!(text.iter().any(|f| f.starts_with("shaders/glow.wgsl:3:") && f.contains("loops must be")), "{text:?}");
+    #[cfg(not(feature = "shader"))]
+    assert_eq!(text, [format!("shaders/glow.wgsl: error: {}", crate::shader::NOT_CHECKED)]);
+    for (file, why) in [
+        ("deep/x.spv", "deep/x.spv: GPU code; shader code comes only from client mods the player installs"),
+        ("movies/intro.swf", "movies/intro.swf: a movie; movies come only from client mods the player installs"),
+    ] {
+        let src = t.0.join(format!("src-{}", file.replace('/', "-")));
+        for (n, b) in files("quiet", "1.0.0") {
+            std::fs::create_dir_all(src.join(&n).parent().unwrap()).unwrap();
+            std::fs::write(src.join(n), b).unwrap();
+        }
+        std::fs::create_dir_all(src.join(file).parent().unwrap()).unwrap();
+        std::fs::write(src.join(file), b"bytes").unwrap();
+        match install_folder_as(&src, &mods, false, Origin::Server) {
+            Err(InstallError::Refused(m)) => {
+                assert_eq!(m, format!("a server's package with GPU code or movies is refused: {why}"));
+            }
+            r => panic!("{file}: {r:?}"),
+        }
+    }
+    let bad = t.0.join("bad");
+    for (n, b) in files("bad", "1.0.0") {
+        std::fs::create_dir_all(bad.join(&n).parent().unwrap()).unwrap();
+        std::fs::write(bad.join(n), b).unwrap();
+    }
+    std::fs::write(bad.join("textures/rock.png"), b"\x89PNG not").unwrap();
+    assert!(matches!(install_folder_as(&bad, &mods, false, Origin::Server), Err(InstallError::Check(_))));
+    std::fs::remove_file(t.0.join("src-movies-intro.swf/movies/intro.swf")).unwrap();
+    let done = install_folder_as(&t.0.join("src-movies-intro.swf"), &mods, false, Origin::Server).unwrap();
+    assert_eq!((done.folder.as_str(), done.files), ("quiet", 2));
+}

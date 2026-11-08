@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use ssx_content::delivery::{self, FileRole, FileStore};
-use ssx_content::install::{InstallError, install_folder, install_zip};
+use ssx_content::install::{InstallError, install_folder_as, install_zip_as};
 use ssx_content::manifest::Manifest;
 use ssx_content::package::{Origin, PackageSource};
 
@@ -101,9 +101,12 @@ pub fn load(
         std::fs::remove_dir_all(&incoming).map_err(|e| format!("{}: {e}", incoming.display()))?;
     }
     ssx_files::create_dir_all(&incoming).map_err(|e| e.to_string())?;
-    let installed =
-        if packed { install_zip(&source, &incoming, false) } else { install_folder(&source, &incoming, false) }
-            .map_err(|e| format!("{name}: {}", install_error(e)))?;
+    let installed = if packed {
+        install_zip_as(&source, &incoming, false, Origin::Server)
+    } else {
+        install_folder_as(&source, &incoming, false, Origin::Server)
+    }
+    .map_err(|e| format!("{name}: {}", install_error(e)))?;
     if installed.manifest.resource.name != name {
         return Err(format!("{name}: its resource.toml names it {:?}", installed.manifest.resource.name));
     }

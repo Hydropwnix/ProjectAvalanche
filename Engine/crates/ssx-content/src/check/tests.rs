@@ -248,9 +248,19 @@ fn skies_records_and_shader_hooks_are_checked() {
     );
     d.write("shaders/glow.wgsl", crate::shader::OBJECT_TEMPLATE);
     let c = run(&d);
-    assert_eq!(c.errors(), 0, "{:#?}", c.findings);
+    #[cfg(feature = "shader")]
+    {
+        assert_eq!(c.errors(), 0, "{:#?}", c.findings);
+        has(&c, Severity::Note, "shaders/glow.wgsl:0: accepted: object family hooks, surface: at most");
+        assert_eq!(c.m4.shaders.len(), 1);
+    }
+    #[cfg(not(feature = "shader"))]
+    {
+        has(&c, Severity::Error, &format!("shaders/glow.wgsl:0: {}", crate::shader::NOT_CHECKED));
+        assert_eq!(c.errors(), 1, "{:#?}", c.findings);
+        assert!(c.m4.shaders.is_empty());
+    }
     has(&c, Severity::Note, "skies/sky.hdr:0: a cubemap sky: faces 4², 3 levels");
-    has(&c, Severity::Note, "shaders/glow.wgsl:0: accepted: object family hooks, surface: at most");
     has(&c, Severity::Note, "contains GPU code");
     assert_eq!((c.m4.skies.len(), c.m4.lighting.len(), c.m4.postfx.len(), c.m4.particles.len()), (2, 1, 1, 2));
     d.write(
@@ -265,8 +275,13 @@ fn skies_records_and_shader_hooks_are_checked() {
     d.write("lighting/day.toml", "sky = \"pack:texture/x\"\n");
     d.write_bytes("postfx/warm.png", &png_rgba(32, 32, [0; 4]));
     let c = run(&d);
-    has(&c, Severity::Error, "shaders/glow.wgsl:3:");
-    has(&c, Severity::Error, "loops must be");
+    #[cfg(feature = "shader")]
+    {
+        has(&c, Severity::Error, "shaders/glow.wgsl:3:");
+        has(&c, Severity::Error, "loops must be");
+    }
+    #[cfg(not(feature = "shader"))]
+    has(&c, Severity::Error, &format!("shaders/glow.wgsl:0: {}", crate::shader::NOT_CHECKED));
     has(&c, Severity::Error, "shaders.wgsl:0: GPU code the manifest does not declare");
     has(&c, Severity::Error, "skies/sky.hdr:0: a damaged Radiance HDR image");
     has(&c, Severity::Error, "the faces are squares of one size");

@@ -20,6 +20,10 @@ pub const SHADER_EXTENSIONS: [&str; 9] = ["wgsl", "wesl", "spv", "glsl", "vert",
 
 pub const MOVIE_EXTENSIONS: [&str; 2] = ["swf", "gfx"];
 
+pub fn server_refusal_message(manifest: &Manifest, tree: &PackageTree) -> Option<String> {
+    server_refusal(manifest, tree).map(|why| format!("a server's package with GPU code or movies is refused: {why}"))
+}
+
 pub fn server_refusal(manifest: &Manifest, tree: &PackageTree) -> Option<String> {
     if manifest.gpu_code() {
         return Some(
@@ -106,9 +110,8 @@ impl PackageSource {
         let bytes = tree.read(MANIFEST_FILE, MAX_MANIFEST_BYTES as u64).map_err(fail)?;
         let manifest = Manifest::parse_bytes(&bytes, &file)?;
         if origin == Origin::Server
-            && let Some(why) = server_refusal(&manifest, &tree)
+            && let Some(message) = server_refusal_message(&manifest, &tree)
         {
-            let message = format!("a server's package with GPU code or movies is refused: {why}");
             return Err(ManifestError {
                 file,
                 diagnostics: vec![Diagnostic { line: 0, column: 0, message: message.into() }],

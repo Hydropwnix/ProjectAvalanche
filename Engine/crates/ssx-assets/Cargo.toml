@@ -8,8 +8,9 @@ rust-version.workspace = true
 publish.workspace = true
 
 [features]
-default = ["pipeline", "movie-decode"]
+default = ["pipeline", "movie-decode", "shader"]
 pipeline = ["dep:ssx-content", "dep:ssx-lua", "dep:glam", "dep:memmap2", "dep:png", "dep:serde", "dep:toml"]
+shader = ["pipeline", "ssx-content/shader"]
 movie-decode = ["pipeline", "dep:ssx-movie"]
 
 [dependencies]

@@ -207,14 +207,24 @@ fn m4_problem(source: &PackageSource, id: &ContentId) -> Option<String> {
                 return Some(format!("{id}: its shader hook: {p}"));
             }
             let (family, text) = (m.family?.hooks()?, hook.source.as_ref()?);
-            let limits = ssx_content::shader::Limits::default();
-            ssx_content::shader::check_hook(family, text.as_bytes(), &limits).err().map(|ps| {
-                let lines: Vec<String> = ps.iter().map(|(l, c, m)| format!("{}:{l}:{c}: {m}", hook.file)).collect();
-                lines.join("; ")
-            })
+            hook_problem(family, &hook.file, text)
         }
         _ => None,
     }
+}
+
+#[cfg(feature = "shader")]
+fn hook_problem(family: ssx_content::shader::HookFamily, file: &str, text: &str) -> Option<String> {
+    let limits = ssx_content::shader::Limits::default();
+    ssx_content::shader::check_hook(family, text.as_bytes(), &limits).err().map(|ps| {
+        let lines: Vec<String> = ps.iter().map(|(l, c, m)| format!("{file}:{l}:{c}: {m}")).collect();
+        lines.join("; ")
+    })
+}
+
+#[cfg(not(feature = "shader"))]
+fn hook_problem(_: ssx_content::shader::HookFamily, file: &str, _: &str) -> Option<String> {
+    Some(format!("{file}: {}", ssx_content::shader::NOT_CHECKED))
 }
 
 fn audio_problem(source: &PackageSource, id: &ContentId) -> Option<String> {
@@ -478,6 +488,45 @@ pub fn watch(root: &Path, content: Arc<GameContent>, mounted: Vec<(String, Versi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_materials_hook_is_checked_before_it_is_used() {
+        let dir = std::env::temp_dir().join(format!("ssx-dev-hook-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("materials")).unwrap();
+        std::fs::create_dir_all(dir.join("shaders")).unwrap();
+        std::fs::write(
+            dir.join("resource.toml"),
+            "[resource]\nname = \"hook\"\nversion = \"1.0.0\"\napi = 1\n[shaders]\nfiles = [\"shaders/*.wgsl\"]\n\
+             [add]\n\"material/glow\" = \"materials/glow.toml\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("materials/glow.toml"),
+            "family = \"object\"\neffect = \"object_default\"\nshader = \"shaders/glow.wgsl\"\n",
+        )
+        .unwrap();
+        let id: ContentId = "hook:material/glow".parse().unwrap();
+        let problem = |text: &str| {
+            std::fs::write(dir.join("shaders/glow.wgsl"), text).unwrap();
+            m4_problem(&PackageSource::open(&dir).unwrap(), &id)
+        };
+        #[cfg(feature = "shader")]
+        {
+            assert_eq!(problem(ssx_content::shader::OBJECT_TEMPLATE), None);
+            let endless = "fn surface(input: SurfaceIn, base: Surface, d: texture_2d<f32>, s: sampler, \
+                           n: texture_2d<f32>, sp: texture_2d<f32>, m: sampler) -> Surface {\n    var out = base;\n    \
+                           loop { out.specular += 1.0; if out.specular > 2.0 { break; } }\n    return out;\n}\n";
+            let p = problem(endless).expect("refused");
+            assert!(p.starts_with("shaders/glow.wgsl:3:") && p.contains("loops must be"), "{p}");
+        }
+        #[cfg(not(feature = "shader"))]
+        assert_eq!(
+            problem(ssx_content::shader::OBJECT_TEMPLATE),
+            Some(format!("shaders/glow.wgsl: {}", ssx_content::shader::NOT_CHECKED))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn ids_naming_one_file_read_it_once() {

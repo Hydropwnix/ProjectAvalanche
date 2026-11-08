@@ -17,7 +17,7 @@ scripts = ["dep:ssx-script"]
 
 [dependencies]
 ssx-assets.workspace = true
-ssx-content.workspace = true
+ssx-content = { workspace = true, features = ["shader"] }
 ssx-core = { workspace = true, features = ["log"] }
 ssx-files.workspace = true
 ssx-movie.workspace = true

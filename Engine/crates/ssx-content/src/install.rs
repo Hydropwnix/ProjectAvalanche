@@ -8,8 +8,9 @@ use cap_std::fs::{Dir, OpenOptions};
 
 use crate::check::{Finding, Severity, check_package};
 use crate::hash::{ContentHash, ContentIndex};
-use crate::limits::{MAX_FILE_BYTES, MAX_PACKAGE_BYTES};
+use crate::limits::{MAX_FILE_BYTES, MAX_MANIFEST_BYTES, MAX_PACKAGE_BYTES};
 use crate::manifest::{MANIFEST_FILE, Manifest};
+use crate::package::Origin;
 use crate::path::{EntryKind, PackageTree, check_package_path};
 use crate::texture;
 use crate::version::Version;
@@ -114,6 +115,10 @@ fn package_prefix(names: &[(String, bool)]) -> Result<String, InstallError> {
 }
 
 pub fn install_zip(zip: &Path, mods: &Path, replace: bool) -> Result<Installed, InstallError> {
+    install_zip_as(zip, mods, replace, Origin::Client)
+}
+
+pub fn install_zip_as(zip: &Path, mods: &Path, replace: bool, origin: Origin) -> Result<Installed, InstallError> {
     let file = std::fs::File::open(zip)?;
     let mut archive = ZipArchive::open(std::io::BufReader::new(file), &ZipLimits::default())?;
     let names: Vec<(String, bool)> = archive.entries().iter().map(|e| (e.name.clone(), e.folder)).collect();
@@ -143,7 +148,17 @@ pub fn install_zip(zip: &Path, mods: &Path, replace: bool) -> Result<Installed, 
     if let Some(index) = index {
         compare_index(&index, &got)?;
     }
-    finish(staging, mods, replace, got, indexed)
+    finish(staging, mods, replace, got, indexed, origin)
+}
+
+fn refuse_for_server(root: &Path) -> Result<(), InstallError> {
+    let Ok(tree) = PackageTree::open(root) else { return Ok(()) };
+    let Ok(bytes) = tree.read(MANIFEST_FILE, MAX_MANIFEST_BYTES as u64) else { return Ok(()) };
+    let Ok(manifest) = Manifest::parse_bytes(&bytes, Path::new(MANIFEST_FILE)) else { return Ok(()) };
+    match crate::package::server_refusal_message(&manifest, &tree) {
+        Some(message) => Err(refused(message)),
+        None => Ok(()),
+    }
 }
 
 fn compare_index(index: &ContentIndex, got: &BTreeMap<String, (u64, ContentHash)>) -> Result<(), InstallError> {
@@ -164,6 +179,10 @@ fn compare_index(index: &ContentIndex, got: &BTreeMap<String, (u64, ContentHash)
 }
 
 pub fn install_folder(src: &Path, mods: &Path, replace: bool) -> Result<Installed, InstallError> {
+    install_folder_as(src, mods, replace, Origin::Client)
+}
+
+pub fn install_folder_as(src: &Path, mods: &Path, replace: bool, origin: Origin) -> Result<Installed, InstallError> {
     let tree = PackageTree::open(src).map_err(|e| refused(e.to_string()))?;
     if let Some(name) = tree.unnamed_names.first() {
         return Err(refused(format!(
@@ -196,7 +215,7 @@ pub fn install_folder(src: &Path, mods: &Path, replace: bool) -> Result<Installe
         out.flush()?;
         got.insert(rel, got_file);
     }
-    finish(staging, mods, replace, got, false)
+    finish(staging, mods, replace, got, false, origin)
 }
 
 fn finish(
@@ -205,7 +224,11 @@ fn finish(
     replace: bool,
     got: BTreeMap<String, (u64, ContentHash)>,
     indexed: bool,
+    origin: Origin,
 ) -> Result<Installed, InstallError> {
+    if origin == Origin::Server {
+        refuse_for_server(&staging.path)?;
+    }
     let checked = check_package(&staging.path, &texture::Limits::default());
     if checked.errors() > 0 {
         let errors = checked.findings.into_iter().filter(|f| f.severity == Severity::Error).collect();
@@ -213,7 +236,8 @@ fn finish(
     }
     let findings = checked.findings;
     drop(checked.tree);
-    let manifest = crate::package::PackageSource::open(&staging.path).map_err(|e| refused(e.to_string()))?.manifest;
+    let manifest =
+        crate::package::PackageSource::open_as(&staging.path, origin).map_err(|e| refused(e.to_string()))?.manifest;
     staging.dir = None;
     ssx_files::sync_tree(&staging.path).map_err(std::io::Error::from)?;
     let name = manifest.resource.name.clone();

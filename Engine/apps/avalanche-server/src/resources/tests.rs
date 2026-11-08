@@ -165,6 +165,23 @@ fn what_a_server_never_sends_is_refused_at_the_start() {
         "[override]\n\"ssx:shader/terrain\" = \"shaders/terrain.wgsl\"\n",
         &[("shaders/terrain.wgsl", b"fn main() {}\n")],
     );
+    package(&t.0, "stray", "1.0.0", "", &[("shaders/stray.wgsl", b"fn main() {}\n")]);
+    let endless = b"fn surface(input: SurfaceIn, base: Surface, d: texture_2d<f32>, s: sampler, n: texture_2d<f32>, \
+                    sp: texture_2d<f32>, m: sampler) -> Surface {\n    var out = base;\n    loop { out.specular += 1.0; \
+                    if out.specular > 2.0 { break; } }\n    return out;\n}\n";
+    package(
+        &t.0,
+        "hooked",
+        "1.0.0",
+        "[shaders]\nfiles = [\"shaders/*.wgsl\"]\n[add]\n\"material/glow\" = \"materials/glow.toml\"\n",
+        &[
+            (
+                "materials/glow.toml",
+                b"family = \"object\"\neffect = \"object_default\"\nshader = \"shaders/glow.wgsl\"\n",
+            ),
+            ("shaders/glow.wgsl", endless),
+        ],
+    );
     let index = HashMap::from([((ctx_bytes.len() as u64, ContentHash::of(ctx_bytes)), "big/x/data/copy.bin".into())]);
     let ctx = context(&t.0, index);
     let e = start(&ctx, Vec::new(), "copied").unwrap_err();
@@ -172,7 +189,23 @@ fn what_a_server_never_sends_is_refused_at_the_start() {
     let e = start(&ctx, Vec::new(), "renamed").unwrap_err();
     assert!(e.contains("its resource.toml names it \"named\""), "{e}");
     let e = start(&ctx, Vec::new(), "shader").unwrap_err();
-    assert!(e.contains("shader"), "{e}");
+    assert_eq!(
+        e,
+        "shader: its check fails (1 errors): resource.toml:6:1: error: [override] \"ssx:shader/terrain\": unknown kind \
+         \"shader\""
+    );
+    let e = start(&ctx, Vec::new(), "stray").unwrap_err();
+    assert_eq!(
+        e,
+        "stray: a server's package with GPU code or movies is refused: shaders/stray.wgsl: GPU code; shader code comes \
+         only from client mods the player installs"
+    );
+    let e = start(&ctx, Vec::new(), "hooked").unwrap_err();
+    assert_eq!(
+        e,
+        "hooked: a server's package with GPU code or movies is refused: it declares GPU code ([shaders]); shader code \
+         comes only from client mods the player installs"
+    );
     assert_eq!(installed(&t.0), Vec::<String>::new());
     let running = start(&ctx, Vec::new(), "scripted").unwrap();
     assert!(running[0].loaded.files.iter().all(|f| !f.path.starts_with("server/")));

@@ -7,6 +7,9 @@ license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+shader = ["dep:naga"]
+
 [dependencies]
 bcdec_rs.workspace = true
 blake3.workspace = true
@@ -26,7 +29,7 @@ zune-jpeg.workspace = true
 exr.workspace = true
 half.workspace = true
 image.workspace = true
-naga.workspace = true
+naga = { workspace = true, optional = true }
 ssx-formats.workspace = true
 symphonia.workspace = true
 skrifa.workspace = true

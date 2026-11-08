@@ -227,17 +227,34 @@ pub(super) fn check_shaders(c: &mut Checked, tree: &PackageTree, m: &Manifest, n
                 continue;
             }
         };
-        match shader::check_hook(hooks, &bytes, &limits) {
-            Ok(a) => {
-                c.push(Severity::Note, &hook.file, (0, 0), format!("accepted: {}", a.summary()));
-                c.m4.shaders.push((mat_file.clone(), hook.file.clone(), a));
-            }
-            Err(ps) => problems(c, &hook.file, ps),
-        }
+        check_hook(c, &mat_file, &hook.file, hooks, &bytes, &limits);
     }
     if m.gpu_code() {
         let message = "the package contains GPU code ([shaders]): a client mod only — servers refuse it, the Mods \
                        page marks it";
         c.push(Severity::Note, MANIFEST_FILE, m.positions.shaders, message);
     }
+}
+
+#[cfg(feature = "shader")]
+fn check_hook(
+    c: &mut Checked,
+    mat_file: &str,
+    file: &str,
+    family: shader::HookFamily,
+    bytes: &[u8],
+    limits: &shader::Limits,
+) {
+    match shader::check_hook(family, bytes, limits) {
+        Ok(a) => {
+            c.push(Severity::Note, file, (0, 0), format!("accepted: {}", a.summary()));
+            c.m4.shaders.push((mat_file.to_string(), file.to_string(), a));
+        }
+        Err(ps) => problems(c, file, ps),
+    }
+}
+
+#[cfg(not(feature = "shader"))]
+fn check_hook(c: &mut Checked, _: &str, file: &str, _: shader::HookFamily, _: &[u8], _: &shader::Limits) {
+    c.push(Severity::Error, file, (0, 0), shader::NOT_CHECKED);
 }
