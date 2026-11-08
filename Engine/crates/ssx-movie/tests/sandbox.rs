@@ -516,6 +516,11 @@ mod platform {
 
     const REFUSED: i32 = 98;
 
+    // TODO(guess): Windows sets TEMP and TMP (to the container's own folder) and nothing else in an AppContainer
+    // process's environment; not run on Windows yet. Settled by this program's "environment" attempt on the Windows CI,
+    // which prints the child's variables and their values.
+    const CHILD_ENVIRONMENT: [&str; 3] = ["LOCALAPPDATA", "TEMP", "TMP"];
+
     fn wide(s: &str) -> Vec<u16> {
         std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
     }
@@ -616,7 +621,12 @@ mod platform {
                     not_stopped(&format!("{} MiB allocated", kept.len() * 8))
                 }
                 "environment" => {
-                    eprintln!("environment: {} variables", std::env::vars_os().count());
+                    let vars: Vec<_> = std::env::vars_os().collect();
+                    let names: Vec<_> = vars.iter().map(|(k, _)| k.to_string_lossy()).collect();
+                    eprintln!("environment: {} variables: [{}]", vars.len(), names.join(" "));
+                    for (k, v) in &vars {
+                        eprintln!("{}={}", k.to_string_lossy(), v.to_string_lossy());
+                    }
                     0
                 }
                 _ => {
@@ -778,7 +788,22 @@ mod platform {
             &["memory allocation of 8388608 bytes failed", "MiB allocated before the limit"],
             &[],
         );
-        expect_end(failed, "environment", "", &["exit code: 0", "environment: 0 variables"], &[]);
+        match super::attempt("environment", "") {
+            Ok(e) => {
+                let names = e.split_once("variables: [").and_then(|(_, r)| r.split_once(']')).map(|(n, _)| n);
+                let foreign: Vec<&str> = names
+                    .unwrap_or_default()
+                    .split(' ')
+                    .filter(|n| !n.is_empty() && !CHILD_ENVIRONMENT.iter().any(|a| a.eq_ignore_ascii_case(n)))
+                    .collect();
+                if e.contains("exit code: 0") && names.is_some() && foreign.is_empty() {
+                    println!("holds    environment: {e}");
+                } else {
+                    failed.push(format!("environment: {e} (wanted only {CHILD_ENVIRONMENT:?}, not {foreign:?})"));
+                }
+            }
+            Err(e) => failed.push(format!("environment: {e}")),
+        }
         if written.exists() {
             failed.push(format!("{} was made", written.display()));
         }

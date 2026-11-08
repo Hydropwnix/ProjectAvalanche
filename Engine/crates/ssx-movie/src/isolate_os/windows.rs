@@ -18,6 +18,7 @@ use windows_sys::Win32::Security::{
     SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES,
 };
 use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_EXECUTE, FILE_GENERIC_READ};
+use windows_sys::Win32::System::Com::CoTaskMemFree;
 use windows_sys::Win32::System::Diagnostics::Debug::{SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SetErrorMode};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
@@ -40,6 +41,7 @@ use windows_sys::Win32::System::Threading::{
     TerminateProcess, WaitForSingleObject,
 };
 use windows_sys::Win32::System::WindowsProgramming::PROCESS_CREATION_CHILD_PROCESS_RESTRICTED;
+use windows_sys::Win32::UI::Shell::{FOLDERID_LocalAppData, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
 
 use super::{MEMORY_LIMIT, Seal, Spawned};
 
@@ -165,6 +167,44 @@ impl Drop for Local {
             unsafe { LocalFree(self.0) };
         }
     }
+}
+
+struct TaskMem(*mut c_void);
+
+impl Drop for TaskMem {
+    fn drop(&mut self) {
+        unsafe { CoTaskMemFree(self.0) };
+    }
+}
+
+const VALUE_MAX: usize = 32_766;
+
+fn environment() -> Result<Vec<u16>, String> {
+    // TODO(guess): LOCALAPPDATA is the one variable Windows' AppContainer process creation needs in the block (an
+    // empty block fails with ERROR_ENVVAR_NOT_FOUND 203; Chromium's filtered environment keeps it "for App Container
+    // processes"), and the child then holds at most LOCALAPPDATA, TEMP and TMP; not run on Windows yet. Settled by the
+    // Windows CI step `cargo test --release -p ssx-movie --test sandbox`, whose "environment" attempt lists the
+    // child's variables.
+    let mut path: *mut u16 = std::ptr::null_mut();
+    let hr = unsafe {
+        SHGetKnownFolderPath(&FOLDERID_LocalAppData, KF_FLAG_DEFAULT as u32, std::ptr::null_mut(), &mut path)
+    };
+    let _path = TaskMem(path.cast());
+    if hr < 0 || path.is_null() {
+        return Err(format!("the local application data folder: HRESULT 0x{:08x}", hr as u32));
+    }
+    let mut len = 0usize;
+    while len <= VALUE_MAX && unsafe { *path.add(len) } != 0 {
+        len += 1;
+    }
+    if len == 0 || len > VALUE_MAX {
+        return Err(format!("the local application data folder: a path of {len} or more units"));
+    }
+    let folder = unsafe { std::slice::from_raw_parts(path, len) };
+    let mut block: Vec<u16> = "LOCALAPPDATA=".encode_utf16().collect();
+    block.extend_from_slice(folder);
+    block.extend([0, 0]);
+    Ok(block)
 }
 
 fn image_access(exe: &Path, sid: &Sid) -> Result<(), String> {
@@ -370,7 +410,7 @@ pub fn spawn(exe: &Path, arg: &str) -> Result<Spawned, String> {
     si.lpAttributeList = attrs.0.as_mut_ptr().cast();
     let app = wide(exe.as_os_str());
     let mut line = wide(std::ffi::OsStr::new(&format!("\"{}\" {arg}", exe.display())));
-    let env = [0u16; 2];
+    let env = environment()?;
     let mut sys = [0u16; 261];
     let n = unsafe { GetSystemDirectoryW(sys.as_mut_ptr(), sys.len() as u32) } as usize;
     if n == 0 || n >= sys.len() {
