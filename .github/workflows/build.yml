@@ -152,7 +152,7 @@ jobs:
           Copy-Item target/release/project-avalanche.exe "$dist/Project Avalanche.exe"
           Copy-Item target/release/avalanche-game.exe "$dist/avalanche-game.exe"
           Copy-Item target/release/avalanche-movie.exe "$dist/avalanche-movie.exe"
-          Copy-Item target/release/avalanche-server.exe "$dist/avalanche-server.exe"
+          # avalanche-server.exe is built by the dedicated server's job; "Windows package" puts it beside these
           Copy-Item assets/THIRD_PARTY_NOTICES.txt "$dist/THIRD_PARTY_NOTICES.txt"
           Copy-Item assets/server/THIRD_PARTY_NOTICES.txt "$dist/THIRD_PARTY_NOTICES-server.txt"
           # the fallback fonts, one copy for the game and the launcher (each file checked against the manifest the
@@ -191,12 +191,14 @@ jobs:
 
           No game data is included in this download.
           "@ | Set-Content -Encoding utf8 "$dist/README.txt"
+      # for "Windows package" only (not a download: it has no server; kept a day)
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         with:
-          name: ProjectAvalanche-windows-x64
+          name: windows-game-programs
           path: dist/ProjectAvalanche
           if-no-files-found: error
+          retention-days: 1
 
   windows-server:
     name: Windows dedicated server
@@ -280,6 +282,38 @@ jobs:
           path: dist/ProjectAvalancheServer
           if-no-files-found: error
 
+  # The game's Windows download: the game's job's programs and the dedicated server's job's avalanche-server.exe (the
+  # launcher's HOST starts it), each built once; it runs when both have passed.
+  windows-package:
+    name: Windows package (game + its server)
+    if: github.ref_type != 'tag'
+    needs: [windows, windows-server]
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-game-programs
+          path: dist/ProjectAvalanche
+      - uses: actions/download-artifact@v8
+        with:
+          name: ProjectAvalanche-server-windows-x64
+          path: server
+      - name: The server beside the launcher
+        run: |
+          cp server/avalanche-server.exe dist/ProjectAvalanche/avalanche-server.exe
+          for f in "Project Avalanche.exe" avalanche-game.exe avalanche-movie.exe avalanche-server.exe \
+              THIRD_PARTY_NOTICES.txt THIRD_PARTY_NOTICES-server.txt README.txt fonts; do
+            if [ ! -e "dist/ProjectAvalanche/$f" ]; then echo "the package has no $f"; exit 1; fi
+          done
+          ls -l dist/ProjectAvalanche
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ProjectAvalanche-windows-x64
+          path: dist/ProjectAvalanche
+          if-no-files-found: error
 
   windows-tests:
     name: Windows tests (movie decoder's sandbox, crash-safe writes)
@@ -551,9 +585,11 @@ jobs:
           echo "$GITHUB_REF_NAME names $commit: releasing the packages of its run on main, $run"
           echo "($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run)"
           echo "run=$run" >> "$GITHUB_OUTPUT"
+      # the downloads (each in dist/<name>/), not the game's job's programs for "Windows package"
       - uses: actions/download-artifact@v8
         with:
           path: dist
+          pattern: ProjectAvalanche-*
           run-id: ${{ steps.main_run.outputs.run }}
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
