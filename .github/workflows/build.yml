@@ -11,10 +11,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# the jobs read the code; `actions: write` lets a failed job cancel its own run (the release job asks for more itself)
+# the jobs read the code (the release job asks for more itself)
 permissions:
   contents: read
-  actions: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -44,6 +43,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: Engine
+          # kept when the run fails too, so the next run builds on it
+          cache-on-failure: true
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       # the movie decoder's sandbox probe and the targets that start it (feature `sandbox-probe`), which the workspace's
@@ -56,16 +57,10 @@ jobs:
         run: cargo test -p ssx-movie --features sandbox-probe --test sandbox
       # ssx-core as the release programs build it: the workspace's tests turn its `dev-master` on, this run does not
       - run: cargo test -p ssx-core --lib
-      # one failed job ends the whole run: the other jobs are cancelled instead of building on to a run that cannot pass
-      # (GitHub's own fail-fast covers a matrix only); a run cancelled this way runs no further cancel (failure() is false)
-      - name: A failed job cancels the run
-        if: failure()
-        continue-on-error: true
-        working-directory: .
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh run cancel ${{ github.run_id }} --repo ${{ github.repository }}
 
+  # The three Windows jobs run side by side: the game's build and package, the dedicated server's, and the tests (the
+  # movie decoder's sandbox, the crash-safe writes), which need neither build and report within minutes. In each job a
+  # check runs when what it reads was built, whatever an earlier check said, so one run shows every failure.
   windows:
     name: Windows build (launcher + game)
     if: github.ref_type != 'tag'
@@ -82,16 +77,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: Engine
+          # kept when the run fails too, so the next run builds on it
+          cache-on-failure: true
       # ssx-movie: the movie decoder's program `avalanche-movie`, which the game starts from beside itself for a mod's
       # movie (its sandbox probe needs the feature `sandbox-probe` and is not built here)
       - name: Build
+        id: build
         run: cargo build --release -p avalanche-game -p avalanche-launcher -p ssx-movie
-      # its own cargo invocation: the game's and the launcher's features stay resolved as without the server
-      - name: Build the dedicated server
-        run: cargo build --release -p avalanche-server
       # the C runtime is linked statically (Engine/.cargo/config.toml): no program may import the Visual C++ runtime's
       # DLLs (vcruntime140, msvcp140) or the Universal CRT's (ucrtbase, api-ms-win-crt-*)
       - name: No C runtime DLLs
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: pwsh
         run: |
           rustup component add llvm-tools
@@ -99,7 +95,7 @@ jobs:
           # (llvm-objdump for the later steps too)
           Split-Path $objdump | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           $found = @()
-          foreach ($exe in "project-avalanche", "avalanche-game", "avalanche-movie", "avalanche-server") {
+          foreach ($exe in "project-avalanche", "avalanche-game", "avalanche-movie") {
             $dlls = & $objdump -p "target/release/$exe.exe" | Select-String "DLL Name:" |
               ForEach-Object { ($_.Line -split "DLL Name:")[1].Trim() }
             if ($LASTEXITCODE -ne 0 -or -not $dlls) { "llvm-objdump read no imports of $exe.exe"; exit 1 }
@@ -108,19 +104,11 @@ jobs:
               ForEach-Object { "$exe.exe imports $_" }
           }
           if ($found) { $found; exit 1 }
-      # the sandbox proof's probe and the decoder's program it runs beside, in a target folder of their own: the shipped
-      # build above never has the feature
-      - name: Build the movie decoder's sandbox probe
-        run: cargo build --release -p ssx-movie --features sandbox-probe --bins --target-dir target/sandbox-probe
       # the decoder's process loads no window library (win32k is off from its creation; user32 and gdi32 would need
-      # it): its programs import exactly these system DLLs, the probe Winsock besides (its connect attempt); the shipped
-      # program carries none of the probe's attempts
-      # TODO(guess): the MSVC release build imports only these four DLLs (std's ws2_32 and userenv, which a
-      # windows-gnu build keeps because std there has no function sections, dropped by link.exe's /OPT:REF); a gnu
-      # build with -Zfunction-sections=yes linked by lld calls no advapi32, authz, shell32 or combase function and has
-      # no parent function in it (GNU ld keeps them all); no MSVC linker here; settle: this step's first run on
-      # windows-latest prints the tables
+      # it): the shipped program imports only these system DLLs (run 42479494218: kernel32, the synchronisation API set
+      # and ntdll; link.exe drops what std's unused parts name) and carries none of the sandbox probe's attempts
       - name: The movie decoder's imports
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: bash
         run: |
           allowed="kernel32.dll ntdll.dll bcryptprimitives.dll api-ms-win-core-synch-l1-2-0.dll"
@@ -138,34 +126,25 @@ jobs:
             done
           }
           check target/release/avalanche-movie.exe ""
-          check target/sandbox-probe/release/avalanche-movie.exe ""
-          check target/sandbox-probe/release/avalanche-movie-probe.exe "ws2_32.dll"
           if grep -aq "NOT STOPPED" target/release/avalanche-movie.exe; then
             echo "target/release/avalanche-movie.exe carries the sandbox probe's attempts"; failed=1
           fi
           exit $failed
-      # the movie decoder's sandbox run on Windows (crates/ssx-movie/tests/sandbox.rs): its program in its AppContainer,
-      # its job, token and mitigation policies, read from outside while it decodes the test card; each attempt of the
-      # probe refused or ended by the code of what stopped it
-      - name: The movie decoder's sandbox
-        run: cargo test --release -p ssx-movie --features sandbox-probe --test sandbox --target-dir target/sandbox-probe
-      # the crash-safe writes on Windows (crates/ssx-files): each step's failure leaving the old file, a crash's partial
-      # file taken back and a live writer's left alone, writers in threads and in processes at once (the write-through
-      # rename and, over an open file, the POSIX-semantics rename), a write inside a folder handle
-      - name: Crash-safe file writes
-        run: cargo test --release -p ssx-files --features cap-std
       # the master is fixed in every release program: the development switch (ssx-core's `dev-master`, which the crates'
       # tests and examples turn on) is in neither their builds' features nor their binaries
       - name: No development master in the release programs
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: bash
         run: |
-          if cargo tree -e features,normal,build -p avalanche-game -p avalanche-launcher -p ssx-movie -p avalanche-server | grep -q dev-master; then
+          if cargo tree -e features,normal,build -p avalanche-game -p avalanche-launcher -p ssx-movie | grep -q dev-master; then
             echo "a release program's build turns on ssx-core/dev-master"; exit 1
           fi
-          for exe in project-avalanche avalanche-game avalanche-movie avalanche-server; do
+          for exe in project-avalanche avalanche-game avalanche-movie; do
             if grep -aq SSX_DEV_MASTER "target/release/$exe.exe"; then echo "$exe.exe carries the development master's switch"; exit 1; fi
           done
       - name: Package
+        id: package
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: pwsh
         run: |
           $dist = "../dist/ProjectAvalanche"
@@ -213,11 +192,57 @@ jobs:
           No game data is included in this download.
           "@ | Set-Content -Encoding utf8 "$dist/README.txt"
       - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         with:
           name: ProjectAvalanche-windows-x64
           path: dist/ProjectAvalanche
           if-no-files-found: error
+
+  windows-server:
+    name: Windows dedicated server
+    if: github.ref_type != 'tag'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: Engine
+          # kept when the run fails too, so the next run builds on it
+          cache-on-failure: true
+      # its own job and cargo invocation: the game's and the launcher's features stay resolved as without the server
+      - name: Build the dedicated server
+        id: build
+        run: cargo build --release -p avalanche-server
+      # the C runtime is linked statically (Engine/.cargo/config.toml), as in the game's job
+      - name: No C runtime DLLs
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          rustup component add llvm-tools
+          $objdump = Join-Path (rustc --print sysroot) "lib/rustlib/x86_64-pc-windows-msvc/bin/llvm-objdump.exe"
+          $found = @()
+          foreach ($exe in "avalanche-server") {
+            $dlls = & $objdump -p "target/release/$exe.exe" | Select-String "DLL Name:" |
+              ForEach-Object { ($_.Line -split "DLL Name:")[1].Trim() }
+            if ($LASTEXITCODE -ne 0 -or -not $dlls) { "llvm-objdump read no imports of $exe.exe"; exit 1 }
+            "$exe.exe imports: $($dlls -join ', ')"
+            $found += $dlls | Where-Object { $_ -match '^(vcruntime|msvcp|ucrtbase|api-ms-win-crt-)' } |
+              ForEach-Object { "$exe.exe imports $_" }
+          }
+          if ($found) { $found; exit 1 }
+      # the master is fixed in the server too (as in the game's job)
+      - name: No development master in the server
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: bash
+        run: |
+          if cargo tree -e features,normal,build -p avalanche-server | grep -q dev-master; then
+            echo "the server's build turns on ssx-core/dev-master"; exit 1
+          fi
+          if grep -aq SSX_DEV_MASTER target/release/avalanche-server.exe; then echo "avalanche-server.exe carries the development master's switch"; exit 1; fi
       - name: Package the dedicated server
+        id: package
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: pwsh
         run: |
           $dist = "../dist/ProjectAvalancheServer"
@@ -249,19 +274,76 @@ jobs:
           No game data is included: setup reads your own disc image.
           "@ | Set-Content -Encoding utf8 "$dist/README.txt"
       - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         with:
           name: ProjectAvalanche-server-windows-x64
           path: dist/ProjectAvalancheServer
           if-no-files-found: error
-      # one failed job ends the whole run: the other jobs are cancelled instead of building on to a run that cannot pass
-      # (GitHub's own fail-fast covers a matrix only); a run cancelled this way runs no further cancel (failure() is false)
-      - name: A failed job cancels the run
-        if: failure()
-        continue-on-error: true
-        working-directory: .
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh run cancel ${{ github.run_id }} --repo ${{ github.repository }}
+
+
+  windows-tests:
+    name: Windows tests (movie decoder's sandbox, crash-safe writes)
+    if: github.ref_type != 'tag'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      # rav1d's assembly (the mod movies' AV1 decoder, decision M-D9) is assembled by NASM
+      - name: NASM
+        shell: pwsh
+        run: |
+          choco install nasm --no-progress -y
+          "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: Engine
+          # kept when the run fails too, so the next run builds on it
+          cache-on-failure: true
+      - name: llvm-objdump
+        shell: pwsh
+        run: |
+          rustup component add llvm-tools
+          $objdump = Join-Path (rustc --print sysroot) "lib/rustlib/x86_64-pc-windows-msvc/bin/llvm-objdump.exe"
+          Split-Path $objdump | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      # the sandbox proof's probe and the decoder's program it runs beside (this job builds nothing that is shipped)
+      - name: Build the movie decoder's sandbox probe
+        id: probe
+        run: cargo build --release -p ssx-movie --features sandbox-probe --bins
+      # the programs the sandbox proof starts import only these system DLLs (as the shipped one, checked in the game's
+      # job), the probe Winsock besides (its connect attempt)
+      - name: The sandbox proof's imports
+        if: ${{ !cancelled() && steps.probe.outcome == 'success' }}
+        shell: bash
+        run: |
+          allowed="kernel32.dll ntdll.dll bcryptprimitives.dll api-ms-win-core-synch-l1-2-0.dll"
+          failed=0
+          check() {
+            local exe=$1 extra=$2 dlls dll
+            dlls=$(llvm-objdump -p "$exe" | sed -n 's/^ *DLL Name: *//p' | tr -d '\r') || dlls=
+            if [ -z "$dlls" ]; then echo "llvm-objdump read no imports of $exe"; failed=1; return; fi
+            echo "$exe imports: $(echo "$dlls" | paste -sd, - | sed 's/,/, /g')"
+            for dll in $dlls; do
+              case " $allowed $extra " in
+                *" ${dll,,} "*) ;;
+                *) echo "$exe imports $dll, which the movie decoder's process must not load"; failed=1 ;;
+              esac
+            done
+          }
+          check target/release/avalanche-movie.exe ""
+          check target/release/avalanche-movie-probe.exe "ws2_32.dll"
+          exit $failed
+      # the movie decoder's sandbox run on Windows (crates/ssx-movie/tests/sandbox.rs): its program in its AppContainer,
+      # its job, token and mitigation policies, read from outside while it decodes the test card; each attempt of the
+      # probe refused or ended by the code of what stopped it
+      - name: The movie decoder's sandbox
+        if: ${{ !cancelled() && steps.probe.outcome == 'success' }}
+        run: cargo test --release -p ssx-movie --features sandbox-probe --test sandbox
+      # the crash-safe writes on Windows (crates/ssx-files): each step's failure leaving the old file, a crash's partial
+      # file taken back and a live writer's left alone, writers in threads and in processes at once (the write-through
+      # rename and, over an open file, the POSIX-semantics rename), a write inside a folder handle
+      - name: Crash-safe file writes
+        if: ${{ !cancelled() }}
+        run: cargo test --release -p ssx-files --features cap-std
 
   linux:
     name: Linux build (launcher + game)
@@ -279,6 +361,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: Engine
+          # kept when the run fails too, so the next run builds on it
+          cache-on-failure: true
       # ssx-movie: the movie decoder's program `avalanche-movie` (as in the Windows job)
       - name: Build
         run: cargo build --release -p avalanche-game -p avalanche-launcher -p ssx-movie
@@ -393,15 +477,6 @@ jobs:
           name: ProjectAvalanche-server-linux-x64
           path: dist/ProjectAvalanche-server-linux-x64.tar.gz
           if-no-files-found: error
-      # one failed job ends the whole run: the other jobs are cancelled instead of building on to a run that cannot pass
-      # (GitHub's own fail-fast covers a matrix only); a run cancelled this way runs no further cancel (failure() is false)
-      - name: A failed job cancels the run
-        if: failure()
-        continue-on-error: true
-        working-directory: .
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh run cancel ${{ github.run_id }} --repo ${{ github.repository }}
 
   server-headless:
     name: Server without desktop packages (Linux)
@@ -446,16 +521,6 @@ jobs:
           if [ "$code" -ne 2 ] || ! grep -q "no rules data yet" check.txt; then
             echo "the check did not run as expected (exit $code)"; exit 1
           fi
-      # one failed job ends the whole run (as in the other jobs; this container has curl, not gh)
-      - name: A failed job cancels the run
-        if: failure()
-        continue-on-error: true
-        working-directory: /
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: >-
-          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json"
-          "${{ github.api_url }}/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/cancel"
 
   # A tag builds nothing: it releases the packages its commit's run on main built and checked, the same files (the
   # building jobs above skip a tag). Push main, wait until its run is green, then push the tag on that commit.

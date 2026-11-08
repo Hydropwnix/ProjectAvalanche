@@ -2,8 +2,9 @@ use std::os::windows::ffi::OsStrExt;
 
 use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Networking::WinSock::{
-    AF_INET, IN_ADDR, IN_ADDR_0, INVALID_SOCKET, IPPROTO_TCP, SOCK_STREAM, SOCKADDR, SOCKADDR_IN, SOCKET_ERROR,
-    WSA_FLAG_NO_HANDLE_INHERIT, WSADATA, WSAGetLastError, WSASocketW, WSAStartup, closesocket, connect,
+    AF_INET, FD_SET, FIONBIO, IN_ADDR, IN_ADDR_0, INVALID_SOCKET, IPPROTO_TCP, SO_ERROR, SOCK_STREAM, SOCKADDR,
+    SOCKADDR_IN, SOCKET_ERROR, SOL_SOCKET, TIMEVAL, WSA_FLAG_NO_HANDLE_INHERIT, WSADATA, WSAEWOULDBLOCK,
+    WSAGetLastError, WSASocketW, WSAStartup, closesocket, connect, getsockopt, ioctlsocket, select,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL, OPEN_EXISTING, WriteFile,
@@ -28,6 +29,8 @@ fn refused(what: &str) -> i32 {
     eprintln!("refused: {what}: error {e}");
     REFUSED
 }
+
+const CONNECT_WAIT_S: i32 = 5;
 
 fn connect_to(to: &str) -> i32 {
     let Some(port) = to.strip_prefix("127.0.0.1:").and_then(|p| p.parse::<u16>().ok()) else {
@@ -54,13 +57,43 @@ fn connect_to(to: &str) -> i32 {
             sin_addr: IN_ADDR { S_un: IN_ADDR_0 { S_addr: u32::from_be_bytes([127, 0, 0, 1]).to_be() } },
             sin_zero: [0; 8],
         };
+        let mut on: u32 = 1;
+        if ioctlsocket(s, FIONBIO, &mut on) == SOCKET_ERROR {
+            eprintln!("no non-blocking socket: error {}", WSAGetLastError());
+            closesocket(s);
+            return NOT_MADE;
+        }
         let r = connect(s, (&raw const a).cast::<SOCKADDR>(), size_of::<SOCKADDR_IN>() as i32);
-        let code = if r == SOCKET_ERROR {
-            let e = std::io::Error::from_raw_os_error(WSAGetLastError());
-            eprintln!("refused: connect to {to}: {e}");
+        let started = if r == SOCKET_ERROR { WSAGetLastError() } else { 0 };
+        let code = if r != SOCKET_ERROR {
+            not_stopped(&format!("connect to {to}"))
+        } else if started != WSAEWOULDBLOCK {
+            eprintln!("refused: connect to {to}: {}", std::io::Error::from_raw_os_error(started));
             REFUSED
         } else {
-            not_stopped(&format!("connect to {to}"))
+            let mut written = FD_SET { fd_count: 1, ..Default::default() };
+            written.fd_array[0] = s;
+            let mut failed = written;
+            let wait = TIMEVAL { tv_sec: CONNECT_WAIT_S, tv_usec: 0 };
+            let n = select(0, std::ptr::null_mut(), &mut written, &mut failed, &wait);
+            if n == SOCKET_ERROR {
+                eprintln!("no wait on the connection: error {}", WSAGetLastError());
+                NOT_MADE
+            } else if n == 0 {
+                eprintln!("refused: connect to {to}: no answer within {CONNECT_WAIT_S} s");
+                REFUSED
+            } else if failed.fd_count == 1 {
+                let mut e: i32 = 0;
+                let mut len = size_of::<i32>() as i32;
+                if getsockopt(s, SOL_SOCKET, SO_ERROR, (&raw mut e).cast::<u8>(), &mut len) == SOCKET_ERROR {
+                    eprintln!("refused: connect to {to}: its error unread: error {}", WSAGetLastError());
+                } else {
+                    eprintln!("refused: connect to {to}: {}", std::io::Error::from_raw_os_error(e));
+                }
+                REFUSED
+            } else {
+                not_stopped(&format!("connect to {to}"))
+            }
         };
         closesocket(s);
         code

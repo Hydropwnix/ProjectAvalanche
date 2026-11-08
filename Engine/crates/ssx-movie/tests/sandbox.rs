@@ -162,14 +162,19 @@ pub fn attempt(name: &str, arg: &str) -> Result<String, String> {
 }
 
 pub fn expect_end(rec: &mut Record, name: &str, arg: &str, want: &[&str], not: &[&str]) {
+    expect_end_either(rec, name, arg, want, &[], not);
+}
+
+pub fn expect_end_either(rec: &mut Record, name: &str, arg: &str, want: &[&str], either: &[&str], not: &[&str]) {
     match attempt(name, arg) {
         Ok(reason) => {
             let missing: Vec<_> = want.iter().filter(|w| !reason.contains(*w)).collect();
+            let one_of = either.is_empty() || either.iter().any(|w| reason.contains(*w));
             let present: Vec<_> = not.iter().filter(|w| reason.contains(*w)).collect();
-            if missing.is_empty() && present.is_empty() && !reason.contains("NOT STOPPED") {
+            if missing.is_empty() && one_of && present.is_empty() && !reason.contains("NOT STOPPED") {
                 rec.stopped(&format!("{name}: {reason}"));
             } else {
-                rec.fail(format!("{name}: {reason} (wanted {want:?}, not {not:?})"));
+                rec.fail(format!("{name}: {reason} (wanted {want:?}, one of {either:?}, not {not:?})"));
             }
         }
         Err(e) => rec.fail(format!("{name}: {e}")),

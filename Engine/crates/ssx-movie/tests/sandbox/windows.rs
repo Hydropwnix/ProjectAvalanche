@@ -23,7 +23,7 @@ use windows_sys::Win32::System::Threading::{
     ProcessSystemCallDisablePolicy, WaitForSingleObject,
 };
 
-use super::{PROBE, PROGRAM, Record, TINY_PICTURES, attempt, expect_end, finish, running};
+use super::{PROBE, PROGRAM, Record, TINY_PICTURES, attempt, expect_end, expect_end_either, finish, running};
 
 const CREATION: u64 = 0x1111_0011_1000_1000;
 const JOB_LIMITS: u32 = 0x2000 | 0x8 | 0x100 | 0x400;
@@ -345,8 +345,8 @@ pub fn run(rec: &mut Record) {
         expect_end(rec, name, arg, &refusal, &[]);
     }
     expect_end(rec, "win32k", "", &["refused: gdi32.dll not loaded: error ", "exit code: 98)"], &[]);
-    let connect = ["socket made", "refused: connect to 127.0.0.1:", "(os error ", "exit code: 98)"];
-    expect_end(rec, "connect", &to, &connect, &[]);
+    let connect = ["socket made", "refused: connect to 127.0.0.1:", "exit code: 98)"];
+    expect_end_either(rec, "connect", &to, &connect, &["(os error ", "no answer within 5 s"], &[]);
     match foreign_pipe() {
         Ok((r, w)) => {
             expect_end(rec, "handle", &(w as usize).to_string(), &["exit code: 0xc0000008"], &["refused:"]);
