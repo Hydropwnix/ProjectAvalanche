@@ -7,6 +7,7 @@
   "imports": [
     {"name": "Panel", "url": "components/Panel.swf", "symbol": "components.Panel"},
     {"name": "ListMenu", "url": "components/ListMenu.swf", "symbol": "components.ListMenu"},
+    {"name": "ScrollBar", "url": "components/ScrollBar.swf", "symbol": "components.ScrollBar"},
     {"name": "Highlight", "url": "components/Highlight.swf", "symbol": "components.Highlight"},
     {"name": "ImageLoader", "url": "components/ImageLoader.swf", "symbol": "components.ImageLoader"},
     {"name": "DropSelector", "url": "components/DropSelector.swf", "symbol": "components.DropSelector"},
@@ -69,6 +70,7 @@
       {"instance": "txtColPing", "x": 767, "y": 228, "text": {"font": "DIN Mittelschrift Std", "size": 15,
         "color": "#6eb7c6", "align": "right", "width": 56, "height": 22}},
       {"instance": "mcRows", "symbol": "ListMenu", "x": 101, "y": 252},
+      {"instance": "mcScrollBar", "symbol": "ScrollBar", "x": 832, "y": 252},
       {"instance": "txtEmpty", "x": 128, "y": 330, "text": {"font": "DIN Mittelschrift Std", "size": 20,
         "color": "#c3fdf9", "align": "center", "width": 676, "height": 120, "multiline": true, "wrap": true}},
       {"instance": "txtStatus", "x": 101, "y": 604, "text": {"font": "DIN Mittelschrift Std", "size": 15,
@@ -84,7 +86,11 @@
   "view_symbol": {"symbol": "AvaBrowser"},
   "logic": {
     "base": "fe_view",
-    "data": ["ava_browser", "ava_browser_rows", "ava_browser_rows_index", "ava_browser_details", "ava_browser_drop"],
+    "sd": {"scale": 0.79},
+    "data": [
+      "ava_browser", "ava_browser_rows", "ava_browser_rows_index", "ava_browser_details", "ava_browser_drop",
+      "ava_browser_window"
+    ],
     "texts": [
       {"target": "txtTabs", "data": "ava_browser", "field": "tabs", "html": true},
       {"target": "txtColName", "data": "ava_browser", "field": "colName"},
@@ -110,6 +116,7 @@
         "data": "ava_browser_rows", "index": "ava_browser_rows_index", "cell": "AvaBrowserRow"}
     ],
     "paging": {"menu": "mcRows", "setup": "A_AvaBrowserSetup"},
+    "scrollbars": [{"target": "mcScrollBar", "menu": "mcRows", "length": 340, "window": "ava_browser_window"}],
     "drop_panels": [{"target": "mcDrop", "data": "ava_browser_drop"}],
     "panels": [
       {"target": "mcTablePanel", "width": 746, "height": 378, "dimmer": 60},

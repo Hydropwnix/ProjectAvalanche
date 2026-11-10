@@ -30,6 +30,10 @@ pub fn auto_check_enabled() -> bool {
     std::env::var_os("SSX_NO_UPDATE_CHECK").is_none()
 }
 
+pub fn tag_url(version: &Version) -> String {
+    format!("https://api.github.com/repos/{REPO}/releases/tags/v{version}")
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Release {
     pub version: Version,
@@ -38,6 +42,7 @@ pub struct Release {
     pub notes: String,
     pub page: String,
     pub asset: Asset,
+    pub reinstall: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -76,6 +81,13 @@ impl Update {
     pub fn start_check(ctx: &egui::Context) -> Self {
         let current = current_version();
         Update::Checking(Background::spawn(ctx, move || github::check(&current)))
+    }
+
+    pub fn start_repair(ctx: &egui::Context, missing: Vec<String>) -> Self {
+        let current = current_version();
+        Update::Checking(Background::spawn(ctx, move || {
+            github::release_of(&current).map(|release| Some(Release { reinstall: missing, ..release }))
+        }))
     }
 
     pub fn poll(&mut self, ctx: &egui::Context) {

@@ -215,6 +215,23 @@
     "symbol": "AvaChat"
   },
   "logic": {
+    "sd": {
+      "left": [
+        "mcBack",
+        "txtName0",
+        "txtText0",
+        "txtName1",
+        "txtText1",
+        "txtName2",
+        "txtText2",
+        "txtName3",
+        "txtText3",
+        "txtName4",
+        "txtText4",
+        "txtName5",
+        "txtText5"
+      ]
+    },
     "data": [
       "ava_chat"
     ],

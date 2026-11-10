@@ -14,6 +14,7 @@
 			{ "viewname": "ava_maps", "type": "object", "dpname": "dp_ava_maps" },
 			{ "viewname": "ava_maps_rows", "type": "array", "dpname": "dp_ava_maps_rows" },
 			{ "viewname": "ava_maps_rows_index", "type": "int", "dpname": "dp_ava_maps_rows_index" },
+			{ "viewname": "ava_maps_window", "type": "object", "dpname": "dp_ava_maps_window" },
 			{ "viewname": "ava_maps_details", "type": "object", "dpname": "dp_ava_maps_details" }
 		]
 }

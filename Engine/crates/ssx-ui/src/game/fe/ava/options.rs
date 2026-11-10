@@ -1,10 +1,13 @@
 use std::path::PathBuf;
 
 use serde_json::Value as Json;
+use ssx_assets::display::DisplaySettings;
 
 #[cfg(feature = "net")]
 use super::keyboard::{self, Outcome, Requester, TextRequest};
-use super::port_settings::{Item, Page, PortSettings, SaveError, read_file, replace_unreadable, save_file};
+use super::port_settings::{
+    Item, Page, PortSettings, SaveError, WindowChoice, read_file, replace_unreadable, save_file,
+};
 use crate::avm1::Ctx;
 use crate::avm1::value::Value;
 use crate::game::fe::{ActionParam, FeEnv, FrontEnd, settings};
@@ -54,6 +57,9 @@ pub const CATEGORIES: &[(Category, &str)] = &{
 pub struct Options {
     pub file: Option<PathBuf>,
     pub settings: PortSettings,
+    pub kept: PortSettings,
+    pub host_window: Option<WindowChoice>,
+    pub window_request: Option<DisplaySettings>,
     pub originals: PortSettings,
     pub page: Option<Page>,
     pub changed: bool,
@@ -68,6 +74,8 @@ pub fn reload(fe: &mut FrontEnd) {
     let Some(path) = fe.ava.options.file.clone() else {
         fe.note("options: no settings file named; the launcher's defaults shown");
         fe.ava.options.settings = PortSettings::default();
+        fe.ava.options.kept = PortSettings::default();
+        take_window(fe);
         return;
     };
     match read_file(&path) {
@@ -76,17 +84,27 @@ pub fn reload(fe: &mut FrontEnd) {
             for p in problems {
                 fe.note(format!("options: {p}"));
             }
+            fe.ava.options.kept = s.clone();
             fe.ava.options.settings = s;
         }
         Err(e) => {
             fe.note(format!("options: ERROR {e:#}; the launcher's defaults shown"));
             fe.ava.options.settings = PortSettings::default();
+            fe.ava.options.kept = PortSettings::default();
         }
     }
+    take_window(fe);
+}
+
+fn take_window(fe: &mut FrontEnd) {
+    let o = &mut fe.ava.options;
+    o.settings.window = o.host_window.clone();
+    o.kept.window = o.host_window.clone();
 }
 
 pub fn activate(fe: &mut FrontEnd, view_model: &str) {
     if view_model == "avaoptionspage" {
+        take_window(fe);
         fe.ava.options.originals = fe.ava.options.settings.clone();
         fe.ava.options.changed = false;
         fe.publish.extend([DP_INIT.into(), DP_COMMIT.into()]);
@@ -144,7 +162,7 @@ pub fn data_action(fe: &mut FrontEnd, env: &mut FeEnv, dp: &str, action: &str, _
         match action {
             "A_GameAdvanceScreen" => {
                 if fe.ava.options.changed {
-                    save(fe, env);
+                    save(fe, env, BROKEN_POPUP);
                 }
                 env.nav_events.push("ava_options_menu".into());
             }
@@ -189,6 +207,7 @@ pub fn nav_action(fe: &mut FrontEnd, env: &mut FeEnv, name: &str) -> bool {
         "do_ava_settings_replace" => match fe.ava.options.file.clone() {
             Some(path) => match replace_unreadable(&path, &fe.ava.options.settings) {
                 Ok(aside) => {
+                    fe.ava.options.kept = fe.ava.options.settings.clone();
                     fe.note(format!("options: the old file kept as {}; saved to {}", aside.display(), path.display()))
                 }
                 Err(e) => fe.note(format!("options: ERROR {e:#}")),
@@ -213,19 +232,34 @@ pub fn nav_action(fe: &mut FrontEnd, env: &mut FeEnv, name: &str) -> bool {
     true
 }
 
-fn save(fe: &mut FrontEnd, env: &mut FeEnv) {
+pub(super) fn save(fe: &mut FrontEnd, env: &mut FeEnv, broken_popup: &str) {
+    let o = &mut fe.ava.options;
+    if o.settings.window != o.kept.window
+        && let Some(w) = o.settings.window.clone()
+    {
+        o.window_request = Some(w.settings);
+        o.kept.window = o.settings.window.clone();
+        let line = format!(
+            "options: the window's mode {} asked of the host",
+            o.kept.window.as_ref().map_or("", |w| w.settings.mode.name())
+        );
+        fe.note(line);
+    }
     let Some(path) = fe.ava.options.file.clone() else {
         fe.note("options: ERROR no settings file named: the changes are not saved");
         return;
     };
-    match save_file(&path, &fe.ava.options.settings) {
-        Ok(()) => fe.note(format!("options: saved to {}", path.display())),
+    match save_file(&path, &fe.ava.options.kept, &fe.ava.options.settings) {
+        Ok(()) => {
+            fe.ava.options.kept = fe.ava.options.settings.clone();
+            fe.note(format!("options: saved to {}", path.display()))
+        }
         Err(SaveError::Unreadable(why)) => {
             fe.note(format!("options: {} could not be read ({why}): asking before it is replaced", path.display()));
             let body = env.loc.format("TXT_AVA_SETTINGS_BROKEN_BODY", &[&path.display().to_string(), &why]);
             let glyphs = fe.ava.glyphs.clone();
             env.values.set_str(crate::game::fe::popup::POPUP_BODY, super::shown(&body, glyphs.as_ref()));
-            env.nav_events.push(BROKEN_POPUP.into());
+            env.nav_events.push(broken_popup.into());
         }
         Err(SaveError::Io(e)) => fe.note(format!("options: ERROR {e:#}")),
     }
@@ -237,8 +271,8 @@ pub fn update(fe: &mut FrontEnd, env: &mut FeEnv) {
     match ssx_net_proto::name::player_name(&text) {
         Ok(name) => {
             fe.note(format!("options: player name {name:?}"));
-            fe.ava.options.settings.player_name = Some(name);
-            save(fe, env);
+            super::name_prompt::confirm(fe, name);
+            save(fe, env, BROKEN_POPUP);
             fe.publish.push(DP_MENU.into());
         }
         Err(e) => {
@@ -290,6 +324,7 @@ pub fn build(fe: &FrontEnd, cx: &mut Ctx, loc: &mut Localization, dp: &str) -> O
             let _ = cx.set_member(&v, "settingsItems", names);
             let _ = cx.set_member(&v, "showDescription", Value::Bool(true));
             let note = match o.page {
+                Some(Page::Display) => "TXT_AVA_OPTIONS_DISPLAY_NOTE",
                 #[cfg(feature = "net")]
                 Some(Page::Multiplayer) => "TXT_AVA_OPTIONS_NEXT_JOIN",
                 _ => "TXT_AVA_OPTIONS_NEXT_START",

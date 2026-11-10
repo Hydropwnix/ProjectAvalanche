@@ -255,5 +255,31 @@ impl Inventory {
             }
         }
         self.survival = self.survival_score(db, profile, drop);
+        self.inventory_size = Self::inventory_size(db, profile);
+    }
+
+    pub fn seen(&mut self, kind: i64, entry: (u32, u8)) {
+        if let Some(l) = usize::try_from(kind).ok().and_then(|k| self.new_items.get_mut(k)) {
+            l.retain(|&e| e != entry);
+        }
+        if !(0..KINDS as i64).contains(&kind) {
+            return;
+        }
+        for list in [&mut self.owned_list, &mut self.inventory_list] {
+            if let Some(u) = list.iter_mut().find(|u| (u.key, u.src) == entry) {
+                u.flags &= !flag::NEW;
+            }
+        }
+    }
+
+    pub fn inventory_size(db: &CareerDb, profile: &Profile) -> i32 {
+        let rows = |n: usize| i64::from(u16::try_from(n % 0x1_0000).unwrap_or(0));
+        let riders = i64::try_from(Self::rider_count(db, profile)).unwrap_or(i64::MAX);
+        let n = rows(profile.owned_items.len()) - riders + rows(profile.generated.len());
+        i32::try_from(n.max(0)).unwrap_or(i32::MAX)
+    }
+
+    pub fn rider_count(db: &CareerDb, profile: &Profile) -> usize {
+        db.riders.iter().filter(|r| !r.locked || profile.owned_items.contains(&r.key)).count()
     }
 }

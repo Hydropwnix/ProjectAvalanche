@@ -194,6 +194,13 @@ impl GlobeScene {
         self.scene_peak = peak;
     }
 
+    pub fn set_widescreen(&mut self, widescreen: bool) {
+        self.nodes = crate::game::fe::globe::nodes::NodeMap::build(&self.data, widescreen);
+        if self.scene_peak != 0 && !self.drop_level && self.nodes.peaks.contains_key(&self.scene_peak) {
+            self.peak_focus_scene(self.scene_peak);
+        }
+    }
+
     fn drop_focus_scene(&mut self) {
         let Some(d) = self.nodes.drops.get(&self.drop_focus) else { return };
         let x = d.screen_x;

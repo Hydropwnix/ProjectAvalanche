@@ -45,6 +45,7 @@ pub fn level_frame(
             ride.hold = false;
             ui.values.set_bool(ssx_ui::game::values::id::READY, true);
             ui.fe_call(ssx_ui::game::fe::pads::hud_ready);
+            ui.fe_call(ssx_ui::game::fe::flow::hud_ready);
             // TODO(guess): the world drawn for `DRAWN_FRAMES` frames stands for the camera's streaming query finding its entries resident (0x824D1998 +0x74, 0x82980620); settle: none (0x824D0A00 / 0x824D1AC8 only place it in the level's start).
             ui.fe_call(ssx_ui::game::fe::flow::stream_ready);
             if let Some(a) = audio.as_mut() {
@@ -134,6 +135,7 @@ pub fn level_frame(
         }
         ride.respawn();
         l.feed = l.feed0.clone();
+        l.sim_hold = None;
         l.ghosts = l.ghosts0.clone();
         l.result = None;
         l.results_posted = false;
@@ -148,6 +150,7 @@ pub fn level_frame(
         }
         ui.values.set_bool(ssx_ui::game::values::id::READY, true);
         ui.fe_call(ssx_ui::game::fe::pads::hud_ready);
+        ui.fe_call(ssx_ui::game::fe::flow::hud_ready);
         ui.fe_call(ssx_ui::game::fe::flow::stream_ready);
         ride.hold = false;
         info!("level: the event starts over");

@@ -1,6 +1,7 @@
 use glam::{Quat, Vec3};
 
 use crate::character::PlayerTuning;
+use crate::tricks::{MatchResult, MatchType, Matcher, PadSample, Test};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct JumpState {
@@ -11,7 +12,36 @@ pub struct JumpState {
     pub held: bool,
     pub launch: Vec3,
     pub a_hold_filtered: f32,
+    pub rstick_y_filtered: f32,
     pub compression: f32,
+    pub prewind: PrewindGestures,
+}
+
+const PREWIND_HOLD: Matcher = Matcher {
+    test: Test::Stick { min_angle: 3.403_392_3, max_angle: 6.021_386, min_mag: 0.85, max_mag: 1.0 },
+    kind: MatchType::Hold,
+    negate: false,
+};
+
+const PREWIND_RELEASE: Matcher = Matcher {
+    test: Test::Stick { min_angle: 0.0, max_angle: std::f32::consts::PI, min_mag: 0.75, max_mag: 1.0 },
+    kind: MatchType::Enter,
+    negate: false,
+};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PrewindGestures {
+    prev: PadSample,
+    pub hold: bool,
+    pub release: bool,
+}
+
+impl PrewindGestures {
+    pub fn tick(&mut self, cur: PadSample) {
+        self.hold = PREWIND_HOLD.eval(&self.prev, &cur) == MatchResult::Match;
+        self.release = PREWIND_RELEASE.eval(&self.prev, &cur) == MatchResult::Match;
+        self.prev = cur;
+    }
 }
 
 pub fn calculated_compression(a_hold_filtered: f32, rstick_y_filtered: f32, compression: f32) -> f32 {
@@ -20,8 +50,8 @@ pub fn calculated_compression(a_hold_filtered: f32, rstick_y_filtered: f32, comp
 }
 
 impl JumpState {
-    pub fn update(&mut self, held: bool, on_ground: bool, dt: f32, p: &PlayerTuning) {
-        let request = self.held && !held;
+    pub fn update(&mut self, held: bool, prewind_release: bool, on_ground: bool, dt: f32, p: &PlayerTuning) {
+        let request = (self.held && !held) || prewind_release;
         self.held = held;
         if on_ground {
             let pending = !self.allow && self.trigger;
@@ -37,11 +67,12 @@ impl JumpState {
         }
     }
 
-    pub fn update_compression(&mut self, held: bool, dt: f32, p: &PlayerTuning) {
+    pub fn update_compression(&mut self, held: bool, rstick_y: f32, dt: f32, p: &PlayerTuning) {
         let target = if held { 1.0 } else { 0.0 };
         let k = (-dt * p.filter_gain).exp();
         self.a_hold_filtered = (self.a_hold_filtered - target) * k + target;
-        self.compression = calculated_compression(self.a_hold_filtered, 0.0, 0.0);
+        self.rstick_y_filtered = (self.rstick_y_filtered - rstick_y) * k + rstick_y;
+        self.compression = calculated_compression(self.a_hold_filtered, self.rstick_y_filtered, 0.0);
     }
 
     pub fn take_trigger(&mut self) -> bool {

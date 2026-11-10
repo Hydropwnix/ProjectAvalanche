@@ -142,6 +142,9 @@ pub(super) fn decide(
     if want == local.asked {
         return;
     }
+    if want.is_some() && !bridge.alone() {
+        return;
+    }
     let job = match &want {
         Some((_, package)) => {
             let rider = level.as_ref().map(|l| l.script_view().0.rider.clone());

@@ -9,7 +9,8 @@ use ssx_content::{ContentId, Kind};
 use super::check::push;
 use crate::content::m6::{DiscStrings, PortStrings};
 
-const PORT_VIEWS: [&str; 6] = ["ava_hub", "ava_keyboard", "ava_browser", "ava_players", "ava_chat", "ava_quickchat"];
+const PORT_VIEWS: [&str; 8] =
+    ["ava_hub", "ava_keyboard", "ava_maps", "ava_options", "ava_browser", "ava_players", "ava_chat", "ava_quickchat"];
 
 pub fn is_port_id(id: &ContentId) -> bool {
     match id.kind() {
@@ -94,5 +95,24 @@ pub(super) fn check(c: &mut Checked, m: &Manifest, big_root: &Path) {
             if info.kerning_dropped.is_some() { "left out" } else { info.kerning_source }
         );
         push(c, Severity::Note, MANIFEST_FILE, at, message);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PORT_VIEWS;
+
+    #[test]
+    fn the_port_views_are_the_built_views() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/fe/views");
+        let mut built: Vec<String> = std::fs::read_dir(&dir)
+            .expect("the port's views")
+            .map(|e| e.expect("a view").file_name().into_string().expect("a UTF-8 name"))
+            .map(|name| name.strip_suffix(".json").map(str::to_string).unwrap_or_else(|| panic!("{name}: not a view")))
+            .collect();
+        built.sort();
+        let mut listed: Vec<String> = PORT_VIEWS.iter().map(|v| v.to_string()).collect();
+        listed.sort();
+        assert_eq!(listed, built);
     }
 }

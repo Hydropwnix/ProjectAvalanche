@@ -211,7 +211,7 @@ pub(super) fn air(s: &mut RiderState, w: &World, input: &Input, before: RideStat
             s.filtered_angular_velocity,
             s.velocity,
             s.ground_normal,
-            input.stick(),
+            input.air_stick(s.tricks.classic),
             s.prewind,
             prediction,
         );
@@ -242,7 +242,7 @@ pub(super) fn air(s: &mut RiderState, w: &World, input: &Input, before: RideStat
     s.air.prediction = prediction;
     let gs = &s.grind.steering;
     let inp = AirInputs {
-        stick: input.stick(),
+        stick: input.air_stick(s.tricks.classic),
         velocity: s.velocity,
         allow_stance_switch: !(s.tricks.is_tricking || s.tricks.anticipating()),
         grind_steering: gs.active.then_some(gs.time_to_land),

@@ -53,6 +53,11 @@ impl HeliFlightData {
         _scripts: &[String],
         _outro_locator: Option<(Vec3, Quat)>,
     ) -> Result<Self> {
+        let track_dir = big_root.join("data0/data/xenon/gameexplorer").join(track);
+        Self::with_grid(big_root, HeightGrid::load(&track_dir, track).ok())
+    }
+
+    pub fn with_grid(big_root: &Path, grid: Option<HeightGrid>) -> Result<Self> {
         let b = crate::tuning::load(big_root)?;
         let bezier = b.view("Transition node_heli_movetoposition to node_heli_idle_end", "StateFlowTransitionAsset")?;
         let blend = bezier.asset("OverrideBlend")?;
@@ -60,12 +65,11 @@ impl HeliFlightData {
             ssx_formats::ant::Value::Array(xs) => xs.iter().filter_map(|x| x.as_f32()).collect(),
             _ => Vec::new(),
         };
-        let track_dir = big_root.join("data0/data/xenon/gameexplorer").join(track);
         Ok(Self {
             update: HeliUpdateTuning::load(&b)?,
             follow: HeliMoveTuning::load(&b, "heli_move_to_follow")?,
             to_position: HeliMoveTuning::load(&b, "heli_move_to_position")?,
-            grid: HeightGrid::load(&track_dir, track).ok(),
+            grid,
             end_level: ssx_assets::helicopter::end_level_clip(big_root).ok(),
             idle_end_blend: (blend.f32("BlendTime").unwrap_or(0.0), samples),
             posing: HeliPosingTuning::load(&b).ok(),

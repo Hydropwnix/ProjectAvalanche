@@ -79,22 +79,20 @@ fn read_password(path: &Path) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-pub fn stored_player_name() -> String {
-    use ssx_ui::game::fe::ava::port_settings::{DEFAULT_PLAYER_NAME, PortSettings, read_file};
+pub fn stored_player_name() -> Option<String> {
+    use ssx_ui::game::fe::ava::port_settings::{PortSettings, read_file};
     let path = ssx_assets::setup::app_dir().join("settings.json");
-    let stored =
-        read_file(&path).ok().and_then(|m| PortSettings::from_json(&serde_json::Value::Object(m)).0.player_name);
-    stored.unwrap_or_else(|| DEFAULT_PLAYER_NAME.into())
+    read_file(&path).ok().and_then(|m| PortSettings::from_json(&serde_json::Value::Object(m)).0.player_name)
 }
 
-pub fn spec_of(connect: &NetConnect) -> Result<JoinSpec, String> {
+pub fn spec_of(connect: &NetConnect, name: String) -> Result<JoinSpec, String> {
     let address = ServerAddress::parse(connect.server.trim(), Some(ssx_net_proto::DEFAULT_PORT))
         .map_err(|e| format!("the server {}: {e}", connect.server))?;
     let password = match &connect.password_file {
         Some(p) => read_password(p)?,
         None => Vec::new(),
     };
-    let name = connect.name.clone().unwrap_or_else(stored_player_name);
+    let name = connect.name.clone().unwrap_or(name);
     Ok(JoinSpec { address, name, password: Zeroizing::new(password), origin: LiveOrigin::Hub, key: None })
 }
 

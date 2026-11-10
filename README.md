@@ -68,6 +68,12 @@ beside the launcher and restarts. Your settings, saves and game data stay where 
 game, the server and the `fonts` folder's files are replaced. `--no-update-check` (or `SSX_NO_UPDATE_CHECK=1`) turns
 the check off.
 
+**After an update from an older version.** Game data set up by v0.2.0 or earlier has no content index, which joining a
+server needs: the launcher says so and **Settings, Game Data, Repair game data** reads your disc image again, keeps
+every file that is already right and writes only what is missing or differs. An installation updated by launcher
+0.2.0 lacks `avalanche-movie` and the `fonts` folder: **Extras, Updates, Repair the installation** downloads this
+version's release again and puts them back the same verified way.
+
 The downloads above always take the latest release: the Windows `.zip` for a manual install, the Linux
 `.tar.gz`; the launcher uses its own `ProjectAvalanche-windows-x64.tar.gz` /
 `ProjectAvalanche-linux-x64.tar.gz` assets.

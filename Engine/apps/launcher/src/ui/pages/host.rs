@@ -106,12 +106,6 @@ impl Launcher {
             self.host_setup_column(&mut left[0], exe.is_file());
             self.host_run_column(&mut right[0], exe.is_file());
         });
-        let ctx = ui.ctx().clone();
-        if let Some(focused) =
-            ctx.memory(|m| m.focused()).and_then(|id| ctx.read_response(id)).filter(egui::Response::gained_focus)
-        {
-            focused.scroll_to_me(None);
-        }
     }
 
     fn host_setup_column(&mut self, ui: &mut Ui, have_server: bool) {
@@ -186,7 +180,7 @@ impl Launcher {
                 p.send("status");
                 self.host.shown = Shown::Server;
             }
-            let can_join = running && self.data_ready && !self.running();
+            let can_join = running && self.data_state.is_complete() && !self.running();
             if widgets::button(ui, "Join with the game", Kind::Plain, can_join).clicked() {
                 let server = Listen::join_address(self.settings.host.port);
                 let inv = command::game_joining(&self.settings, &self.settings.big_root(), server);
@@ -228,14 +222,13 @@ impl Launcher {
                 widgets::field(ui, "Drop");
                 match &drops {
                     Some(Ok(list)) => {
-                        egui::ComboBox::from_id_salt("host_drop").selected_text(h.drop.clone()).width(240.0).show_ui(
-                            ui,
-                            |ui| {
-                                for d in list {
-                                    ui.selectable_value(&mut h.drop, d.clone(), d);
-                                }
-                            },
-                        );
+                        let combo =
+                            egui::ComboBox::from_id_salt("host_drop").selected_text(h.drop.clone()).width(240.0);
+                        widgets::combo(ui, combo, |ui| {
+                            for d in list {
+                                ui.selectable_value(&mut h.drop, d.clone(), d);
+                            }
+                        });
                     }
                     Some(Err(e)) => widgets::status(ui, theme::ERROR, format!("The drops do not read: {e}")),
                     None => widgets::note(ui, "(the drops come from the game data once it is set up)"),
@@ -255,7 +248,8 @@ impl Launcher {
                 ui.end_row();
                 widgets::field(ui, "Listen on");
                 let current = Listen::ALL.iter().find(|(v, _)| *v == h.listen).map_or("", |(_, t)| *t);
-                egui::ComboBox::from_id_salt("host_listen").selected_text(current).width(240.0).show_ui(ui, |ui| {
+                let combo = egui::ComboBox::from_id_salt("host_listen").selected_text(current).width(240.0);
+                widgets::combo(ui, combo, |ui| {
                     for (v, t) in Listen::ALL {
                         ui.selectable_value(&mut h.listen, v, t);
                     }
@@ -304,9 +298,8 @@ impl Launcher {
             Ok(Written::Yes(hash)) => {
                 self.settings.host.written = Some(hash);
                 self.host.edited_by_hand = false;
-                match self.settings.save() {
-                    Ok(()) => self.saved = self.settings.clone(),
-                    Err(e) => self.host.note = Some((false, format!("the launcher's settings were not saved: {e}"))),
+                if let Err(e) = self.save_settings() {
+                    self.host.note = Some((false, format!("the launcher's settings were not saved: {e}")));
                 }
                 true
             }
@@ -347,14 +340,16 @@ impl Launcher {
         };
         let h = &self.settings.host;
         let map = map.as_ref().map(|m| &m.map);
-        let inv = if self.data_ready {
+        let inv = if self.data_state.is_complete() {
             host::setup_from_extraction(h, &self.settings.game_data(), map)
         } else if let Some(iso) = self.settings.iso.clone().filter(|p| p.is_file()) {
             host::setup_from_image(h, &iso, map)
         } else {
             self.host.note = Some((
                 false,
-                "Set up the game data first (Settings, Game data): the server's rules come from it.".into(),
+                "Set up or repair the game data first (Settings, Game data), or select the disc image there: the \
+                 server's rules come from it."
+                    .into(),
             ));
             return;
         };
@@ -429,7 +424,7 @@ fn host_map_fields(ui: &mut Ui, h: &mut host::HostSettings, maps: Option<&host::
                     .map_or_else(|| m.id.clone(), |x| format!("{} ({})", x.title, x.id))
             },
         );
-        egui::ComboBox::from_id_salt("host_map").selected_text(current).width(240.0).show_ui(ui, |ui| {
+        widgets::combo(ui, egui::ComboBox::from_id_salt("host_map").selected_text(current).width(240.0), |ui| {
             if ui.selectable_label(h.map.is_none(), "None (the drop above)").clicked() {
                 h.map = None;
             }
@@ -447,7 +442,8 @@ fn host_map_fields(ui: &mut Ui, h: &mut host::HostSettings, maps: Option<&host::
             let modes = maps.modes_of(m);
             let shown =
                 modes.iter().find(|(v, _)| *v == chosen.mode).map_or_else(|| chosen.mode.clone(), |x| x.1.clone());
-            egui::ComboBox::from_id_salt("host_map_mode").selected_text(shown).width(240.0).show_ui(ui, |ui| {
+            let combo = egui::ComboBox::from_id_salt("host_map_mode").selected_text(shown).width(240.0);
+            widgets::combo(ui, combo, |ui| {
                 for (value, label) in &modes {
                     ui.selectable_value(&mut chosen.mode, value.clone(), label);
                 }

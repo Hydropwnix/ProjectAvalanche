@@ -2,7 +2,6 @@ use eframe::egui;
 
 use crate::app::Launcher;
 use crate::jobs::{self, Background, SetupEnd, SetupJob};
-use crate::settings::Settings;
 use crate::ui::Page;
 
 pub fn gb(bytes: u64) -> String {
@@ -42,10 +41,12 @@ impl Launcher {
                     (
                         true,
                         format!(
-                            "Setup finished: {} archives extracted, {} files written, {} kept, {} movies copied{failed}.",
+                            "Setup finished: {} archives read, {} files written, {} kept, {} repaired, {} movies \
+                             copied{failed}.",
                             s.extracted.len(),
                             s.members_written,
-                            s.members_kept,
+                            s.members_kept + s.movies_kept,
+                            s.members_replaced + s.movies_replaced,
                             s.movies_written
                         ),
                     )
@@ -54,12 +55,8 @@ impl Launcher {
                 SetupEnd::Failed(e) => (false, format!("Setup failed: {e}")),
             });
         }
-        if self.settings != self.saved {
-            if let Err(e) = self.settings.save() {
-                self.launch_error = Some(format!("could not save {}: {e}", Settings::path().display()));
-            }
-            self.saved = self.settings.clone();
-        }
+        self.displays.poll();
+        self.settings_frame();
         if self.job.is_some() || self.checking.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }

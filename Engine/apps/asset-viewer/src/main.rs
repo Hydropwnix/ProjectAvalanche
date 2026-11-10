@@ -105,6 +105,10 @@ struct Cli {
     #[arg(long, value_name = "N", default_value_t = 0.0, requires = "ride")]
     ride_boost_meter: f32,
 
+    /// With --ride: the classic controls (the shoulder trick tables, D-pad, X boost, Y grind, B rewind, A wingsuit).
+    #[arg(long, requires = "ride")]
+    ride_classic: bool,
+
     /// The rider drawn on the board (a `character` collection of the vault, e.g. `alex`, `zoe`).
     #[arg(long, value_name = "NAME", default_value = ssx_assets::character::DEFAULT_CHARACTER)]
     character: String,
@@ -165,6 +169,7 @@ fn run(cli: Cli) -> Result<AppExit> {
         tweak: cli.ride_tweak,
         boost: cli.ride_boost,
         boost_meter: cli.ride_boost_meter,
+        classic: cli.ride_classic,
         fly_camera: cli.camera.is_some(),
         screenshot_steps: cli.screenshot.as_ref().map(|_| cli.frames),
         ..default()

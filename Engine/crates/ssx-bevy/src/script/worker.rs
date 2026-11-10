@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
@@ -9,33 +9,36 @@ use ssx_content::marker::Hit;
 use ssx_content::package::Origin;
 use ssx_content::{ContentHash, ContentId, Kind, Layer, PackageSource};
 use ssx_script::host::game::{Catalog, ContentMeta, FrameReport, GameFrame, MarkerHitShape, MarkerMeta};
+use ssx_script::host::outbox::Message;
 #[cfg(feature = "net")]
 use ssx_script::host::outbox::{Body, Peer};
-use ssx_script::host::outbox::{Destination, Message};
 use ssx_script::host::package::PackageScripts;
 use ssx_script::host::server::ServerFrame;
 use ssx_script::host::{HostConfig, ScriptHost, Side};
 
+mod clients;
+pub(super) use clients::Word;
 mod local;
 #[cfg(test)]
 pub(super) use local::local_client_is_the_first_admitted;
 pub(super) use local::{LOCAL_CLIENT, LocalOut};
+#[cfg(test)]
+mod tests;
 
 const STACK: usize = 8 << 20;
-const QUEUE: usize = 8;
+pub(super) const QUEUE: usize = 8;
 const MAX_LINES: usize = 64;
 const MAX_LINE: usize = 300;
 
 pub(super) enum Job {
     Frame(Box<GameFrame>, Option<Box<ServerFrame>>),
     Restart(PathBuf),
-    Suspend(String),
-    Resume,
+    Clients(Word),
     Session {
         packages: Vec<(String, PathBuf, ContentHash)>,
         storage: PathBuf,
     },
-    EndSession,
+    SessionScriptsOff,
     #[cfg(feature = "net")]
     Net(Vec<(Option<String>, Body)>),
     Local {
@@ -53,6 +56,7 @@ pub(super) struct Out {
     pub lines: Vec<(bool, String)>,
     pub looks: Option<Arc<BTreeMap<ContentId, Arc<MarkerLook>>>>,
     pub net: Vec<Message>,
+    pub session: Option<u64>,
     pub local: Option<LocalOut>,
 }
 
@@ -80,6 +84,7 @@ pub(super) fn spawn(start: Start) -> (SyncSender<Job>, Receiver<Out>, Receiver<(
 }
 
 type HeldSession = (Vec<(String, PathBuf, ContentHash)>, PathBuf);
+type Looks = Arc<BTreeMap<ContentId, Arc<MarkerLook>>>;
 
 struct Worker {
     host: ScriptHost,
@@ -89,7 +94,15 @@ struct Worker {
     generation: Option<u64>,
     lines: Vec<(bool, String)>,
     last_stop: Option<ssx_script::host::monitor::StopRecord>,
-    suspended: bool,
+    word: Option<Word>,
+    clients_started: bool,
+    start_waits: bool,
+    client_names: BTreeSet<String>,
+    held_off: BTreeSet<String>,
+    catalogue_session: bool,
+    looks: Option<Looks>,
+    net_out: Vec<Message>,
+    dropped: u64,
     session: BTreeMap<String, ContentHash>,
     held_session: Option<HeldSession>,
     #[cfg(feature = "net")]
@@ -122,7 +135,15 @@ fn run(start: Start, jobs: Receiver<Job>, outs: SyncSender<Out>) {
         generation: None,
         lines: Vec::new(),
         last_stop: None,
-        suspended: false,
+        word: None,
+        clients_started: false,
+        start_waits: false,
+        client_names: BTreeSet::new(),
+        held_off: BTreeSet::new(),
+        catalogue_session: false,
+        looks: None,
+        net_out: Vec::new(),
+        dropped: 0,
         session: BTreeMap::new(),
         held_session: None,
         #[cfg(feature = "net")]
@@ -132,91 +153,73 @@ fn run(start: Start, jobs: Receiver<Job>, outs: SyncSender<Out>) {
         server_storage: start.server_storage,
         catalog: None,
     };
-    let looks = w.catalogue();
-    w.start_all();
-    let mut pending_looks = Some(looks);
+    w.refresh();
     while let Ok(job) = jobs.recv() {
-        match job {
+        let answer = match job {
             Job::Frame(f, server) => {
                 let local = server.and_then(|sf| w.local_before(*sf));
-                let report = match w.host.frame(*f) {
+                let f = w.as_seen(*f);
+                let report = match w.host.frame(f) {
                     Ok(r) => r,
                     Err(e) => {
                         w.note(true, format!("scripts: the frame was refused: {e}"));
                         FrameReport::default()
                     }
                 };
-                if w.generation != Some(w.content.generation()) {
-                    pending_looks = Some(w.catalogue());
-                }
+                w.refresh();
                 w.local_after();
+                w.start_clients();
                 w.collect();
-                let out = Out {
-                    frame: true,
-                    report,
-                    monitor: w.monitor(),
-                    lines: std::mem::take(&mut w.lines),
-                    looks: pending_looks.take(),
-                    net: w.outbound(),
-                    local,
-                };
-                if outs.send(out).is_err() {
-                    return;
-                }
+                Some(w.out(true, report, local))
             }
-            Job::Restart(root) => w.restart(&root),
-            Job::Suspend(why) => {
-                for name in w.host.running().into_iter().filter(|n| !w.session.contains_key(n)) {
-                    w.host.stop(&name, &why);
-                }
-                w.suspended = true;
-                w.collect();
-                let out = Out {
-                    frame: false,
-                    report: FrameReport::default(),
-                    monitor: w.monitor(),
-                    lines: std::mem::take(&mut w.lines),
-                    looks: None,
-                    net: w.outbound(),
-                    local: None,
-                };
-                if outs.send(out).is_err() {
-                    return;
-                }
+            Job::Restart(root) => {
+                w.restart(&root);
+                None
             }
-            Job::Resume => {
-                w.suspended = false;
-                w.start_all();
+            Job::Clients(word) => {
+                w.word(word);
+                Some(w.out(false, FrameReport::default(), None))
+            }
+            Job::Session { .. } if !w.sees() => {
+                w.note(true, "scripts: the server's client scripts came before its word on the client mods".into());
+                None
             }
             Job::Session { packages, storage } if w.host.local_player().is_none() || w.local.is_some() => {
                 w.end_local("a network session begins");
                 w.note(false, "scripts: the server's client scripts wait for the server to name this player".into());
                 w.held_session = Some((packages, storage));
+                None
             }
-            Job::Session { packages, storage } => w.session(packages, &storage),
+            Job::Session { packages, storage } => {
+                w.session(packages, &storage);
+                None
+            }
+            Job::SessionScriptsOff => {
+                w.session_scripts_off();
+                None
+            }
             #[cfg(feature = "net")]
-            Job::Net(messages) => w.net(messages),
-            Job::Local { package, player } => w.start_local(&package, &player),
-            Job::EndLocal(why) => w.end_local(&why),
-            Job::EndSession => {
-                for name in std::mem::take(&mut w.session).into_keys() {
-                    w.host.stop(&name, "the session ended");
-                }
-                w.held_session = None;
-                #[cfg(feature = "net")]
-                {
-                    w.refused = 0;
-                }
-                w.host.leave_session();
-                w.collect();
-                if !w.suspended {
-                    w.start_all();
-                }
+            Job::Net(messages) => {
+                w.net(messages);
+                None
+            }
+            Job::Local { package, player } => {
+                w.start_local(&package, &player);
+                None
+            }
+            Job::EndLocal(why) => {
+                w.end_local(&why);
+                None
             }
             Job::Shutdown => {
                 w.end_local("the game closes");
                 return;
             }
+        };
+        if let Some(out) = answer
+            && outs.send(out).is_err()
+        {
+            return;
         }
     }
     w.end_local("the game closes");
@@ -252,19 +255,24 @@ impl Worker {
         }
     }
 
-    fn catalogue(&mut self) -> Arc<BTreeMap<ContentId, Arc<MarkerLook>>> {
+    fn catalogue(&mut self, blind: bool, g: u64) -> Option<Looks> {
         let t = std::time::Instant::now();
-        self.generation = Some(self.content.generation());
-        let mut cat = Catalog::default();
-        self.content.with_registry(|r| {
+        let list = |r: &ssx_content::registry::Registry| {
+            let mut ids = BTreeMap::new();
             for kind in Kind::ALL {
                 for id in r.list(kind) {
                     if let Some(w) = r.winner(&id) {
-                        cat.ids.insert(id, ContentMeta { source: w.name.to_string(), layer: layer_name(w.layer) });
+                        ids.insert(id, ContentMeta { source: w.name.to_string(), layer: layer_name(w.layer) });
                     }
                 }
             }
-        });
+            ids
+        };
+        let ids = match blind {
+            true => self.content.without_session(list)?,
+            false => self.content.with_registry(list),
+        };
+        let mut cat = Catalog { ids, ..Catalog::default() };
         let disc = |source: &str| ContentMeta { source: source.to_string(), layer: layer_name(Layer::Base) };
         if let Some(s) = self.content.disc_sounds() {
             for id in s.by_id.keys() {
@@ -277,6 +285,7 @@ impl Worker {
             }
         }
         let mut looks = BTreeMap::new();
+        let mut problems = Vec::new();
         for id in self.content.marker_ids() {
             match self.content.marker(&id) {
                 Ok(look) => {
@@ -293,10 +302,18 @@ impl Worker {
                     looks.insert(id, Arc::new(look));
                 }
                 Err(e) => {
-                    self.note(true, format!("scripts: the marker {id} cannot be placed: {}", clean(&e.to_string())))
+                    problems.push(format!("scripts: the marker {id} cannot be placed: {}", clean(&e.to_string())))
                 }
             }
         }
+        if blind && (self.content.session_policy().is_some() || self.content.generation() != g) {
+            return None;
+        }
+        for line in problems {
+            self.note(true, line);
+        }
+        self.generation = Some(g);
+        self.catalogue_session = !blind;
         let (n, m) = (cat.ids.len(), cat.markers.len());
         let cat = Arc::new(cat);
         self.host.set_catalog(cat.clone());
@@ -308,7 +325,7 @@ impl Worker {
             false,
             format!("scripts: the content catalogue: {n} ids, {m} markers ({:.2} s)", t.elapsed().as_secs_f32()),
         );
-        Arc::new(looks)
+        Some(Arc::new(looks))
     }
 
     fn scripts_of(&self, root: &std::path::Path) -> Result<PackageScripts, String> {
@@ -316,20 +333,24 @@ impl Worker {
         PackageScripts::from_source(&src, Side::Client, self.host.limits())
     }
 
-    fn start_all(&mut self) {
+    fn start_all(&mut self, only: Option<&BTreeSet<String>>) {
         let roots: Vec<PathBuf> = self.packages.iter().chain(self.dev.iter()).cloned().collect();
         let running = self.host.running();
         for root in roots {
             match self.scripts_of(&root) {
                 Ok(p) if p.scripts.is_empty() => {}
+                Ok(p) if only.is_some_and(|o| !o.contains(&p.name)) => {}
                 Ok(p) if running.contains(&p.name) => {
                     if self.session.contains_key(&p.name) {
                         let line = format!("scripts: {} is held off: the server's resource of its name runs", p.name);
                         self.note(false, line);
+                        self.client_names.insert(p.name.clone());
+                        self.held_off.insert(p.name);
                     }
                 }
                 Ok(p) => {
                     let (name, n) = (p.name.clone(), p.scripts.len());
+                    self.client_names.insert(name.clone());
                     match self.host.start(p) {
                         Ok(()) => self.note(false, format!("scripts: {name} started ({n} client scripts)")),
                         Err(e) => self.note(true, format!("scripts: {name} did not start: {}", clean(&e))),
@@ -349,6 +370,7 @@ impl Worker {
             .map(|(n, _)| n.clone())
             .collect();
         for name in stale {
+            self.drain_net();
             self.session.remove(&name);
             self.host.stop(&name, "the server stopped or changed it");
         }
@@ -376,7 +398,11 @@ impl Worker {
                 }
             };
             if self.host.running().contains(&name) {
+                self.drain_net();
                 self.host.stop(&name, "the server's resource of its name runs in its place for the session");
+                if self.client_names.contains(&name) {
+                    self.held_off.insert(name.clone());
+                }
             }
             let n = p.scripts.len();
             match self.host.start_with_storage(p, storage) {
@@ -395,11 +421,18 @@ impl Worker {
                 }
             }
         }
+        self.release_held_off();
         self.collect();
     }
 
     #[cfg(feature = "net")]
     fn net(&mut self, messages: Vec<(Option<String>, Body)>) {
+        if !self.sees() {
+            self.refused = self.refused.saturating_add(u64::try_from(messages.len()).unwrap_or(u64::MAX));
+            let line =
+                format!("scripts: {} of the server's messages came before its word on the client mods", messages.len());
+            return self.note(true, line);
+        }
         self.end_local("a network session begins");
         for (package, body) in messages {
             if let Err(e) = self.host.deliver(Peer::Server, package.as_deref(), body) {
@@ -416,12 +449,8 @@ impl Worker {
         self.collect();
     }
 
-    fn outbound(&mut self) -> Vec<Message> {
-        self.host.drain(usize::MAX).messages.into_iter().filter(|m| m.to == Destination::Server).collect()
-    }
-
     fn restart(&mut self, root: &std::path::Path) {
-        if self.suspended {
+        if !self.clients_started {
             return;
         }
         let p = match self.scripts_of(root) {
@@ -459,8 +488,22 @@ impl Worker {
         }
     }
 
+    fn out(&mut self, frame: bool, report: FrameReport, local: Option<LocalOut>) -> Out {
+        self.drain_net();
+        Out {
+            frame,
+            report,
+            monitor: self.monitor(),
+            lines: std::mem::take(&mut self.lines),
+            looks: self.looks.take(),
+            net: std::mem::take(&mut self.net_out),
+            session: self.seen_session(),
+            local,
+        }
+    }
+
     fn monitor(&self) -> String {
-        let client = self.host.monitor().render();
+        let client = format!("{}\n{}", self.clients_line(), self.host.monitor().render());
         #[cfg(feature = "net")]
         let client = match self.refused {
             0 => client,
@@ -498,167 +541,4 @@ fn outputs(
     }
     *last_stop = m.stops.last().cloned();
     lines
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn package(dir: &std::path::Path) -> PathBuf {
-        let root = dir.join("p");
-        std::fs::create_dir_all(root.join("client")).unwrap();
-        std::fs::write(
-            root.join("resource.toml"),
-            "[resource]\nname = \"p\"\nversion = \"1.0.0\"\napi = 1\n[scripts]\nclient = [\"client/*.luau\"]\n",
-        )
-        .unwrap();
-        std::fs::write(
-            root.join("client/main.luau"),
-            "print('started') addEventHandler('onClientRender', root, function() draw.rect(0, 0, 1, 1, 0) end)",
-        )
-        .unwrap();
-        root
-    }
-
-    #[test]
-    fn a_session_without_a_policy_runs_no_client_script() {
-        let dir = std::env::temp_dir().join(format!("ssx-script-session-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let start = Start {
-            big_root: dir.join("no-disc"),
-            packages: vec![package(&dir)],
-            dev: None,
-            storage: dir.join("storage"),
-            server_packages: Vec::new(),
-            server_storage: dir.join("server-storage"),
-        };
-        let (tx, rx, done) = spawn(start);
-        let frame = |tx: &SyncSender<Job>| tx.send(Job::Frame(Box::default(), None)).unwrap();
-        let wait = || rx.recv_timeout(std::time::Duration::from_secs(60)).expect("the host answers");
-        frame(&tx);
-        let out = wait();
-        assert!(out.lines.iter().any(|(_, l)| l.contains("[p] started")), "{:?}", out.lines);
-        assert_eq!(out.report.orders.draws.map(|d| d.len()), Some(1));
-        assert!(!ssx_content::policy::ClientScripts::SESSION_DEFAULT.runs());
-        tx.send(Job::Suspend(ssx_content::policy::ClientScripts::SESSION_DEFAULT.reason().into())).unwrap();
-        let note = wait();
-        assert!(!note.frame && note.report.orders.draws.is_none());
-        assert!(
-            note.monitor.contains("stopped p") && note.monitor.contains("client_scripts policy"),
-            "{}",
-            note.monitor
-        );
-        assert!(note.lines.iter().any(|(_, l)| l.contains("p stopped")), "{:?}", note.lines);
-        frame(&tx);
-        let out = wait();
-        assert!(out.frame);
-        assert_eq!(out.report.orders.draws.map(|d| d.len()), Some(0), "no script draws in the session");
-        tx.send(Job::Resume).unwrap();
-        frame(&tx);
-        let out = wait();
-        assert_eq!(out.report.orders.draws.map(|d| d.len()), Some(1), "the session ended: the scripts run again");
-        tx.send(Job::Shutdown).unwrap();
-        done.recv_timeout(std::time::Duration::from_secs(10)).expect("the host goes away");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    fn gamemode(dir: &std::path::Path) -> PathBuf {
-        let root = dir.join("gm");
-        std::fs::create_dir_all(root.join("client")).unwrap();
-        std::fs::create_dir_all(root.join("server")).unwrap();
-        let manifest = "[resource]\nname = \"gm\"\nversion = \"1.0.0\"\napi = 1\n[scripts]\n\
-                        client = [\"client/*.luau\"]\nserver = [\"server/*.luau\"]\n";
-        std::fs::write(root.join("resource.toml"), manifest).unwrap();
-        let client = "print('client sees ' .. tostring(localPlayer ~= nil))\n\
-                      if localPlayer then triggerServerEvent('gm:hello', localPlayer, 1) end\n";
-        std::fs::write(root.join("client/main.luau"), client).unwrap();
-        let server = r#"
-            addEvent("gm:hello", true)
-            addEventHandler("onPlayerJoin", root, function() print("join " .. getPlayerName(source)) end)
-            addEventHandler("gm:hello", root, function(n) print("hello " .. n .. " from " .. getPlayerName(client)) end)
-            addEventHandler("onRoundStart", root, function(round, drop) print("round " .. round .. " " .. drop) end)
-            addEventHandler("onRiderCheckpoint", root, function(cp, split, clock)
-                print("gate " .. split .. " " .. clock)
-                endRound(getPlayerInstance(getRiderPlayer(source)), "one gate is enough")
-            end)
-            addEventHandler("onPlayerQuit", root, function(why) print("quit " .. why) end)
-        "#;
-        std::fs::write(root.join("server/main.luau"), server).unwrap();
-        root
-    }
-
-    #[test]
-    fn a_gamemodes_server_scripts_run_in_the_local_host() {
-        use ssx_script::host::server::{EndRound, InstanceFrame, PlayerView, ServerEvent};
-        let dir = std::env::temp_dir().join(format!("ssx-script-local-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let gm = gamemode(&dir);
-        let start = Start {
-            big_root: dir.join("no-disc"),
-            packages: vec![gm.clone()],
-            dev: None,
-            storage: dir.join("storage"),
-            server_packages: vec![gm],
-            server_storage: dir.join("server-storage"),
-        };
-        let (tx, rx, done) = spawn(start);
-        let wait = || rx.recv_timeout(std::time::Duration::from_secs(60)).expect("the host answers");
-        let frame = |events: Vec<ServerEvent>, ms: u64| {
-            let now = std::time::Duration::from_millis(ms);
-            let instance = InstanceFrame {
-                id: 1,
-                mode: "gm:gamemode/race".into(),
-                drop: "gm:map/a".into(),
-                state: "running",
-                round: 1,
-                clock_ms: 0.0,
-                standings: Vec::new(),
-            };
-            let player = PlayerView {
-                client: LOCAL_CLIENT,
-                name: "Player".into(),
-                instance: Some(1),
-                rider: Some(0),
-                progress: "ready",
-                status: "riding",
-                ping_ms: 0,
-                position: Some([0.0; 3]),
-                velocity: None,
-                run: None,
-            };
-            let sf = ServerFrame { now, instances: vec![instance], players: vec![player], events };
-            Job::Frame(Box::new(GameFrame { now, ..GameFrame::default() }), Some(Box::new(sf)))
-        };
-        tx.send(Job::Local { package: "gm".into(), player: "Player".into() }).unwrap();
-        tx.send(frame(vec![ServerEvent::RoundStart { instance: 1, round: 1, drop: "gm:map/a".into() }], 33)).unwrap();
-        let out = wait();
-        let lines: Vec<&str> = out.lines.iter().map(|(_, l)| l.as_str()).collect();
-        for want in [
-            "scripts: [gm] client sees false",
-            "scripts: local server: [gm] join Player",
-            "scripts: [gm] client sees true",
-            "scripts: local server: [gm] hello 1 from Player",
-            "scripts: local server: [gm] round 1 gm:map/a",
-        ] {
-            assert!(lines.contains(&want), "{want}: {lines:#?}");
-        }
-        assert_eq!(out.local.as_ref().and_then(|l| l.running.as_deref()), Some("gm"));
-        assert!(out.monitor.contains("local server (gm)"), "{}", out.monitor);
-        tx.send(frame(vec![ServerEvent::Checkpoint { client: LOCAL_CLIENT, split: 0, clock_ms: 900 }], 66)).unwrap();
-        let out = wait();
-        let end = EndRound { instance: 1, round: 1, reason: "gm: one gate is enough".into() };
-        assert_eq!(out.local.map(|l| l.end_round), Some(vec![end]));
-        tx.send(Job::EndLocal("the level ended".into())).unwrap();
-        tx.send(Job::Frame(Box::default(), None)).unwrap();
-        let out = wait();
-        let lines: Vec<&str> = out.lines.iter().map(|(_, l)| l.as_str()).collect();
-        assert!(lines.contains(&"scripts: local server: [gm] quit the level ended"), "{lines:#?}");
-        assert!(lines.contains(&"scripts: [gm] client sees false"), "{lines:#?}");
-        assert!(out.local.is_none(), "the host is gone");
-        tx.send(Job::Shutdown).unwrap();
-        done.recv_timeout(std::time::Duration::from_secs(10)).expect("the host goes away");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 }

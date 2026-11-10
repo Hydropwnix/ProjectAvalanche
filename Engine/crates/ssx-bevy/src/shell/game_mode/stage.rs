@@ -96,18 +96,18 @@ impl Shell {
         {
             *v = Visibility::Hidden;
         }
-        // TODO(guess): off 16:9 the movie covers the window at its own aspect, cropped, as the UI's view does (Scaleform scale mode 3 `noBorder`, centred: the FE view set-up 0x82593800); the game's back buffer is 1280 × 720, 960 × 720 without widescreen (0x82FB57A0); settle: `RenderFmv`'s quad (0x824FA360) on a 4:3 back buffer.
         if let Some(m) = &self.movie
             && let Some(size) = images.get(&m.image).map(Image::size_f32).filter(|s| s.x > 0.0 && s.y > 0.0)
             && let Ok((mut sprite, _)) = sprites.get_mut(self.movie_sprite)
         {
-            let cover = size * (window.x / size.x).max(window.y / size.y);
-            if sprite.custom_size != Some(cover) {
-                sprite.custom_size = Some(cover);
+            let whole = size * (window.x / size.x).min(window.y / size.y);
+            if sprite.custom_size != Some(whole) {
+                sprite.custom_size = Some(whole);
             }
         }
         if let Ok(mut c) = cameras.get_mut(self.movie_camera) {
             c.is_active = self.movie.is_some();
+            c.clear_color = bevy::prelude::ClearColorConfig::Custom(bevy::prelude::Color::BLACK);
         }
         self.host.viewer_movie_frame = self.movie.as_ref().map(ui::movie::MoviePlayback::frame);
     }
@@ -331,6 +331,7 @@ impl Shell {
                 event_key: Some(l.drop),
                 collected_geotags: fe.profile.collected_geotags.iter().copied().collect(),
                 game: true,
+                classic: ui.values.int(ssx_ui::game::values::id::SETTINGS_GAMEPLAY_CONTROLLER_SCHEME) != 0,
                 autoplay: self.autoplay,
                 setup: Some(ssx_ui::game::ride::game_setup(&l.setup)),
                 setup_presentation: l.setup.presentation.as_deref().map(ssx_ui::game::ride::game_setup),

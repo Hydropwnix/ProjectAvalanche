@@ -380,6 +380,58 @@
       }
     },
     {
+      "state": "AvaHub",
+      "transition": {
+        "event": "ava_name_refused",
+        "targets": [],
+        "actions": [
+          ["pushPopup", ["ava_name_refused"]]
+        ]
+      }
+    },
+    {
+      "state": "AvaHub",
+      "transition": {
+        "event": "ava_name_refused_ok",
+        "targets": [],
+        "actions": [
+          ["popPopup", ["ava_name_refused"]]
+        ]
+      }
+    },
+    {
+      "state": "AvaHub",
+      "transition": {
+        "event": "ava_name_settings_broken",
+        "targets": [],
+        "actions": [
+          ["pushPopup", ["ava_name_settings_broken"]]
+        ]
+      }
+    },
+    {
+      "state": "AvaHub",
+      "transition": {
+        "event": "ava_name_settings_broken_yes",
+        "targets": [],
+        "actions": [
+          ["popPopup", ["ava_name_settings_broken"]],
+          ["do_ava_settings_replace", []]
+        ]
+      }
+    },
+    {
+      "state": "AvaHub",
+      "transition": {
+        "event": "ava_name_settings_broken_no",
+        "targets": [],
+        "actions": [
+          ["popPopup", ["ava_name_settings_broken"]],
+          ["do_ava_settings_keep", []]
+        ]
+      }
+    },
+    {
       "state": "ExploreResults",
       "transition": {
         "event": "ava_results_players",

@@ -13,6 +13,7 @@ use crate::ui;
 #[derive(SystemParam)]
 pub(super) struct TextKeys<'w, 's> {
     typed: MessageReader<'w, 's, bevy::input::keyboard::KeyboardInput>,
+    alt_enter: Res<'w, super::display::AltEnter>,
     ime: MessageReader<'w, 's, bevy::window::Ime>,
     windows: Query<'w, 's, &'static mut Window, With<bevy::window::PrimaryWindow>>,
     clipboard: Option<ResMut<'w, bevy::clipboard::Clipboard>>,
@@ -97,7 +98,7 @@ const MAX_PASTE: usize = ssx_ui::game::fe::ava::keyboard::MAX_LEN;
 fn text_input(text: &mut TextKeys, ui: &mut GameUiRes, ctrl: bool) {
     use bevy::input::ButtonState;
     use ssx_ui::game::fe::ava::keyboard::TextInput as T;
-    for e in text.typed.read() {
+    for e in text.alt_enter.typed(text.typed.read_with_id()) {
         if ctrl {
             continue;
         }
@@ -135,6 +136,7 @@ pub(super) fn key_text(key: KeyCode, text: Option<&str>) -> Vec<ssx_ui::game::fe
 pub(super) struct Frame<'w, 's> {
     commands: Commands<'w, 's>,
     time: Res<'w, Time>,
+    real: Res<'w, Time<Real>>,
     scene: ResMut<'w, ui::UiScene>,
     images: ResMut<'w, Assets<Image>>,
     sprites: Query<'w, 's, (&'static mut Sprite, &'static mut Visibility)>,
@@ -150,6 +152,7 @@ pub(super) struct Frame<'w, 's> {
     world_check: Res<'w, WorldCheck>,
     exit: MessageWriter<'w, AppExit>,
     live: Option<ResMut<'w, crate::shell::live::LiveSession>>,
+    render_scale: Option<Res<'w, super::display::RenderScale>>,
 }
 
 pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mut f: Frame) {
@@ -170,6 +173,10 @@ pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mu
             Stage::Level => None,
             _ => ui.fe.as_ref().and_then(|fe| fe.globe_frame(aspect)),
         };
+    }
+    if let Some(window) = f.windows.iter().next() {
+        let now = f.real.elapsed_secs_f64();
+        super::display::display_class_frame(&mut s.display_pending, s.started, &mut ui, &mut f.scene, window, now);
     }
     let drawn = f.ready.0 && f.ui_frame.viewport.x > 0;
     s.ready_frames = if drawn { s.ready_frames + 1 } else { 0 };
@@ -203,6 +210,11 @@ pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mu
             s.pending_shots = shots;
             s.hold = 2;
         }
+        if !std::mem::take(&mut s.host.displays).is_empty() {
+            warn!(
+                "shell: --script display=…: the game's display follows its window (resize it or Alt+Enter); not taken"
+            );
+        }
     }
     if f.level.as_ref().is_some_and(|l| l.results_shown()) {
         s.next_segment();
@@ -218,6 +230,7 @@ pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mu
     if s.link.is_some()
         && ui.fe.as_ref().is_some_and(|fe| fe.ava.hub.active)
         && !ui.views_loading()
+        && !ui.name_prompt_waiting()
         && let Some(address) = s.link.take()
     {
         info!("shell: the link's server {address}: the browser asks the player");
@@ -254,7 +267,16 @@ pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mu
         }
     }
     s.maps_frame(&mut ui);
-    let window = f.windows.iter().next().map_or(Vec2::new(1280.0, 720.0), |w| w.size());
+    #[cfg(feature = "net")]
+    if s.name_prompt_after_launch && s.test_launch.is_none() && s.test_map.is_none() {
+        s.name_prompt_after_launch = false;
+        ui.arm_name_prompt();
+    }
+    let window = f
+        .render_scale
+        .as_deref()
+        .filter(|r| r.enabled)
+        .map_or_else(|| f.windows.iter().next().map_or(Vec2::new(1280.0, 720.0), |w| w.size()), |r| r.size.as_vec2());
     s.play_movie(&mut ui, dt, window, &mut f.images, &mut f.sprites, &mut f.cameras, f.audio.as_deref_mut());
     s.stage_step(&mut ui, f.level.as_deref(), f.ride.as_deref(), f.live.as_deref_mut());
     let sc = &mut *f.scene;

@@ -194,6 +194,14 @@ pub fn run_ids(data: &Path, kind: Option<&str>, grep: Option<&str>, out: Option<
 }
 
 pub fn run_hash(data: &Path, threads: usize) -> Result<()> {
+    if crate::setup::marker(data) != Ok(None) {
+        anyhow::bail!(
+            "{} is a setup's data folder ({}): its {} comes from the disc image; run the setup again to repair it",
+            data.display(),
+            crate::setup::MARKER,
+            hash::INDEX_FILE
+        );
+    }
     let run = hash::hash_data(data, threads)?;
     let out = hash::write_index(data, &run.index)?;
     ssx_core::println!(

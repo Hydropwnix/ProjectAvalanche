@@ -113,6 +113,7 @@ fn crash_install(at: usize, install: &Path, staged: &Path, files: &[String]) -> 
 
 #[test]
 fn a_crash_at_any_step_leaves_the_old_install_or_the_new_one() {
+    let _no_child = crate::jobs::child_start::shared();
     let mut outcomes = Vec::new();
     for at in 0.. {
         let (root, install, staged, files) = fixture(&format!("crash-{at}"));
@@ -141,6 +142,7 @@ fn a_crash_at_any_step_leaves_the_old_install_or_the_new_one() {
 
 #[test]
 fn a_crash_of_the_recovery_is_recovered_at_the_next_start() {
+    let _no_child = crate::jobs::child_start::shared();
     let mut runs = 0;
     for at in 0.. {
         let (root, install, staged, files) = fixture(&format!("again-{at}"));
@@ -176,6 +178,7 @@ fn a_crash_of_the_recovery_is_recovered_at_the_next_start() {
 
 #[test]
 fn an_error_at_any_step_puts_the_old_files_back_or_ends_the_install() {
+    let _no_child = crate::jobs::child_start::shared();
     for at in 0.. {
         let (root, install, staged, files) = fixture(&format!("fail-{at}"));
         crash::fail_at(at);
@@ -213,6 +216,7 @@ fn cut_after_the_game(tag: &str) -> (PathBuf, PathBuf, PathBuf, Vec<String>) {
 
 #[test]
 fn a_held_lock_is_left_alone() {
+    let _no_child = crate::jobs::child_start::shared();
     let (root, install, staged, files) = cut_after_the_game("held");
     let other = std::fs::File::open(install.join(BACKUP).join(LOCK)).unwrap();
     other.try_lock().unwrap();
@@ -228,6 +232,7 @@ fn a_held_lock_is_left_alone() {
 
 #[test]
 fn a_file_neither_old_nor_new_keeps_its_backup() {
+    let _no_child = crate::jobs::child_start::shared();
     let (root, install, ..) = cut_after_the_game("third");
     std::fs::write(install.join(game_name()), b"a third game").unwrap();
     let refused = recover(&install).unwrap_err();
@@ -242,6 +247,7 @@ fn a_file_neither_old_nor_new_keeps_its_backup() {
 
 #[test]
 fn a_journal_reads_back_as_written() {
+    let _no_child = crate::jobs::child_start::shared();
     let journal = Journal {
         staged: ".update-0.3.0-2".into(),
         made: Vec::new(),
@@ -274,6 +280,7 @@ fn a_journal_reads_back_as_written() {
 
 #[test]
 fn a_journal_that_is_not_the_launchers_is_left_alone() {
+    let _no_child = crate::jobs::child_start::shared();
     let h = "ab".repeat(32);
     let (l, g) = (launcher_name(), game_name());
     let bad = [
@@ -311,6 +318,7 @@ fn a_journal_that_is_not_the_launchers_is_left_alone() {
 
 #[test]
 fn a_backup_without_a_journal_is_removed_only_when_it_holds_nothing() {
+    let _no_child = crate::jobs::child_start::shared();
     let root = scratch("no-journal");
     let dir = root.join(BACKUP);
     std::fs::create_dir(&dir).unwrap();
@@ -334,6 +342,7 @@ fn a_backup_without_a_journal_is_removed_only_when_it_holds_nothing() {
 
 #[test]
 fn a_backup_of_the_updater_0_2_0_is_never_lost() {
+    let _no_child = crate::jobs::child_start::shared();
     let root = scratch("legacy");
     let (one, two) = (root.join(".update-backup-77"), root.join(".update-backup-78"));
     std::fs::create_dir(&one).unwrap();
@@ -357,6 +366,7 @@ fn a_backup_of_the_updater_0_2_0_is_never_lost() {
 
 #[test]
 fn the_lock_is_one_holders() {
+    let _no_child = crate::jobs::child_start::shared();
     let root = scratch("lock");
     assert_eq!(Lock::take(&root).err().map(|e| e.kind()), Some(ErrorKind::NotFound));
     let first = Lock::create(&root).unwrap();
@@ -373,6 +383,7 @@ fn the_lock_is_one_holders() {
 
 #[test]
 fn only_windows_waits_for_a_file_held_open() {
+    let _no_child = crate::jobs::child_start::shared();
     #[cfg(windows)]
     {
         use windows_sys::Win32::Foundation::{
@@ -400,6 +411,7 @@ fn only_windows_waits_for_a_file_held_open() {
 
 #[test]
 fn a_crash_at_any_step_with_the_fonts_leaves_the_old_install_or_the_new_one() {
+    let _no_child = crate::jobs::child_start::shared();
     for (tag, plan) in [("fonts", fonts_plan()), ("fonts-again", fonts_again_plan())] {
         let mut outcomes = Vec::new();
         for at in 0.. {
@@ -428,6 +440,7 @@ fn a_crash_at_any_step_with_the_fonts_leaves_the_old_install_or_the_new_one() {
 
 #[test]
 fn a_crash_of_the_recovery_with_the_fonts_is_recovered_at_the_next_start() {
+    let _no_child = crate::jobs::child_start::shared();
     for (tag, plan) in [("fonts-again", fonts_plan()), ("fonts-twice", fonts_again_plan())] {
         for at in 0.. {
             let (root, install, staged, files) = fixture_of(&format!("{tag}-{at}"), &plan);
@@ -462,6 +475,7 @@ fn a_crash_of_the_recovery_with_the_fonts_is_recovered_at_the_next_start() {
 
 #[test]
 fn an_error_at_any_step_with_the_fonts_puts_the_old_files_back_or_ends_the_install() {
+    let _no_child = crate::jobs::child_start::shared();
     for (tag, plan) in [("fonts-fail", fonts_plan()), ("fonts-again-fail", fonts_again_plan())] {
         for at in 0.. {
             let (root, install, staged, files) = fixture_of(&format!("{tag}-{at}"), &plan);
@@ -487,6 +501,7 @@ fn an_error_at_any_step_with_the_fonts_puts_the_old_files_back_or_ends_the_insta
 
 #[test]
 fn the_fonts_folder_is_never_taken_over() {
+    let _no_child = crate::jobs::child_start::shared();
     let plan = fonts_plan();
     let (root, install, staged, files) = fixture_of("fonts-file", &plan);
     std::fs::write(install.join(FONTS), b"a file").unwrap();

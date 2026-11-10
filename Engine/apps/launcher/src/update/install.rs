@@ -91,6 +91,25 @@ pub(crate) fn is_program(name: &str) -> bool {
     matches!(name, "project-avalanche" | "avalanche-game" | "avalanche-movie" | "avalanche-server")
 }
 
+pub fn release_build() -> bool {
+    option_env!("GITHUB_SHA").is_some_and(|s| s.len() >= 7 && s.is_ascii())
+}
+
+pub fn missing(dir: &Path) -> Vec<&'static str> {
+    let shipped = |name: &str| {
+        let Ok(meta) = std::fs::symlink_metadata(path_of(dir, name)) else { return false };
+        let folder_ok = folder_of(name).is_none_or(|f| {
+            std::fs::symlink_metadata(dir.join(f)).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
+        });
+        #[cfg(unix)]
+        let runs = !is_program(name) || std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o100 != 0;
+        #[cfg(not(unix))]
+        let runs = true;
+        folder_ok && meta.is_file() && !meta.file_type().is_symlink() && runs
+    };
+    allowed_files().iter().copied().filter(|name| !shipped(name)).collect()
+}
+
 pub fn install_dir() -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot find the launcher's folder: {e}"))?;
     exe.parent().map(Path::to_path_buf).ok_or_else(|| "the launcher has no folder".to_string())
@@ -163,6 +182,10 @@ fn validate(staged: &Staged) -> Result<(), String> {
         if !staged.files.iter().any(|f| f == need) {
             return Err(format!("the update has no {need}"));
         }
+    }
+    if let Some(need) = staged.release.reinstall.iter().find(|n| !staged.files.contains(n)) {
+        let version = &staged.release.version;
+        return Err(format!("the release v{version} has no {need}: it cannot repair this installation"));
     }
     Ok(())
 }
@@ -385,6 +408,7 @@ mod tests {
 
     #[test]
     fn a_failed_install_puts_the_old_files_back() {
+        let _no_child = crate::jobs::child_start::shared();
         let (root, install, staged) = folders("rollback", &[launcher_name(), game_name()]);
         let files = vec![game_name().to_string(), "evil.sh".to_string(), launcher_name().to_string()];
         assert!(journal::install(&staged, &install, &files).is_err());
@@ -399,6 +423,7 @@ mod tests {
 
     #[test]
     fn a_verified_install_replaces_the_files() {
+        let _no_child = crate::jobs::child_start::shared();
         let names = [launcher_name(), game_name(), decoder_name()];
         let (root, install, staged) = folders("replace", &names);
         let files = names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
@@ -420,6 +445,7 @@ mod tests {
             notes: String::new(),
             page: String::new(),
             asset,
+            reinstall: Vec::new(),
         };
         let files = files.iter().map(|f| f.to_string()).collect();
         Staged { release, dir: dir.to_path_buf(), install: install.to_path_buf(), files }
@@ -456,6 +482,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_cleanup_never_removes_a_backup() {
+        let _no_child = crate::jobs::child_start::shared();
         let root = temp_dir("cleanup");
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 24 * 3600);
         let age = |dir: &Path| std::fs::File::open(dir).unwrap().set_modified(old).unwrap();
@@ -481,6 +508,50 @@ mod tests {
         assert!(root.join(".update-0.2.0-2").exists());
         assert!(root.join(BACKUP).join("stray").exists());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_program_folder_without_its_decoder_is_found_and_repaired_only_by_a_release_with_it() {
+        let root = temp_dir("missing");
+        for name in allowed_files() {
+            let path = path_of(&root, name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"shipped").unwrap();
+            #[cfg(unix)]
+            if is_program(name) {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        assert!(missing(&root).is_empty());
+        std::fs::remove_file(root.join(decoder_name())).unwrap();
+        std::fs::remove_dir_all(root.join(FONTS)).unwrap();
+        let lacks = missing(&root);
+        assert_eq!(lacks.len(), 1 + allowed_files().iter().filter(|n| n.starts_with("fonts/")).count());
+        assert!(lacks.contains(&decoder_name()), "{lacks:?}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.join(game_name()), std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(missing(&root).contains(&game_name()), "a program that cannot run");
+            std::fs::remove_file(root.join(game_name())).unwrap();
+            std::os::unix::fs::symlink("/bin/true", root.join(game_name())).unwrap();
+            assert!(missing(&root).contains(&game_name()), "a link is not the shipped file");
+        }
+        let names = [launcher_name(), game_name(), decoder_name()];
+        let (root2, install, dir) = folders("reinstall", &names);
+        #[cfg(unix)]
+        for name in names {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut repair = staged(&install, &dir, &names);
+        repair.release.reinstall = vec![decoder_name().to_string()];
+        validate(&repair).unwrap();
+        repair.release.reinstall.push("fonts/OFL.txt".into());
+        assert!(validate(&repair).unwrap_err().contains("has no fonts/OFL.txt"), "a release without the font");
+        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::remove_dir_all(&root2).unwrap();
     }
 
     #[test]

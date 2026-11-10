@@ -29,6 +29,8 @@
       {"instance": "txtCount", "x": 896, "y": 219, "text": {"font": "DIN Mittelschrift Std", "size": 20,
         "color": "#6eb7c6", "align": "right", "width": 112, "height": 30}},
       {"instance": "mcKeys", "symbol": "GridMenu", "x": 260, "y": 276},
+      {"instance": "txtNote", "x": 260, "y": 498, "text": {"font": "DIN Mittelschrift Std", "size": 18,
+        "color": "#8fd3e0", "width": 760, "height": 48, "multiline": true, "wrap": true}},
       {"instance": "mcCallouts", "symbol": "Callouts", "x": 250, "y": 548}
     ]}
   ],
@@ -40,7 +42,8 @@
     "texts": [
       {"target": "txtTitle", "data": "ava_keyboard", "field": "title"},
       {"target": "txtEntry", "data": "ava_keyboard", "field": "text"},
-      {"target": "txtCount", "data": "ava_keyboard", "field": "count"}
+      {"target": "txtCount", "data": "ava_keyboard", "field": "count"},
+      {"target": "txtNote", "data": "ava_keyboard", "field": "note"}
     ],
     "menus": [
       {"target": "mcKeys", "columns": 10, "rows": 4, "cell_width": 76, "cell_height": 50, "spacing_x": 0,

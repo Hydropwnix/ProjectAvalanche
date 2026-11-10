@@ -1,4 +1,5 @@
 mod about;
+mod display;
 mod game_data;
 mod host;
 mod mods;
@@ -20,12 +21,16 @@ impl Launcher {
         let body = panel::frame(ui.painter(), l, "SETTINGS");
         panel::tabs(ui, l, &SettingsTab::ALL, &mut self.settings_tab);
         let tab = self.settings_tab;
-        panel::body(ui, body, "settings", |ui| match tab {
-            SettingsTab::GameData => self.game_data_section(ui),
-            SettingsTab::Graphics => self.graphics_section(ui),
-            SettingsTab::Audio => self.audio_section(ui),
-            SettingsTab::Controls => self.controls_section(ui),
-            SettingsTab::Multiplayer => self.multiplayer_section(ui),
+        panel::body(ui, body, "settings", |ui| {
+            self.settings_notes(ui);
+            match tab {
+                SettingsTab::GameData => self.game_data_section(ui),
+                SettingsTab::Display => self.display_section(ui),
+                SettingsTab::Graphics => self.graphics_section(ui),
+                SettingsTab::Audio => self.audio_section(ui),
+                SettingsTab::Controls => self.controls_section(ui),
+                SettingsTab::Multiplayer => self.multiplayer_section(ui),
+            }
         });
     }
 

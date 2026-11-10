@@ -18,6 +18,7 @@
 			{ "viewname": "ava_browser", "type": "object", "dpname": "dp_ava_browser" },
 			{ "viewname": "ava_browser_rows", "type": "array", "dpname": "dp_ava_browser_rows" },
 			{ "viewname": "ava_browser_rows_index", "type": "int", "dpname": "dp_ava_browser_rows_index" },
+			{ "viewname": "ava_browser_window", "type": "object", "dpname": "dp_ava_browser_window" },
 			{ "viewname": "ava_browser_details", "type": "object", "dpname": "dp_ava_browser_details" },
 			{ "viewname": "ava_browser_drop", "type": "object", "dpname": "dp_ava_browser_drop" }
 		]

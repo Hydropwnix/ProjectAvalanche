@@ -147,6 +147,8 @@ pub fn step_with_trigger(
         ls.nis_scene_op();
     }
     let a_prev = s.jump.held;
+    s.jump.prewind.tick(crate::tricks::PadSample::new(tricks));
+    let prewind_release = s.jump.prewind.release && !s.tricks.classic;
     let prev_spray = s.spray;
     s.spray = Spray::default();
     s.survival.init_outputs(&t.survival, &w.props);
@@ -156,7 +158,7 @@ pub fn step_with_trigger(
         (true, None, Some(sun)) => crate::survival::shade_value(&w.collision, s.traj, sun),
         (true, None, None) => 1.0,
     };
-    update_prewind(s, w, input, dt);
+    update_prewind(s, w, input, s.jump.prewind.hold, dt);
     update_player_speed(s, in_air);
     let grid = w.collision.boundary.as_ref();
     s.boundary.update(&t.player.out_of_bounds, grid, s.traj_cached, s.traj_velocity, dt);
@@ -178,18 +180,27 @@ pub fn step_with_trigger(
             dt,
         },
     );
+    if s.tricks.classic {
+        s.tricks.classic_boost_ticks = crate::tricks::classic_boost_ticks(s.tricks.classic_boost_ticks, tricks.x, dt);
+    } else {
+        s.tricks.classic_boost_ticks = 0.0;
+    }
     let boost_request = BoostRequest {
-        requested: tricks.tweak,
+        requested: if s.tricks.classic {
+            crate::tricks::classic_boost_requested(s.tricks.classic_boost_ticks)
+        } else {
+            tricks.tweak
+        },
         in_air,
         player_speed: s.player_speed,
         crashed: carving_crashed(s, in_air),
         awesome: s.score.is_awesome,
     };
     s.boost.update(&mut s.score.boost, &w.props, &boost_request, dt);
-    s.boost.modifier = r2.clamp(0.0, 1.0);
+    s.boost.modifier = if s.tricks.classic { if tricks.x { 1.0 } else { 0.0 } } else { r2.clamp(0.0, 1.0) };
     let recovery_input = (s.jump.held && !input.jump) || (tricks.tweak && s.score.boost > 0.0);
-    s.jump.update(input.jump, s.close.is_very_close, dt, &t.player);
-    s.jump.update_compression(input.jump, dt, &t.player);
+    s.jump.update(input.jump, prewind_release, s.close.is_very_close, dt, &t.player);
+    s.jump.update_compression(input.jump, tricks.right_stick.y, dt, &t.player);
     if s.death.is_alive() && !in_air {
         s.last_safe_ground = s.traj;
         if s.track_started && s.close.is_very_close && s.contact.is_some() {
@@ -229,7 +240,8 @@ pub fn step_with_trigger(
     s.track_started = s.track_started || s.trigger_go;
     finish_force_stop(s, t, x.flow.track_finished, dt);
     s.wingsuit.decay_handles(&t.wingsuit, dt);
-    s.stick_y_filtered = stick.y + (s.stick_y_filtered - stick.y) * (-0.11 * dt).exp();
+    let carve_y = input.carve_stick_y(s.tricks.classic);
+    s.stick_y_filtered = carve_y + (s.stick_y_filtered - carve_y) * (-0.11 * dt).exp();
     let ctx = trick_context(s, in_air);
     if is_scoring_wipeout(s, in_air) {
         s.tricks.scene_op_reset(&t.tricks, tricks, &ctx, dt);

@@ -190,6 +190,20 @@ pub fn script_sets(name: &str, src: &str) -> Arc<StateSets> {
     Arc::new(StateSets::from_graph(&g))
 }
 
+// TODO(guess): a port cap of 2²⁰ instructions (1 024 × the disc's largest controller, 1 024); settle: none on the disc (the game runs only its own scripts) — the scripting round's budget for a package's controller.
+pub const MAP_CONTROLLER_BUDGET: u64 = 1 << 20;
+
+pub fn script_sets_within(name: &str, src: &str, budget: u64) -> Result<Arc<StateSets>, String> {
+    let batch = [(name.to_string(), src.as_bytes().to_vec())];
+    let g = ssx_lua::game::graph::run_batch_with(ssx_lua::game::Binder::StateSets, &batch, None, &move |l| {
+        l.budget = budget;
+    });
+    match &g.scripts[0].1 {
+        Some(e) => Err(e.clone()),
+        None => Ok(Arc::new(StateSets::from_graph(&g))),
+    }
+}
+
 impl Controllers {
     pub fn load(
         state_sets: &ssx_lua::game::graph::Graph,
@@ -422,7 +436,11 @@ pub struct NamedEntity {
 
 impl NamedEntity {
     pub fn load(big_root: &std::path::Path, track: &str, name: &str, object: u32) -> Option<Self> {
-        let scripts = ssx_assets::vault_db::with_track_db(big_root, track, |db| {
+        Self::load_in(big_root, Some(track), name, object)
+    }
+
+    pub fn load_in(big_root: &std::path::Path, track: Option<&str>, name: &str, object: u32) -> Option<Self> {
+        let scripts = ssx_assets::vault_db::with_level_db(big_root, track, |db| {
             ssx_assets::track_particles::object_controllers(db, &[object])
         })
         .ok()?;

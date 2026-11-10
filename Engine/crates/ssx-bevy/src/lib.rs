@@ -28,7 +28,7 @@ use bevy::math::UVec2;
 pub const DEFAULT_TRACK: &str = "Game-Data/Extracted/big/data0/data/xenon/gameexplorer/alps0101";
 pub const DEFAULT_TRACK_IN_BIG: &str = "data0/data/xenon/gameexplorer/alps0101";
 
-pub const WINDOW_SIZE: UVec2 = UVec2::new(1600, 900);
+pub const WINDOW_SIZE: UVec2 = UVec2::new(ssx_assets::display::DEFAULT_WINDOW.0, ssx_assets::display::DEFAULT_WINDOW.1);
 
 /// The options both programs build and draw a level with (the game: every drop it loads; the viewer: its track).
 #[derive(clap::Args, Debug, Clone)]

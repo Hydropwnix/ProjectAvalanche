@@ -8,6 +8,11 @@ pub const HALF_WIDTH: f32 = 30.0;
 pub const LENGTH: f32 = 360.0;
 const STEP: f32 = 10.0;
 
+pub const HELI_INTRO: [f32; 2] = [400.0, -1500.0];
+pub const HELI_PICKUP_Z: f32 = 355.0;
+pub const FLARE: &str = "ssx:object/markerflare_sml_red_gameobject";
+pub const FLARE_AT: [f32; 2] = [1.5, 150.0];
+
 pub const MAP_TOML: &str = r#"# A map of this package (every key: Docs/architecture/content.md §22.3).
 [map]
 title = "Template slope"
@@ -15,6 +20,8 @@ title = "Template slope"
 scene = "maps/course.gltf"
 # A layout on a disc drop names its drop instead of bringing terrain: base = "ssx:drop/<ui_drop name>".
 modes = ["race", "freeride"]
+# Where the ride starts: "spawn" (at the spawn node), or "heli" — in the helicopter, which flies the scene's two
+# heli_path empties (order 0 the pilot's shot, 1 the pickup after the finish) as a disc drop's helicopter does.
 intro = "spawn"
 # A new track's distant scenery: a disc track's mid-ground, drawn far off without collision.
 # midground = "ssx:track/alps0101"
@@ -132,7 +139,7 @@ pub fn gltf() -> String {
     }
     let at = |z: f32, up: f32| format!("[0.0,{},{}]", f(ground(z) + up), f(z));
     let nodes = [
-        "{\"name\":\"course\",\"children\":[1,2,3,4,5,6,7,8]}".to_string(),
+        "{\"name\":\"course\",\"children\":[1,2,3,4,5,6,7,8,9,10,11]}".to_string(),
         "{\"name\":\"slope\",\"mesh\":0,\"extras\":{\"ava_type\":\"terrain\",\"ava_surface\":\"groomed\"}}".to_string(),
         "{\"name\":\"rail\",\"mesh\":1,\"extras\":{\"ava_type\":\"rail\",\"ava_surface\":\"metal\"}}".to_string(),
         format!("{{\"name\":\"spawn\",\"translation\":{},\"extras\":{{\"ava_type\":\"spawn\",\"ava_slot\":0}}}}", at(5.0, 0.0)),
@@ -153,6 +160,21 @@ pub fn gltf() -> String {
             at(100.0, 0.0)
         ),
         "{\"name\":\"below\",\"mesh\":2,\"translation\":[0.0,-170.0,200.0],\"scale\":[600.0,100.0,600.0],\"extras\":{\"ava_type\":\"death\"}}".to_string(),
+        format!(
+            "{{\"name\":\"heli intro\",\"translation\":[0.0,{},{}],\"extras\":{{\"ava_type\":\"heli_path\",\"ava_order\":0}}}}",
+            f(HELI_INTRO[0]),
+            f(HELI_INTRO[1])
+        ),
+        format!(
+            "{{\"name\":\"heli pickup\",\"translation\":{},\"extras\":{{\"ava_type\":\"heli_path\",\"ava_order\":1}}}}",
+            at(HELI_PICKUP_Z, 0.0)
+        ),
+        format!(
+            "{{\"name\":\"flare\",\"translation\":[{},{},{}],\"extras\":{{\"ava_type\":\"prop\",\"ava_object\":\"{FLARE}\"}}}}",
+            f(FLARE_AT[0]),
+            f(ground(FLARE_AT[1])),
+            f(FLARE_AT[1])
+        ),
     ];
     let meshes = ["slope", "rail", "box"]
         .iter()

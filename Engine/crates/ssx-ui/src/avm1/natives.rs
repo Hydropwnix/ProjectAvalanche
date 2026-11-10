@@ -11,6 +11,8 @@ pub struct NativeState {
     queue: Vec<(&'static str, &'static str, Vec<Value>)>,
     pub view_ready: Option<String>,
     pub refused: u64,
+    pub sd_moves: HashMap<crate::display::InstanceId, bool>,
+    pub sd_scales: HashMap<crate::display::InstanceId, [f64; 3]>,
 }
 
 impl NativeState {

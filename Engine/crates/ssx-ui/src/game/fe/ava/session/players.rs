@@ -9,6 +9,7 @@ use ssx_net_proto::{Mode, StandingState};
 pub const DP: &str = "dp_ava_players";
 pub const DP_ROWS: &str = "dp_ava_players_rows";
 pub const DP_ROWS_INDEX: &str = "dp_ava_players_rows_index";
+pub const DP_WINDOW: &str = "dp_ava_players_window";
 pub const OPEN: &str = "go_to_ava_players";
 pub const BACK: &str = "go_to_pause";
 pub const RESULTS_OPEN: &str = "ava_results_players";
@@ -106,7 +107,7 @@ pub fn update(fe: &mut FrontEnd) {
         return;
     }
     s.list.window.clamp(s.players.len());
-    fe.publish.extend([DP.into(), DP_ROWS.into(), DP_ROWS_INDEX.into()]);
+    fe.publish.extend([DP.into(), DP_ROWS.into(), DP_ROWS_INDEX.into(), DP_WINDOW.into()]);
 }
 
 pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &ActionParam) {
@@ -146,7 +147,7 @@ pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &ActionPa
         _ => false,
     };
     if moved {
-        fe.publish.extend([DP_ROWS.into(), DP_ROWS_INDEX.into()]);
+        fe.publish.extend([DP_ROWS.into(), DP_ROWS_INDEX.into(), DP_WINDOW.into()]);
     }
 }
 
@@ -224,6 +225,7 @@ pub fn build(fe: &FrontEnd, cx: &mut Ctx, loc: &mut Localization, dp: &str) -> O
             Some(Value::Object(cx.new_array(rows)))
         }
         DP_ROWS_INDEX => Some(Value::Number(s.list.window.focus as f64)),
+        DP_WINDOW => Some(crate::game::fe::ava::window_object(cx, s.players.len(), s.list.window.first)),
         _ => None,
     }
 }

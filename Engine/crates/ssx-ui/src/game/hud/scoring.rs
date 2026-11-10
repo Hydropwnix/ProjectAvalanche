@@ -238,6 +238,14 @@ impl Component for Scoring {
             {
                 let info = DisplayInfo { x: 640.0, y: 610.0, visible: true, ..Default::default() };
                 c.set_info(cx, &info, DI_X | DI_Y | DI_VISIBLE);
+                // TODO(guess): a port choice — the disc's placement (SetDisplayInfo flags 0x43: x 640, y 610, visible)
+                // leaves the shown byte +0x1A9 as it is; the port records the show there. They differ only when UI
+                // 0x131 rose before the bind (0x8262A9A0 → 0x8262A5B0(0): hidden, +0x1A9 = 0): the placement shows the
+                // clip again and the HUD's hide (0x8238C100 → 0x82385110 → 0x8262A5B0(0)) is skipped, the meter stays
+                // over the pause menu. The HUD view binds `mcScoring` at its frame 30 (`OnScoreHudLoaded`), before a
+                // drop's intro reaches its GO; a GO in the view's first second (fe_run's 16 ride steps per UI frame)
+                // raises 0x131 first; settle: the original with 0x131 raised before frame 30.
+                self.shown = Some(true);
             }
             if self.deposit {
                 if self.component.is_none() {
@@ -683,7 +691,56 @@ fn set_x(cx: &mut Ctx, c: &mut Clip, x: i32) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
+    use crate::avm1::Vm;
+    use crate::display::Player;
+    use crate::display::tests::{empty_lib, movie, po};
+    use crate::game::loc::{Language, Localization};
+    use crate::game::values::UiValues;
+    use crate::library::FrameTag;
+
+    #[test]
+    fn a_component_bound_after_the_score_came_on_hides_with_the_hud() {
+        let mut lib = empty_lib();
+        let mut p = po(1, Some(10), false, 0);
+        p.name = Some("mcScoring".into());
+        let m = movie(&mut lib, vec![vec![FrameTag::Place(Arc::new(p))]]);
+        let mut player = Player::new();
+        let mut vm = Vm::new();
+        vm.load_level(&mut lib, &mut player, m, 0);
+        let mut cx = vm.ctx(&mut lib, &mut player);
+        let mut values = UiValues::new();
+        let mut loc = Localization::empty(Language::English);
+        let (mut sounds, mut nav_events) = (Vec::new(), Vec::new());
+        let mut env = HudEnv {
+            values: &mut values,
+            loc: &mut loc,
+            event_type: 0,
+            sounds: &mut sounds,
+            nav_events: &mut nav_events,
+            gear: [false; 15],
+        };
+        let dt = 1.0 / 30.0;
+        let mut s = Scoring::default();
+        env.values.set_bool(id::SCORE_ACTIVE, true);
+        s.update(&mut cx, &mut env, dt);
+        env.values.clear_dirty();
+        let mut clip = Clip::resolve(&mut cx, "_level0.mcScoring").expect("the placed instance");
+        s.bind(&mut cx, &mut env, "db_hud_scoring_component", clip.clone());
+        assert!(!clip.visible(&mut cx), "the bind hides the component");
+        s.update(&mut cx, &mut env, dt);
+        assert!(clip.visible(&mut cx), "the placement shows it while 0x131 holds");
+        env.values.clear_dirty();
+        env.values.set_bool(id::SCORE_ACTIVE, false);
+        s.update(&mut cx, &mut env, dt);
+        assert!(!clip.visible(&mut cx), "the HUD's hide reaches it");
+        env.values.clear_dirty();
+        env.values.set_bool(id::SCORE_ACTIVE, true);
+        s.update(&mut cx, &mut env, dt);
+        assert!(clip.visible(&mut cx));
+    }
 
     #[test]
     fn meter_formulas() {

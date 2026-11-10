@@ -8,10 +8,13 @@ use crate::geom::{Cxform, Mat2d, RectF};
 use crate::glyph_filter::{GlyphFilter, ShadowParam, TextFieldParam, shadow_size};
 use crate::library::{CharRef, Character, Library};
 
+pub mod cover;
 pub mod overlay;
+mod stage;
 use crate::scale9::Slice9;
 use crate::shape::{self, Paint, ShapeMesh, Tolerance};
 use crate::tess::{Budget, Mesh, OverBudget, Work};
+pub use stage::{ScaleMode, stage_scale, stage_transform};
 
 #[derive(Clone, Debug)]
 pub struct DrawItem {
@@ -36,6 +39,7 @@ pub struct RenderList {
     pub commands: Vec<Command>,
     pub viewport: (u32, u32),
     pub background: Option<[f32; 4]>,
+    pub stage: Option<[f32; 4]>,
 }
 
 impl RenderList {
@@ -52,33 +56,6 @@ impl RenderList {
             })
             .sum()
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ScaleMode {
-    NoScale,
-    ShowAll,
-    ExactFit,
-    NoBorder,
-}
-
-pub fn stage_transform(stage: RectF, viewport: (u32, u32), mode: ScaleMode) -> Mat2d {
-    let (sw, sh) = ((stage.width() / 20.0).max(1.0), (stage.height() / 20.0).max(1.0));
-    let (vw, vh) = (viewport.0 as f32, viewport.1 as f32);
-    let (kx, ky) = match mode {
-        ScaleMode::NoScale => (1.0, 1.0),
-        ScaleMode::ExactFit => (vw / sw, vh / sh),
-        ScaleMode::ShowAll => {
-            let k = (vw / sw).min(vh / sh);
-            (k, k)
-        }
-        ScaleMode::NoBorder => {
-            let k = (vw / sw).max(vh / sh);
-            (k, k)
-        }
-    };
-    let (ox, oy) = ((vw - sw * kx) / 2.0, (vh - sh * ky) / 2.0);
-    Mat2d::translate(ox, oy).mul(&Mat2d::scale(kx / 20.0, ky / 20.0)).mul(&Mat2d::translate(-stage.x0, -stage.y0))
 }
 
 // TODO(guess): fixed power-of-two buckets instead of Scaleform's history-dependent reuse band; settle: the mesh cache's reuse test.
@@ -181,11 +158,14 @@ impl Renderer {
 
     pub fn build(&mut self, lib: &Library, player: &Player, viewport: (u32, u32), mode: ScaleMode) -> RenderList {
         self.new_frame();
-        let mut out = RenderList { commands: Vec::new(), viewport, background: None };
+        let mut out = RenderList { commands: Vec::new(), viewport, background: None, stage: None };
         let Some(root) = player.levels.values().next().and_then(|r| player.get(*r)) else { return out };
         let movie = lib.movie(root.movie);
         out.background = movie.background.map(crate::geom::rgba);
         let stage = stage_transform(movie.stage, viewport, mode);
+        let ((x0, y0), (x1, y1)) =
+            (stage.apply(movie.stage.x0, movie.stage.y0), stage.apply(movie.stage.x1, movie.stage.y1));
+        out.stage = Some([x0, y0, x1, y1]);
         for &r in player.levels.values() {
             let inh = Inherited { xf: stage, cx: Cxform::IDENTITY, blend: BlendMode::Normal, mask: false, slice: None };
             self.instance(lib, player, r, inh, &mut out.commands);
@@ -680,17 +660,5 @@ mod tests {
             })
             .collect();
         assert_eq!(kinds, ["begin", "draw", "end", "draw", "pop", "draw", "popend", "draw"]);
-    }
-
-    #[test]
-    fn no_border_fills_and_centres() {
-        let stage = RectF::new(0.0, 0.0, 1280.0 * 20.0, 720.0 * 20.0);
-        let m = stage_transform(stage, (1024, 768), ScaleMode::NoBorder);
-        let k = 768.0 / 720.0;
-        assert!((m.a - k / 20.0).abs() < 1e-6);
-        let (x, _) = m.apply(0.0, 0.0);
-        assert!((x - (1024.0 - 1280.0 * k) / 2.0).abs() < 1e-3, "{x}");
-        let s = stage_transform(stage, (1024, 768), ScaleMode::ShowAll);
-        assert!((s.a - 0.8 / 20.0).abs() < 1e-6);
     }
 }

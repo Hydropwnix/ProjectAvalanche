@@ -1,13 +1,13 @@
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde_json::{Map, Value as Json};
+use ssx_assets::display::{DisplaySettings, WindowMode};
 
 use crate::game::loc::Localization;
 
-pub const MAX_FILE: u64 = 1024 * 1024;
+pub const MAX_FILE: u64 = ssx_assets::settings_file::MAX_FILE;
 
-#[cfg(feature = "net")]
 // TODO(guess): a port choice — "Player", the port's offline gamertag (`USER_gamertag`); settle: none (the player sets
 // a name in Options, Player Name).
 pub const DEFAULT_PLAYER_NAME: &str = "Player";
@@ -63,6 +63,13 @@ pub struct PortSettings {
     pub player_name: Option<String>,
     #[cfg(feature = "net")]
     pub resources: super::resource_settings::ResourceSettings,
+    pub window: Option<WindowChoice>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WindowChoice {
+    pub settings: DisplaySettings,
+    pub exclusive: bool,
 }
 
 impl Default for PortSettings {
@@ -86,6 +93,7 @@ impl Default for PortSettings {
             player_name: None,
             #[cfg(feature = "net")]
             resources: Default::default(),
+            window: None,
         }
     }
 }
@@ -207,43 +215,40 @@ pub enum SaveError {
 }
 
 pub fn read_file(path: &Path) -> Result<Map<String, Json>> {
-    let meta = match std::fs::metadata(path) {
-        Ok(m) => m,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Map::new()),
-        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
-    };
-    if meta.len() > MAX_FILE {
-        bail!("{}: {} bytes, at most {MAX_FILE}", path.display(), meta.len());
-    }
-    let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    match serde_json::from_str::<Json>(&text) {
-        Ok(Json::Object(m)) => Ok(m),
-        Ok(_) => bail!("{}: not a JSON object", path.display()),
-        Err(e) => Err(e).with_context(|| format!("parsing {}", path.display())),
-    }
+    ssx_assets::settings_file::read_object(path)
 }
 
-pub fn save_file(path: &Path, s: &PortSettings) -> Result<(), SaveError> {
-    let mut m = read_file(path).map_err(|e| SaveError::Unreadable(format!("{e:#}")))?;
-    s.write_json(&mut m);
-    write_object(path, m).map_err(SaveError::Io)
+pub fn save_file(path: &Path, kept: &PortSettings, s: &PortSettings) -> Result<(), SaveError> {
+    use ssx_assets::settings_file::{UpdateError, merge_changes, update_object};
+    let (mut base, mut ours) = (Map::new(), Map::new());
+    kept.write_json(&mut base);
+    s.write_json(&mut ours);
+    match update_object(path, |m| {
+        merge_changes(m, &base, &ours, 2);
+        Ok(())
+    }) {
+        Ok(_) => Ok(()),
+        Err(UpdateError::Unreadable(why)) => Err(SaveError::Unreadable(why)),
+        Err(UpdateError::Failed(e)) => Err(SaveError::Io(e.context(format!("writing {}", path.display())))),
+    }
 }
 
 pub fn replace_unreadable(path: &Path, s: &PortSettings) -> Result<std::path::PathBuf> {
     let aside = super::files::move_aside(path).with_context(|| format!("moving {} aside", path.display()))?;
     let mut m = Map::new();
     s.write_json(&mut m);
-    write_object(path, m)?;
+    ssx_assets::settings_file::update_object(path, |file| {
+        file.extend(m);
+        Ok(())
+    })
+    .map_err(|e| anyhow::anyhow!("writing {}: {e}", path.display()))?;
     Ok(aside)
-}
-
-fn write_object(path: &Path, m: Map<String, Json>) -> Result<()> {
-    let text = serde_json::to_string_pretty(&Json::Object(m))?;
-    super::files::write_whole(path, text.as_bytes()).with_context(|| format!("writing {}", path.display()))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Item {
+    WindowMode,
+    RenderResolution,
     Subdivide,
     Shading,
     Vsync,
@@ -278,7 +283,15 @@ pub enum Page {
 impl Page {
     pub fn items(self) -> &'static [Item] {
         match self {
-            Page::Display => &[Item::Subdivide, Item::Shading, Item::Vsync, Item::Objects, Item::Wireframe],
+            Page::Display => &[
+                Item::WindowMode,
+                Item::RenderResolution,
+                Item::Subdivide,
+                Item::Shading,
+                Item::Vsync,
+                Item::Objects,
+                Item::Wireframe,
+            ],
             Page::Effects => &[Item::Particles, Item::SnowTracks, Item::LocalLights, Item::Post, Item::Sky],
             Page::Sound => &[Item::Music, Item::MusicVolume, Item::Sfx, Item::SfxVolume],
             #[cfg(feature = "net")]
@@ -292,7 +305,9 @@ const NET_ITEMS: [Item; 3] = [Item::DownloadLimit, Item::ResourceCache, Item::Se
 #[cfg(not(feature = "net"))]
 const NET_ITEMS: [Item; 0] = [];
 
-const ALL: [Item; 14] = [
+const ALL: [Item; 16] = [
+    Item::WindowMode,
+    Item::RenderResolution,
     Item::Subdivide,
     Item::Shading,
     Item::Vsync,
@@ -309,12 +324,16 @@ const ALL: [Item; 14] = [
     Item::SfxVolume,
 ];
 
+const RENDER_HEIGHTS: [Option<u32>; 7] = [None, Some(2160), Some(1440), Some(1080), Some(900), Some(720), Some(540)];
+
 // TODO(guess): a port choice — the launcher's volumes (0 … 1 in hundredths on its slider) are shown and stepped in tenths, as the game's own speech and effect volumes step 0 … 10 (`AUDIOSETTING_*`); a step from 0.37 goes to 0.3 or 0.4; settle: none (the port's own setting).
 const VOLUME_STEPS: f32 = 10.0;
 
 impl Item {
     pub fn name(self) -> &'static str {
         match self {
+            Item::WindowMode => "ava_opt_window",
+            Item::RenderResolution => "ava_opt_render_resolution",
             Item::Subdivide => "ava_opt_subdivide",
             Item::Shading => "ava_opt_shading",
             Item::Vsync => "ava_opt_vsync",
@@ -340,6 +359,8 @@ impl Item {
 
     pub fn title(self) -> &'static str {
         match self {
+            Item::WindowMode => "TXT_AVA_OPT_WINDOW",
+            Item::RenderResolution => "TXT_AVA_OPT_RENDER_RESOLUTION",
             Item::Subdivide => "TXT_AVA_OPT_SUBDIVIDE",
             Item::Shading => "TXT_AVA_OPT_SHADING",
             Item::Vsync => "TXT_AVA_OPT_VSYNC",
@@ -386,6 +407,16 @@ impl Item {
 
     pub fn reset(self, s: &mut PortSettings, defaults: &PortSettings) {
         match self {
+            Item::WindowMode => {
+                if let Some(w) = s.window.as_mut() {
+                    w.settings = w.settings.with_mode(DisplaySettings::default().mode);
+                }
+            }
+            Item::RenderResolution => {
+                if let Some(w) = s.window.as_mut() {
+                    w.settings.render_height = DisplaySettings::default().render_height;
+                }
+            }
             Item::Subdivide => s.subdivide = defaults.subdivide,
             Item::Shading => s.shading = defaults.shading,
             Item::Music => s.music = defaults.music,
@@ -406,6 +437,7 @@ impl Item {
 
     pub fn enabled(self, s: &PortSettings) -> bool {
         match self {
+            Item::WindowMode | Item::RenderResolution => s.window.is_some(),
             Item::MusicVolume => s.music != Music::Off,
             Item::SfxVolume => s.sfx,
             _ => true,
@@ -416,6 +448,16 @@ impl Item {
         let mut on_off = |b: bool| loc.text(if b { "TXT_ON" } else { "TXT_OFF" });
         let mut s = s.clone();
         match self {
+            Item::WindowMode => loc.text(match s.window.as_ref().map(|w| w.settings.mode) {
+                None => "TXT_AVA_OPT_WINDOW_NONE",
+                Some(WindowMode::Windowed) => "TXT_AVA_OPT_WINDOW_WINDOWED",
+                Some(WindowMode::Borderless) => "TXT_AVA_OPT_WINDOW_BORDERLESS",
+                Some(WindowMode::Exclusive) => "TXT_AVA_OPT_WINDOW_EXCLUSIVE",
+            }),
+            Item::RenderResolution => match s.window.as_ref().and_then(|w| w.settings.render_height) {
+                None => loc.text("TXT_AVA_OPT_RENDER_NATIVE"),
+                Some(h) => format!("{h}p"),
+            },
             Item::Subdivide => s.subdivide.to_string(),
             Item::Shading => loc.text(SHADINGS.iter().find(|x| x.0 == s.shading).map_or("", |x| x.2)),
             Item::Music => loc.text(MUSICS.iter().find(|x| x.0 == s.music).map_or("", |x| x.2)),
@@ -436,6 +478,22 @@ impl Item {
             list[if next { (i + 1) % n } else { (i + n - 1) % n }]
         }
         match self {
+            Item::WindowMode => {
+                let Some(w) = s.window.as_mut() else { return false };
+                let offered: Vec<WindowMode> =
+                    WindowMode::ALL.into_iter().filter(|&m| m != WindowMode::Exclusive || w.exclusive).collect();
+                let to = wrap(&offered, w.settings.mode, next);
+                let moved = to != w.settings.mode;
+                w.settings = w.settings.with_mode(to);
+                moved
+            }
+            Item::RenderResolution => {
+                let Some(w) = s.window.as_mut() else { return false };
+                let to = wrap(&RENDER_HEIGHTS, w.settings.render_height, next);
+                let moved = to != w.settings.render_height;
+                w.settings.render_height = to;
+                moved
+            }
             Item::Subdivide => {
                 let v = s.subdivide.min(SUBDIVIDE_MAX);
                 let to = if next { (v + 1).min(SUBDIVIDE_MAX) } else { v.saturating_sub(1) };
@@ -553,17 +611,85 @@ mod tests {
         let path = dir.join("settings.json");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&path, r#"{"iso": "/games/ssx.iso", "track": "alps0101", "vsync": true}"#).unwrap();
-        let s = PortSettings { vsync: false, music_volume: 0.4, ..Default::default() };
-        save_file(&path, &s).unwrap();
+        let kept = PortSettings::from_json(&Json::Object(read_file(&path).unwrap())).0;
+        let s = PortSettings { vsync: false, music_volume: 0.4, ..kept.clone() };
+        save_file(&path, &kept, &s).unwrap();
         let m = read_file(&path).unwrap();
         assert_eq!(m["iso"], "/games/ssx.iso");
         assert_eq!(m["track"], "alps0101");
         assert_eq!(m["vsync"], false);
         assert_eq!(m["music_volume"], 0.4);
+        assert!(!m.contains_key("subdivide") && !m.contains_key("particles"));
         assert_eq!(PortSettings::from_json(&Json::Object(m)).0, s);
         assert!(!path.with_extension("json.partial").exists());
         assert!(read_file(&dir.join("missing.json")).unwrap().is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_save_keeps_what_the_launcher_changed_meanwhile() {
+        let dir = std::env::temp_dir().join(format!("ava-options-merge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"vsync": true, "music_volume": 1.0, "resources": {"cache_mib": 1024}}"#).unwrap();
+        let kept = PortSettings::from_json(&Json::Object(read_file(&path).unwrap())).0;
+        std::fs::write(
+            &path,
+            r#"{"vsync": false, "music_volume": 1.0, "future": 7, "resources": {"cache_mib": 1024}}"#,
+        )
+        .unwrap();
+        let s = PortSettings { music_volume: 0.5, ..kept.clone() };
+        save_file(&path, &kept, &s).unwrap();
+        let m = read_file(&path).unwrap();
+        assert_eq!(
+            (&m["vsync"], &m["music_volume"], &m["future"]),
+            (&Json::Bool(false), &Json::from(0.5), &Json::from(7))
+        );
+        let w =
+            PortSettings { window: Some(WindowChoice { settings: Default::default(), exclusive: true }), ..s.clone() };
+        save_file(&path, &s, &w).unwrap();
+        assert_eq!(read_file(&path).unwrap(), m);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_window_mode_steps_through_what_is_offered() {
+        let mut s = PortSettings::default();
+        assert!(!Item::WindowMode.enabled(&s) && !Item::WindowMode.step(&mut s, true));
+        s.window = Some(WindowChoice { settings: Default::default(), exclusive: false });
+        let mode = |s: &PortSettings| s.window.as_ref().map(|w| (w.settings.mode, w.settings.fullscreen));
+        assert!(Item::WindowMode.step(&mut s, true));
+        assert_eq!(mode(&s), Some((WindowMode::Borderless, WindowMode::Borderless)));
+        assert!(Item::WindowMode.step(&mut s, true));
+        assert_eq!(mode(&s), Some((WindowMode::Windowed, WindowMode::Borderless)));
+        if let Some(w) = s.window.as_mut() {
+            w.exclusive = true;
+        }
+        assert!(Item::WindowMode.step(&mut s, false));
+        assert_eq!(mode(&s), Some((WindowMode::Exclusive, WindowMode::Exclusive)));
+        Item::WindowMode.reset(&mut s, &PortSettings::default());
+        assert_eq!(mode(&s), Some((WindowMode::Windowed, WindowMode::Exclusive)));
+    }
+
+    #[test]
+    fn the_render_resolution_steps_through_the_presets() {
+        let mut s = PortSettings::default();
+        assert!(!Item::RenderResolution.enabled(&s) && !Item::RenderResolution.step(&mut s, true));
+        s.window = Some(WindowChoice { settings: Default::default(), exclusive: false });
+        let height = |s: &PortSettings| s.window.as_ref().and_then(|w| w.settings.render_height);
+        assert_eq!(height(&s), None);
+        assert!(Item::RenderResolution.step(&mut s, false));
+        assert_eq!(height(&s), Some(540));
+        assert!(Item::RenderResolution.step(&mut s, true));
+        assert_eq!(height(&s), None);
+        assert!(Item::RenderResolution.step(&mut s, true));
+        assert_eq!(height(&s), Some(2160));
+        if let Some(w) = s.window.as_mut() {
+            w.settings.render_height = Some(1080);
+        }
+        Item::RenderResolution.reset(&mut s, &PortSettings::default());
+        assert_eq!(height(&s), None);
     }
 
     #[test]
@@ -575,7 +701,7 @@ mod tests {
         let s = PortSettings { vsync: false, ..Default::default() };
         for broken in [&b"[1, 2"[..], b"{\"iso\": \"/games/ssx.iso\",", b"[]", &vec![b' '; MAX_FILE as usize + 1]] {
             std::fs::write(&path, broken).unwrap();
-            assert!(matches!(save_file(&path, &s), Err(SaveError::Unreadable(_))));
+            assert!(matches!(save_file(&path, &PortSettings::default(), &s), Err(SaveError::Unreadable(_))));
             assert_eq!(std::fs::read(&path).unwrap(), broken, "left as it was");
         }
         let aside = replace_unreadable(&path, &s).unwrap();

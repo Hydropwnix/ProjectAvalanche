@@ -56,6 +56,14 @@ pub enum PairError {
     NotTaken,
     NoFinish,
     Rules(RulesError),
+    NoHelicopter,
+}
+
+pub fn event_takes_start(t: EventType, intro: crate::map::Intro) -> Result<(), PairError> {
+    match (t, intro) {
+        (EventType::SurviveToDeath, crate::map::Intro::Spawn) => Err(PairError::NoHelicopter),
+        _ => Ok(()),
+    }
 }
 
 impl std::fmt::Display for PairError {
@@ -64,6 +72,11 @@ impl std::fmt::Display for PairError {
             PairError::NotTaken => write!(f, "the gamemode does not name this map ([[gamemode.map]]) nor take any_map"),
             PairError::NoFinish => write!(f, "the map has no finish, and the gamemode's event ends at one"),
             PairError::Rules(e) => write!(f, "{e}"),
+            PairError::NoHelicopter => write!(
+                f,
+                "the gamemode's survive to death loops through the helicopter's pickup, and the map starts at its spawn \
+                 (intro = \"heli\" starts it in the helicopter)"
+            ),
         }
     }
 }
@@ -77,6 +90,10 @@ impl GamemodeToml {
 
     pub fn needs_finish(&self) -> bool {
         self.event_type != EventType::FreeRide
+    }
+
+    pub fn takes_start(&self, intro: crate::map::Intro) -> Result<(), PairError> {
+        event_takes_start(self.event_type, intro)
     }
 
     pub fn rules(&self, map: &ContentId, map_limit_ms: Option<u32>, has_finish: bool) -> Result<Rules, PairError> {

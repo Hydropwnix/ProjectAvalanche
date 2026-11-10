@@ -23,6 +23,7 @@ pub enum Step {
     WindowMove(f32, f32),
     Click(crate::game::pointer::MouseButton),
     Wheel(i32),
+    Display(crate::game::display_class::DisplayClass),
 }
 
 const MAX_POINTER_COORD: f32 = 16_384.0;
@@ -97,6 +98,13 @@ pub fn parse_script(s: &str) -> Result<Vec<(f64, Step)>> {
                     k => anyhow::bail!("script step key={k}: backspace, delete, left, right, home, end, enter, escape"),
                 })
             }
+            w if w.starts_with("display=") => Step::Display(crate::game::display_class::DisplayClass {
+                widescreen: match &w[8..] {
+                    "wide" => true,
+                    "4x3" => false,
+                    d => anyhow::bail!("script step display={d}: 4x3 or wide"),
+                },
+            }),
             w if w.starts_with("stick=") => {
                 let (x, y) = w[6..].split_once('/').with_context(|| format!("script step {w:?}: stick=<x>/<y>"))?;
                 Step::Stick(x.parse()?, y.parse()?)
@@ -162,6 +170,7 @@ pub struct Host {
     release: Vec<(Button, u8)>,
     pointer_release: Vec<crate::game::pointer::MouseButton>,
     pub window_moves: Vec<(f32, f32)>,
+    pub displays: Vec<crate::game::display_class::DisplayClass>,
     pub script_pointer: bool,
     pub script_pad: bool,
     pub paused: bool,
@@ -246,6 +255,7 @@ impl Host {
             release: Vec::new(),
             pointer_release: Vec::new(),
             window_moves: Vec::new(),
+            displays: Vec::new(),
             script_pointer: false,
             script_pad: false,
             paused: false,
@@ -340,6 +350,10 @@ impl Host {
                     self.note(format!("pointer wheel {n} (script)"));
                     ui.pointer_wheel(n);
                     self.script_pointer = true;
+                }
+                Step::Display(d) => {
+                    self.note(format!("display {} (script)", if d.widescreen { "widescreen" } else { "4:3" }));
+                    self.displays.push(d);
                 }
             }
         }

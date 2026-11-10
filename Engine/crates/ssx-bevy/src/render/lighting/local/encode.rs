@@ -31,8 +31,18 @@ const STACKS: u32 = 10;
 const SLICES: u32 = 10;
 const RECORD: u32 = 10;
 
-pub(super) fn collect(big_root: &std::path::Path, track: &str) -> Result<(Vec<Placed>, String)> {
-    let lights = load_track_lights(big_root, track).with_context(|| format!("{track}: light nodes"))?;
+pub(super) fn collect(
+    big_root: &std::path::Path,
+    track: Option<&str>,
+    map: &[(u32, ssx_assets::track_objects::Placement)],
+) -> Result<(Vec<Placed>, String)> {
+    let mut lights = match track {
+        Some(t) => load_track_lights(big_root, t).with_context(|| format!("{t}: light nodes"))?,
+        None => Default::default(),
+    };
+    if !map.is_empty() {
+        lights.extend(ssx_assets::track_lights::map_lights(big_root, map).context("the map's placed objects' lights")?);
+    }
     let mut placed = Vec::new();
     let (mut entity, mut off, mut text) = (0u32, 0usize, 0usize);
     let mut strings: Option<Strings> = None;

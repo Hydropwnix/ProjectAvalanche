@@ -2,7 +2,7 @@ use super::*;
 
 impl GameUi {
     pub fn run_nav(&mut self, vm: &mut Vm, lib: &mut Library, player: &mut Player) {
-        if self.nav_wait.is_some() {
+        if self.nav_wait.is_some() || self.relayout.is_some() {
             return;
         }
         while let Some(action) = self.nav.next_action() {

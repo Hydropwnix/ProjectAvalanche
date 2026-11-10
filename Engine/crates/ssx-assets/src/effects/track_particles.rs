@@ -32,6 +32,7 @@ pub struct ObjectParticles {
 pub enum InstanceScope {
     Track,
     Drop(u32),
+    Map,
 }
 
 #[derive(Clone, Debug)]
@@ -123,6 +124,33 @@ pub fn track_particles(db: &Db<'_>, track: &str, drop: Option<u32>) -> Result<Tr
         out.instances.push(ParticleInstance { object, key, scope, placements });
     }
     Ok(out)
+}
+
+pub fn map_particles(big_root: &Path, placed: &[(u32, u32, Placement)]) -> Result<TrackParticles> {
+    crate::vault_db::with_attribdb(big_root, |db| {
+        let mut out = TrackParticles::default();
+        let mut by_key: HashMap<u32, Option<usize>> = HashMap::new();
+        for &(instance, key, placement) in placed {
+            let idx = match by_key.get(&key) {
+                Some(i) => *i,
+                None => {
+                    let o = object_particles(db, crate::track_objects::CLASS_GAMEOBJECT, key)
+                        .with_context(|| format!("game object {key:#010x}"))?;
+                    let i = o.lods.iter().any(|l| !l.is_empty()).then(|| {
+                        out.objects.push(o);
+                        out.objects.len() - 1
+                    });
+                    by_key.insert(key, i);
+                    i
+                }
+            };
+            if let Some(object) = idx {
+                let scope = InstanceScope::Map;
+                out.instances.push(ParticleInstance { object, key: instance, scope, placements: vec![placement] });
+            }
+        }
+        Ok(out)
+    })
 }
 
 fn placements(d: &FieldData) -> Vec<Placement> {

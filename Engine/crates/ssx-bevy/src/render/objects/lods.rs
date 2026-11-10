@@ -278,7 +278,10 @@ pub(super) fn update_object_lods(
     let Some(mut lods) = lods else { return };
     let Some((camera, view)) = cameras.iter().find(|(c, _)| c.is_active) else { return };
     let clip = camera.clip_from_view();
-    let tan_min = 1.0 / clip.x_axis.x.abs().max(clip.y_axis.y.abs());
+    let (tan_x, tan_y) = (1.0 / clip.x_axis.x.abs(), 1.0 / clip.y_axis.y.abs());
+    let narrower = tan_x < tan_y * crate::camera::GAME_ASPECT * (1.0 - 1e-4);
+    let tan_min =
+        if narrower { tan_x / crate::camera::GAME_ASPECT } else { 1.0 / clip.x_axis.x.abs().max(clip.y_axis.y.abs()) };
     if !(tan_min.is_finite() && tan_min > 0.0) {
         return;
     }

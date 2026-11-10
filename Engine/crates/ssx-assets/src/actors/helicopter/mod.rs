@@ -12,7 +12,7 @@ use crate::character::{Skin, Srt};
 use crate::ghosts::{CLASS_GAMEOBJECT, FIELD_LOD_THRESHOLDS, FIELD_MODELS, bind_pose, part_refs, skin_of};
 use crate::object_mesh::ObjectMesh;
 use crate::track_objects::asset_file;
-use crate::vault_db::{Material, refs, with_track_db};
+use crate::vault_db::{Material, refs, with_level_db};
 
 pub use animation::*;
 
@@ -35,7 +35,10 @@ const FIELD_HELI_DISPLAY: u32 = 0x5A0F_251D;
 pub enum HeliSource {
     Drop,
     Range,
+    Default,
 }
+
+pub const DEFAULT_HELICOPTER: u32 = 0xB48A_C47B;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct HeliChoice {
@@ -110,6 +113,10 @@ pub fn drop_helicopter(big_root: &Path, ui_drop: &str) -> Result<HeliChoice> {
     choice(&Vaults::load(big_root)?, fnv1(ui_drop.as_bytes())).with_context(|| format!("ui_drop {ui_drop}"))
 }
 
+pub fn default_helicopter(big_root: &Path) -> Result<HeliChoice> {
+    helicopter(&Vaults::load(big_root)?, DEFAULT_HELICOPTER, HeliSource::Default, 0, 0)
+}
+
 pub fn survey(big_root: &Path) -> Result<Vec<(u32, Result<HeliChoice>)>> {
     let v = Vaults::load(big_root)?;
     let keys: Vec<u32> = v.cols[0].iter().filter(|c| c.class == CLASS_UI_DROP).map(|c| c.key).collect();
@@ -142,6 +149,10 @@ fn choice(v: &Vaults, drop: u32) -> Result<HeliChoice> {
         anyhow::ensure!(r != 0, "neither the drop nor its range {range:08x} names a helicopter");
         (r, HeliSource::Range)
     };
+    helicopter(v, key, source, peak, range)
+}
+
+fn helicopter(v: &Vaults, key: u32, source: HeliSource, peak: u32, range: u32) -> Result<HeliChoice> {
     let gameobject = v.reference(CLASS_HELICOPTER, key, FIELD_HELI_GAMEOBJECT)?;
     anyhow::ensure!(gameobject != 0, "helicopter {key:08x} has no game object");
     Ok(HeliChoice {
@@ -173,7 +184,11 @@ pub struct HeliModel {
 }
 
 pub fn load_model(big_root: &Path, track: &str, key: u32) -> Result<HeliModel> {
-    let (lod_thresholds, lod0) = with_track_db(big_root, track, |db| {
+    load_model_in(big_root, Some(track), key)
+}
+
+pub fn load_model_in(big_root: &Path, track: Option<&str>, key: u32) -> Result<HeliModel> {
+    let (lod_thresholds, lod0) = with_level_db(big_root, track, |db| {
         let mut thresholds = Vec::new();
         let mut models = Vec::new();
         for f in db.fields(CLASS_GAMEOBJECT, key)? {

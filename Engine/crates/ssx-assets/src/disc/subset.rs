@@ -10,7 +10,7 @@ use ssx_formats::chunk;
 use ssx_formats::xdvdfs::Disc;
 
 use super::setup::{
-    ARCHIVES, Cancelled, DiscCheck, Progress, big_root, check_disc, open_disc, read_index, safe_relative,
+    ARCHIVES, Cancelled, DiscCheck, Progress, big_root, check_disc, open_disc, portable_name, read_index, safe_relative,
 };
 
 pub const MARKER: &str = "subset.json";
@@ -51,15 +51,6 @@ impl Member {
     fn folded(&self) -> String {
         self.data_path().to_ascii_lowercase()
     }
-}
-
-fn portable_name(name: &str) -> bool {
-    const DEVICES: [&str; 6] = ["con", "prn", "aux", "nul", "conin$", "conout$"];
-    let stem = name.split('.').next().unwrap_or(name).trim_end_matches(' ').to_ascii_lowercase();
-    let numbered = (stem.starts_with("com") || stem.starts_with("lpt"))
-        && stem.len() == 4
-        && stem.as_bytes().get(3).is_some_and(u8::is_ascii_digit);
-    !(DEVICES.contains(&stem.as_str()) || numbered || name.ends_with('.') || name.ends_with(' '))
 }
 
 #[derive(Clone, Debug, Default)]

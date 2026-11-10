@@ -5,6 +5,8 @@ mod args;
 mod art;
 mod catalog;
 mod command;
+mod data_state;
+mod display;
 mod host;
 mod jobs;
 mod link_handler;
@@ -12,6 +14,7 @@ mod main_screen;
 mod masters;
 mod mod_list;
 mod settings;
+mod settings_flow;
 mod setup_flow;
 mod ui;
 mod update;
@@ -152,8 +155,9 @@ impl eframe::App for Refused {
 
 fn print(s: &settings::Settings) -> i32 {
     ssx_core::println!("settings {}", settings::Settings::path().display());
-    ssx_core::println!("game data {} (ready: {})", s.game_data().display(), s.data_ready());
-    if !s.data_ready() {
+    let state = s.data_state();
+    ssx_core::println!("game data {} (ready: {}; {state})", s.game_data().display(), state.playable());
+    if !state.playable() {
         return 1;
     }
     let big = s.big_root();

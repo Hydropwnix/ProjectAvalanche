@@ -92,6 +92,12 @@ impl Shell {
         let id: ssx_content::ContentId = map.id.parse().map_err(|e| anyhow::anyhow!("{}: {e}", map.id))?;
         info!("shell: game setup (0x82498BA0): {}", l.setup.describe(&fe.career));
         let n = self.rides + 1;
+        // TODO(guess): a map's intro path counts the map's rides in this game (the first Long, later Medium) as a drop's counts its range's visits (`NumTimesVisitedRange_<range><Rider>`, FUN_82385F28, persisted in the profile); a map has no range and the profile no record for it, so the count is not saved and starts again with the game; settle: none on the disc (maps are not the game's) — a profile record per map would keep it.
+        let visits = {
+            let c = self.map_rides.entry(map.id.clone()).or_insert(0);
+            *c = c.saturating_add(1);
+            *c
+        };
         let tracks = self.big_root.join("data0/data/xenon/gameexplorer");
         let spec = LevelSpec {
             track_dir: if map.track.is_empty() { tracks } else { tracks.join(&map.track) },
@@ -106,9 +112,11 @@ impl Shell {
             aspect: self.aspect,
             ride: Some(level::RideOptions {
                 game: true,
+                classic: ui.values.int(ssx_ui::game::values::id::SETTINGS_GAMEPLAY_CONTROLLER_SCHEME) != 0,
                 autoplay: self.autoplay,
                 setup: Some(ssx_ui::game::ride::game_setup(&l.setup)),
                 map_mode: Some(map.mode.clone()),
+                intro_visits: Some(visits),
                 live,
                 ..default()
             }),

@@ -18,6 +18,19 @@ pub const BOOST_HINT: u32 = 0xA4AC_9A6F;
 pub const CAMPAIGN_HINT: u32 = 0x23E9_4763;
 pub const LEVEL_UP_HINT: u32 = 0x6948_3FCF;
 pub const CAMPAIGN_COMPLETE_HINT: u32 = 0xD9CE_E023;
+pub const GEAR_ENTRY: u16 = 0x213;
+pub const GEAR_HELP: [(i64, u32); 10] = [
+    (0, 0x2864_FF12),
+    (1, 0xECBA_2068),
+    (2, 0x00F6_4F59),
+    (3, 0x0F22_76AA),
+    (4, 0x8230_8D47),
+    (5, 0x3EBD_26E6),
+    (6, 0x2161_FAEE),
+    (7, 0xBD73_85CB),
+    (8, 0x9F93_DBEE),
+    (12, 0xB385_F974),
+];
 const CLASS: u32 = 0xE04A_24A3;
 const F_BODY: u32 = 0x6DFE_676D;
 const F_TEXTS: [u32; 4] = [0x203A_E619, 0x203A_E61A, 0x203A_E61B, 0x203A_E61C];
@@ -210,6 +223,24 @@ pub fn request(fe: &mut FrontEnd, env: &mut FeEnv, key: u32) {
     }
 }
 
+pub fn gear_help(fe: &mut FrontEnd, env: &mut FeEnv, gear_type: f64, force: bool) {
+    let key = gear_help_key(gear_type, force);
+    fe.note(format!("message 0xDB49D73B {{{gear_type}, {force}}} → 0x824D5228: tutorial record {key:#010x}"));
+    show(fe, env, key, force);
+}
+
+pub fn gear_help_key(gear_type: f64, force: bool) -> u32 {
+    if (gear_type == 0.0 || gear_type == 8.0) && !force {
+        return 0;
+    }
+    GEAR_HELP.iter().find(|&&(t, _)| t as f64 == gear_type).map_or(0, |&(_, k)| k)
+}
+
+pub fn gear_entry_texts(entry: Option<&crate::game::fe::inventory::UiItem>) -> [Option<String>; 3] {
+    let stats = entry.map_or([(-1, 0); 3], |u| u.stats);
+    stats.map(|(stat, _)| (stat >= 0).then(|| format!("TXT_EQUIPSCREEN_STAT{stat}_DESCRIPTION")))
+}
+
 pub fn campaign_hint(fe: &mut FrontEnd, env: &mut FeEnv, key: u32) {
     if !show(fe, env, key, false) {
         env.values.set_bool(HINT_DONE, true);
@@ -252,5 +283,35 @@ mod tests {
             "assets/tutorial_images/equipment1_eng.dds"
         );
         assert_eq!(image_name("assets/tutorial_images/worldtour.dds", "fr"), "assets/tutorial_images/worldtour.dds");
+    }
+
+    #[test]
+    fn the_equipment_help_shows_the_gear_types_record() {
+        for (t, k) in GEAR_HELP {
+            assert_eq!(gear_help_key(t as f64, true), k);
+        }
+        assert_eq!(gear_help_key(0.0, true), 0x2864_FF12);
+        assert_eq!(gear_help_key(8.0, true), 0x9F93_DBEE);
+        for t in [-1.0, 9.0, 10.0, 11.0, 13.0, 14.0, 15.0, 1.5, f64::NAN, f64::INFINITY] {
+            assert_eq!(gear_help_key(t, true), 0);
+        }
+        assert_eq!(gear_help_key(0.0, false), 0);
+        assert_eq!(gear_help_key(8.0, false), 0);
+        assert_eq!(gear_help_key(1.0, false), 0xECBA_2068);
+    }
+
+    #[test]
+    fn a_stats_page_lists_the_gear_entrys_stats() {
+        assert_eq!(gear_entry_texts(None), [None, None, None]);
+        let entry =
+            crate::game::fe::inventory::UiItem { slot: 8, stats: [(31, 2), (-1, 0), (1, 5)], ..Default::default() };
+        assert_eq!(
+            gear_entry_texts(Some(&entry)),
+            [
+                Some("TXT_EQUIPSCREEN_STAT31_DESCRIPTION".to_string()),
+                None,
+                Some("TXT_EQUIPSCREEN_STAT1_DESCRIPTION".to_string())
+            ]
+        );
     }
 }

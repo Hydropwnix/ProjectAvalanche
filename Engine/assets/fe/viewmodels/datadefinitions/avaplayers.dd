@@ -11,6 +11,7 @@
 		[
 			{ "viewname": "ava_players", "type": "object", "dpname": "dp_ava_players" },
 			{ "viewname": "ava_players_rows", "type": "array", "dpname": "dp_ava_players_rows" },
-			{ "viewname": "ava_players_rows_index", "type": "int", "dpname": "dp_ava_players_rows_index" }
+			{ "viewname": "ava_players_rows_index", "type": "int", "dpname": "dp_ava_players_rows_index" },
+			{ "viewname": "ava_players_window", "type": "object", "dpname": "dp_ava_players_window" }
 		]
 }

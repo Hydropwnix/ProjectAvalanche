@@ -6,19 +6,18 @@ use anyhow::{Context, Result};
 use bevy::camera::visibility::RenderLayers;
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::{
-    App, AppExit, Camera, Camera2d, ClearColorConfig, Color, Component, DefaultPlugins, Deref, DerefMut, Entity, IVec2,
-    IntoScheduleConfigs, Msaa, PluginGroup, PreUpdate, Res, Resource, Sprite, Startup, UVec2, Update, Vec2, Visibility,
-    Window, WindowPlugin, WindowPosition, World, default, error, info, warn,
+    App, AppExit, Camera, Camera2d, ClearColorConfig, Color, Component, DefaultPlugins, Deref, DerefMut, Entity,
+    IntoScheduleConfigs, Msaa, PluginGroup, PreUpdate, Res, ResMut, Resource, Sprite, Startup, Update, Vec2,
+    Visibility, WindowPlugin, World, default, error, info, warn,
 };
 use bevy::render::view::Tonemapping;
 use bevy::render::{ExtractSchedule, RenderApp};
-use bevy::window::{PresentMode, WindowResolution};
 use bevy::winit::WinitSettings;
-use serde::{Deserialize, Serialize};
 use ssx_assets::career::Profile;
 use ssx_assets::career::profile::DropState;
 use ssx_assets::career::save::SaveSchema;
 use ssx_ui::game::GameUi;
+use ssx_ui::game::display_class::DisplayClass;
 use ssx_ui::game::fe::host::{Host, Phase as HostPhase, Step};
 use ssx_ui::game::loc::Language;
 
@@ -28,6 +27,7 @@ use crate::shell::level::{self, LevelData, ShadingArg};
 use crate::ui;
 
 mod check;
+mod display;
 mod frame;
 mod live;
 mod maps;
@@ -39,6 +39,7 @@ mod window;
 mod world;
 
 pub use check::{UiPipelinesReady, WorldCheck, report_pipelines, screenshot, ui_cover};
+pub use display::{DisplayCli, DisplayState, WindowSpec, alt_held, print_displays};
 use frame::{shell_input, shell_step};
 pub use live::shown_text;
 pub use pads::{PadSlots, PadState, StickDpad, pad_presses, pads_frame};
@@ -53,32 +54,6 @@ pub fn settings_values(values: &ssx_ui::game::values::UiValues) -> Vec<(u16, i32
 }
 
 pub const SAVE_FILE: &str = "ssxvprofile";
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub struct WindowSpec {
-    pub width: u32,
-    pub height: u32,
-    pub physical: bool,
-    pub vsync: bool,
-    pub position: Option<(i32, i32)>,
-}
-
-impl WindowSpec {
-    pub fn window(&self, title: &str) -> Window {
-        let resolution = if self.physical {
-            WindowResolution::new(self.width, self.height).with_scale_factor_override(1.0)
-        } else {
-            UVec2::new(self.width, self.height).into()
-        };
-        Window {
-            title: title.into(),
-            resolution,
-            present_mode: if self.vsync { PresentMode::default() } else { PresentMode::AutoNoVsync },
-            position: self.position.map_or(WindowPosition::Automatic, |(x, y)| WindowPosition::At(IVec2::new(x, y))),
-            ..default()
-        }
-    }
-}
 
 pub struct GameArgs {
     pub big_root: PathBuf,
@@ -122,6 +97,14 @@ pub struct NetConnect {
     pub server: String,
     pub password_file: Option<PathBuf>,
     pub name: Option<String>,
+}
+
+fn apply_controller_scheme(ui: Res<GameUiRes>, ride: Option<ResMut<crate::ride::Ride>>) {
+    let Some(mut ride) = ride else { return };
+    let classic = ui.values.int(ssx_ui::game::values::id::SETTINGS_GAMEPLAY_CONTROLLER_SCHEME) != 0;
+    if ride.classic() != classic {
+        ride.set_classic(classic);
+    }
 }
 
 fn report_gpu(
@@ -198,25 +181,29 @@ pub fn mount(big_root: &Path, classic: bool) -> Result<Box<dyn ssx_ui::fs::FileS
     ssx_ui::game::port::files::mount(big_root, classic)
 }
 
-pub fn boot_ui(big_root: &Path, lang: Language, classic: bool) -> Result<(GameUi, ui::UiScene)> {
-    use ssx_ui::avm1::{Vm, natives};
+pub fn boot_ui(big_root: &Path, lang: Language, classic: bool, display: DisplayClass) -> Result<(GameUi, ui::UiScene)> {
+    use ssx_ui::avm1::Vm;
     use ssx_ui::display::Player;
     use ssx_ui::library::Library;
-    let game = GameUi::new(mount(big_root, classic)?.as_ref(), lang)?;
+    let mut game = GameUi::new(mount(big_root, classic)?.as_ref(), lang)?;
     let mut lib = Library::new(mount(big_root, classic)?);
     lib.load_font_library(lang.font_region())?;
     let mut player = Player::new();
     let mut vm = Vm::new();
     let boot = lib.load_movie("bootstrapper.gfx")?;
     vm.load_level(&mut lib, &mut player, boot, 0);
-    // TODO(guess): the PC's display counts as widescreen (0x82FB57A0's `fIsWideScreen`: the render manager's display set-up reads `XGetVideoMode` and tells the movies 1280 × 720 on a widescreen display, 960 × 720 otherwise); settle: none (a PC has no such dashboard setting; the window shows the 16:9 stage scaled and cropped).
-    natives::set_game_globals(&mut vm.ctx(&mut lib, &mut player), 1280, 720, true);
+    game.set_display(&mut vm, &mut lib, &mut player, display);
     for _ in 0..60 {
         if vm.trace_log.iter().any(|l| l.contains("OnAllSwfsLoaded")) {
             break;
         }
         vm.step_frame(&mut lib, &mut player);
     }
+    if !ssx_ui::game::display_class::install(&mut vm.ctx(&mut lib, &mut player)) {
+        anyhow::bail!("the UI's boot: no `utility.ViewUtil` after the bootstrapper (the ClassLoader movie defines it)");
+    }
+    let ((w, h), wide) = (display.size(), display.widescreen);
+    info!("UI: the movies are told a {w} × {h} display (widescreen {wide})");
     let mut scene = ui::UiScene::new(lib, player);
     scene.vm = Some(vm);
     scene.playing = false;
@@ -296,6 +283,7 @@ struct Shell {
     shading: Option<ShadingArg>,
     no_objects: bool,
     aspect: f32,
+    display_pending: Option<(DisplayClass, f64)>,
     movie: Option<ui::movie::MoviePlayback>,
     movie_ended: Option<u32>,
     lang: String,
@@ -314,6 +302,7 @@ struct Shell {
     launch_start_at: f64,
     test_map: Option<(String, f64)>,
     test_map_mode: Option<String>,
+    map_rides: std::collections::BTreeMap<String, u32>,
     popup_reported: bool,
     frame_sleep: Option<u64>,
     input_log: bool,
@@ -327,6 +316,8 @@ struct Shell {
     live_next_since: Option<f64>,
     #[cfg(feature = "net")]
     link: Option<ssx_ui::game::fe::ava::browser::ServerAddress>,
+    #[cfg(feature = "net")]
+    name_prompt_after_launch: bool,
 }
 
 const LAUNCH_BOOT_WAIT: f64 = 20.0;
@@ -358,13 +349,14 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
         server_storage: ssx_assets::setup::app_dir().join("ScriptData").join("local-server"),
     };
     crate::render::fx_states::init(&a.big_root);
-    let (mut game, scene) = boot_ui(&a.big_root, lang, a.classic_front_end)?;
+    let (mut game, scene) = boot_ui(&a.big_root, lang, a.classic_front_end, a.window.expected_display())?;
     let mut fe = ssx_ui::game::fe::FrontEnd::with_files(
         mount(&a.big_root, a.classic_front_end)?.as_ref(),
         &a.big_root,
         Profile::new(),
     )?;
     fe.ava.options.file = Some(ssx_assets::setup::app_dir().join("settings.json"));
+    ssx_ui::game::fe::ava::options::reload(&mut fe);
     #[cfg(feature = "net")]
     {
         fe.ava.browser.app_dir = Some(ssx_assets::setup::app_dir());
@@ -385,6 +377,10 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
     if !a.classic_front_end {
         let port = ssx_ui::game::port::PortFe::new(a.open_view.as_deref())?;
         game.enable_port_fe(mount(&a.big_root, false)?.as_ref(), port)?;
+        #[cfg(feature = "net")]
+        if a.launch.is_none() && a.launch_map.is_none() && a.connect.as_ref().is_none_or(|c| c.name.is_none()) {
+            game.arm_name_prompt();
+        }
     }
     let stored_audio = save.profile_into(&mut game, profile);
     let mut segments: std::collections::VecDeque<_> =
@@ -453,6 +449,7 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
         || a.rides.is_some();
     let real_focus = std::env::var("SSX_SHELL_REAL_FOCUS").is_ok_and(|v| v == "1");
     app.insert_resource(PadSlots::new(test_run, !test_run || real_focus));
+    display::register(&mut app, &a.window, !test_run, !test_run || real_focus);
     app.insert_resource(scene)
         .insert_resource(ui::globe::GlobeView { assets: globe_assets, ..default() })
         .insert_resource(WinitSettings::game())
@@ -491,6 +488,7 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
             launch: None,
             rides: 0,
             rides_done: 0,
+            map_rides: std::collections::BTreeMap::new(),
             segments,
             segment_started: false,
             max_rides: a.rides,
@@ -511,6 +509,7 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
             shading: a.shading,
             no_objects: a.no_objects,
             aspect: w / h,
+            display_pending: None,
             movie: None,
             movie_ended: None,
             lang: a.lang.clone(),
@@ -539,6 +538,8 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
             live_next_since: None,
             #[cfg(feature = "net")]
             link: a.link.clone(),
+            #[cfg(feature = "net")]
+            name_prompt_after_launch: !a.classic_front_end && (a.launch.is_some() || a.launch_map.is_some()),
         })
         .add_systems(Startup, move |world: &mut World| {
             spawn_front_end_camera(world);
@@ -558,7 +559,7 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
         )
         .add_systems(
             Update,
-            (game_level::level_frame, shell_input, pointer::pointer_system, shell_step)
+            (apply_controller_scheme, game_level::level_frame, shell_input, pointer::pointer_system, shell_step)
                 .chain()
                 .after(crate::ride::RideStepSet),
         );

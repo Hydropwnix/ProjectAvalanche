@@ -56,8 +56,11 @@ pub fn map_start_after(
         .and_then(|d| d.slot(0))
         .context("the map has no spawn slot 0 (and its base drop no start slot)")?;
     let (at, q) = crate::spawn::level_start_pose(w, level.drop, None, None)?;
-    let mut rider =
-        RiderState::level_start(w, at, q).with_context(|| format!("no ground below spawn slot 0 at {at:.2}"))?;
+    let rider = match &level.start_intro {
+        Some(i) => crate::nis::level_start_or_below(w, at, q, i.clone()),
+        None => RiderState::level_start(w, at, q),
+    };
+    let mut rider = rider.with_context(|| format!("no ground below spawn slot 0 at {at:.2}"))?;
     let mut session = Session { event: EventManager::new(level.setup.clone()), ..Session::default() };
     let mut gates = level.gates.clone();
     gates.reset(&mut session);
@@ -72,7 +75,7 @@ pub fn map_start_after(
             std::cmp::Ordering::Equal => Input { jump: true, ..Input::default() },
             std::cmp::Ordering::Greater => controls(i - idle, &rider),
         };
-        let pad = RewindPad { flip_accel: input.stick().y, ..RewindPad::default() };
+        let pad = RewindPad { flip_accel: input.air_stick(rider.tricks.classic).y, ..RewindPad::default() };
         session.execute(&mut rider, w, &input, &TrickInput::default(), 0.0, &pad, graph.as_deref_mut());
         gates.update(&mut session, rider.traj);
         if !rider.traj.is_finite() {
@@ -137,7 +140,7 @@ pub fn sequence_input(seed: u64, k: usize) -> Input {
     let tuck = if unit() < 0.5 { 0.0 } else { unit() };
     let brake = if unit() < 0.7 { 0.0 } else { unit() };
     let jump = unit() < 0.2;
-    Input { steer, tuck, brake, jump }
+    Input { steer, tuck, brake, jump, ..Input::default() }
 }
 
 pub fn envelope_gears() -> [GearStats; 3] {

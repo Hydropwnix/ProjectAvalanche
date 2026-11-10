@@ -45,7 +45,18 @@ impl Default for GameProjection {
 impl GameProjection {
     pub fn tan_half(&self) -> (f32, f32) {
         let h = (self.hfov_deg.to_radians() * 0.5).tan();
-        (h, h / self.aspect)
+        // TODO(guess): wider than 16:9 the view widens sideways ("Hor+"): the game's aspect is the asset value 16:9
+        // (`FLT_CameraViewAspectRatio` = 1.7777778, anim_all.cba; its id 0a4bae12-3345ce4d-88e7fcc2-6ff49954 is
+        // nowhere in the executable: no code sets it from the display), the projection horizontal (`FovIsHorizontal`,
+        // 0x82DF45E0), so the game never drew wider than 16:9; narrower (4:3, 16:10) the game's width is kept and more
+        // shows above and below, where the game put the same 16:9 projection into the 960 × 720 back buffer of a 4:3
+        // display (0x82FB57A0); settle: none wider (a port choice), narrower a 4:3 console capture.
+        if self.aspect > GAME_ASPECT {
+            let v = h / GAME_ASPECT;
+            (v * self.aspect, v)
+        } else {
+            (h, h / self.aspect)
+        }
     }
 
     fn off_centre(&self, left: f32, right: f32, bottom: f32, top: f32) -> Mat4 {
@@ -261,5 +272,33 @@ fn adjust_speed(scroll: Res<AccumulatedMouseScroll>, mut cameras: Query<&mut Fly
     }
     for mut cam in &mut cameras {
         cam.speed = (cam.speed * WHEEL_STEP.powf(notches)).clamp(SPEED_RANGE.0, SPEED_RANGE.1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_view_at_each_ratio() {
+        let game = GameProjection::default().tan_half();
+        let at = |w: f32, h: f32| GameProjection { aspect: w / h, ..default() }.tan_half();
+        assert_eq!(at(1920.0, 1080.0), game);
+        assert_eq!(at(1280.0, 720.0), game);
+        for (w, h) in [(2560.0, 1080.0), (3440.0, 1440.0), (5120.0, 1440.0)] {
+            let (th, tv) = at(w, h);
+            assert_eq!(tv, game.1, "{w}x{h}: the 16:9 height");
+            assert!((th / tv - w / h).abs() < 1e-5, "{w}x{h}: square view units");
+            assert!(th > game.0);
+        }
+        for (w, h) in [(1024.0, 768.0), (1280.0, 800.0)] {
+            let (th, tv) = at(w, h);
+            assert_eq!(th, game.0, "{w}x{h}: the game's width");
+            assert!(tv > game.1 && (th / tv - w / h).abs() < 1e-5);
+        }
+        let deg = |t: f32| (2.0 * t.atan()).to_degrees();
+        let (th, tv) = at(2560.0, 1080.0);
+        assert!((deg(th) - 105.80).abs() < 0.05 && (deg(tv) - 58.31).abs() < 0.05, "{} {}", deg(th), deg(tv));
+        assert!((deg(at(5120.0, 1440.0).0) - 126.48).abs() < 0.05);
     }
 }

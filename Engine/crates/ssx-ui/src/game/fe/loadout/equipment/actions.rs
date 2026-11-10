@@ -1,14 +1,68 @@
 use super::*;
 
-pub(super) fn refresh_inventory_view(fe: &mut FrontEnd) {
-    let all = fe.equipment.inv.as_ref().map(|i| i.inventory_list.clone()).unwrap_or_default();
-    let first = fe.equipment.inv_first.max(0) as usize;
-    let max = if fe.equipment.inv_max > 0 { fe.equipment.inv_max as usize } else { all.len() };
-    fe.equipment.inventory = all.into_iter().skip(first).take(max).collect();
+pub(super) fn fctiwz(v: f64) -> i32 {
+    if v.is_nan() { i32::MIN } else { v as i32 }
+}
+
+impl Equipment {
+    pub fn inventory_setup(&mut self, max: f64, unselectable: f64) {
+        (self.inv_max, self.inv_unselectable) = (fctiwz(max), fctiwz(unselectable));
+        (self.inv_first, self.inv_focus, self.inv_step) = (0, 0, 0);
+    }
+
+    pub fn inventory_step(&mut self, step: f64) {
+        let d = fctiwz(step);
+        if d < 1 {
+            if self.inv_first > 0 {
+                self.inv_first = self.inv_first.wrapping_add(d);
+            } else {
+                self.inv_focus = self.inv_focus.wrapping_add(d);
+            }
+        } else if self.inv_unselectable <= self.inv_focus {
+            self.inv_first = self.inv_first.wrapping_add(d);
+        } else {
+            self.inv_focus = self.inv_focus.wrapping_add(d);
+        }
+        self.inv_index = self.inv_focus;
+        self.inv_step = d.wrapping_abs();
+    }
+
+    pub fn inventory_sold(&mut self) {
+        let shown = i32::try_from(self.inventory.len()).unwrap_or(i32::MAX);
+        if shown > self.inv_focus.wrapping_add(25) {
+            return;
+        }
+        if self.inv_first >= 1 {
+            self.inv_first = self.inv_first.wrapping_sub(self.inv_step);
+        } else if self.inv_focus > 0 {
+            self.inv_focus = self.inv_focus.wrapping_sub(self.inv_step);
+            self.inv_index = self.inv_focus;
+        }
+    }
+}
+
+fn entry(list: &[UiItem], index: usize) -> Option<(u32, u8)> {
+    list.get(index).map(|u| (u.key, u.src))
+}
+
+fn fill(fe: &mut FrontEnd, env: &mut FeEnv, item: Option<UiItem>) {
+    if let Some(u) = item {
+        fill_entry(&mut fe.equipment.gear_info, env.loc, env.values, &u);
+    }
+}
+
+fn live(fe: &FrontEnd, list: List, index: usize) -> Option<UiItem> {
+    let inv = fe.equipment.inv.as_ref()?;
+    match list {
+        List::Items => inv.owned_list.get(index),
+        List::Store => inv.store_list.get(index),
+        List::Inventory => inv.inventory_list.get(index),
+    }
+    .cloned()
 }
 
 pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &ActionParam) {
-    let index = param.number.max(0.0) as usize;
+    let index = usize::try_from(fctiwz(param.number)).unwrap_or(usize::MAX);
     match action {
         "A_GameAdvanceFlow" => advance(fe, env),
         "A_EquipmentBackCategory" => match fe.equipment.state {
@@ -18,7 +72,7 @@ pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &ActionPa
                 crate::game::fe::globe::back_from_equipment(fe, env);
             }
             state::GEAR => {
-                let (k, slot) = (i64::from(fe.equipment.category - 1), fe.equipment.slot.max(0) as usize);
+                let (k, slot) = (kind_of(fe.equipment.category), usize::try_from(fe.equipment.slot).unwrap_or(0));
                 let mut inv = inv(fe);
                 inv.close_category(&fe.career, &fe.profile, k, slot);
                 fe.equipment.inv = Some(inv);
@@ -39,25 +93,23 @@ pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &ActionPa
             _ => {}
         },
         "A_EquipmentCategoryHighlight" if matches!(fe.equipment.state, state::READY | state::READY_CATEGORY) => {
-            let (c, s) = (param.field("category"), param.field("slot"));
-            fe.equipment.category = if c.is_nan() { fe.equipment.category } else { c as i32 + 1 };
-            fe.equipment.slot = if s.is_nan() { 0 } else { s as i32 };
-            set_category(fe, env, fe.equipment.category);
-            fill_list(fe);
-            let k = fe.equipment.category - 1;
+            fe.equipment.category = fctiwz(param.field("category")).wrapping_add(1);
+            fe.equipment.slot = fctiwz(param.field("slot"));
+            publish_list(fe, "dp_equipment_items");
+            publish_list(fe, "dp_store_items");
+            let k = usize::try_from(kind_of(fe.equipment.category)).unwrap_or(0);
+            let slot = usize::try_from(fe.equipment.slot).unwrap_or(0);
             let gear = fe.equipment.inv.as_ref().and_then(|i| {
-                let before: usize = i.category_slots.iter().take(k.max(0) as usize).map(|&n| n.max(0) as usize).sum();
-                i.selected_gear.get(1 + before + fe.equipment.slot.max(0) as usize).cloned()
+                let n = |&n: &i64| usize::try_from(n).unwrap_or(0);
+                let before = i.category_slots.iter().take(k).map(n).fold(0usize, usize::saturating_add);
+                i.selected_gear.get(before.saturating_add(slot).saturating_add(1)).cloned()
             });
-            fe.equipment.gear_info = gear;
-            fe.publish.extend(
-                ["dp_equipment_items", "dp_store_items", "dp_selected_gear_info", "dp_selected_rider"]
-                    .map(String::from),
-            );
+            fill(fe, env, gear);
+            fe.publish.push("dp_selected_gear_info".into());
         }
         "A_EquipmentCategorySelect" => {
             fe.equipment.state = state::GEAR;
-            let (k, slot) = (i64::from(fe.equipment.category - 1), fe.equipment.slot.max(0) as usize);
+            let (k, slot) = (kind_of(fe.equipment.category), usize::try_from(fe.equipment.slot).unwrap_or(0));
             let mut inv = inv(fe);
             inv.open_category(&fe.career, &fe.profile, k, slot);
             let survival = inv.survival;
@@ -67,7 +119,6 @@ pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &ActionPa
                 inv.survival = survival;
             }
             env.values.set_int(0x6C, survival);
-            fill_list(fe);
             fe.publish.push("dp_screen_state".into());
         }
         "A_EquipmentBackReady" => {
@@ -80,11 +131,10 @@ pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &ActionPa
             fe.equipment.slot = 0;
             fe.equipment.category = 0;
             set_category(fe, env, 0);
-            fill_list(fe);
+            publish_list(fe, "dp_playable_characters");
+            fe.publish.push("dp_playable_characters_index".into());
             fe.equipment.state = state::RIDER;
-            fe.publish.extend(
-                ["dp_playable_characters", "dp_playable_characters_index", "dp_screen_state"].map(String::from),
-            );
+            fe.publish.push("dp_screen_state".into());
         }
         "A_EquipmentItemSelected" => {
             let Some(item) = fe.equipment.list.get(index).cloned() else { return };
@@ -94,7 +144,7 @@ pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &ActionPa
                 }
                 return;
             }
-            fe.equipment.rider_index = index as i32;
+            fe.equipment.rider_index = i32::try_from(index).unwrap_or(0);
             fe.equipment.last_rider = item.key;
             env.values.set_int(0x65, item.key as i32);
             if !item.has(flag::AVAILABLE) {
@@ -104,17 +154,26 @@ pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &ActionPa
             }
             select(fe, env, List::Items, index);
         }
-        "A_EquipmentItemHighlighted" | "A_EquipmentRiderHighlighted" => {
-            if action == "A_EquipmentRiderHighlighted" && fe.equipment.category != 0 {
-                return;
-            }
-            let Some(item) = fe.equipment.list.get(index).cloned() else { return };
-            highlight(fe, env, &item);
+        _ => highlight_action(fe, env, action, param, index),
+    }
+}
+
+fn highlight_action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &ActionParam, index: usize) {
+    match action {
+        "A_EquipmentItemHighlighted" => {
+            let Some(e) = entry(&fe.equipment.list, index) else { return };
+            preview(fe, env, Some(e));
             fe.equipment.score = env.values.int(0x6C);
-            fe.publish.extend(
-                ["dp_selected_gear_info", "dp_selected_rider_info", "dp_equipment_score", "dp_selected_rider"]
-                    .map(String::from),
-            );
+            let item = live(fe, List::Items, index);
+            fill(fe, env, item);
+            fe.publish.extend(["dp_equipment_score", "dp_selected_gear_info", "dp_selected_rider"].map(String::from));
+        }
+        "A_EquipmentRiderHighlighted" if fe.equipment.category == 0 => {
+            let Some(e) = entry(&fe.equipment.list, index) else { return };
+            preview(fe, env, Some(e));
+            let item = live(fe, List::Items, index);
+            fill(fe, env, item);
+            fe.publish.extend(["dp_selected_gear_info", "dp_selected_rider_info"].map(String::from));
         }
         "A_EquipmentOptimizeGear" if matches!(fe.equipment.state, state::READY | state::READY_CATEGORY) => {
             let mut inv = inv(fe);
@@ -122,6 +181,7 @@ pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &ActionPa
             inv.optimize(&fe.career, &fe.profile, env.loc, drop.as_ref());
             inv.save_loadout(&fe.career, &mut fe.profile);
             env.values.set_int(0x6C, inv.survival);
+            env.values.set_int(0x64, inv.inventory_size);
             fe.equipment.inv = Some(inv);
             fe.equipment.score = env.values.int(0x6C);
             fe.publish.extend(["dp_equipment_score", "dp_equipment_categories"].map(String::from));
@@ -131,48 +191,43 @@ pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &ActionPa
             purchase(fe, env, List::Store, index);
         }
         "A_EquipmentStoreItemHighlighted" => {
-            let Some(item) = fe.equipment.store.get(index).cloned() else { return };
-            highlight(fe, env, &item);
+            let Some(e) = entry(&fe.equipment.store, index) else { return };
+            preview(fe, env, Some(e));
             fe.equipment.score = env.values.int(0x6C);
+            let item = live(fe, List::Store, index);
+            fill(fe, env, item);
             fe.publish.extend(["dp_equipment_score", "dp_selected_gear_info", "dp_selected_rider"].map(String::from));
         }
-        "A_EquipmentRefreshStore" => fe.publish.extend(["dp_equipment_items", "dp_store_items"].map(String::from)),
+        "A_EquipmentRefreshStore" => {
+            publish_list(fe, "dp_equipment_items");
+            publish_list(fe, "dp_store_items");
+        }
         "A_EquipmentViewMoreSelected" => {
             fe.equipment.state = state::INVENTORY;
             save_state(fe, env);
             fe.go_to_screen(env, 0x31);
         }
         "A_EquipmentViewMoreHighlighted" if fe.equipment.state == state::GEAR => {
-            fe.equipment.gear_info = None;
+            preview(fe, env, None);
+            fe.equipment.score = env.values.int(0x6C);
+            fill_view_more(&mut fe.equipment.gear_info, env.loc, env.values, fe.equipment.category);
             fe.publish.extend(["dp_equipment_score", "dp_selected_gear_info"].map(String::from));
         }
         "A_EquipmentInventorySetup" => {
-            fe.equipment.inv_max = param.field("maxData").max(0.0) as i32;
-            fe.equipment.inv_unselectable = param.field("unselectableData").max(0.0) as i32;
-            fe.equipment.inv_first = 0;
-            fe.equipment.inv_focus = 0;
+            fe.equipment.inventory_setup(param.field("maxData"), param.field("unselectableData"));
         }
         "A_EquipmentInventoryRequestData" => {
-            let d = param.number as i32;
-            let eq = &mut fe.equipment;
-            if d < 1 {
-                if eq.inv_first > 0 {
-                    eq.inv_first = (eq.inv_first + d).max(0);
-                } else {
-                    eq.inv_focus = (eq.inv_focus + d).max(0);
-                }
-            } else if eq.inv_unselectable <= eq.inv_focus {
-                eq.inv_first += d;
-            } else {
-                eq.inv_focus += d;
-            }
-            refresh_inventory_view(fe);
-            fe.publish.extend(["dp_inventory_items", "dp_inventory_items_index"].map(String::from));
+            fe.equipment.inventory_step(param.number);
+            publish_list(fe, "dp_inventory_items");
+            fe.publish.push("dp_inventory_items_index".into());
         }
         "A_EquipmentInventoryItemSelected" => select(fe, env, List::Inventory, index),
         "A_EquipmentInventoryItemHighlighted" => {
-            let Some(item) = fe.equipment.inventory.get(index).cloned() else { return };
-            highlight(fe, env, &item);
+            let Some(e) = entry(&fe.equipment.inventory, index) else { return };
+            preview(fe, env, Some(e));
+            let at = usize::try_from(fe.equipment.inv_first).ok().and_then(|f| f.checked_add(index));
+            let item = at.and_then(|a| live(fe, List::Inventory, a));
+            fill(fe, env, item);
             fe.publish.push("dp_selected_gear_info".into());
         }
         "A_EquipmentInventoryItemBack" => {
@@ -184,6 +239,7 @@ pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &ActionPa
             fe.equipment.pending = Some((List::Inventory, index));
             env.nav_events.push("equip_sell_confirm_popup".into());
         }
+        "A_EquipmentShowHelp" => crate::game::fe::hint::gear_help(fe, env, param.number, true),
         _ => {}
     }
 }

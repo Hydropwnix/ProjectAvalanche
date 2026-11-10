@@ -34,18 +34,17 @@ impl Launcher {
                 ui.add(egui::Slider::new(&mut s.subdivide, 0..=3).text("levels (2 = the game's)"));
                 ui.end_row();
                 widgets::field(ui, "Shading");
-                egui::ComboBox::from_id_salt("shading").selected_text(shading_label(s.shading)).width(250.0).show_ui(
-                    ui,
-                    |ui| {
-                        for v in [Shading::Auto, Shading::Textured, Shading::Height, Shading::Material] {
-                            ui.selectable_value(&mut s.shading, v, shading_label(v));
-                        }
-                    },
-                );
+                let combo =
+                    egui::ComboBox::from_id_salt("shading").selected_text(shading_label(s.shading)).width(250.0);
+                widgets::combo(ui, combo, |ui| {
+                    for v in [Shading::Auto, Shading::Textured, Shading::Height, Shading::Material] {
+                        ui.selectable_value(&mut s.shading, v, shading_label(v));
+                    }
+                });
                 ui.end_row();
             });
             ui.add_space(8.0);
-            widgets::heading(ui, "Display");
+            widgets::heading(ui, "Rendering");
             ui.checkbox(&mut s.vsync, "VSync");
             ui.checkbox(&mut s.objects, "Placed objects");
             ui.checkbox(&mut s.wireframe, "Wireframe (F)");
@@ -67,7 +66,8 @@ impl Launcher {
         widgets::heading(ui, "Music");
         egui::Grid::new("music").num_columns(2).spacing([16.0, 10.0]).show(ui, |ui| {
             widgets::field(ui, "Source");
-            egui::ComboBox::from_id_salt("music").selected_text(music_label(s.music)).width(330.0).show_ui(ui, |ui| {
+            let combo = egui::ComboBox::from_id_salt("music").selected_text(music_label(s.music)).width(330.0);
+            widgets::combo(ui, combo, |ui| {
                 for v in [Music::Auto, Music::DeadlyDescent, Music::Licensed, Music::Off] {
                     ui.selectable_value(&mut s.music, v, music_label(v));
                 }
@@ -142,6 +142,10 @@ impl Launcher {
         widgets::note(ui, LINK_NOTE);
         ui.add_space(8.0);
         widgets::heading(ui, "Your name on servers");
+        match &self.settings.player_name {
+            Some(name) => widgets::paragraph(ui, &widgets::shown(name)),
+            None => widgets::paragraph(ui, "None set yet."),
+        }
         widgets::note(ui, "Set in the game: Options, Player Name.");
     }
 }

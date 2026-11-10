@@ -20,7 +20,16 @@ struct OverlayUniform {
 @group(0) @binding(9) var overlay_sampler: sampler;
 
 fn apply_overlay(c: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
-    let q = uv * overlay.uvscale.xy - overlay.uvscale.zw;
+    // TODO(guess): beyond 16:9 the circle's 16:9 size across (k = 0.9 · 16:9 / a): at k = 0.9 a 21:9 frame's sides
+    // reach |q| = 1.06, outside what any 16:9 frame (corners 0.918) or 4:3 frame (0.833) showed, and the survival and
+    // pause fades go black there; below 16:9, k = 0.9 (the 4:3 branch has k = 1 but drew the game's 16:9 view; the
+    // port's narrower window shows more above and below instead); settle: a 4:3 console capture of a survival overlay
+    // next to the port's at 4:3 (no console renders wider than 16:9).
+    let q0 = uv * overlay.uvscale.xy - overlay.uvscale.zw;
+    let d = textureDimensions(scene);
+    let r = f32(d.x) / f32(d.y) / (16.0 / 9.0);
+    let s = select(vec2<f32>(r, 1.0), vec2<f32>(1.0, 1.0 / r), r > 1.0);
+    let q = select(q0 * s, q0, d.x * 9u == d.y * 16u);
     let fob = overlay.fadeoffbounds;
     let span = fob.y - fob.x;
     var t = select(0.0, 1.0, length(q) > fob.x);

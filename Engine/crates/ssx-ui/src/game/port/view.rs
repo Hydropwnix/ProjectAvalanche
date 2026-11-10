@@ -25,7 +25,7 @@ pub fn global_path(cx: &mut Ctx, path: &str) -> Value {
     cur
 }
 
-fn path_from(cx: &mut Ctx, base: &Value, path: &str) -> Value {
+pub(super) fn path_from(cx: &mut Ctx, base: &Value, path: &str) -> Value {
     let mut cur = base.clone();
     for p in path.split('.') {
         cur = match cx.get_member(&cur, p) {
@@ -36,7 +36,7 @@ fn path_from(cx: &mut Ctx, base: &Value, path: &str) -> Value {
     cur
 }
 
-fn call_method(cx: &mut Ctx, obj: &Value, method: &str, args: &[Value]) -> R {
+pub(super) fn call_method(cx: &mut Ctx, obj: &Value, method: &str, args: &[Value]) -> R {
     if obj.is_nullish() {
         return Ok(Value::Undefined);
     }
@@ -107,10 +107,27 @@ pub fn view_ctor(cx: &mut Ctx, this: Value, _: &[Value]) -> R {
     super_construct(cx, base, this)
 }
 
+fn sd_layout(cx: &mut Ctx, this: &Value, sd: &crate::author::SdDef) -> R {
+    let view_util = global_path(cx, "utility.ViewUtil");
+    for (target, left) in &sd.moves {
+        let clip = path_from(cx, this, target);
+        call_method(cx, &view_util, "RepositionIfSD", &[clip, Value::Bool(*left)])?;
+    }
+    if let Some(k) = sd.scale {
+        // TODO(guess): a port choice — a port screen wider than the 4:3 picture (the server browser, the maps: 93 … 1209 of the 1280 stage pixels, where the 4:3 display keeps 160 … 1120) is scaled about the stage's middle there instead of an own 4:3 layout (the disc's screens move their edge clips by 136, `RepositionIfSD`, and the badges' panel scales `SECONDARY_MENU_SD_XSCALE`); settle: none (the port's screens).
+        let centre = (f64::from(sd.centre.0), f64::from(sd.centre.1));
+        crate::game::display_class::scale_if_sd(cx, this, f64::from(k), centre)?;
+    }
+    Ok(Value::Undefined)
+}
+
 pub fn view_initialize(cx: &mut Ctx, this: Value, args: &[Value]) -> R {
     let Some(class) = class_of::<ViewClass>(cx, &this) else { return Ok(Value::Undefined) };
     let logic = &class.logic;
     let input_manager = arg(args, 0);
+    if let Some(sd) = &logic.sd {
+        sd_layout(cx, &this, sd)?;
+    }
     for m in &logic.menus {
         let menu = path_from(cx, &this, &m.target);
         let (data, index, cell) = (Value::str(&m.data), Value::str(&m.index), Value::str(&m.cell));
@@ -132,10 +149,13 @@ pub fn view_initialize(cx: &mut Ctx, this: Value, args: &[Value]) -> R {
                 call_method(cx, &menu, "AllowWrappingHorizontally", &[Value::Bool(wrap)])?;
                 call_method(cx, &menu, "AllowWrappingVertically", &[Value::Bool(wrap)])?;
             }
-            MenuKind::List { rows, cell_width, cell_height, spacing, panel_gaps, wrap } => {
+            MenuKind::List { rows, cell_width, cell_height, spacing, panel_gaps, wrap, use_panel } => {
                 let n = |v: f32| Value::Number(f64::from(v));
                 let setup = [data, index, cell, Value::Number(f64::from(rows)), n(cell_width), n(cell_height)];
                 call_method(cx, &menu, "Setup", &setup)?;
+                if use_panel {
+                    call_method(cx, &menu, "SetUsePanel", &[Value::Bool(true)])?;
+                }
                 call_method(cx, &menu, "SetWrapEnabled", &[Value::Bool(wrap)])?;
                 call_method(cx, &menu, "SetRowSpacing", &[n(spacing)])?;
                 if let Some((top, bottom)) = panel_gaps {
@@ -147,9 +167,11 @@ pub fn view_initialize(cx: &mut Ctx, this: Value, args: &[Value]) -> R {
                 }
             }
         }
+        super::scroll::hand_to_menu(cx, &this, logic, &m.target, &menu)?;
         call_method(cx, &menu, "Initialize", std::slice::from_ref(&input_manager))?;
     }
     super_call(cx, logic.base.class(), "Initialize", &this, std::slice::from_ref(&input_manager))?;
+    super::scroll::set_lengths(cx, &this, logic)?;
     if let Some(p) = logic.input_priority {
         let priority = constant(cx, "ux.input.InputManager", p);
         call_method(cx, &input_manager, "SetInputPriority", &[this.clone(), priority])?;
@@ -292,6 +314,7 @@ pub fn view_publish(cx: &mut Ctx, this: Value, args: &[Value]) -> R {
         }
         cx.set_member(&loader, IMAGE_PATH, Value::str(&path))?;
     }
+    super::scroll::publish_window(cx, &this, &class.logic, &name, &value)?;
     for d in class.logic.drop_panels.iter().filter(|d| *d.data == *name) {
         let panel = path_from(cx, &this, &d.target);
         if panel.is_nullish() {
@@ -392,7 +415,7 @@ pub fn view_handle_input(cx: &mut Ctx, this: Value, args: &[Value]) -> R {
         }
         match &i.what {
             InputDo::Take => {}
-            InputDo::Menu { target, op, blocked_sound: Some(sound) } => {
+            InputDo::Menu { target, op, blocked_sound: Some(sound), .. } => {
                 let menu = path_from(cx, &this, target);
                 let (can, go) = match op {
                     MenuOp::Up => ("CanHighlightPreviousIndex", "Previous"),
@@ -405,7 +428,10 @@ pub fn view_handle_input(cx: &mut Ctx, this: Value, args: &[Value]) -> R {
                     play_sound(cx, sound)?;
                 }
             }
-            InputDo::Menu { target, op, blocked_sound: None } => {
+            InputDo::Menu { target, op, blocked_sound: None, sound } => {
+                if let Some(s) = sound {
+                    play_sound(cx, s)?;
+                }
                 let menu = path_from(cx, &this, target);
                 let grid = logic.menus.iter().any(|m| m.target == *target && matches!(m.kind, MenuKind::Grid { .. }));
                 let method = match (op, grid) {

@@ -134,60 +134,47 @@ impl Launcher {
     }
 
     fn mods_confirm(&mut self, ui: &mut Ui) -> bool {
-        let Some(confirm) = &self.mods.confirm else { return false };
-        let app = settings::app_dir();
-        let (title, text, yes) = match confirm {
-            Confirm::Remove { folder, title } => (
-                format!("Remove {title}?"),
-                format!("The folder {folder} goes to the system's trash, and its entry leaves the list."),
-                "Move to the trash",
-            ),
-            Confirm::Delete { folder, why } => (
-                format!("Delete {folder} for good?"),
-                format!("The system's trash is not available here ({why}). Deleting cannot be undone."),
-                "Delete permanently",
-            ),
-            Confirm::Replace { name, installed, .. } => (
-                format!("Replace {name} {installed}?"),
-                "A package of this name is installed. The installed version goes to the system's trash (where there is \
-                 none, it is deleted), the new one takes its place in the list."
-                    .to_string(),
-                "Replace",
-            ),
-        };
-        let mut answer = None;
-        ui.push_id("confirm", |ui| {
-            egui::Frame::new().fill(theme::PANEL).stroke(egui::Stroke::new(1.0, theme::WARN)).inner_margin(10.0).show(
-                ui,
-                |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.label(RichText::new(title).font(Face::Title.id(size::TEXT)).color(theme::WARN));
-                    widgets::paragraph(ui, &text);
-                    ui.horizontal(|ui| {
-                        if widgets::button(ui, yes, Kind::Primary, self.mods.install.is_none()).clicked() {
-                            answer = Some(true);
-                        }
-                        if widgets::button(ui, "Cancel", Kind::Plain, true).clicked() {
-                            answer = Some(false);
-                        }
-                    });
-                },
-            )
+        let question = self.mods.confirm.as_ref().map(question_texts);
+        let asked = question.as_ref().map(|(title, text, yes)| widgets::Question {
+            title,
+            text,
+            yes,
+            yes_enabled: self.mods.install.is_none(),
         });
-        let Some(yes) = answer else { return false };
-        let confirm = self.mods.confirm.take();
-        if !yes {
-            return false;
-        }
-        match confirm {
+        let ctx = ui.ctx().clone();
+        let Some(yes) = widgets::question(&ctx, egui::Id::new("mods-confirm"), asked) else { return false };
+        let app = settings::app_dir();
+        match self.mods.confirm.take().filter(|_| yes) {
             Some(Confirm::Remove { folder, .. }) => self.mods.remove(&app, &folder, false),
             Some(Confirm::Delete { folder, .. }) => self.mods.remove(&app, &folder, true),
             Some(Confirm::Replace { package, .. }) => {
-                self.mods.start_install(ui.ctx(), app, package, true);
+                self.mods.start_install(&ctx, app, package, true);
                 false
             }
             None => false,
         }
+    }
+}
+
+fn question_texts(confirm: &Confirm) -> (String, String, &'static str) {
+    match confirm {
+        Confirm::Remove { folder, title } => (
+            format!("Remove {title}?"),
+            format!("The folder {folder} goes to the system's trash, and its entry leaves the list."),
+            "Move to the trash",
+        ),
+        Confirm::Delete { folder, why } => (
+            format!("Delete {folder} for good?"),
+            format!("The system's trash is not available here ({why}). Deleting cannot be undone."),
+            "Delete permanently",
+        ),
+        Confirm::Replace { name, installed, .. } => (
+            format!("Replace {name} {installed}?"),
+            "A package of this name is installed. The installed version goes to the system's trash (where there is \
+             none, it is deleted), the new one takes its place in the list."
+                .to_string(),
+            "Replace",
+        ),
     }
 }
 

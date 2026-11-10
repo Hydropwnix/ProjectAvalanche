@@ -21,6 +21,10 @@ pub enum Button {
     X,
     B,
     A,
+    Lb,
+    Rb,
+    Lt,
+    Rt,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -144,6 +148,8 @@ pub fn gesture_match(steps: &[Step], s: &mut GestureState, prev: &PadSample, cur
 pub enum Gesture {
     Matcher(Matcher),
     Steps(&'static [Step]),
+    Shoulders([bool; 4]),
+    Never,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -185,6 +191,14 @@ impl GrabMapping {
             let r = match self.gesture {
                 Gesture::Matcher(m) => m.eval(prev, cur),
                 Gesture::Steps(steps) => gesture_match(steps, s, prev, cur, 1.0),
+                Gesture::Shoulders(set) => {
+                    if [cur.lb, cur.rb, cur.lt, cur.rt] == set {
+                        MatchResult::Match
+                    } else {
+                        MatchResult::Fail
+                    }
+                }
+                Gesture::Never => MatchResult::Fail,
             };
             match r {
                 MatchResult::Match => return true,
@@ -317,6 +331,39 @@ pub const AIR_TRICKS: [TableEntry; 13] = {
         e(map(&BTN_G_DOWN, InAir), map_matcher(held(RS_DOWN)), 2, Truckdriver, Truckdriver),
     ]
 };
+
+pub(super) const fn classic_button(lb: bool, rb: bool, lt: bool, rt: bool) -> GrabMapping {
+    GrabMapping { gesture: Gesture::Shoulders([lb, rb, lt, rt]), enabled: Enable::InAir }
+}
+pub(super) const fn classic_none() -> GrabMapping {
+    GrabMapping { gesture: Gesture::Never, enabled: Enable::InAir }
+}
+
+pub const AIR_TRICKS_CLASSIC: [TableEntry; 15] = {
+    use TrickType::{FlyingSquirrel, Indy, Melon, Mute, Nose, Rocket, Seatbelt, Stalefish, Stiffy, Tail};
+    use TrickType::{Truckdriver, Wheelman};
+    [
+        e(classic_button(true, false, false, false), classic_none(), 0, Nose, Wheelman),
+        e(classic_button(false, true, false, false), classic_none(), 0, Wheelman, Nose),
+        e(classic_button(false, false, true, false), classic_none(), 0, Melon, Indy),
+        e(classic_button(false, false, false, true), classic_none(), 0, Indy, Melon),
+        e(classic_button(true, true, false, false), classic_none(), 1, Truckdriver, Truckdriver),
+        e(classic_button(true, false, true, false), classic_none(), 1, Mute, Stalefish),
+        e(classic_button(true, false, false, true), classic_none(), 1, FlyingSquirrel, Stiffy),
+        e(classic_button(false, true, false, true), classic_none(), 1, Stalefish, Mute),
+        e(classic_button(false, true, true, false), classic_none(), 1, Stiffy, FlyingSquirrel),
+        e(classic_button(false, false, true, true), classic_none(), 1, Rocket, Rocket),
+        e(classic_button(true, true, true, false), classic_none(), 2, Seatbelt, Tail),
+        e(classic_button(true, true, false, true), classic_none(), 2, Tail, Seatbelt),
+        e(classic_button(true, false, true, true), classic_none(), 2, Stiffy, FlyingSquirrel),
+        e(classic_button(false, true, true, true), classic_none(), 2, FlyingSquirrel, Stiffy),
+        e(classic_button(true, true, true, true), classic_none(), 2, Truckdriver, Truckdriver),
+    ]
+};
+
+pub(super) fn air_table(classic: bool) -> &'static [TableEntry] {
+    if classic { &AIR_TRICKS_CLASSIC } else { &AIR_TRICKS }
+}
 
 // TODO(guess): an added trick's input is the air doubles' shape (a press, its release within 10 ticks, the second press within 10, then held) with one direction twice; the disc has no air same-direction double (TrickSceneOp's ButtonGrabUpUp/LeftLeft/RightRight fields name BLN_Pad_Grab_Button_UpUp…, whose mappings take the Pad_Grab_Button_UpDown/LeftDown/RightDown gestures), its only same-button doubles are the grind double taps (Pad_Grind_Button_UpUp: press, release within 4, held within 4); settle: none on this disc — a port choice for added content.
 pub(super) const BTN_G_UP_UP: [Step; 4] = double!(held(BTN_Y), BTN_Y, held(BTN_Y), BTN_Y);

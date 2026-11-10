@@ -205,10 +205,25 @@ fn strip_ansi(line: &str) -> String {
 }
 
 #[cfg(test)]
+pub(crate) mod child_start {
+    use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+    static STARTS: RwLock<()> = RwLock::new(());
+
+    pub(crate) fn shared() -> RwLockReadGuard<'static, ()> {
+        STARTS.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(crate) fn exclusive() -> RwLockWriteGuard<'static, ()> {
+        STARTS.write().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::{GAME_LOG, VIEWER_LOG, Viewer};
+    use super::{GAME_LOG, VIEWER_LOG, Viewer, child_start};
     use crate::command::Invocation;
 
     #[test]
@@ -227,7 +242,10 @@ mod tests {
         };
         let ctx = eframe::egui::Context::default();
         for log in [GAME_LOG, VIEWER_LOG] {
-            let started = Viewer::spawn_in(&ctx, &inv, &dir, log).expect("the start");
+            let started = {
+                let _no_lock_test = child_start::exclusive();
+                Viewer::spawn_in(&ctx, &inv, &dir, log).expect("the start")
+            };
             let listed =
                 || started.log.lock().is_ok_and(|l| l.iter().any(|l| l.contains("a_starts_output_goes_to_its_log")));
             let since = Instant::now();

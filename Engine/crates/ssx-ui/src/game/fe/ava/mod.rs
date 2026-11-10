@@ -5,6 +5,8 @@ pub mod files;
 pub mod hub;
 pub mod keyboard;
 pub mod maps;
+#[cfg(feature = "net")]
+pub mod name_prompt;
 pub mod options;
 pub mod port_settings;
 #[cfg(feature = "net")]
@@ -17,6 +19,12 @@ pub struct Ava {
     pub keyboard: keyboard::Keyboard,
     pub hub: hub::Hub,
     pub options: options::Options,
+    #[cfg(feature = "net")]
+    pub name_prompt: name_prompt::NamePrompt,
+    #[cfg(feature = "net")]
+    pub confirmed_name: Option<String>,
+    #[cfg(feature = "net")]
+    pub profile_name_due: bool,
     pub maps: maps::Maps,
     #[cfg(feature = "net")]
     pub browser: browser::Browser,
@@ -27,6 +35,24 @@ pub struct Ava {
     pub credits: Vec<credits::Section>,
     pub third_party: credits::ThirdPartyList,
     pub glyphs: Option<std::collections::BTreeSet<char>>,
+}
+
+pub fn window_object(cx: &mut crate::avm1::Ctx, total: usize, first: usize) -> crate::avm1::value::Value {
+    use crate::avm1::value::Value;
+    let o = Value::Object(cx.new_object());
+    let _ = cx.set_member(&o, "total", Value::Number(total as f64));
+    let _ = cx.set_member(&o, "first", Value::Number(first as f64));
+    o
+}
+
+pub fn profile_name(fe: &crate::game::fe::FrontEnd) -> String {
+    #[cfg(feature = "net")]
+    return name_prompt::join_name(fe);
+    #[cfg(not(feature = "net"))]
+    {
+        let _ = fe;
+        port_settings::DEFAULT_PLAYER_NAME.to_string()
+    }
 }
 
 pub fn shown(text: &str, glyphs: Option<&std::collections::BTreeSet<char>>) -> String {

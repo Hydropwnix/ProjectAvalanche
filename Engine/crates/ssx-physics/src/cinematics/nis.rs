@@ -129,8 +129,20 @@ pub fn prepare_path(
     path: IntroPath,
 ) -> Result<Option<Arc<IntroAssets>>> {
     let Some(choice) = intro_of_event(big_root, event)? else { return Ok(None) };
-    let snow = choice.variant == IntroVariant::Snow;
     let heli = ssx_assets::helicopter::drop_helicopter(big_root, &event.name).map_err(|e| format!("{e:#}"));
+    prepare_choice(world, big_root, choice, heli, &event.name, character, path).map(Some)
+}
+
+pub fn prepare_choice(
+    world: &mut crate::rider::World,
+    big_root: &Path,
+    choice: IntroChoice,
+    heli: Result<ssx_assets::helicopter::HeliChoice, String>,
+    event: &str,
+    character: &str,
+    path: IntroPath,
+) -> Result<Arc<IntroAssets>> {
+    let snow = choice.variant == IntroVariant::Snow;
     let reverse = world.survival.avalanche.reverse_cam;
     let h = heli.as_ref().ok().map(|h| h.name.as_str());
     let mut nis = ssx_assets::nis::load_drop_intro(big_root, &choice.binding, character, h, snow, path, reverse)?;
@@ -149,7 +161,7 @@ pub fn prepare_path(
     }
     let first = clips.iter().position(|c| c.name == rider.clip.name).unwrap_or(0);
     let jump_clip = jump_clips[first];
-    Ok(Some(Arc::new(IntroAssets { choice, nis, jump_clip, jump_clips, event: event.name.clone(), heli })))
+    Ok(Arc::new(IntroAssets { choice, nis, jump_clip, jump_clips, event: event.to_string(), heli }))
 }
 
 pub fn profile_path(
@@ -625,6 +637,18 @@ pub fn level_start(
     assets: Arc<IntroAssets>,
 ) -> Option<crate::rider::RiderState> {
     level_start_on(world, position, position, orientation, assets)
+}
+
+pub fn level_start_or_below(
+    world: &crate::rider::World,
+    position: Vec3,
+    orientation: Quat,
+    assets: Arc<IntroAssets>,
+) -> Option<crate::rider::RiderState> {
+    level_start(world, position, orientation, assets.clone()).or_else(|| {
+        let hit = world.collision.ray_cast(position, -Vec3::Y, 20_000.0)?;
+        level_start_on(world, hit.point + Vec3::Y, position, orientation, assets)
+    })
 }
 
 pub fn level_start_on(

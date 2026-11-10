@@ -6,6 +6,7 @@ impl GameUi {
             || !self.due_views.is_empty()
             || !self.loading_views.is_empty()
             || self.nav_wait.is_some()
+            || self.relayout.is_some()
     }
 
     pub fn menus_settled(&self) -> bool {
@@ -194,6 +195,7 @@ impl GameUi {
             self.nav.raise(&e);
         }
         self.port_open();
+        self.relayout_step(vm, lib, player);
         self.run_nav(vm, lib, player);
         // TODO(guess): the resource loads take one FE update; settle: the resource manager's service of the view model's request (0x825A1D48, callback 0x825A27E8).
         for view in std::mem::take(&mut self.due_views) {

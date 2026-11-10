@@ -13,6 +13,8 @@ const FNV_PRIME: u64 = 0x100_0000_01b3;
 #[derive(Clone, Debug)]
 pub struct MapPlayer {
     pub loop_t0: f32,
+    pub ready_t0: Option<f32>,
+    pub rode: bool,
     pub falling: bool,
     pub fall_at: Option<f32>,
     pub restarts: usize,
@@ -22,7 +24,16 @@ pub struct MapPlayer {
 
 impl MapPlayer {
     pub fn new(fall_at: Option<f32>) -> MapPlayer {
-        MapPlayer { loop_t0: 0.0, falling: false, fall_at, restarts: 0, fingerprint: FNV_OFFSET, hashed: 0 }
+        MapPlayer {
+            loop_t0: 0.0,
+            ready_t0: None,
+            rode: false,
+            falling: false,
+            fall_at,
+            restarts: 0,
+            fingerprint: FNV_OFFSET,
+            hashed: 0,
+        }
     }
 
     pub fn controls(&mut self, i: u64, s: &RiderState, target: Option<Vec3>) -> (Input, RewindPad, bool) {
@@ -37,11 +48,16 @@ impl MapPlayer {
             _ => 0.0,
         };
         let waiting = s.stopped || s.start.as_ref().is_some_and(|l| l.idle());
-        let t_loop = time - self.loop_t0;
-        let push = waiting && (PUSH_S..PUSH_S + 1.0).contains(&t_loop);
+        let intro = s.start.as_ref().and_then(|l| l.intro.as_ref());
+        self.rode |= s.start.is_none();
+        if !self.rode && self.ready_t0.is_none() && intro.is_some_and(|i| i.in_ready_loop()) {
+            self.ready_t0 = Some(time);
+        }
+        let t0 = if intro.is_some() { self.ready_t0 } else { Some(self.loop_t0) };
+        let push = waiting && t0.is_some_and(|t0| (PUSH_S..PUSH_S + 1.0).contains(&(time - t0)));
         let tuck = if push && i % 2 == 1 { 0.0 } else { 1.0 };
-        let input = Input { steer: if push { 0.0 } else { steer }, brake: 0.0, tuck, jump: false };
-        let pad = RewindPad { rewind_held: false, takeover: false, flip_accel: input.stick().y };
+        let input = Input { steer: if push { 0.0 } else { steer }, brake: 0.0, tuck, jump: false, ..Input::default() };
+        let pad = RewindPad { rewind_held: false, takeover: false, flip_accel: input.air_stick(s.tricks.classic).y };
         (input, pad, turned)
     }
 
@@ -61,7 +77,7 @@ impl MapPlayer {
     }
 
     pub fn restarted(&mut self, i: u64) {
-        (self.loop_t0, self.falling) = (i as f32 / SIM_HZ + 1.0 / SIM_HZ, false);
+        (self.loop_t0, self.ready_t0, self.rode, self.falling) = (i as f32 / SIM_HZ + 1.0 / SIM_HZ, None, false, false);
         self.restarts += 1;
     }
 }

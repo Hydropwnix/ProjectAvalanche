@@ -180,9 +180,17 @@ impl Ride {
         }
         if let Some(a) = self.air_input.filter(|_| in_air || release) {
             (input.steer, input.tuck, input.brake) = (a.x, a.y.max(0.0), (-a.y).max(0.0));
+            if self.classic {
+                input.dpad = a.clamp(Vec2::splat(-1.0), Vec2::splat(1.0));
+            }
         }
+        let grab_ok = self.state.air.air_time > self.world.tuning.player.max_in_air_jump_ticks;
         let mut tricks = if in_air {
-            TrickInput { right_stick: self.grab.unwrap_or(Vec2::ZERO), tweak: self.tweak, ..TrickInput::default() }
+            TrickInput {
+                right_stick: if grab_ok { self.grab.unwrap_or(Vec2::ZERO) } else { Vec2::ZERO },
+                tweak: self.tweak,
+                ..TrickInput::default()
+            }
         } else {
             TrickInput { tweak: self.boost, ..TrickInput::default() }
         };
@@ -246,10 +254,13 @@ fn autoplay_input(ride: &Ride) -> (Input, TrickInput) {
     let flick = if i.is_multiple_of(2) { 1.0 } else { 0.0 };
     let (steer, tuck) = ride.auto_rewind.react(time).map_or((0.0, 0.0), |side| (side, 1.0));
     let (steer, tuck) = if pushing || stuck || get_up { (0.0, flick) } else { (steer, tuck) };
-    let mut input = Input { steer, brake: 0.0, tuck, jump };
+    let mut input = Input { steer, brake: 0.0, tuck, jump, ..Input::default() };
     let mut tricks = TrickInput::default();
     if s.state != RideState::Riding || release {
         (input.steer, input.tuck, input.brake) = (1.0, 0.0, 0.0);
+        if s.tricks.classic {
+            input.dpad = Vec2::X;
+        }
     }
     if s.state != RideState::Riding && s.air.air_time < 0.5 * 60.0 {
         match grab_buttons_script() {
@@ -258,7 +269,11 @@ fn autoplay_input(ride: &Ride) -> (Input, TrickInput) {
                 ssx_physics::harness::buttons::pressed(seq, s.air.air_time),
             ),
             Some(_) => {}
-            None => tricks.right_stick = Vec2::Y,
+            None => {
+                if s.air.air_time > ride.world.tuning.player.max_in_air_jump_ticks {
+                    tricks.right_stick = Vec2::Y;
+                }
+            }
         }
     }
     (input, tricks)

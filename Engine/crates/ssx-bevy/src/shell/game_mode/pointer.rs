@@ -49,13 +49,21 @@ pub fn window_to_stage(physical: Vec2, viewport: URect, stage: RectF, mode: Scal
     (x.is_finite() && y.is_finite()).then_some((x / 20.0, y / 20.0))
 }
 
+fn on_viewport(point: Vec2, window: Vec2, viewport: URect) -> Vec2 {
+    if window.x <= 0.0 || window.y <= 0.0 {
+        return point;
+    }
+    point * viewport.size().as_vec2() / window
+}
+
 impl PointerInput<'_, '_> {
     fn stage_point(&self, logical: Vec2, scale: f32) -> Option<(f32, f32)> {
         let scene = self.scene.as_deref()?;
         let viewport = self.cameras.iter().find_map(|c| c.physical_viewport_rect())?;
         let root = scene.player.levels.values().next().and_then(|r| scene.player.get(*r))?;
         let stage = scene.lib.movie(root.movie).stage;
-        window_to_stage(logical * scale, viewport, stage, scene.scale_mode)
+        let window = self.window.single().map_or(logical * scale, |w| w.physical_size().as_vec2());
+        window_to_stage(on_viewport(logical * scale, window, viewport), viewport, stage, scene.scale_mode)
     }
 
     fn script_point(&self, physical: Vec2) -> Option<(f32, f32)> {
@@ -63,7 +71,8 @@ impl PointerInput<'_, '_> {
         let viewport = self.cameras.iter().find_map(|c| c.physical_viewport_rect())?;
         let root = scene.player.levels.values().next().and_then(|r| scene.player.get(*r))?;
         let stage = scene.lib.movie(root.movie).stage;
-        window_to_stage(physical, viewport, stage, scene.scale_mode)
+        let window = self.window.single().map_or(physical, |w| w.physical_size().as_vec2());
+        window_to_stage(on_viewport(physical, window, viewport), viewport, stage, scene.scale_mode)
     }
 }
 
@@ -200,9 +209,33 @@ mod tests {
         assert!(near(at(1024, 768, 512.0, 384.0), (640.0, 360.0)));
         let left = at(1024, 768, 0.0, 0.0);
         assert!(near(left, ((1365.333 - 1024.0) / 2.0 / (768.0 / 720.0), 0.0)), "{left:?}");
+        assert!(near(at(1280, 800, 640.0, 400.0), (640.0, 360.0)));
+        assert!(near(at(1280, 800, 0.0, 800.0), (64.0, 720.0)));
+        assert!(near(at(2560, 1080, 1280.0, 540.0), (640.0, 360.0)));
+        assert!(near(at(2560, 1080, 320.0, 0.0), (0.0, 0.0)));
+        assert!(near(at(2560, 1080, 2240.0, 1080.0), (1280.0, 720.0)));
+        assert!(near(at(2560, 1080, 0.0, 540.0), (-213.333, 360.0)));
+        assert!(near(at(3440, 1440, 440.0, 1440.0), (0.0, 720.0)));
+        assert!(near(at(5120, 1440, 5120.0, 0.0), (1920.0, 0.0)));
         let vp = URect::new(100, 50, 100 + 1280, 50 + 720);
         let p = window_to_stage(Vec2::new(100.0, 50.0), vp, STAGE, ScaleMode::NoBorder).unwrap();
         assert!(near(p, (0.0, 0.0)));
         assert_eq!(window_to_stage(Vec2::ZERO, URect::new(0, 0, 0, 0), STAGE, ScaleMode::NoBorder), None);
+    }
+
+    #[test]
+    fn a_render_resolution_scales_the_pointer_with_the_frame() {
+        let viewport = URect::new(0, 0, 1920, 1080);
+        assert_eq!(
+            on_viewport(Vec2::new(3840.0, 2160.0), Vec2::new(3840.0, 2160.0), viewport),
+            Vec2::new(1920.0, 1080.0)
+        );
+        assert_eq!(
+            on_viewport(Vec2::new(1920.0, 1080.0), Vec2::new(3840.0, 2160.0), viewport),
+            Vec2::new(960.0, 540.0)
+        );
+        let own = URect::new(0, 0, 3840, 2160);
+        assert_eq!(on_viewport(Vec2::new(1920.0, 1080.0), Vec2::new(3840.0, 2160.0), own), Vec2::new(1920.0, 1080.0));
+        assert_eq!(on_viewport(Vec2::new(10.0, 20.0), Vec2::ZERO, viewport), Vec2::new(10.0, 20.0));
     }
 }

@@ -1,11 +1,14 @@
 mod collision;
+pub mod entities;
 mod gates;
+pub mod heli;
 mod player;
 #[cfg(test)]
 mod tests;
 
 pub use collision::{CLUSTER_CELL, CLUSTER_TRIANGLES, MapCollisionStats, TERRAIN_SURFACE, add_map_collision};
 pub use gates::{FINISH_GROUPS, GateStep, Gates};
+pub use heli::MapHeli;
 pub use player::MapPlayer;
 mod start;
 pub use start::{
@@ -16,7 +19,7 @@ pub use start::{
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use glam::{Quat, Vec3};
 use ssx_assets::content::GameContent;
 use ssx_assets::content::gamemodes::{ModeChoice, ResolvedMode};
@@ -63,6 +66,10 @@ pub struct MapLevel {
     pub gates: Gates,
     pub setup: EventSetup,
     pub collision: MapCollisionStats,
+    pub intro: ssx_content::map::Intro,
+    pub heli: Option<MapHeli>,
+    pub start_intro: Option<std::sync::Arc<crate::nis::IntroAssets>>,
+    pub entities: entities::MapEntityStats,
 }
 
 impl MapLevel {
@@ -76,10 +83,50 @@ impl MapLevel {
             s.results = Some(ssx_rules::results::ResultsFlow::Explore);
         }
         let drop = self.world.survival.objectives.as_deref();
-        s.objectives = Some(std::sync::Arc::new(crate::objectives::EventObjectives::for_event_type(big_root, drop, t)));
+        let scripts = heli::event_scripts(t, self.intro);
+        let objectives = crate::objectives::EventObjectives::for_map(big_root, drop, t, &scripts);
+        s.objectives = Some(std::sync::Arc::new(objectives));
         s.time_up_result = rules.time_up() == TimeUp::Result;
-        s.loop_without_outro = rules.loops();
         self.gates.time_limit_ms = rules.time_limit_ms();
+    }
+
+    pub fn prepare_start_intro(&mut self, big_root: &Path, character: &str) -> Result<()> {
+        let (Some(heli), Some(objectives)) = (self.heli.as_ref(), self.setup.objectives.clone()) else {
+            self.start_intro = None;
+            return Ok(());
+        };
+        let path = crate::nis::IntroPath::Short;
+        let intro = heli::map_intro(&mut self.world, big_root, &objectives, heli, "map", character, path)?;
+        self.start_intro = Some(intro.context("the helicopter's scripts play no intro")?);
+        Ok(())
+    }
+
+    fn check_heli_scripts(&self) -> Result<()> {
+        let Some(t) = self.setup.event_type else { return Ok(()) };
+        let o = self.setup.objectives.as_ref().context("the event's objectives were not built")?;
+        for name in heli::event_scripts(t, self.intro) {
+            if !o.scripts.sources.contains_key(&name) {
+                bail!("the event's script {name} is not in the data folder ({})", crate::spawn::SCRIPTS_DIR);
+            }
+        }
+        crate::nis::intro_of_probe(&o.probe).context("the helicopter's event scripts play no intro NIS")?;
+        Ok(())
+    }
+
+    fn check_heli_pickup(&self) -> Result<()> {
+        let heli = self.heli.as_ref().context("a survive-to-death run starts in the helicopter (intro = \"heli\")")?;
+        let (p, q) = crate::outro::outro_locator(&self.world).context("the level has no nis_outro_locator")?;
+        crate::rider::RiderState::level_start(&self.world, p, q).with_context(|| {
+            format!(
+                "no ground under the outro locator at {p:.2} (heli_path order 1): the heli pickup starts the rider \
+                 there on the surface from {} m above it to {} m below (the disc's outro locators stand on the ground, \
+                 −0.13 … +0.27 m on 170 of its 171 drops)",
+                crate::rider::SPAWN_RAY_UP,
+                crate::rider::SPAWN_RAY_LENGTH - crate::rider::SPAWN_RAY_UP
+            )
+        })?;
+        heli.choice.as_ref().map_err(|e| anyhow!("the helicopter: {e}"))?;
+        Ok(())
     }
 
     pub fn has_finish(&self) -> bool {
@@ -101,6 +148,12 @@ impl MapLevel {
         };
         let mode = content.resolve_mode(&m.map, &choice, self.has_finish()).map_err(|e| anyhow!("{e}"))?;
         self.apply_rules(big_root, &mode.rules, mode.gamemode.is_some());
+        if self.heli.is_some() {
+            self.check_heli_scripts().with_context(|| format!("{}: the helicopter intro", m.map.id))?;
+        }
+        if mode.rules.loops() {
+            self.check_heli_pickup().with_context(|| format!("{}: survive to death", m.map.id))?;
+        }
         Ok(mode)
     }
 }
@@ -209,5 +262,11 @@ pub fn load_map_level(big_root: &Path, m: &ResolvedMap, gear_mix: f32) -> Result
     let start_y = world.starts.get(drop).and_then(|d| d.slot(0)).map(|(p, _)| p.y);
     let course = start_y.zip(world.end_locator).map(|(start_y, e)| Course { start_y, end_y: e.y });
     let setup = EventSetup::new(None, course);
-    Ok(MapLevel { world, drop, gates, setup, collision: stats })
+    let map_volumes = def.checkpoints.len() + def.triggers.len() + def.deaths.len() + usize::from(def.finish.is_some());
+    let entities = entities::place_entities(&mut world.triggers, big_root, def, &m.objects, map_volumes)
+        .with_context(|| format!("{}: its entities", m.map.id))?;
+    crate::map::heli::place_locators(&mut world.triggers, def);
+    let intro = m.map.value.toml.intro;
+    let heli = (intro == ssx_content::map::Intro::Heli).then(|| MapHeli::load(big_root, m.base.as_ref(), def));
+    Ok(MapLevel { world, drop, gates, setup, collision: stats, intro, heli, start_intro: None, entities })
 }

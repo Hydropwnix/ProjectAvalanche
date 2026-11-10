@@ -106,6 +106,9 @@ pub fn sim_hash(map: &Map) -> ContentHash {
     e.u64(area.len() as u64);
     area.iter().flatten().for_each(|p| e.fs(p));
     e.u64(d.heli_path.len() as u64);
-    d.heli_path.iter().for_each(|p| e.fs(p));
+    d.heli_path.iter().for_each(|p| {
+        e.fs(&p.position);
+        e.fs(&p.rotation);
+    });
     ContentHash(*e.0.finalize().as_bytes())
 }

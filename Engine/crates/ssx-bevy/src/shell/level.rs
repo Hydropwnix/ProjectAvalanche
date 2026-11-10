@@ -66,6 +66,7 @@ pub struct RideOptions {
     pub event_key: Option<u32>,
     pub collected_geotags: Vec<u64>,
     pub game: bool,
+    pub classic: bool,
     pub autoplay: bool,
     pub setup: Option<ssx_physics::gear::GameSetup>,
     pub setup_presentation: Option<ssx_physics::gear::GameSetup>,
@@ -202,7 +203,7 @@ impl LevelData {
         };
         let riding = ride.is_some();
         let root = big_root.as_deref();
-        let heli = helicopter::load_level(root, &name, ride.as_ref().and_then(ride::RideLoad::heli_intro));
+        let heli = helicopter::load_level(root, Some(&name), ride.as_ref().and_then(ride::RideLoad::heli_intro));
         let ghosts = if ride.as_ref().is_some_and(|r| r.ride().session.bots.is_some()) {
             None
         } else {
@@ -406,7 +407,7 @@ pub(super) fn ride_setup(
             r.riders = Some(rr.decision.clone());
             r
         });
-    let fixed_input = cli.input.map(|v| Input { steer: v.x, brake: v.y, tuck: v.z, jump: false });
+    let fixed_input = cli.input.map(|v| Input { steer: v.x, brake: v.y, tuck: v.z, jump: false, ..Input::default() });
     let setup = ride::RideSetup {
         world: w.world,
         spawn: w.spawn,
@@ -431,6 +432,7 @@ pub(super) fn ride_setup(
         event_key: cli.event_key,
         collected_geotags: cli.collected_geotags.clone(),
         game: cli.game,
+        classic: cli.classic,
         autoplay: cli.autoplay,
         setup: game_setup,
         intro_visits: cli.intro_visits,

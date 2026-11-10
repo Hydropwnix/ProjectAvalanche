@@ -11,6 +11,7 @@ use ssx_physics::session::{Execution, Session};
 use crate::camera::CameraMode;
 use crate::rider::skin::LoadedRider;
 use crate::rider::visual::{self as rider_visual, LoadedBoard};
+pub use clock::PausedFrames;
 use clock::{fixed_step, frame_step, place_rider, report};
 use controls::{PadLock, late_controls, read_controls};
 use draw::{
@@ -27,6 +28,7 @@ mod draw;
 pub mod helicopter;
 mod hud;
 pub mod live;
+mod map_intro;
 mod scripted;
 mod start;
 mod step;
@@ -36,6 +38,9 @@ pub use controls::read_live_controls;
 pub use draw::TerrainRipple;
 
 const TRIGGER_THRESHOLD: f32 = 0.5;
+const CLASSIC_GRIND_HOLD_TICKS: f32 = 10.0;
+const CLASSIC_REWIND_HOLD_TICKS: f32 = 12.0;
+const CLASSIC_WINGSUIT_HOLD_TICKS: f32 = 8.0;
 
 pub struct RideSetup {
     pub world: PhysicsWorld,
@@ -61,6 +66,7 @@ pub struct RideSetup {
     pub event_key: Option<u32>,
     pub collected_geotags: Vec<u64>,
     pub game: bool,
+    pub classic: bool,
     pub autoplay: bool,
     pub setup: Option<ssx_physics::gear::GameSetup>,
     pub intro_visits: Option<u32>,
@@ -81,6 +87,8 @@ pub struct MapRide {
     pub markers: Vec<MapMarker>,
     pub drawn: (u64, u64),
     pub mode: Option<MapRideMode>,
+    pub heli: Option<std::sync::Arc<ssx_physics::map::MapHeli>>,
+    pub placed: Vec<(u32, u32, ssx_assets::track_objects::Placement)>,
 }
 
 #[derive(Clone, Debug)]
@@ -120,7 +128,19 @@ impl MapRide {
         let fall_at =
             std::env::var("SSX_MAP_FALL_AT").ok().and_then(|v| v.parse::<f32>().ok()).filter(|t| t.is_finite());
         let player = ssx_physics::map::MapPlayer::new(fall_at);
-        MapRide { id, title, gates, setup, player, finished: false, markers: Vec::new(), drawn: (0, 0), mode: None }
+        MapRide {
+            id,
+            title,
+            gates,
+            setup,
+            player,
+            finished: false,
+            markers: Vec::new(),
+            drawn: (0, 0),
+            mode: None,
+            heli: None,
+            placed: Vec::new(),
+        }
     }
 
     pub fn target(&self, world: &PhysicsWorld) -> Option<Vec3> {
@@ -222,6 +242,10 @@ pub struct Ride {
     back_was: bool,
     pub back_press: bool,
     autoplay: bool,
+    classic: bool,
+    classic_grind_ticks: f32,
+    classic_rewind_ticks: f32,
+    classic_wingsuit_ticks: f32,
     auto_rewind: AutoRewind,
     autoplay_waited: u64,
     course: Option<ssx_physics::harness::CoursePlayer>,
@@ -254,6 +278,19 @@ impl Ride {
 
     pub fn world(&self) -> &PhysicsWorld {
         &self.world
+    }
+
+    pub fn set_classic(&mut self, classic: bool) {
+        self.classic = classic;
+        self.state.tricks.classic = classic;
+        if !classic {
+            (self.classic_grind_ticks, self.classic_rewind_ticks) = (0.0, 0.0);
+            self.classic_wingsuit_ticks = 0.0;
+        }
+    }
+
+    pub fn classic(&self) -> bool {
+        self.classic
     }
 
     #[cfg(feature = "scripts")]
@@ -411,7 +448,8 @@ pub fn insert(world: &mut World, r: RideLoad) -> anyhow::Result<()> {
 
 pub fn register(app: &mut App, hud: bool) {
     let riding = resource_exists::<Ride>;
-    app.add_systems(FixedUpdate, fixed_step.in_set(RideStepSet).run_if(riding))
+    app.init_resource::<PausedFrames>()
+        .add_systems(FixedUpdate, fixed_step.in_set(RideStepSet).run_if(riding))
         .add_systems(
             Update,
             (

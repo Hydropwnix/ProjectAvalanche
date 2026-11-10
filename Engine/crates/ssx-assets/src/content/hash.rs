@@ -64,10 +64,12 @@ pub fn write_index(data: &Path, index: &ContentIndex) -> Result<PathBuf> {
 }
 
 pub fn ensure_index(data: &Path, threads: usize) -> Result<ContentIndex> {
-    if let Ok(text) = std::fs::read_to_string(data.join(INDEX_FILE))
-        && let Ok(index) = ContentIndex::from_tsv(&text)
-    {
+    let folder = crate::folder::check(data);
+    if let Some(index) = folder.index {
         return Ok(index);
+    }
+    if crate::setup::marker(data) != Ok(None) {
+        return Err(crate::folder::Incomplete { data: data.to_path_buf(), state: folder.state }.into());
     }
     let run = hash_data(data, threads)?;
     write_index(data, &run.index)?;

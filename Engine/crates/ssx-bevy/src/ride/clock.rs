@@ -46,12 +46,17 @@ fn render_blend(a: &Pose, b: &Pose, t: f32) -> Pose {
     }
 }
 
+#[derive(Resource, Default)]
+pub struct PausedFrames(pub u64);
+
 pub(super) fn fixed_step(
     mut ride: ResMut<Ride>,
     mut rig: Option<ResMut<RiderRig>>,
     shadow: Option<Res<crate::particles::shadow_query::PlayerShadowQuery>>,
+    mut paused_frames: ResMut<PausedFrames>,
 ) {
     if matches!(ride.clock, Clock::Fixed) && ride.hold && ride.paused {
+        paused_frames.0 += 1;
         let r = &mut *ride;
         let ev = r.session.paused_frame(&mut r.state, &r.world);
         if ev.results || ev.finished || ev.looped {

@@ -55,18 +55,8 @@ impl Launcher {
             };
         }
         if !self.data_ready {
-            let line = if ssx_assets::setup::needs_update(&self.settings.game_data()) {
-                "This data folder has no movies yet: select the same disc image again and they are added."
-            } else {
-                "Choose your SSX (2012) disc image: the game data is unpacked from it once."
-            };
-            let line = line.to_owned();
-            return HeroText {
-                title: "SET UP GAME DATA",
-                line: (line, soft),
-                tab: ("SETUP NEEDED", theme::WARN),
-                enabled: true,
-            };
+            let (title, line, tab) = crate::data_state::hero_unplayable(&self.data_state);
+            return HeroText { title, line: (line.to_owned(), soft), tab: (tab, theme::WARN), enabled: true };
         }
         if self.tracks.is_empty() {
             let dir = self.settings.big_root().join(catalog::TRACKS_DIR);
@@ -110,7 +100,10 @@ impl Launcher {
                     };
                 }
                 if let Some(release) = self.update.ready() {
-                    let line = format!("Update v{} ready: restart in Extras, Updates.", release.version);
+                    let line = match release.reinstall.is_empty() {
+                        true => format!("Update v{} ready: restart in Extras, Updates.", release.version),
+                        false => "The repair is ready: restart in Extras, Updates.".to_owned(),
+                    };
                     return HeroText {
                         title,
                         line: (line, theme::CYAN_SOFT),
@@ -118,7 +111,7 @@ impl Launcher {
                         enabled: true,
                     };
                 }
-                if let Some(release) = self.update.available() {
+                if let Some(release) = self.update.available().filter(|r| r.reinstall.is_empty()) {
                     let line = format!("A new version, v{}, is available: Extras, Updates.", release.version);
                     return HeroText {
                         title,
@@ -126,6 +119,24 @@ impl Launcher {
                         tab: ("UPDATE", theme::CYAN),
                         enabled: true,
                     };
+                }
+                if let [first, rest @ ..] = self.program_missing.as_slice() {
+                    let line = match rest.len() {
+                        0 => format!("This installation lacks {first}: repair it in Extras, Updates."),
+                        more => format!(
+                            "This installation lacks {first} and {more} more files: repair it in Extras, Updates."
+                        ),
+                    };
+                    return HeroText {
+                        title,
+                        line: (line, theme::WARN),
+                        tab: ("REPAIR NEEDED", theme::WARN),
+                        enabled: true,
+                    };
+                }
+                if !self.data_state.is_complete() {
+                    let line = (crate::data_state::HERO_JOIN_REPAIR.to_owned(), theme::WARN);
+                    return HeroText { title, line, tab: ("REPAIR NEEDED", theme::WARN), enabled: true };
                 }
                 let line = match (&self.setup_message, self.mods_line()) {
                     (Some((true, message)), _) => (message.clone(), theme::GOOD),

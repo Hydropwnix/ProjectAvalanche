@@ -42,6 +42,12 @@ const MAP_README: &str = r#"# A map
 - `finish` ("finish"): the box the race ends in.
 - `gate` ("marker", `ava_marker` "ava:marker/gate"): a gate drawn at the first checkpoint.
 - `below` ("death"): a rider who falls off the slope dies here, and the level restarts at the spawn.
+- `heli intro`, `heli pickup` ("heli_path", `ava_order` 0 and 1): the helicopter's two locators. With
+  `intro = "heli"` in `map.toml` the ride starts in the helicopter as a disc drop's does: its intro flies to the
+  spawn from the first, a survive-to-death run's pickup lands at the second after the finish (survive to death needs
+  it). With `intro = "spawn"` (as made) they are not flown.
+- `flare` ("prop", `ava_object` "ssx:object/markerflare_sml_red_gameobject"): a marker flare of the disc beside the
+  line, an entity: its controller pushes it away from a rider passing within 2.5 m (Docs/architecture/content.md §29).
 
 How it is drawn in the game (Docs/architecture/content.md §24): terrain and rails with a terrain material of the
 disc (`ava_material` "ssx:material/<name>" on the node; `terrain_default_mat` by default, `terrain_rail_red_mat` on a
@@ -213,6 +219,7 @@ mod tests {
         let d = &map.definition;
         assert_eq!((d.spawns.len(), d.checkpoints.len(), d.rails.len(), d.markers.len()), (1, 2, 1, 1));
         assert!(d.finish.is_some() && d.deaths.len() == 1);
+        assert_eq!((d.heli_path.len(), d.props.len()), (2, 1));
         assert!(new_package("my-map2", Template::Layout, &out, std::path::Path::new("")).is_err());
         for drop in ["ssx:object/x", "pack:drop/x", "no such drop"] {
             assert!(new_layout("my-layout", drop, &out, &out.join("no-disc")).is_err(), "{drop}");

@@ -232,6 +232,15 @@ pub fn parse_toml(bytes: &[u8]) -> Result<MapToml, Vec<Problem>> {
             Intro::Spawn
         }
     };
+    if modes.contains(&Mode::Death) && intro != Intro::Heli && m.intro.as_ref().is_none_or(|s| s.get_ref() == "spawn") {
+        let span = m.intro.as_ref().map_or_else(|| m.modes.as_ref().map_or(span.clone(), |l| l.span()), |s| s.span());
+        at(
+            span,
+            "a death map starts in the helicopter (intro = \"heli\"): survive to death loops through the helicopter's \
+             pickup at the finish"
+                .into(),
+        );
+    }
     let midground = m.midground.as_ref().and_then(|s| {
         let id = id_of(s, Kind::Track, "midground", &mut at)?;
         if id.namespace() != BASE_NAMESPACE {

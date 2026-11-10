@@ -22,6 +22,9 @@ pub struct MapObject {
     pub pob: Option<String>,
     pub model: Option<(ContentId, Option<ContentHash>)>,
     pub audio: Option<AudioName>,
+    pub key: Option<u32>,
+    pub controller: Option<ContentId>,
+    pub rigid_body: Option<ssx_content::object::RigidBody>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,6 +55,17 @@ impl GameContent {
     pub fn map_object(&self, id: &ContentId) -> Result<MapObject, LoadError> {
         let found = self.map_object_def(id)?;
         let o = &found.value;
+        let key = match id.namespace() == BASE_NAMESPACE {
+            true => {
+                let records = self.disc_records().ok_or_else(|| LoadError::Failed {
+                    id: id.clone(),
+                    message: "the disc's records are not indexed".into(),
+                })?;
+                let names = records.names().map_err(|message| LoadError::Failed { id: id.clone(), message })?;
+                names.by_id.get(id).map(|&(_, key)| key)
+            }
+            false => None,
+        };
         let (collision, pob, model) = match &o.collision {
             ObjectCollision::None => (None, None, None),
             ObjectCollision::Decoded { path, collision } => (Some(collision.clone()), Some(path.clone()), None),
@@ -69,6 +83,9 @@ impl GameContent {
             pob,
             model,
             audio: o.audio.clone(),
+            key,
+            controller: o.controller.clone(),
+            rigid_body: o.rigid_body,
         })
     }
 
@@ -76,12 +93,12 @@ impl GameContent {
         if id.kind() != Kind::Object {
             return Err(LoadError::Failed { id: id.clone(), message: "not an object id".into() });
         }
-        let fits = |o: &ObjectDef| match (&o.controller, &o.rigid_body) {
-            (Some(c), _) => Some(format!(
-                "its controller script {c} makes it an entity with a controller, which a map does not place"
+        let fits = |o: &ObjectDef| match &o.controller {
+            Some(c) if c.namespace() != BASE_NAMESPACE => Some(format!(
+                "its controller {c} is a package's script: a placed object's controller is one of the disc's \
+                 (ssx:script/<path>, run by the game's controllers); the scripting API has no entity controller"
             )),
-            (None, Some(_)) => Some("a rigid body (a controlled entity's) is not placed by a map".into()),
-            (None, None) => None,
+            _ => None,
         };
         self.strongest(id, fits)
     }

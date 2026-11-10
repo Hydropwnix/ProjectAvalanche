@@ -36,13 +36,12 @@ impl Launcher {
             match &self.riders {
                 Ok(riders) if !riders.is_empty() => {
                     let current = riders.iter().find(|r| r.name == self.settings.character);
-                    egui::ComboBox::from_id_salt("rider")
-                        .selected_text(current.map_or(self.settings.character.clone(), |r| r.label.clone()))
-                        .show_ui(ui, |ui| {
-                            for r in riders {
-                                ui.selectable_value(&mut self.settings.character, r.name.clone(), &r.label);
-                            }
-                        });
+                    let shown = current.map_or(self.settings.character.clone(), |r| r.label.clone());
+                    widgets::combo(ui, egui::ComboBox::from_id_salt("rider").selected_text(shown), |ui| {
+                        for r in riders {
+                            ui.selectable_value(&mut self.settings.character, r.name.clone(), &r.label);
+                        }
+                    });
                 }
                 Ok(_) => _ = ui.text_edit_singleline(&mut self.settings.character),
                 Err(e) => widgets::status(ui, theme::ERROR, format!("riders unavailable: {e}")),
@@ -96,7 +95,8 @@ impl Launcher {
         widgets::field(ui, "Track");
         let big = self.settings.big_root();
         ui.horizontal(|ui| {
-            egui::ComboBox::from_id_salt("track").selected_text(&self.settings.track).height(320.0).show_ui(ui, |ui| {
+            let combo = egui::ComboBox::from_id_salt("track").selected_text(&self.settings.track).height(320.0);
+            widgets::combo(ui, combo, |ui| {
                 for t in &self.tracks {
                     if ui.selectable_value(&mut self.settings.track, t.clone(), t).changed() {
                         self.settings.drop = 0;
@@ -133,7 +133,7 @@ impl Launcher {
             } else {
                 format!("{}. {}", self.settings.drop, name(self.settings.drop - 1))
             };
-            egui::ComboBox::from_id_salt("drop").selected_text(shown).width(WIDE).show_ui(ui, |ui| {
+            widgets::combo(ui, egui::ComboBox::from_id_salt("drop").selected_text(shown).width(WIDE), |ui| {
                 ui.selectable_value(&mut self.settings.drop, 0, "Default (the first drop)");
                 for i in 0..drops.len() {
                     ui.selectable_value(&mut self.settings.drop, i + 1, format!("{}. {}", i + 1, name(i)));
@@ -145,7 +145,7 @@ impl Launcher {
         ui.horizontal(|ui| {
             let presets = catalog::presets(&drops);
             let shown = self.settings.lighting.clone().unwrap_or_else(|| "The drop's own".into());
-            egui::ComboBox::from_id_salt("lighting").selected_text(shown).show_ui(ui, |ui| {
+            widgets::combo(ui, egui::ComboBox::from_id_salt("lighting").selected_text(shown), |ui| {
                 ui.selectable_value(&mut self.settings.lighting, None, "The drop's own");
                 for p in presets {
                     ui.selectable_value(&mut self.settings.lighting, Some(p.clone()), p);

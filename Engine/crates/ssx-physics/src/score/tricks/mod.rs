@@ -4,7 +4,7 @@ use anyhow::Result;
 use glam::Vec2;
 
 use crate::actuator::wrap_angle;
-use crate::rider::grind::tricks::{GRIND_TRICKS, GrindTricks};
+use crate::rider::grind::tricks::{GRIND_TRICKS, GRIND_TRICKS_CLASSIC, GrindTricks};
 use crate::tuning::Bundle;
 
 mod added;
@@ -18,6 +18,15 @@ pub use gestures::*;
 pub const RSTICK_ACTIVE: f32 = 0.3;
 pub const TWEAK_STICK_DEAD_ZONE: f32 = 0.1;
 pub const TWEAK_BLEND_ACTIVE: f32 = 0.9;
+pub const CLASSIC_BOOST_HOLD_TICKS: f32 = 12.0;
+
+pub fn classic_boost_ticks(ticks: f32, x: bool, dt: f32) -> f32 {
+    if x { ticks + dt } else { 0.0 }
+}
+
+pub fn classic_boost_requested(ticks: f32) -> bool {
+    ticks >= CLASSIC_BOOST_HOLD_TICKS
+}
 pub const ANTICIPATE_TICKS: f32 = 15.0;
 pub const ENTER_TICKS: f32 = 15.0;
 pub const EXIT_TICKS: f32 = 10.0;
@@ -172,6 +181,10 @@ pub struct PadSample {
     pub x: bool,
     pub b: bool,
     pub a: bool,
+    pub lb: bool,
+    pub rb: bool,
+    pub lt: bool,
+    pub rt: bool,
     pub r2: bool,
     pub l2_r2: bool,
 }
@@ -186,6 +199,10 @@ impl PadSample {
             x: i.x,
             b: i.b,
             a: i.a,
+            lb: i.lb,
+            rb: i.rb,
+            lt: i.lt,
+            rt: i.rt,
             r2: i.tweak,
             l2_r2: i.signature,
         }
@@ -197,6 +214,10 @@ impl PadSample {
             Button::X => self.x,
             Button::B => self.b,
             Button::A => self.a,
+            Button::Lb => self.lb,
+            Button::Rb => self.rb,
+            Button::Lt => self.lt,
+            Button::Rt => self.rt,
         }
     }
 }
@@ -237,6 +258,10 @@ pub struct TrickInput {
     pub x: bool,
     pub b: bool,
     pub a: bool,
+    pub lb: bool,
+    pub rb: bool,
+    pub lt: bool,
+    pub rt: bool,
     pub tweak: bool,
     pub signature: bool,
 }
@@ -245,20 +270,20 @@ pub struct TrickInput {
 pub struct GrabGestures {
     pub prev: PadSample,
     pub cur: PadSample,
-    pub button_state: [GestureState; 13],
-    pub stick_state: [GestureState; 13],
-    pub button: [bool; 13],
-    pub stick: [bool; 13],
+    pub button_state: [GestureState; 15],
+    pub stick_state: [GestureState; 15],
+    pub button: [bool; 15],
+    pub stick: [bool; 15],
     pub signature: bool,
     pub tweak: bool,
     pub added: AddedGestures,
 }
 
 impl GrabGestures {
-    pub fn tick(&mut self, pad: PadSample, gates: &Gates, added: &AddedAirTricks) {
+    pub fn tick(&mut self, pad: PadSample, gates: &Gates, added: &AddedAirTricks, classic: bool) {
         (self.prev, self.cur) = (self.cur, pad);
         let (prev, cur) = (self.prev, self.cur);
-        for (i, e) in AIR_TRICKS.iter().enumerate() {
+        for (i, e) in air_table(classic).iter().enumerate() {
             self.button[i] = e.button.update(&mut self.button_state[i], gates, &prev, &cur);
             self.stick[i] = e.stick.update(&mut self.stick_state[i], gates, &prev, &cur);
         }
@@ -383,6 +408,8 @@ impl Default for SignatureTiming {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TrickState {
+    pub classic: bool,
+    pub classic_boost_ticks: f32,
     pub gestures: GrabGestures,
     pub press: crate::press::PressGestures,
     pub gesture_clock: f32,
@@ -420,6 +447,8 @@ pub struct TrickState {
 impl Default for TrickState {
     fn default() -> Self {
         Self {
+            classic: false,
+            classic_boost_ticks: 0.0,
             gestures: GrabGestures::default(),
             press: crate::press::PressGestures::default(),
             gesture_clock: 0.0,

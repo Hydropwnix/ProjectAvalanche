@@ -4,6 +4,7 @@ use ssx_physics::rider::{RiderState, World};
 const USER_GAMERTAG: u16 = 0x22B;
 const USER_GAMERPIC: u16 = 0x22C;
 use ssx_physics::scoring::{RecordKind, TrickRecord};
+use ssx_physics::session::tombstones::Tombstones;
 use ssx_physics::session::{Execution, Session};
 
 use super::GameUi;
@@ -11,8 +12,9 @@ use super::hud::HudMessage;
 use super::hud::billboards::{Camera, Ghost, ghost_list, tombstone_list, tombstone_points, wingsuit_timer_pos};
 use super::hud::trick::ComboEnded;
 use super::leaderboard::{ExploreLeaderboard, RaceEntrant, TrickBot, TrickStandings, race_update};
+use super::loc::Localization;
 use super::tricks::{TrickRecordView, trick_name};
-use super::values::{SplitsCallout, UiValue, id};
+use super::values::{SplitsCallout, UiValue, UiValues, id};
 
 pub const TRICKY_WARN_TICKS: f32 = 120.0;
 
@@ -121,6 +123,10 @@ impl HudFeed {
         }
         if running {
             self.feed_hud(ui, s, x, world);
+        }
+        self.project(ui, s, x);
+        if e.is_some_and(|e| e.event.results) {
+            self.race_started = false;
         }
         let started = matches!(
             x.event.state,
@@ -296,7 +302,6 @@ impl HudFeed {
             RecordKind::None | RecordKind::Rewind => String::new(),
             _ => trick_name(&mut ui.loc, &record_view(&self.record), &rider, false),
         };
-        let tombstones = tombstone_points(x.tombstones.as_ref(), &mut ui.loc);
         let v = &mut ui.values;
         v.set_int(id::RACE_TIME, x.event.clock.ms() as i32);
         v.set_float(id::PLAYER_SPEED, s.player_speed);
@@ -338,20 +343,40 @@ impl HudFeed {
         v.set_float(id::WINGSUIT_EFFECTIVENESS, s.wingsuit.effectiveness);
         v.set_float(id::OXYGEN_TANK_LEVEL, h.oxygen_tank);
         v.set_bool(id::IS_OXYGEN_USE_REQUESTED, h.oxygen_use_requested);
+    }
+
+    pub fn project(&self, ui: &mut GameUi, s: &RiderState, x: &Session) {
+        let in_air = s.in_air().then_some([s.position.x, s.position.y, s.position.z]);
+        self.project_into(&mut ui.values, &mut ui.loc, in_air, x.tombstones.as_ref());
+    }
+
+    fn project_into(
+        &self,
+        v: &mut UiValues,
+        loc: &mut Localization,
+        in_air: Option<[f32; 3]>,
+        tombstones: Option<&Tombstones>,
+    ) {
+        let latch = self.race_started;
+        let tombstones = if latch { tombstone_points(tombstones, loc) } else { Vec::new() };
         if let Some(cam) = &self.camera {
-            if s.in_air() {
-                let p = s.position;
-                let [x, y] = wingsuit_timer_pos(cam, [p.x, p.y, p.z]);
+            v.set(id::GHOST_LIST, UiValue::Markers(ghost_list(cam, &self.ghosts)));
+            if let Some(p) = in_air.filter(|_| latch) {
+                let [x, y] = wingsuit_timer_pos(cam, p);
                 v.set_float(id::WINGSUIT_TIMER_POS_X, x);
                 v.set_float(id::WINGSUIT_TIMER_POS_Y, y);
             }
-            v.set(id::GHOST_LIST, UiValue::Markers(ghost_list(cam, &self.ghosts)));
             v.set(id::TOMBSTONE_LIST, UiValue::Markers(tombstone_list(cam, &tombstones)));
-        } else {
+        } else if latch {
             // TODO(guess): without a camera (the headless tools) the wingsuit timer sits at the stage centre (640, 541); settle: none (the viewer passes its camera, `HudFeed::camera`).
             v.set_float(id::WINGSUIT_TIMER_POS_X, 640.0);
             v.set_float(id::WINGSUIT_TIMER_POS_Y, 541.0);
         }
+    }
+
+    pub fn paused_frame(&self, ui: &mut GameUi, s: &RiderState, x: &Session) {
+        self.project(ui, s, x);
+        ui.values.set_bool(id::NIS_IS_ACTIVE, x.flow.nis_active || s.start.is_some());
     }
 
     fn messages(&mut self, ui: &mut GameUi, s: &RiderState, x: &Session, world: &World) {
@@ -429,19 +454,23 @@ impl HudFeed {
 
 const NO_PROMPT_DROPS: [u32; 3] = [0x28F6_34F8, 0xC145_699A, 0xB0F3_51A2];
 
-pub fn nis_prompt_shown(drop: u32, no_prompt: bool, tutorial: bool, loops: u32) -> bool {
-    !no_prompt && !tutorial && loops == 0 && !NO_PROMPT_DROPS.contains(&drop)
+pub fn nis_prompt_shown(drop: u32, no_prompt: bool, tutorial: bool, loops: u32, session: bool) -> bool {
+    // TODO(guess): a port choice (the user's, 2026-11-08: a change of equipment makes no sense in a multiplayer session) — a network session's level counts as HUD_NONISPROMPT (UI 0x11A) raised: the game has no network sessions, and its own rule (0x11A set when the front end's frame state begins, 0x82381C88) leaves the prompt to a level restarted in place, which a session's next round on the same drop is (A_GameRestartStage); settle: none (no network sessions on the disc).
+    !no_prompt && !session && !tutorial && loops == 0 && !NO_PROMPT_DROPS.contains(&drop)
 }
 
 fn ready_loop_objectives(ui: &mut GameUi, loops: u32) {
     let drop = ui.nav.drop_key;
-    let tutorial = match ui.fe.as_ref() {
-        Some(fe) => fe.profile.is_tutorial_drop(drop),
-        None => ssx_assets::career::Profile::new().is_tutorial_drop(drop),
+    let (tutorial, session) = match ui.fe.as_ref() {
+        Some(fe) => (fe.profile.is_tutorial_drop(drop), fe.network_session),
+        None => (ssx_assets::career::Profile::new().is_tutorial_drop(drop), false),
     };
-    let v = &mut ui.values;
-    if nis_prompt_shown(drop, v.bool(id::NO_NIS_PROMPT), tutorial, loops) {
-        let text = ui.loc.text("TXT_NISPROMPT_MESSAGE");
+    ready_loop_values(&mut ui.values, &mut ui.loc, drop, tutorial, loops, session);
+}
+
+fn ready_loop_values(v: &mut UiValues, loc: &mut Localization, drop: u32, tutorial: bool, loops: u32, session: bool) {
+    if nis_prompt_shown(drop, v.bool(id::NO_NIS_PROMPT), tutorial, loops, session) {
+        let text = loc.text("TXT_NISPROMPT_MESSAGE");
         v.set_str(id::NIS_PROMPT_MESSAGE, text);
         v.set_int(id::NIS_PROMPT_CALLOUT, 4);
         v.set_bool(id::NIS_PROMPT_ACTIVE, true);
@@ -470,15 +499,62 @@ mod tests {
         let (final_drop, other) = (fnv1(b"chapter_11_drop_h2h"), fnv1(b"exp_alps_vorassay_drop_3"));
         let mut p = Profile::new();
         assert!(p.is_tutorial_drop(prologue) && p.is_tutorial_drop(first) && p.is_tutorial_drop(second));
-        assert!(!nis_prompt_shown(prologue, false, p.is_tutorial_drop(prologue), 0));
+        assert!(!nis_prompt_shown(prologue, false, p.is_tutorial_drop(prologue), 0, false));
         p.drop_states.insert(second, DropState::Completed);
-        assert!(nis_prompt_shown(prologue, false, p.is_tutorial_drop(prologue), 0));
+        assert!(nis_prompt_shown(prologue, false, p.is_tutorial_drop(prologue), 0, false));
         assert!(!p.is_tutorial_drop(first), "the boost notification shows on a replayed tutorial");
-        assert!(!nis_prompt_shown(first, false, p.is_tutorial_drop(first), 0));
-        assert!(!nis_prompt_shown(second, false, p.is_tutorial_drop(second), 0));
-        assert!(!nis_prompt_shown(final_drop, false, false, 0));
-        assert!(nis_prompt_shown(other, false, false, 0));
-        assert!(!nis_prompt_shown(other, true, false, 0), "HUD_NONISPROMPT");
-        assert!(!nis_prompt_shown(other, false, false, 1), "a survive loop's next intro");
+        assert!(!nis_prompt_shown(first, false, p.is_tutorial_drop(first), 0, false));
+        assert!(!nis_prompt_shown(second, false, p.is_tutorial_drop(second), 0, false));
+        assert!(!nis_prompt_shown(final_drop, false, false, 0, false));
+        assert!(nis_prompt_shown(other, false, false, 0, false));
+        assert!(!nis_prompt_shown(other, true, false, 0, false), "HUD_NONISPROMPT");
+        assert!(!nis_prompt_shown(other, false, false, 1, false), "a survive loop's next intro");
+    }
+
+    #[test]
+    fn the_prompt_comes_on_a_restart_and_never_in_a_session() {
+        let drop = fnv1(b"exp_alps_vorassay_drop_3");
+        let mut loc = Localization::empty(crate::game::loc::Language::English);
+        for session in [false, true] {
+            let mut v = UiValues::new();
+            let mut hud_ready_seen = true;
+            let due = crate::game::fe::flow::front_end_meta_values(&mut v, &mut hud_ready_seen);
+            assert!(due && !hud_ready_seen, "0x329E66FA {{1}} after a level came up, once");
+            assert!(v.bool(id::NO_NIS_PROMPT) && v.bool(id::NIS_TITLE_ENABLED));
+            ready_loop_values(&mut v, &mut loc, drop, false, 0, session);
+            assert!(!v.bool(id::NIS_PROMPT_ACTIVE), "the first ready loop after the front end (session {session})");
+            assert!(!v.bool(id::NO_NIS_PROMPT), "DO_NisPrompt clears HUD_NONISPROMPT");
+            ready_loop_values(&mut v, &mut loc, drop, false, 0, session);
+            assert_eq!(v.bool(id::NIS_PROMPT_ACTIVE), !session, "the restarted level's ready loop (session {session})");
+            if !session {
+                assert_eq!(v.str(id::NIS_PROMPT_MESSAGE), "TXT_NISPROMPT_MESSAGE");
+                assert_eq!(v.int(id::NIS_PROMPT_CALLOUT), 4);
+            }
+        }
+        let mut v = UiValues::new();
+        let mut hud_ready_seen = false;
+        assert!(!crate::game::fe::flow::front_end_meta_values(&mut v, &mut hud_ready_seen), "the boot's: no level");
+    }
+
+    #[test]
+    fn the_projections_are_written_in_every_frame() {
+        let mut f = HudFeed::new("elise");
+        let identity = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+        f.camera = Some(Camera { view_proj: identity, screen: [1280.0, 720.0] });
+        f.ghosts = vec![Ghost { id: 7, name: "Gold".into(), colour: 0xFF00_0000, position: [0.0, -0.8, 10.0] }];
+        let mut v = UiValues::new();
+        let mut loc = Localization::empty(crate::game::loc::Language::English);
+        for _ in 0..2 {
+            v.clear_dirty();
+            f.project_into(&mut v, &mut loc, Some([0.0, 0.0, 10.0]), None);
+            assert!(v.is_dirty(id::GHOST_LIST) && v.is_dirty(id::TOMBSTONE_LIST));
+            let g = v.markers(id::GHOST_LIST);
+            assert_eq!((g.len(), g[0].x, g[0].y), (1, 640.0, 360.0));
+            assert!(v.markers(id::TOMBSTONE_LIST).is_empty());
+            assert!(!v.written(id::WINGSUIT_TIMER_POS_X), "no wingsuit timer before the race latch");
+        }
+        f.race_started = true;
+        f.project_into(&mut v, &mut loc, Some([0.0, 0.0, 10.0]), None);
+        assert_eq!((v.float(id::WINGSUIT_TIMER_POS_X), v.float(id::WINGSUIT_TIMER_POS_Y)), (715.0, 360.0));
     }
 }

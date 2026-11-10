@@ -70,9 +70,11 @@ impl GameUi {
                     if ev == i64::from(navev::POST_ON_ENTER_VIEW) {
                         self.loading_views.retain(|v| *v != data);
                         self.view_acknowledged(true, &data);
+                        self.relayout_answer(true, &data);
                     }
                     if ev == i64::from(navev::POST_ON_EXIT_VIEW) {
                         self.view_acknowledged(false, &data);
+                        self.relayout_answer(false, &data);
                     }
                     // TODO(guess): the game's consumer of the queued framework events (0x82B41858, callback 0x82B417D8) is not traced; a movie's `kNavChangeView` with a nav event's name is raised on the nav; settle: that consumer.
                     if ev == i64::from(navev::CHANGE_VIEW) && self.fe.is_some() {

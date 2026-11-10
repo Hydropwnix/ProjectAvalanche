@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use bevy::prelude::AppExit;
 use clap::Parser;
-use ssx_bevy::{RenderArgs, WINDOW_SIZE, game_mode, terrain_look};
+use ssx_bevy::{RenderArgs, game_mode, terrain_look};
 
 /// The game: the front end from the boot movie to a drop and back in one window, the profile loaded and saved. The
 /// data come from --big-root (or the default search). Keys: Enter START,
@@ -34,9 +34,15 @@ struct Cli {
     #[arg(long, value_name = "LANG", default_value = "eng_us")]
     lang: String,
 
-    /// The window in pixels at scale factor 1 (e.g. `1280x720`; default 1600x900 logical).
+    /// A test option: the window in pixels at scale factor 1 (e.g. `1280x720`), windowed; the launcher's display
+    /// settings neither read nor kept.
     #[arg(long, value_name = "WxH")]
     window: Option<String>,
+
+    /// The window's mode, monitor and sizes (`--window-mode`, `--monitor`, `--video-mode`, `--window-size`,
+    /// `--list-displays`).
+    #[command(flatten)]
+    display: game_mode::DisplayCli,
 
     /// A test option: pad presses `<seconds>:<step>,…` on the front end's clock (`start`, `a`, `b`, `x`, `y`, `up`,
     /// `down`, `left`, `right`, `lb`, `rb`, `skip`, `shot=NAME`, `nav=EVENT`); `|` starts the next segment, timed
@@ -129,8 +135,9 @@ struct Cli {
     play_movie: Option<String>,
 
     /// Join this multiplayer server (`host:port`, an address, or a name; the port 27450 when none is given) and ride
-    /// its drop with the others; a refusal or the session's end shows its reason on the Project Avalanche menu.
-    #[arg(long, value_name = "ADDR", conflicts_with = "classic_front_end")]
+    /// its drop with the others; a refusal or the session's end shows its reason on the Project Avalanche menu. Without
+    /// --name and a stored Player Name the join waits for the name the menu asks for first.
+    #[arg(long, value_name = "ADDR", conflicts_with_all = ["classic_front_end", "launch", "launch_map"])]
     connect: Option<String>,
 
     /// The file holding the server's password (one line).
@@ -138,13 +145,13 @@ struct Cli {
     password_file: Option<PathBuf>,
 
     /// The name the server shows over your rider (the game's fonts' characters, at most 20; default: the Options'
-    /// Player Name, else "Player").
+    /// Player Name, which the menu asks for when there is none; "Player" if that is cancelled).
     #[arg(long, value_name = "NAME", requires = "connect")]
     name: Option<String>,
 
     /// An `avalanche://connect/host:port` link (the launcher passes one the system handed it): the server browser opens
     /// with the server and asks before anything is sent to it.
-    #[arg(long, value_name = "URL", conflicts_with_all = ["classic_front_end", "connect"])]
+    #[arg(long, value_name = "URL", conflicts_with_all = ["classic_front_end", "connect", "launch", "launch_map"])]
     link: Option<String>,
 
     /// A test option: the server browser's tabs show N generated servers (also `SSX_FAKE_SERVERS=N`).
@@ -153,7 +160,11 @@ struct Cli {
 }
 
 fn main() -> AppExit {
-    match game_args(Cli::parse()).and_then(game_mode::run) {
+    let cli = Cli::parse();
+    if cli.display.list_displays {
+        return game_mode::print_displays();
+    }
+    match game_args(cli).and_then(game_mode::run) {
         Ok(exit) => exit,
         Err(e) => {
             ssx_core::eprintln!("error: {e:#}");
@@ -172,19 +183,8 @@ fn game_args(cli: Cli) -> Result<game_mode::GameArgs> {
         }
     };
     let vsync = !cli.render.no_vsync;
-    let window = match &cli.window {
-        Some(s) => {
-            let (w, h) = s.split_once('x').with_context(|| format!("--window {s}: WxH"))?;
-            game_mode::WindowSpec { width: w.parse()?, height: h.parse()?, physical: true, vsync, position: None }
-        }
-        None => game_mode::WindowSpec {
-            width: WINDOW_SIZE.x,
-            height: WINDOW_SIZE.y,
-            physical: false,
-            vsync,
-            position: None,
-        },
-    };
+    let settings = ssx_assets::setup::app_dir().join("settings.json");
+    let window = game_mode::WindowSpec::new(cli.window.as_deref(), &cli.display, vsync, Some(&settings))?;
     let classic_front_end = cli.classic_front_end || std::env::var("SSX_FE_HUB").is_ok_and(|v| v == "off");
     if classic_front_end && cli.open_view.is_some() {
         anyhow::bail!("--open-view opens a screen of the Project Avalanche menu: not with SSX_FE_HUB=off");

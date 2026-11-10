@@ -197,11 +197,19 @@ fn mode_name(t: Option<EventType>) -> &'static str {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Seen {
+    Own,
+    Session,
+    Blind,
+}
+
 #[derive(SystemParam)]
 pub(super) struct FrameView<'w> {
     time: Res<'w, Time<Real>>,
     ride: Option<Res<'w, Ride>>,
     level: Option<Res<'w, LevelGame>>,
+    live: Option<Res<'w, crate::shell::live::LiveSession>>,
     #[cfg(feature = "net")]
     poses: Option<Res<'w, ssx_net::client::RemotePoses>>,
     #[cfg(feature = "net")]
@@ -211,6 +219,10 @@ pub(super) struct FrameView<'w> {
 impl FrameView<'_> {
     pub(super) fn ride(&self) -> Option<&Ride> {
         self.ride.as_deref()
+    }
+
+    pub(super) fn live(&self) -> Option<&crate::shell::live::LiveSession> {
+        self.live.as_deref()
     }
 
     pub(super) fn rider_name(&self) -> Option<String> {
@@ -224,16 +236,20 @@ impl FrameView<'_> {
         content: &ssx_assets::content::GameContent,
         values: &ssx_ui::game::values::UiValues,
         loc: &mut ssx_ui::game::loc::Localization,
-        typing: bool,
+        seen: Seen,
     ) -> GameFrame {
         let mut f = GameFrame {
             now: self.time.elapsed(),
             events: inbox.events.drain(..).collect(),
             keys: inbox.keys.drain(..).collect(),
-            typing,
             ..GameFrame::default()
         };
         f.hud_busy = state.hud.game_busy(values);
+        if seen == Seen::Blind {
+            f.events.clear();
+            inbox.ride_seen = false;
+            return f;
+        }
         let Some(ride) = self.ride.as_deref() else {
             inbox.ride_seen = false;
             return f;
@@ -293,7 +309,9 @@ impl FrameView<'_> {
             }
         }
         #[cfg(feature = "net")]
-        if let (Some(poses), Some(roster)) = (self.poses.as_deref(), self.roster.as_deref()) {
+        if seen == Seen::Session
+            && let (Some(poses), Some(roster)) = (self.poses.as_deref(), self.roster.as_deref())
+        {
             let own = roster.own.map(|(r, _)| r);
             for (rider, p) in &roster.players {
                 let Some(pose) = poses.riders.get(rider).filter(|_| Some(*rider) != own) else { continue };

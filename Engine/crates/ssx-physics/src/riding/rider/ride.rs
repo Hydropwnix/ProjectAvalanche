@@ -22,7 +22,7 @@ pub(super) fn ride(s: &mut RiderState, w: &World, input: &Input, flags: (bool, b
     let gframe = grind::carving_frame(&mut s.grind, s.position, s.contact.map(|c| (c.point, c.normal)), s.velocity, dt);
     let has_contact = gframe.contact.is_some();
     let n = gframe.n;
-    let stick = input.stick();
+    let stick = input.carve_stick(s.tricks.classic);
     let uber = s.landing.uber_crash || s.board_particle.enabled;
     let dead_on_ground = matches!(s.landing.uber_recovery, UberRecovery::GettingUp(_)) && uber;
     let is_dead = s.carving.is_dead;

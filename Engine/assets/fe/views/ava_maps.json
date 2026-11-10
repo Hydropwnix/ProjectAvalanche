@@ -7,6 +7,7 @@
   "imports": [
     {"name": "Panel", "url": "components/Panel.swf", "symbol": "components.Panel"},
     {"name": "ListMenu", "url": "components/ListMenu.swf", "symbol": "components.ListMenu"},
+    {"name": "ScrollBar", "url": "components/ScrollBar.swf", "symbol": "components.ScrollBar"},
     {"name": "Highlight", "url": "components/Highlight.swf", "symbol": "components.Highlight"},
     {"name": "Callouts", "url": "components/ButtonCalloutBar.swf", "symbol": "components.ButtonCalloutBar"}
   ],
@@ -47,6 +48,7 @@
       {"instance": "txtColBase", "x": 561, "y": 228, "text": {"font": "DIN Mittelschrift Std", "size": 15,
         "color": "#6eb7c6", "width": 262, "height": 22}},
       {"instance": "mcRows", "symbol": "ListMenu", "x": 101, "y": 252},
+      {"instance": "mcScrollBar", "symbol": "ScrollBar", "x": 832, "y": 252},
       {"instance": "txtEmpty", "x": 128, "y": 330, "text": {"font": "DIN Mittelschrift Std", "size": 20,
         "color": "#c3fdf9", "align": "center", "width": 676, "height": 120, "multiline": true, "wrap": true}},
       {"instance": "txtStatus", "x": 101, "y": 604, "text": {"font": "DIN Mittelschrift Std", "size": 15,
@@ -59,7 +61,8 @@
   "view_symbol": {"symbol": "AvaMaps"},
   "logic": {
     "base": "fe_view",
-    "data": ["ava_maps", "ava_maps_rows", "ava_maps_rows_index", "ava_maps_details"],
+    "sd": {"scale": 0.79},
+    "data": ["ava_maps", "ava_maps_rows", "ava_maps_rows_index", "ava_maps_details", "ava_maps_window"],
     "texts": [
       {"target": "txtColTitle", "data": "ava_maps", "field": "colTitle"},
       {"target": "txtColModes", "data": "ava_maps", "field": "colModes"},
@@ -78,6 +81,7 @@
         "data": "ava_maps_rows", "index": "ava_maps_rows_index", "cell": "AvaMapsRow"}
     ],
     "paging": {"menu": "mcRows", "setup": "A_AvaMapsSetup"},
+    "scrollbars": [{"target": "mcScrollBar", "menu": "mcRows", "length": 340, "window": "ava_maps_window"}],
     "panels": [
       {"target": "mcTablePanel", "width": 746, "height": 378, "dimmer": 60},
       {"target": "mcDetailsPanel", "width": 364, "height": 378, "dimmer": 60}

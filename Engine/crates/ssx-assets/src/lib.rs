@@ -9,10 +9,12 @@ pub mod career;
 #[cfg(feature = "pipeline")]
 pub mod content;
 mod disc;
+pub mod display;
 #[cfg(feature = "pipeline")]
 mod effects;
 #[cfg(feature = "pipeline")]
 mod landscape;
+pub mod settings_file;
 #[cfg(feature = "pipeline")]
 mod soundtrack;
 #[cfg(feature = "pipeline")]
@@ -30,6 +32,8 @@ pub use anim::{
 pub use audio::{
     sfx, sfx_aems, sfx_avalanche, sfx_bus, sfx_dsp, sfx_dsp_remix, sfx_game, sfx_mixer, sfx_override, sfx_tuna,
 };
+#[cfg(feature = "pipeline")]
+pub use disc::folder;
 pub use disc::{exe, setup, subset};
 #[cfg(feature = "pipeline")]
 pub use effects::{light_script, particle_script, particles, postfx, postfx_overlay, track_particles};

@@ -19,18 +19,31 @@ impl Launcher {
                 return Status { colour: theme::CYAN, label: format!("Updating… {:.0} %", p.fraction * 100.0) };
             }
             if let Some(release) = self.update.ready() {
-                return status(theme::CYAN, &format!("Update v{} ready: restart", release.version));
+                return match release.reinstall.is_empty() {
+                    true => status(theme::CYAN, &format!("Update v{} ready: restart", release.version)),
+                    false => status(theme::CYAN, "Repair ready: restart"),
+                };
             }
-            if let Some(release) = self.update.available() {
+            if let Some(release) = self.update.available().filter(|r| r.reinstall.is_empty()) {
                 return status(theme::CYAN, &format!("Update v{} available", release.version));
+            }
+            if !self.program_missing.is_empty() {
+                return status(theme::WARN, "Program files missing");
             }
         }
         match (self.running(), self.started_game, self.data_ready) {
             (true, true, _) => status(theme::CYAN, "Game running"),
             (true, false, _) => status(theme::CYAN, "Viewer running"),
+            (false, _, true) if !self.data_state.is_complete() => status(theme::WARN, "Game data: repair needed"),
             (false, _, true) if self.tracks.is_empty() => status(theme::WARN, "Game data incomplete"),
             (false, _, true) => status(theme::GOOD, "Game data ready"),
-            (false, _, false) => status(theme::WARN, "Setup needed"),
+            (false, _, false) => match crate::data_state::status(&self.data_state) {
+                (colour, "Repair needed") => status(colour, "Game data: repair needed"),
+                _ if self.data_state == ssx_assets::folder::State::Unfinished => {
+                    status(theme::WARN, "Setup unfinished")
+                }
+                _ => status(theme::WARN, "Setup needed"),
+            },
         }
     }
 
@@ -193,6 +206,7 @@ impl eframe::App for Launcher {
             Page::Extras => self.extras_page(ui, &l),
         }
         ui::footer::draw(&painter, &l, &self.status());
+        self.settings_question(&ctx);
         self.keys(&ctx);
         self.screenshot_step(&ctx);
     }

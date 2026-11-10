@@ -3,9 +3,10 @@ use std::time::{Duration, Instant};
 
 use ssx_assets::content::GameContent;
 use ssx_assets::content::gamemodes::{ModeChoice, finish_from_record, map_limit_ms};
+use ssx_assets::nis::IntroNis;
 use ssx_content::ContentId;
 use ssx_content::gamemode::{Rules, TimeUp};
-use ssx_content::map::{Intro, MapToml};
+use ssx_content::map::MapToml;
 use ssx_gameplay::validate::{Limits, MapLimits};
 use ssx_net_proto::instance::built_in_mode;
 use ssx_physics::character::DEFAULT_GEAR_MIX;
@@ -117,6 +118,7 @@ pub fn record_rules(
         ModeChoice::Gamemode(g) => {
             let found = content.gamemode(g).map_err(|e| ssx_core::text::message(&e.to_string()).to_string())?;
             let has_finish = finish_from_record(toml).unwrap_or(true);
+            found.value.takes_start(toml.intro).map_err(|e| format!("{g} on {cid}: {e}"))?;
             let rules = found.value.rules(cid, limit, has_finish).map_err(|e| format!("{g} on {cid}: {e}"))?;
             Ok((rules, Some(found.value.title.clone())))
         }
@@ -160,7 +162,11 @@ pub fn load_resolved(
         EventType::FreeRide => (None, None),
         _ => {
             let ts = Instant::now();
-            let mut graph = start_graph(folder, resolved.base.as_ref().map(|b| b.track.as_str()))
+            level
+                .prepare_start_intro(folder, START_RIDER)
+                .map_err(|e| format!("{id}: its helicopter intro: {}", ssx_core::text::message(&format!("{e:#}"))))?;
+            let intro = level.start_intro.as_ref().map(|i| &i.nis);
+            let mut graph = start_graph(folder, resolved.base.as_ref().map(|b| b.track.as_str()), intro)
                 .map_err(|e| format!("{id}: {e}"))?;
             let env = start_envelope(&mut level, Some(&mut graph)).map_err(|e| format!("{id}: its start: {e:#}"))?;
             let start = env.start;
@@ -218,7 +224,7 @@ pub fn load_resolved(
     })
 }
 
-fn start_graph(folder: &Path, track: Option<&str>) -> Result<RiderGraph, String> {
+fn start_graph(folder: &Path, track: Option<&str>, intro: Option<&IntroNis>) -> Result<RiderGraph, String> {
     let graph = match track {
         Some(t) => RiderGraph::load(folder, t, START_RIDER),
         None => RiderGraph::load_untracked(folder, START_RIDER),
@@ -232,7 +238,7 @@ fn start_graph(folder: &Path, track: Option<&str>) -> Result<RiderGraph, String>
         )
     })?;
     graph
-        .set_intro(folder, None)
+        .set_intro(folder, intro)
         .map_err(|e| format!("{START_RIDER}'s level start: {}", ssx_core::text::message(&format!("{e:#}"))))?;
     Ok(graph)
 }
@@ -242,11 +248,6 @@ fn shown_folder(folder: &Path) -> String {
 }
 
 pub fn check_toml(folder: &Path, content: &GameContent, id: &str, toml: &MapToml) -> Result<(), String> {
-    if toml.intro == Intro::Heli {
-        return Err(format!(
-            "{id} starts in the helicopter (intro = \"heli\"), which a server does not run: a server's map starts at its spawn"
-        ));
-    }
     if let Some(base) = &toml.base {
         let b = content
             .layout_base(base)

@@ -106,6 +106,7 @@ pub struct Inventory {
     pub selected_gear: Vec<UiItem>,
     pub category_slots: Vec<i64>,
     pub survival: i32,
+    pub inventory_size: i32,
     pub bio: RiderBio,
 }
 
@@ -143,6 +144,7 @@ impl Inventory {
             selected_gear: Vec::new(),
             category_slots: Vec::new(),
             survival: 0,
+            inventory_size: 0,
             bio: RiderBio::default(),
         }
     }

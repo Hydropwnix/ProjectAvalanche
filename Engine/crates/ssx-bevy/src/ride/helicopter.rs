@@ -79,10 +79,10 @@ impl HeliVisual {
     }
 }
 
-fn load(root: &Path, track: &str, intro: &IntroAssets) -> Result<LoadedHeli> {
+fn load(root: &Path, track: Option<&str>, intro: &IntroAssets) -> Result<LoadedHeli> {
     let choice = intro.heli.as_ref().map_err(|e| anyhow::anyhow!("{e}"))?;
     // TODO(guess): LOD 0 at every distance (`LODThresholds` 1.6, 1.15, 0.02 not applied); settle: run the helicopter through `objects::update_object_lods` with its LOD 1 / 2 meshes.
-    let model = ssx_assets::helicopter::load_model(root, track, choice.gameobject)?;
+    let model = ssx_assets::helicopter::load_model_in(root, track, choice.gameobject)?;
     let animator = HeliAnimator::load(root, &choice.name)?;
     let mut parts = Vec::new();
     for p in &model.parts {
@@ -99,7 +99,7 @@ fn load(root: &Path, track: &str, intro: &IntroAssets) -> Result<LoadedHeli> {
             .then(|| (m.float("glowEnable").unwrap_or(0.0), m.float("glowIntensity").unwrap_or(0.0)));
         parts.push((part, nodes, inv, p.mesh_name.clone(), translucent));
     }
-    let (particles, light_nodes) = match ssx_assets::vault_db::with_track_db(root, track, |db| {
+    let (particles, light_nodes) = match ssx_assets::vault_db::with_level_db(root, track, |db| {
         ssx_assets::track_particles::game_object_nodes(db, choice.gameobject)
     }) {
         Ok((p, l)) => (p.lods.into_iter().next().unwrap_or_default(), l.into_iter().next().unwrap_or_default()),
@@ -169,7 +169,7 @@ pub fn insert(world: &mut World, loaded: Loaded) {
     }
 }
 
-pub fn load_level(big_root: Option<&Path>, track: &str, intro: Option<Arc<IntroAssets>>) -> Option<Loaded> {
+pub fn load_level(big_root: Option<&Path>, track: Option<&str>, intro: Option<Arc<IntroAssets>>) -> Option<Loaded> {
     if crate::render::post::env_is("SSX_HELI", "off") {
         info!("helicopter: off (SSX_HELI=off)");
         return None;

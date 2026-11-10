@@ -5,8 +5,19 @@ use ssx_script::host::wire::{from_item, to_item};
 
 use super::{ScriptBridge, worker};
 
-pub(super) fn inbound(mut bridge: ResMut<ScriptBridge>, mut got: ResMut<ScriptReceived>) {
+pub(super) fn inbound(
+    mut bridge: ResMut<ScriptBridge>,
+    mut got: ResMut<ScriptReceived>,
+    live: Option<Res<crate::shell::live::LiveSession>>,
+) {
     if got.items.is_empty() || bridge.gone.is_some() {
+        return;
+    }
+    if live.is_none() {
+        drop(got.take());
+        return;
+    }
+    if bridge.seen(live.as_deref()) != super::snapshot::Seen::Session {
         return;
     }
     let (items, bytes) = got.take();

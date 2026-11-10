@@ -37,7 +37,7 @@ fn ticks_where(inputs: &[TrickInput], gates: Gates, signal: impl Fn(&GrabGesture
     let mut g = GrabGestures::default();
     let mut on = Vec::new();
     for (t, i) in inputs.iter().enumerate() {
-        g.tick(PadSample::new(i), &gates, &AddedAirTricks::default());
+        g.tick(PadSample::new(i), &gates, &AddedAirTricks::default(), false);
         if signal(&g) {
             on.push(t);
         }
@@ -424,4 +424,88 @@ fn signature_timing_by_bundle_name() {
     assert_eq!(SignatureTiming::for_rider("travis"), SignatureTiming::for_rider("travisrice"));
     assert_eq!(SignatureTiming::for_rider("tyler").map(|t| t.enter_end.0), Some(190.0));
     assert!(SignatureTiming::for_rider("wizard").is_none(), "a helicopter pilot");
+}
+
+fn classic(lb: bool, rb: bool, lt: bool, rt: bool) -> TrickInput {
+    TrickInput { lb, rb, lt, rt, ..TrickInput::default() }
+}
+
+#[test]
+fn classic_air_tricks_are_exact_shoulder_sets() {
+    let sets = [
+        (true, false, false, false),
+        (false, true, false, false),
+        (false, false, true, false),
+        (false, false, false, true),
+        (true, true, false, false),
+        (true, false, true, false),
+        (true, false, false, true),
+        (false, true, false, true),
+        (false, true, true, false),
+        (false, false, true, true),
+        (true, true, true, false),
+        (true, true, false, true),
+        (true, false, true, true),
+        (false, true, true, true),
+        (true, true, true, true),
+    ];
+    for (i, &(lb, rb, lt, rt)) in sets.iter().enumerate() {
+        let mut g = GrabGestures::default();
+        g.tick(PadSample::new(&classic(lb, rb, lt, rt)), &OPEN_GATES, &AddedAirTricks::default(), true);
+        assert!(g.button[i], "entry {i} is {:?}", (lb, rb, lt, rt));
+        assert_eq!(g.button.iter().filter(|&&b| b).count(), 1, "entry {i} matches no other entry");
+        assert!(!g.stick.iter().any(|&b| b), "the classic stick mappings are never on");
+    }
+    let mut g = GrabGestures::default();
+    g.tick(PadSample::new(&classic(true, true, false, false)), &OPEN_GATES, &AddedAirTricks::default(), true);
+    assert!(g.button[4] && !g.button[0], "LB+RB is Truckdriver, not LB's Nose");
+}
+
+#[test]
+fn classic_air_choice_uses_the_fifteen_entry_table() {
+    let mut s = TrickState { classic: true, ..TrickState::default() };
+    s.gestures.button[4] = true;
+    s.choose_air_trick(&tuning(), &none(), &PadSample::default(), &air(), 2.0);
+    assert_eq!(s.trick_type, TrickType::Truckdriver);
+    assert_eq!(s.gesture_len, 1);
+    let mut s = TrickState { classic: true, ..TrickState::default() };
+    s.gestures.button[14] = true;
+    s.choose_air_trick(&tuning(), &none(), &PadSample::default(), &air(), 2.0);
+    assert_eq!(s.trick_type, TrickType::Truckdriver);
+    assert_eq!(s.gesture_len, 2);
+}
+
+#[test]
+fn classic_grind_tables_match_the_executables_groups() {
+    let cases = [
+        (0, (false, false, true, false), 0, 14),
+        (1, (true, false, false, false), 0, 14),
+        (2, (true, false, true, false), 1, 23),
+        (3, (true, true, true, false), 2, 23),
+        (5, (false, false, false, true), 0, 17),
+        (6, (false, true, false, false), 0, 17),
+        (7, (false, true, false, true), 1, 26),
+        (10, (true, true, false, false), 1, 20),
+        (14, (true, true, true, true), 2, 29),
+    ];
+    for (i, (lb, rb, lt, rt), len, plain) in cases {
+        let mut g = GrindTricks::default();
+        let cur = PadSample { lb, rb, lt, rt, ..PadSample::default() };
+        g.tick_gestures(&PadSample::default(), &cur, true, true);
+        assert!(g.button[i], "classic grind entry {i}");
+        assert_eq!(g.button.iter().filter(|&&b| b).count(), 1, "entry {i} is the exact set");
+        assert_eq!((GRIND_TRICKS_CLASSIC[i].len, GRIND_TRICKS_CLASSIC[i].plain), (len, plain));
+    }
+}
+
+#[test]
+fn classic_boost_holds_x_for_twelve_ticks() {
+    let mut ticks = 0.0;
+    for _ in 0..5 {
+        ticks = classic_boost_ticks(ticks, true, 2.0);
+        assert!(!classic_boost_requested(ticks), "{ticks}");
+    }
+    ticks = classic_boost_ticks(ticks, true, 2.0);
+    assert!(classic_boost_requested(ticks), "{ticks}");
+    assert_eq!(classic_boost_ticks(ticks, false, 2.0), 0.0, "a release resets");
 }

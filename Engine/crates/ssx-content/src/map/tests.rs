@@ -182,6 +182,9 @@ fn the_template_reads_and_its_committed_copy_is_the_generated_one() {
     assert_eq!((d.spawns.len(), d.checkpoints.len(), d.rails.len(), d.markers.len()), (1, 2, 1, 1));
     assert!(d.finish.is_some() && d.deaths.len() == 1 && d.terrain.len() == 1);
     assert_eq!(d.rails[0].triangles[0].group, RAIL_GROUP);
+    assert_eq!(d.heli_path.iter().map(|p| p.order).collect::<Vec<_>>(), vec![0, 1]);
+    assert!(d.notes.iter().any(|n| n.contains("flown with intro = \"heli\"")), "{:?}", d.notes);
+    assert!(matches!(&d.props[..], [p] if p.look == PropLook::Object(template::FLARE.parse().unwrap())));
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/templates/map");
     let committed = std::fs::read_to_string(dir.join("maps/course.gltf")).unwrap_or_default();
     assert!(
@@ -311,9 +314,53 @@ fn a_map_without_its_requirements_is_refused() {
     let freeride = RACE.replace("[\"race\"]", "[\"freeride\"]");
     assert!(read(&freeride, &g.text(&[ground, spawn])).is_ok(), "a freeride map needs no finish");
     let heli = format!("{freeride}intro = \"heli\"\n");
-    refused(&heli, &g.text(&[ground, spawn]), "needs a heli_path");
+    refused(&heli, &g.text(&[ground, spawn]), "on a new track needs a heli_path");
     let layout = format!("{freeride}base = \"ssx:drop/alps0101\"\n");
     refused(&layout, &g.text(&[ground, spawn]), "adds no terrain");
+}
+
+#[test]
+fn the_helicopters_path_is_its_two_locators() {
+    let mut g = G::default();
+    let q = g.quad(10.0, 0.0);
+    let ground = g.node(&format!("{{\"mesh\":{q},\"extras\":{{\"ava_type\":\"terrain\",\"ava_surface\":\"ice\"}}}}"));
+    let spawn = g.node("{\"extras\":{\"ava_type\":\"spawn\",\"ava_slot\":0}}");
+    let point = |g: &mut G, order: u32, x: f32| {
+        g.node(&format!(
+            "{{\"translation\":[{x},5,0],\"rotation\":[0,0.7071068,0,0.7071068],\
+             \"extras\":{{\"ava_type\":\"heli_path\",\"ava_order\":{order}}}}}"
+        ))
+    };
+    let (p0, p1, p2) = (point(&mut g, 0, -3.0), point(&mut g, 1, 4.0), point(&mut g, 2, 9.0));
+    let p1b = point(&mut g, 1, 6.0);
+    let heli = RACE.replace("[\"race\"]", "[\"freeride\"]") + "intro = \"heli\"\n";
+    let m = read(&heli, &g.text(&[ground, spawn, p0, p1])).expect("two locators read");
+    let path: Vec<(u32, [f32; 3])> = m.definition.heli_path.iter().map(|p| (p.order, p.position)).collect();
+    assert_eq!(path, vec![(0, [-3.0, 5.0, 0.0]), (1, [4.0, 5.0, 0.0])]);
+    assert!(
+        (m.definition.heli_path[1].rotation[1] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6,
+        "the locator keeps its rotation"
+    );
+    refused(&heli, &g.text(&[ground, spawn, p0, p1, p2]), "0 (the intro locator) or 1 (the outro locator)");
+    refused(&heli, &g.text(&[ground, spawn, p1]), "order 0 (nis_intro_locator) is missing");
+    refused(&heli, &g.text(&[ground, spawn, p0]), "order 1 (nis_outro_locator) is missing");
+    refused(&heli, &g.text(&[ground, spawn, p0, p1, p1b]), "order 1 twice");
+    refused(&heli, &g.text(&[ground, spawn]), "on a new track needs a heli_path");
+    let far = g.node("{\"translation\":[0,5,140000],\"extras\":{\"ava_type\":\"heli_path\",\"ava_order\":0}}");
+    refused(&heli, &g.text(&[ground, spawn, far, p1]), "a position beyond");
+    let text = g.text(&[ground, spawn, p0, p1]);
+    assert_eq!(text.matches("[-3,5,0]").count(), 1);
+    let inf = text.replace("[-3,5,0]", "[0,1e999,0]");
+    assert!(read(&heli, &inf).is_err(), "an overflowing number is refused");
+    let death = RACE.replace("[\"race\"]", "[\"freeride\", \"death\"]");
+    let e = parse_toml(death.as_bytes()).expect_err("a death map at its spawn");
+    assert!(e[0].0 == 4 && e[0].2.contains("a death map starts in the helicopter"), "{e:?}");
+    let spawn_map = RACE.replace("[\"race\"]", "[\"freeride\"]");
+    let m = read(&spawn_map, &g.text(&[ground, spawn, p0, p1])).expect("a spawn intro with a path reads");
+    assert!(m.definition.notes.iter().any(|n| n.contains("flown with intro = \"heli\"")), "{:?}", m.definition.notes);
+    let moved = read(&heli, &g.text(&[ground, spawn, p0, p1b])).expect("reads");
+    let first = read(&heli, &g.text(&[ground, spawn, p0, p1])).expect("reads");
+    assert_ne!(sim_hash(&moved), sim_hash(&first));
 }
 
 #[test]
@@ -367,4 +414,46 @@ fn an_object_prop_takes_no_material() {
     let m = read(RACE, &terrain).expect("a terrain node names its material");
     let named = m.definition.terrain.iter().filter_map(|t| t.material.as_ref()).map(ToString::to_string);
     assert_eq!(named.collect::<Vec<_>>(), vec!["ssx:material/terrain_rock_mat".to_string()]);
+}
+
+#[test]
+fn the_helicopter_grid_holds_each_cells_highest_terrain() {
+    use super::heli::{HELI_CELL, HELI_FILL_BELOW, MAX_HELI_GRID_CELLS, MAX_HELI_GRID_VISITS, check, heli_grid};
+    type Mesh = (Vec<[f32; 3]>, Vec<[u32; 3]>);
+    let def = |meshes: Vec<Mesh>| MapDefinition {
+        terrain: meshes
+            .into_iter()
+            .map(|(positions, triangles)| TerrainMesh {
+                node: "t".into(),
+                weights: vec![[0.0; 8]; positions.len()],
+                positions,
+                triangles,
+                material: None,
+            })
+            .collect(),
+        ..MapDefinition::default()
+    };
+    let flat = def(vec![(
+        vec![[-5.0, 3.0, -5.0], [20.0, 3.0, -5.0], [20.0, 3.0, 20.0], [-5.0, 3.0, 20.0]],
+        vec![[0, 3, 1], [1, 3, 2]],
+    )]);
+    let g = heli_grid(&flat).expect("a grid");
+    assert_eq!((g.width, g.height, g.min, g.max), (3, 3, [-10.0, 3.0 - HELI_FILL_BELOW, -10.0], [20.0, 3.0, 20.0]));
+    assert!(g.cells.iter().all(|c| *c == 3.0), "{:?}", g.cells);
+    let tilted = def(vec![(vec![[0.0, 0.0, 0.0], [30.0, 30.0, 0.0], [0.0, 0.0, 30.0]], vec![[0, 2, 1]])]);
+    let g = heli_grid(&tilted).expect("a grid");
+    assert_eq!((g.width, g.height, g.min[1], g.max[1]), (3, 3, -HELI_FILL_BELOW, 30.0));
+    let want = [10.0, 20.0, 30.0, 10.0, 20.0, 20.0, 10.0, 10.0, -HELI_FILL_BELOW];
+    assert!(g.cells.iter().zip(want).all(|(c, w)| (c - w).abs() < 1e-4), "{:?}", g.cells);
+    assert_eq!(g.cells[8], -HELI_FILL_BELOW);
+    assert!(heli_grid(&MapDefinition::default()).unwrap_err().contains("the map has none"));
+    let side = (MAX_HELI_GRID_CELLS as f32).sqrt() * HELI_CELL + 2.0 * HELI_CELL;
+    let wide = def(vec![(vec![[0.0, 0.0, 0.0], [side, 0.0, 0.0], [0.0, 0.0, side]], vec![[0, 2, 1]])]);
+    assert!(check(&wide).unwrap_err().contains(&format!("at most {MAX_HELI_GRID_CELLS} cells")));
+    let half = (MAX_HELI_GRID_CELLS as f32).sqrt() * HELI_CELL / 2.0 - HELI_CELL;
+    let big = vec![[0.0, 0.0, 0.0], [half, 0.0, 0.0], [0.0, 0.0, half], [half, 0.0, half]];
+    let per = ((half / HELI_CELL) as u64).pow(2);
+    let n = (MAX_HELI_GRID_VISITS / per + 2) as u32;
+    let stacked = def(vec![(big, (0..n).map(|_| [0, 2, 3]).collect())]);
+    assert!(check(&stacked).unwrap_err().contains("stacked large triangles"));
 }

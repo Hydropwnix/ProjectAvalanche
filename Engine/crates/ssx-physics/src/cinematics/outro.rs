@@ -187,6 +187,16 @@ pub fn start(world: &crate::rider::World, assets: Arc<IntroAssets>) -> Result<cr
 }
 
 pub fn prepare_heli_pickup(big_root: &Path, event: &str, character: &str) -> Result<Arc<IntroAssets>> {
+    let heli = ssx_assets::helicopter::drop_helicopter(big_root, event).map_err(|e| format!("{e:#}"));
+    prepare_heli_pickup_with(big_root, heli, event, character)
+}
+
+pub fn prepare_heli_pickup_with(
+    big_root: &Path,
+    heli: Result<ssx_assets::helicopter::HeliChoice, String>,
+    event: &str,
+    character: &str,
+) -> Result<Arc<IntroAssets>> {
     let nis = ssx_assets::nis::load_heli_pickup_outro(big_root, character)?;
     let choice = IntroChoice {
         script: "outro_heli_pickup.lua".into(),
@@ -195,7 +205,6 @@ pub fn prepare_heli_pickup(big_root: &Path, event: &str, character: &str) -> Res
         locator_alternate: None,
         variant: IntroVariant::Outro,
     };
-    let heli = ssx_assets::helicopter::drop_helicopter(big_root, event).map_err(|e| format!("{e:#}"));
     Ok(Arc::new(IntroAssets {
         choice,
         nis,

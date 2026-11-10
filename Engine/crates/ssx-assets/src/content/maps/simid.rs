@@ -21,9 +21,7 @@ impl GameContent {
         objects: &[MapObject],
         mode: Option<&super::super::gamemodes::ResolvedMode>,
     ) -> Result<SessionId> {
-        let text = std::fs::read_to_string(data.join(super::super::hash::INDEX_FILE))
-            .with_context(|| format!("{}: the data folder's content index", data.display()))?;
-        let index = ContentIndex::from_tsv(&text).map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        let index = crate::folder::content_index(data)?;
         self.map_sim_content_id_with(&index, map, base, objects, mode)
     }
 

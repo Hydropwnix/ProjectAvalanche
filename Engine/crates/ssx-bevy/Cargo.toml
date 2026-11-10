@@ -24,6 +24,7 @@ ssx-movie.workspace = true
 ssx-formats.workspace = true
 ssx-lua.workspace = true
 bevy = { workspace = true, features = ["default"] }
+winit.workspace = true
 cpal.workspace = true
 anyhow.workspace = true
 clap.workspace = true

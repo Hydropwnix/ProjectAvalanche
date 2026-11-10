@@ -458,6 +458,7 @@ pub struct InstalledMap {
     pub modes: Vec<String>,
     pub layout: bool,
     pub packages: Vec<(String, String)>,
+    pub intro: ssx_content::map::Intro,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -471,7 +472,11 @@ pub struct InstalledGamemode {
 }
 
 impl InstalledGamemode {
-    pub fn takes(&self, id: &str) -> bool {
+    pub fn takes(&self, m: &InstalledMap) -> bool {
+        self.names(&m.id) && ssx_content::gamemode::event_takes_start(self.event_type, m.intro).is_ok()
+    }
+
+    fn names(&self, id: &str) -> bool {
         self.any_map || self.maps.iter().any(|m| m == id)
     }
 }
@@ -526,7 +531,7 @@ impl HostedMap {
 impl HostMaps {
     pub fn modes_of(&self, m: &InstalledMap) -> Vec<(String, String)> {
         let built_in = m.modes.iter().map(|x| (x.clone(), x.clone()));
-        let gamemodes = self.gamemodes.iter().filter(|g| g.takes(&m.id)).map(|g| {
+        let gamemodes = self.gamemodes.iter().filter(|g| g.takes(m)).map(|g| {
             let event = ssx_content::gamemode::event_name(g.event_type);
             (g.id.clone(), format!("{} ({}, {event})", g.title, g.id))
         });
@@ -548,8 +553,11 @@ impl HostMaps {
                 shown(&choice.mode)
             ));
         };
-        if !g.takes(&map.id) {
+        if !g.names(&map.id) {
             return Err(format!("the gamemode {} does not take the map {} (its [[gamemode.map]] list)", g.id, map.id));
+        }
+        if let Err(e) = ssx_content::gamemode::event_takes_start(g.event_type, map.intro) {
+            return Err(format!("the gamemode {} on the map {}: {e}", g.id, map.id));
         }
         Ok(HostedMap { map: map.clone(), gamemode: Some(g.clone()), builtin: None })
     }
@@ -589,6 +597,7 @@ pub fn installed_maps(app_dir: &Path) -> HostMaps {
                     modes: t.modes.iter().map(|x| x.name().to_string()).collect(),
                     layout: t.base.is_some(),
                     packages,
+                    intro: t.intro,
                 }),
                 (Err(e), _) | (_, Err(e)) => out.unusable.push(format!("{shown}: {}", ssx_core::text::message(&e))),
             }
@@ -916,6 +925,10 @@ mod tests {
         for name in ["gm", "anyone"] {
             new_package(name, Template::Gamemode, &mods, Path::new("")).expect("the gamemode template");
         }
+        let gm_toml = mods.join("gm").join("map.toml");
+        let text = std::fs::read_to_string(&gm_toml).expect("gm's map.toml");
+        assert_eq!(text.matches("intro = \"spawn\"").count(), 1, "{text}");
+        std::fs::write(&gm_toml, text.replace("intro = \"spawn\"", "intro = \"heli\"")).expect("gm's map.toml");
         let record = mods.join("anyone").join(ssx_content::gamemode::template::GAMEMODE_PATH);
         std::fs::write(&record, "[gamemode]\ntitle = \"Anyone\"\nevent = \"survive_to_death\"\nany_map = true\n")
             .expect("gamemode.toml");
@@ -929,7 +942,7 @@ mod tests {
         let tpl = found.maps.iter().find(|m| m.id == "tpl:map/course").expect("tpl's map");
         let gm_map = found.maps.iter().find(|m| m.id == "gm:map/course").expect("gm's map");
         let values = |m: &InstalledMap| found.modes_of(m).into_iter().map(|(v, _)| v).collect::<Vec<_>>();
-        assert_eq!(values(tpl), ["race", "freeride", "anyone:gamemode/gully_race"]);
+        assert_eq!(values(tpl), ["race", "freeride"]);
         assert_eq!(values(gm_map), ["race", "freeride", "anyone:gamemode/gully_race", "gm:gamemode/gully_race"]);
         assert_eq!(found.modes_of(gm_map)[3].1, "Gully Race (gm:gamemode/gully_race, race_ghosts)");
         let mut h = HostSettings { folder: Some(app.join("Server")), ..HostSettings::default() };
@@ -952,6 +965,8 @@ mod tests {
         assert_eq!(done.len(), 3, "{done:?}");
         let e = found.hosted(&HostMap { id: tpl.id.clone(), mode: "gm:gamemode/gully_race".into() }).unwrap_err();
         assert!(e.contains("does not take the map tpl:map/course"), "{e}");
+        let e = found.hosted(&HostMap { id: tpl.id.clone(), mode: "anyone:gamemode/gully_race".into() }).unwrap_err();
+        assert!(e.contains("intro = \"heli\""), "{e}");
         let e = found.hosted(&HostMap { id: tpl.id.clone(), mode: "x:gamemode/none".into() }).unwrap_err();
         assert!(e.contains("no installed gamemode is"), "{e}");
         assert!(config_text(&h, None).is_err(), "a gamemode not installed");

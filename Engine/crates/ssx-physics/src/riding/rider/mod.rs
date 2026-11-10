@@ -80,14 +80,37 @@ pub struct Input {
     pub steer: f32,
     pub brake: f32,
     pub tuck: f32,
+    pub dpad: Vec2,
     pub jump: bool,
 }
 
 impl Input {
     pub fn stick(&self) -> Vec2 {
-        let s = Vec2::new(self.steer.clamp(-1.0, 1.0), self.tuck.clamp(0.0, 1.0) - self.brake.clamp(0.0, 1.0));
-        if s.length() > 1.0 { s.normalize() } else { s }
+        disc(self.steer, self.tuck.clamp(0.0, 1.0) - self.brake.clamp(0.0, 1.0))
     }
+
+    pub fn carve_stick(&self, classic: bool) -> Vec2 {
+        let (x, y) = (self.steer, self.tuck.clamp(0.0, 1.0) - self.brake.clamp(0.0, 1.0));
+        if !classic {
+            return disc(x, y);
+        }
+        let d = self.dpad.clamp(Vec2::splat(-1.0), Vec2::splat(1.0));
+        disc((x + d.x).clamp(-1.0, 1.0), (y + d.y).clamp(-1.0, 1.0))
+    }
+
+    pub fn carve_stick_y(&self, classic: bool) -> f32 {
+        let y = self.tuck.clamp(0.0, 1.0) - self.brake.clamp(0.0, 1.0);
+        if classic { (y + self.dpad.y.clamp(-1.0, 1.0)).clamp(-1.0, 1.0) } else { y.clamp(-1.0, 1.0) }
+    }
+
+    pub fn air_stick(&self, classic: bool) -> Vec2 {
+        if classic { self.dpad.clamp(Vec2::splat(-1.0), Vec2::splat(1.0)) } else { self.stick() }
+    }
+}
+
+fn disc(x: f32, y: f32) -> Vec2 {
+    let s = Vec2::new(x.clamp(-1.0, 1.0), y.clamp(-1.0, 1.0));
+    if s.length() > 1.0 { s.normalize() } else { s }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -273,9 +296,12 @@ impl World {
     }
 }
 
+pub const SPAWN_RAY_UP: f32 = 1.0;
+pub const SPAWN_RAY_LENGTH: f32 = 101.0;
+
 impl RiderState {
     pub fn spawn(world: &World, position: Vec3, heading: Vec3) -> Option<Self> {
-        let hit = world.collision.ray_cast(position + Vec3::Y * 1.0, -Vec3::Y, 101.0)?;
+        let hit = world.collision.ray_cast(position + Vec3::Y * SPAWN_RAY_UP, -Vec3::Y, SPAWN_RAY_LENGTH)?;
         let normal = hit.normal;
         let weights = world.collision.surface_weights(hit.cluster, hit.tri, hit.bary, normal.y);
         let surface = world.tuning.surfaces.blend(&weights, &ChatterInputs::default());

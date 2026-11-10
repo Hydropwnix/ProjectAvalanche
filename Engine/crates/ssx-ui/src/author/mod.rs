@@ -14,7 +14,8 @@ pub use layout::{
 pub use logic::ImageBinding;
 pub use logic::{
     Base, BillboardDef, CalloutsDef, DropPanelDef, ICONS, InputDef, InputDo, KEYS, Logic, MenuDef, MenuKind, MenuOp,
-    OnEnter, PRIORITIES, PagingDef, PanelDef, PanelHeight, SOUNDS, TextBinding, TextFit, UI_EVENTS, VisibleBinding,
+    OnEnter, PRIORITIES, PagingDef, PanelDef, PanelHeight, SOUNDS, ScrollBarDef, SdDef, TextBinding, TextFit,
+    UI_EVENTS, VisibleBinding,
 };
 
 use std::fmt;

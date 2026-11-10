@@ -103,9 +103,6 @@ pub(super) fn update(
         layer.images.len(),
         layer.cpu.as_secs_f64() * 1000.0
     )];
-    if let Some(why) = &bridge.suspended {
-        lines.push(format!("client scripts off for this session: {why}"));
-    }
     for line in bridge.monitor.lines() {
         shown(line, &mut lines);
     }

@@ -136,6 +136,7 @@ impl GameContent {
             }
             ModeChoice::Gamemode(g) => {
                 let found = self.gamemode(g).map_err(|e| e.to_string())?;
+                found.value.takes_start(map.value.toml.intro).map_err(|e| format!("{g} on {}: {e}", map.id))?;
                 let rules = found
                     .value
                     .rules(&map.id, limit, has_finish)

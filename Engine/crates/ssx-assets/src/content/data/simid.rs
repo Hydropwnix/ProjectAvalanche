@@ -99,9 +99,7 @@ impl GameContent {
         if super::super::segment(drop).is_none() {
             bail!("{}: no ui_drop name", ssx_core::text::quoted(drop));
         }
-        let text = std::fs::read_to_string(data.join(super::super::hash::INDEX_FILE))
-            .with_context(|| format!("{}: the data folder's content index", data.display()))?;
-        let index = ContentIndex::from_tsv(&text).map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        let index = crate::folder::content_index(data)?;
         self.sim_content_id_with(&index, track, drop)
     }
 

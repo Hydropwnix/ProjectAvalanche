@@ -16,6 +16,7 @@ pub enum UiValue {
     Panel(Box<DropPanel>),
     Rival(Box<RivalPanel>),
     Buttons(Vec<PopupButton>),
+    Item(Box<super::fe::inventory::UiItem>),
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -286,6 +287,13 @@ impl UiValues {
         }
     }
 
+    pub fn item(&self, id: u16) -> Option<&super::fe::inventory::UiItem> {
+        match self.slots.get(&id) {
+            Some(UiValue::Item(i)) => Some(i),
+            _ => None,
+        }
+    }
+
     pub fn rows(&self, id: u16) -> &[LeaderboardRow] {
         match self.slots.get(&id) {
             Some(UiValue::Rows(r)) => r,
@@ -299,6 +307,18 @@ impl UiValues {
 
     pub fn clear_dirty(&mut self) {
         self.dirty.clear();
+    }
+
+    pub fn held_copy(&self) -> UiValues {
+        UiValues { slots: self.slots.clone(), dirty: BTreeSet::new(), by_name: self.by_name.clone() }
+    }
+
+    pub fn copy_written(&mut self, from: &UiValues) {
+        for &id in &from.dirty {
+            if let Some(v) = from.slots.get(&id) {
+                self.set(id, v.clone());
+            }
+        }
     }
 
     pub fn written_ids(&self) -> Vec<u16> {

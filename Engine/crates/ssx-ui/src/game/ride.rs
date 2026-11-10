@@ -390,10 +390,13 @@ impl RideDriver {
         let get_up = s.stopped && s.landing.bail_on_landing;
         let flick = if i.is_multiple_of(2) { 1.0 } else { 0.0 };
         let (steer, tuck) = if pushing || get_up { (0.0, flick) } else { (0.0, 0.0) };
-        let mut input = Input { steer, brake: 0.0, tuck, jump };
+        let mut input = Input { steer, brake: 0.0, tuck, jump, ..Input::default() };
         let mut tricks = TrickInput::default();
         if s.state != RideState::Riding || release {
             (input.steer, input.tuck, input.brake) = (self.opts.spin, 0.0, 0.0);
+            if s.tricks.classic {
+                input.dpad = Vec2::new(self.opts.spin, 0.0);
+            }
         }
         if s.state != RideState::Riding && s.air.air_time < 0.5 * 60.0 {
             tricks.right_stick = self.opts.grab.unwrap_or(Vec2::ZERO);

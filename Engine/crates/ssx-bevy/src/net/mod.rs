@@ -49,10 +49,34 @@ pub fn register(app: &mut App) {
 
 pub fn connect_at_start(app: &mut App, connect: NetConnect) {
     app.add_systems(Startup, move |world: &mut World| {
-        let spec = session::spec_of(&connect);
-        let server = connect.server.clone();
-        start(world, spec.map_err(|e| (server, e)));
+        let stored = connect.name.is_none().then(session::stored_player_name).flatten();
+        if connect.name.is_none() && stored.is_none() && world.resource::<GameUiRes>().name_prompt_waiting() {
+            info!("network: the join to {} waits for the name prompt", ssx_core::text::Text::new(&connect.server));
+            world.insert_resource(PendingConnect(connect.clone()));
+            return;
+        }
+        let name = stored.unwrap_or_else(|| world.resource::<GameUiRes>().join_name());
+        begin(world, &connect, name);
     });
+    app.add_systems(Update, pending_connect.run_if(resource_exists::<PendingConnect>));
+}
+
+#[derive(Resource)]
+struct PendingConnect(NetConnect);
+
+fn pending_connect(world: &mut World) {
+    if world.resource::<GameUiRes>().name_prompt_waiting() {
+        return;
+    }
+    let Some(PendingConnect(connect)) = world.remove_resource::<PendingConnect>() else { return };
+    let name = world.resource::<GameUiRes>().join_name();
+    begin(world, &connect, name);
+}
+
+fn begin(world: &mut World, connect: &NetConnect, name: String) {
+    let spec = session::spec_of(connect, name);
+    let server = connect.server.clone();
+    start(world, spec.map_err(|e| (server, e)));
 }
 
 fn start(world: &mut World, spec: Result<session::JoinSpec, (String, String)>) {
@@ -66,7 +90,21 @@ fn start(world: &mut World, spec: Result<session::JoinSpec, (String, String)>) {
             let server = spec.address.to_string();
             let big_root = world.get_resource::<crate::shell::session_content::SessionRoot>().map(|r| r.0.clone());
             match big_root {
-                Some(root) => (origin, session::NetSession::start(spec, &root).map_err(|e| (server, e))),
+                Some(root) => match crate::shell::session_content::join_data_check(&root) {
+                    Ok(()) => (origin, session::NetSession::start(spec, &root).map_err(|e| (server, e))),
+                    Err(incomplete) => {
+                        warn!("network: no join: {incomplete}");
+                        let why = match world.get_resource_mut::<GameUiRes>() {
+                            Some(mut ui) => {
+                                crate::shell::session_content::incomplete_text(&incomplete.state, &mut |key, args| {
+                                    ui.0.loc.format(key, args)
+                                })
+                            }
+                            None => incomplete.to_string(),
+                        };
+                        (origin, Err((server, why)))
+                    }
+                },
                 None => (origin, Err((server, "the game's data folder is not known".to_string()))),
             }
         }
@@ -151,5 +189,40 @@ pub fn test_conditioner() -> Option<RecvLinkConditioner> {
             error!("network: SSX_NET_CONDITIONS={v}: LATENCY_MS,JITTER_MS,LOSS; no conditioner");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ssx_net_join::browse::{ServerAddress, Zeroizing};
+
+    #[test]
+    fn a_join_with_game_data_of_an_earlier_version_is_refused_before_it_is_sent() {
+        let data = std::env::temp_dir().join(format!("ssx-join-v020-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        std::fs::create_dir_all(data.join("big")).unwrap();
+        let finished: serde_json::Map<String, serde_json::Value> =
+            ssx_assets::setup::ARCHIVES.iter().map(|a| (a.to_string(), serde_json::json!({ "members": 1 }))).collect();
+        let marker =
+            serde_json::json!({ "format": 2, "complete": true, "finished": finished, "movies": { "files": 36 } });
+        std::fs::write(data.join(ssx_assets::setup::MARKER), marker.to_string()).unwrap();
+        let mut world = World::new();
+        world.insert_resource(crate::shell::session_content::SessionRoot(data.join("big")));
+        let spec = session::JoinSpec {
+            address: ServerAddress::parse("127.0.0.1:1", None).unwrap(),
+            name: "Player".into(),
+            password: Zeroizing::new(Vec::new()),
+            origin: LiveOrigin::Browser,
+            key: None,
+        };
+        start(&mut world, Ok(spec));
+        assert!(world.resource::<session::NetSession>().is_ended(), "no join task was started");
+        let live = world.resource::<LiveSession>();
+        assert_eq!(live.origin, LiveOrigin::Browser);
+        let why = live.end.as_ref().and_then(|e| e.reason.clone()).unwrap();
+        assert!(why.contains("no content index") && why.contains("Repair game data"), "{why}");
+        assert!(!why.contains("os error") && !why.contains("content.tsv:"), "{why}");
+        std::fs::remove_dir_all(&data).unwrap();
     }
 }

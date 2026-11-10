@@ -1,0 +1,49 @@
+{
+  "format": 1,
+  "view": "ava_options",
+  "layer": "activityfeed",
+  "stage": [1280, 720],
+  "frame_rate": 30,
+  "imports": [
+    {"name": "ListMenuCellLarge", "url": "components/ListMenuCellLarge.swf", "symbol": "components.ListMenuCellLarge"},
+    {"name": "ListMenu", "url": "components/ListMenu.swf", "symbol": "components.ListMenu"},
+    {"name": "Callouts", "url": "components/ButtonCalloutBar.swf", "symbol": "components.ButtonCalloutBar"},
+    {"name": "ScrollBar", "url": "components/ScrollBar.swf", "symbol": "components.ScrollBar"}
+  ],
+  "symbols": [
+    {"name": "AvaOptionsCell", "export": true, "cell": "mcCell", "children": [
+      {"instance": "mcCell", "symbol": "ListMenuCellLarge"}
+    ]},
+    {"name": "AvaOptions", "export": true, "children": [
+      {"instance": "mcMenu", "symbol": "ListMenu", "x": 90, "y": 190},
+      {"instance": "mcButtonCalloutBar", "symbol": "Callouts", "x": 90, "y": 634},
+      {"instance": "mcScrollBar", "symbol": "ScrollBar", "x": 441, "y": 190}
+    ]}
+  ],
+  "view_symbol": {"symbol": "AvaOptions"},
+  "logic": {
+    "base": "activity_feed_view",
+    "sd": {"left": ["mcMenu", "mcScrollBar", "mcButtonCalloutBar"]},
+    "input_priority": "medium",
+    "consume_unmapped": true,
+    "data": ["settings_menu", "settings_menu_index"],
+    "menus": [
+      {"target": "mcMenu", "rows": 5, "cell_width": 350, "cell_height": 60, "spacing": -10, "panel_gaps": [5, -14],
+        "wrap": true, "use_panel": true, "data": "settings_menu", "index": "settings_menu_index",
+        "cell": "AvaOptionsCell"}
+    ],
+    "callouts": {"target": "mcButtonCalloutBar", "buttons": [
+      {"icon": "CALLOUT_ADVANCE", "label": "TXT_ADVANCE"},
+      {"icon": "CALLOUT_BACK", "label": "TXT_BACK"}
+    ]},
+    "scrollbars": [{"target": "mcScrollBar", "menu": "mcMenu", "length": 251}],
+    "inputs": [
+      {"key": "ADVANCE", "menu": "mcMenu", "do": "advance"},
+      {"key": "BACK", "menu": "mcMenu", "do": "back", "sound": "button_press_back"},
+      {"key": "DPAD_UP", "menu": "mcMenu", "do": "up"},
+      {"key": "LAS_UP", "menu": "mcMenu", "do": "up"},
+      {"key": "DPAD_DOWN", "menu": "mcMenu", "do": "down"},
+      {"key": "LAS_DOWN", "menu": "mcMenu", "do": "down"}
+    ]
+  }
+}

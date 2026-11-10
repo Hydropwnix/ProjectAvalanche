@@ -115,15 +115,21 @@ pub(super) fn read_controls(
     read_live_controls(&mut ride, &keys, &gamepads, *mode == CameraMode::Chase);
 }
 
+fn enter_held(keys: &ButtonInput<KeyCode>) -> bool {
+    keys.pressed(KeyCode::Enter) && !crate::shell::game_mode::alt_held(keys)
+}
+
 pub fn read_live_controls(ride: &mut Ride, keys: &ButtonInput<KeyCode>, gamepads: &Query<&Gamepad>, chase: bool) {
-    let held = keys.pressed(KeyCode::Backspace) || gamepads.iter().any(|p| p.pressed(GamepadButton::LeftTrigger));
+    let classic = ride.classic;
+    let held = keys.pressed(KeyCode::Backspace)
+        || gamepads.iter().any(|p| p.pressed(if classic { GamepadButton::East } else { GamepadButton::LeftTrigger }));
     let released = ride.pads_held || ride.chat_held;
     ride.back_held =
         !released && (keys.pressed(KeyCode::KeyC) || gamepads.iter().any(|p| p.pressed(GamepadButton::Select)));
     ride.rewind_pad = RewindPad { rewind_held: held, takeover: rewind_takeover(gamepads), flip_accel: 0.0 };
-    let mut input = live_input(keys, gamepads, chase);
-    input.jump |= ride.state.start.is_some() && keys.pressed(KeyCode::Enter);
-    let tricks = live_tricks(keys, gamepads, chase, input.jump);
+    let mut input = live_input(keys, gamepads, chase, classic);
+    input.jump |= ride.state.start.is_some() && enter_held(keys);
+    let tricks = live_tricks(keys, gamepads, chase, input.jump, classic);
     ride.l2 = live_l2(keys, gamepads, chase);
     ride.r1 = live_r1(keys, gamepads, chase);
     let pads = gamepads.iter().map(|p| p.get(GamepadButton::RightTrigger2).unwrap_or(0.0)).fold(0.0, f32::max);
@@ -140,9 +146,10 @@ pub(super) fn late_controls(
     if ride.scripted() {
         return;
     }
-    let mut input = live_input(&keys, &gamepads, *mode == CameraMode::Chase);
-    input.jump |= ride.state.start.is_some() && keys.pressed(KeyCode::Enter);
-    let a = input.jump || live_tricks(&keys, &gamepads, *mode == CameraMode::Chase, input.jump).a;
+    let classic = ride.classic;
+    let mut input = live_input(&keys, &gamepads, *mode == CameraMode::Chase, classic);
+    input.jump |= ride.state.start.is_some() && enter_held(&keys);
+    let a = input.jump || live_tricks(&keys, &gamepads, *mode == CameraMode::Chase, input.jump, classic).a;
     if a != ride.a_lock.prev {
         ride.a_lock.update(a);
     }
@@ -178,21 +185,33 @@ fn rewind_takeover(gamepads: &Query<&Gamepad>) -> bool {
     })
 }
 
-fn live_input(keys: &ButtonInput<KeyCode>, gamepads: &Query<&Gamepad>, wasd: bool) -> Input {
+fn live_input(keys: &ButtonInput<KeyCode>, gamepads: &Query<&Gamepad>, wasd: bool, classic: bool) -> Input {
     let held =
         |arrow: KeyCode, letter: KeyCode| f32::from(u8::from(keys.pressed(arrow) || (wasd && keys.pressed(letter))));
-    let mut steer = held(KeyCode::ArrowRight, KeyCode::KeyD) - held(KeyCode::ArrowLeft, KeyCode::KeyA);
-    let mut brake = held(KeyCode::ArrowDown, KeyCode::KeyS);
-    let mut tuck = held(KeyCode::ArrowUp, KeyCode::KeyW);
+    let arrow_x = held(KeyCode::ArrowRight, KeyCode::KeyD) - held(KeyCode::ArrowLeft, KeyCode::KeyA);
+    let arrow_y = held(KeyCode::ArrowUp, KeyCode::KeyW) - held(KeyCode::ArrowDown, KeyCode::KeyS);
+    // TODO(guess): a port choice — the arrows / WASD are the keyboard's left stick in both schemes and, under the
+    // classic scheme, also its D-pad (the console reads pads only, and one keyboard cannot be two sticks; the carve
+    // sums the two, which for ±1 keys clamps to the same full deflection a pad reaches); settle: a second keyboard
+    // binding for the classic D-pad, if the two must be separate.
+    let mut dpad = if classic { Vec2::new(arrow_x, arrow_y) } else { Vec2::ZERO };
+    let (mut steer, mut tuck, mut brake) = (arrow_x, arrow_y.max(0.0), (-arrow_y).max(0.0));
     let mut jump = keys.pressed(KeyCode::Space);
     for pad in gamepads {
         let stick = pad.left_stick();
         steer = (steer + stick.x).clamp(-1.0, 1.0);
         tuck = tuck.max(stick.y);
         brake = brake.max(-stick.y);
+        if classic {
+            let left = f32::from(u8::from(pad.pressed(GamepadButton::DPadLeft)));
+            let right = f32::from(u8::from(pad.pressed(GamepadButton::DPadRight)));
+            let up = f32::from(u8::from(pad.pressed(GamepadButton::DPadUp)));
+            let down = f32::from(u8::from(pad.pressed(GamepadButton::DPadDown)));
+            dpad += Vec2::new(right - left, up - down);
+        }
         jump |= pad.pressed(GamepadButton::South);
     }
-    Input { steer, brake, tuck, jump }
+    Input { steer, brake, tuck, dpad: dpad.clamp(Vec2::splat(-1.0), Vec2::splat(1.0)), jump }
 }
 
 fn live_l2(keys: &ButtonInput<KeyCode>, gamepads: &Query<&Gamepad>, chase: bool) -> bool {
@@ -206,9 +225,54 @@ fn live_r1(keys: &ButtonInput<KeyCode>, gamepads: &Query<&Gamepad>, chase: bool)
     (chase && keys.pressed(KeyCode::KeyE)) || gamepads.iter().any(|p| p.pressed(GamepadButton::RightTrigger))
 }
 
-fn live_tricks(keys: &ButtonInput<KeyCode>, gamepads: &Query<&Gamepad>, chase: bool, jump: bool) -> TrickInput {
+fn live_tricks(
+    keys: &ButtonInput<KeyCode>,
+    gamepads: &Query<&Gamepad>,
+    chase: bool,
+    jump: bool,
+    classic: bool,
+) -> TrickInput {
     let shift = chase && keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
     let ctrl = chase && keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
+    if classic {
+        let mut t = TrickInput {
+            right_stick: Vec2::ZERO,
+            y: chase && keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]),
+            x: keys.pressed(KeyCode::KeyJ),
+            b: keys.pressed(KeyCode::KeyL),
+            a: jump,
+            lb: keys.pressed(KeyCode::KeyQ),
+            rb: keys.pressed(KeyCode::KeyE),
+            lt: keys.pressed(KeyCode::KeyZ),
+            rt: keys.pressed(KeyCode::KeyX),
+            tweak: keys.pressed(KeyCode::KeyJ),
+            signature: shift && ctrl,
+        };
+        for pad in gamepads {
+            let stick = pad.right_stick();
+            if stick.length() > t.right_stick.length() {
+                t.right_stick = stick;
+            }
+            let west = pad.pressed(GamepadButton::West);
+            let east = pad.pressed(GamepadButton::East);
+            let north = pad.pressed(GamepadButton::North);
+            let south = pad.pressed(GamepadButton::South);
+            let lb = pad.pressed(GamepadButton::LeftTrigger);
+            let rb = pad.pressed(GamepadButton::RightTrigger);
+            let lt = pad.get(GamepadButton::LeftTrigger2).unwrap_or(0.0) >= TRIGGER_THRESHOLD
+                || pad.pressed(GamepadButton::LeftTrigger2);
+            let rt = pad.get(GamepadButton::RightTrigger2).unwrap_or(0.0) >= TRIGGER_THRESHOLD
+                || pad.pressed(GamepadButton::RightTrigger2);
+            t.x |= west;
+            t.tweak |= west;
+            t.y |= north;
+            t.b |= east;
+            t.a |= south;
+            (t.lb, t.rb, t.lt, t.rt) = (t.lb || lb, t.rb || rb, t.lt || lt, t.rt || rt);
+            t.signature |= lb && rb && lt && rt;
+        }
+        return t;
+    }
     let mut t = TrickInput {
         right_stick: Vec2::ZERO,
         y: keys.pressed(KeyCode::KeyI),
@@ -217,6 +281,7 @@ fn live_tricks(keys: &ButtonInput<KeyCode>, gamepads: &Query<&Gamepad>, chase: b
         a: keys.pressed(KeyCode::KeyK) || jump,
         tweak: shift,
         signature: shift && ctrl,
+        ..TrickInput::default()
     };
     for pad in gamepads {
         let stick = pad.right_stick();
@@ -237,6 +302,90 @@ fn live_tricks(keys: &ButtonInput<KeyCode>, gamepads: &Query<&Gamepad>, chase: b
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn live(classic: bool, stick: Vec2, (right, up): (bool, bool)) -> Input {
+        use bevy::ecs::system::RunSystemOnce;
+        use bevy::input::gamepad::{
+            GamepadAxis, GamepadButton, GamepadConnection, GamepadConnectionEvent, RawGamepadAxisChangedEvent,
+            RawGamepadButtonChangedEvent, RawGamepadEvent,
+        };
+        let mut app = App::new();
+        app.add_plugins(bevy::input::InputPlugin);
+        let id = app.world_mut().spawn_empty().id();
+        app.world_mut().write_message(GamepadConnectionEvent::new(
+            id,
+            GamepadConnection::Connected { name: "test pad".into(), vendor_id: None, product_id: None },
+        ));
+        app.update();
+        let world = app.world_mut();
+        world.write_message(RawGamepadEvent::Axis(RawGamepadAxisChangedEvent::new(
+            id,
+            GamepadAxis::LeftStickX,
+            stick.x,
+        )));
+        world.write_message(RawGamepadEvent::Axis(RawGamepadAxisChangedEvent::new(
+            id,
+            GamepadAxis::LeftStickY,
+            stick.y,
+        )));
+        if right {
+            world.write_message(RawGamepadEvent::Button(RawGamepadButtonChangedEvent::new(
+                id,
+                GamepadButton::DPadRight,
+                1.0,
+            )));
+        }
+        if up {
+            world.write_message(RawGamepadEvent::Button(RawGamepadButtonChangedEvent::new(
+                id,
+                GamepadButton::DPadUp,
+                1.0,
+            )));
+        }
+        app.update();
+        app.world_mut()
+            .run_system_once(move |keys: Res<ButtonInput<KeyCode>>, pads: Query<&Gamepad>| {
+                live_input(&keys, &pads, false, classic)
+            })
+            .expect("the live input system")
+    }
+
+    #[test]
+    fn the_classic_live_input_reads_the_left_stick_and_the_dpad() {
+        let stick = Vec2::new(0.5, -0.25);
+        let standard = live(false, stick, (false, false));
+        assert_eq!((standard.steer, standard.tuck, standard.brake), (0.5, 0.0, 0.25));
+        assert_eq!(standard.dpad, Vec2::ZERO);
+        let classic = live(true, stick, (true, true));
+        assert_eq!((classic.steer, classic.tuck, classic.brake), (0.5, 0.0, 0.25), "the left stick still carves");
+        assert_eq!(classic.dpad, Vec2::ONE, "the D-pad is the classic air input");
+        assert_eq!(live(true, stick, (false, false)).dpad, Vec2::ZERO);
+        assert_eq!(live(false, stick, (true, true)).dpad, Vec2::ZERO, "the standard scheme has no D-pad input");
+    }
+
+    #[test]
+    fn the_keyboard_is_the_left_stick_and_the_classic_dpad() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut app = App::new();
+        app.add_plugins(bevy::input::InputPlugin);
+        let mut keys = ButtonInput::<KeyCode>::default();
+        keys.press(KeyCode::ArrowUp);
+        keys.press(KeyCode::ArrowRight);
+        app.world_mut().insert_resource(keys);
+        let read = |app: &mut App, classic: bool| {
+            app.world_mut()
+                .run_system_once(move |keys: Res<ButtonInput<KeyCode>>, pads: Query<&Gamepad>| {
+                    live_input(&keys, &pads, false, classic)
+                })
+                .expect("the live input system")
+        };
+        let classic = read(&mut app, true);
+        assert_eq!((classic.steer, classic.tuck, classic.brake), (1.0, 1.0, 0.0), "the left stick");
+        assert_eq!(classic.dpad, Vec2::ONE, "the classic D-pad: the air's stick and the carve's second stick");
+        let standard = read(&mut app, false);
+        assert_eq!((standard.steer, standard.tuck, standard.brake), (1.0, 1.0, 0.0));
+        assert_eq!(standard.dpad, Vec2::ZERO, "the standard scheme has no D-pad input");
+    }
 
     #[test]
     fn the_pause_locks_a_button_pressed_during_it() {

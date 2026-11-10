@@ -19,7 +19,8 @@ impl Launcher {
                 if widgets::button(ui, "Copy", Kind::Plain, true).clicked() {
                     ui.ctx().copy_text(text.clone());
                 }
-                ui.add(egui::TextEdit::multiline(&mut text).code_editor().desired_rows(2).desired_width(f32::INFINITY));
+                let field = egui::TextEdit::multiline(&mut text).font(egui::TextStyle::Monospace);
+                ui.add(field.desired_rows(2).desired_width(f32::INFINITY));
             });
         }
         ui.add_space(4.0);

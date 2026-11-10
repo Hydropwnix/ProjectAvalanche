@@ -101,6 +101,7 @@
   "logic": {
     "input_priority": "popup",
     "consume_unmapped": true,
+    "sd": {"left": ["mcPanel", "txtTitle", "mcLines", "mcCallouts"]},
     "data": [
       "ava_quickchat",
       "ava_quickchat_items",

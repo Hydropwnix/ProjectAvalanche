@@ -17,6 +17,9 @@ pub(super) fn pause_now(l: &mut LevelGame, ride: &mut Ride, ui: &mut GameUi, aud
         // not decoded; a network session cannot hold the others' ride; settle: the live events' pause, if it is ever
         // decoded (the live-event manager 0x82426C18).
         ride.hold_pads(paused);
+        if !paused && let Some(hold) = l.sim_hold.take() {
+            hold.release(ui);
+        }
     } else if paused {
         ride.pause();
     } else {

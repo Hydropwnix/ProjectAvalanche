@@ -117,6 +117,35 @@ impl TrackEffects {
         textures: &mut Vec<String>,
     ) -> Result<TrackEffects> {
         let tp = ssx_assets::track_particles::load_track_particles(root, track, drop)?;
+        let mut out =
+            TrackEffects { slots: Self::slots_of(root, &tp, arena, defs, textures)?, ..TrackEffects::default() };
+        let triggers = ssx_physics::spawn::load_trigger_volumes(root, track, drop).context("the track's entities")?;
+        out.offline = Some((Box::new(Controllers::offline(&triggers)), OfflineHost::default()));
+        Ok(out)
+    }
+
+    pub fn add_map(
+        &mut self,
+        root: &Path,
+        placed: &[(u32, u32, Placement)],
+        arena: &mut SetArena,
+        defs: &mut DefCache,
+        textures: &mut Vec<String>,
+    ) -> Result<usize> {
+        let tp = ssx_assets::track_particles::map_particles(root, placed)?;
+        let slots = Self::slots_of(root, &tp, arena, defs, textures)?;
+        let n = slots.len();
+        self.slots.extend(slots);
+        Ok(n)
+    }
+
+    fn slots_of(
+        root: &Path,
+        tp: &ssx_assets::track_particles::TrackParticles,
+        arena: &mut SetArena,
+        defs: &mut DefCache,
+        textures: &mut Vec<String>,
+    ) -> Result<Vec<TrackSlot>> {
         let (schemas, _) = ssx_assets::avalanche_entities::batches(root, &[]).context("the schemas batch")?;
         let mut out = TrackEffects::default();
         for inst in &tp.instances {
@@ -149,9 +178,7 @@ impl TrackEffects {
                 }
             }
         }
-        let triggers = ssx_physics::spawn::load_trigger_volumes(root, track, drop).context("the track's entities")?;
-        out.offline = Some((Box::new(Controllers::offline(&triggers)), OfflineHost::default()));
-        Ok(out)
+        Ok(out.slots)
     }
 
     pub fn switch(&mut self, clock: f32, dt: f32, session: Option<Option<&Controllers>>) {

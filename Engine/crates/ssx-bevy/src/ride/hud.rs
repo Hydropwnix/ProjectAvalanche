@@ -184,9 +184,14 @@ pub(super) fn spawn_hud(mut commands: Commands) {
 
 const RIDE_CONTROLS: &str = "A/D or Left/Right steer (air: spin) | S/Down brake, W/Up tuck (air: flip) | Space jump (on \
 release; air: A grab) | grabs I/J/L/K = Y/X/B/A (ground / rail: J/L = X/B nose / tail press) | Shift R2 (boost / tweak) | Ctrl L2 (grind) | Ctrl+Shift signature (L2+R2) \
-| E R1 (wingsuit) | hold Backspace rewind | pad: left stick, right stick grabs, A/B/X/Y, R2, L2 grind, L2+R2, R1 wingsuit, L1 \
-rewind | R respawn | N rail \
+| E R1 (wingsuit) | hold Backspace rewind | pad: left stick, right stick grabs and up = jump, A/B/X/Y, R2, L2 grind, L2+R2, \
+R1 wingsuit, L1 rewind | R respawn | N rail \
 debug | Tab chase/fly | F wireframe | H overlay";
+
+const RIDE_CONTROLS_CLASSIC: &str = "Classic: D-pad or A/D carve (air: spin) | S/Down brake, W/Up tuck (air: flip) | Space A jump \
+(on release; air: A wingsuit hold 8) | Q/E/Z/X = LB/RB/LT/RT grabs (exact shoulder sets; pad right stick up/down = nose/tail) | J X \
+(boost hold 12 / tweak) | Ctrl Y grind hold 10 | L B rewind hold 12 | Ctrl+Shift signature | pad: D-pad, shoulders, right \
+stick up/down nose/tail | R respawn | N rail debug | Tab chase/fly | F wireframe | H overlay";
 
 fn death_hud(ride: &Ride) -> String {
     let (d, t) = (&ride.state.death, &ride.session.timer);
@@ -446,12 +451,13 @@ pub(super) fn update_hud(
         Clock::PerFrame { .. } => "screenshot: SSX_RIDE_SUBFRAMES frames per step",
     };
     let camera = if *mode == CameraMode::Chase { "chase" } else { "fly" };
+    let controls = if ride.classic() { RIDE_CONTROLS_CLASSIC } else { RIDE_CONTROLS };
     let new = format!(
         "RIDE  {:.1} km/h | {} | ground d {} | surface {surface} | lean {:+.1} deg\n\
          t {:.1} s | distance {:.0} m | height {:.0} m | camera {camera}\n\
          input ({source}): steer {:+.2} brake {:.2} tuck {:.2}{}{}\n\
          physics ({clock}): {:.3} ms/step | {frame_ms:.1} ms/frame\n\
-         ride mode: physics port, simplifications: {PORT_SUMMARY}\n{}{}{}\n{RIDE_CONTROLS}",
+         ride mode: physics port, simplifications: {PORT_SUMMARY}\n{}{}{}\n{controls}",
         s.speed() * KMH_PER_M_PER_TICK,
         match (s.state, s.stopped) {
             _ if s

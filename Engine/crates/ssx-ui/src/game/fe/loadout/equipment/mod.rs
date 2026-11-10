@@ -3,13 +3,17 @@ use crate::avm1::value::Value;
 use crate::game::fe::inventory::{self, DropInfo, Inventory, UiItem, flag};
 use crate::game::fe::{ActionParam, FeEnv, FrontEnd, screens};
 use crate::game::loc::Localization;
-use crate::game::values::UiValues;
+use crate::game::values::{UiValue, UiValues};
 
 mod actions;
 mod data;
+mod info;
+#[cfg(test)]
+mod tests;
 
 pub use actions::*;
 pub use data::*;
+pub use info::*;
 
 pub mod state {
     pub const HIDDEN: i32 = 0;
@@ -50,8 +54,10 @@ pub struct Equipment {
     pub inv_unselectable: i32,
     pub inv_first: i32,
     pub inv_focus: i32,
+    pub inv_step: i32,
+    pub inv_index: i32,
     pub pending: Option<(List, usize)>,
-    pub gear_info: Option<UiItem>,
+    pub gear_info: GearInfo,
     pub purchase_result: bool,
     pub online: i32,
     pub rider: u32,
@@ -59,12 +65,26 @@ pub struct Equipment {
 }
 
 impl Equipment {
+    fn new_view(&mut self) {
+        self.list.clear();
+        self.store.clear();
+        self.inventory.clear();
+        (self.inv_max, self.inv_unselectable, self.inv_first, self.inv_focus) = (0, 0, 0, 0);
+        (self.inv_step, self.inv_index) = (0, 0);
+        self.pending = None;
+        self.gear_info = GearInfo::default();
+    }
+
     pub fn rider_name(&self, fe: &FrontEnd) -> String {
         let forced = fe.career.event(self.drop).and_then(|e| e.forced.get(5).copied()).filter(|&k| k != 0);
         let luri = fe.profile.attribs.get(&u32::from_be_bytes(*b"LURI")).map(|&v| v as u32);
         let key = [Some(self.rider).filter(|&k| k != 0), forced, luri].into_iter().flatten().next().unwrap_or(0);
         fe.career.riders.iter().find(|r| r.key == key).map_or_else(|| "zoe".to_string(), |r| r.name.clone())
     }
+}
+
+fn kind_of(category: i32) -> i64 {
+    if category == 0 { inventory::RIDER } else { i64::from(category) - 1 }
 }
 
 fn drop_info(fe: &FrontEnd) -> Option<DropInfo> {
@@ -83,13 +103,14 @@ pub fn flow_equip(fe: &mut FrontEnd, key: u32, slot: i64) {
 }
 
 fn set_category(fe: &mut FrontEnd, env: &mut FeEnv, category: i32) {
-    let kind = if category == 0 { inventory::RIDER } else { i64::from(category - 1) };
+    let kind = kind_of(category);
     let mut inv = inv(fe);
     let drop = drop_info(fe);
     let ctx = inv.store_context(&fe.career, &fe.profile, drop.as_ref());
     inv.build_lists(&fe.career, &fe.profile, env.loc, drop.as_ref(), &ctx, kind);
     inv.build_selected_gear(&fe.career, &fe.profile, env.loc, drop.as_ref());
     env.values.set_int(0x6C, inv.survival);
+    env.values.set_int(0x64, inv.inventory_size);
     fe.equipment.inv = Some(inv);
 }
 
@@ -112,6 +133,7 @@ fn loadout_refresh(fe: &mut FrontEnd, env: &mut FeEnv) {
 }
 
 pub fn activate(fe: &mut FrontEnd, env: &mut FeEnv) {
+    fe.equipment.new_view();
     env.values.set_bool(0xEF, true);
     let eq = &mut fe.equipment;
     eq.state = env.values.int(0x62);
@@ -133,17 +155,17 @@ pub fn activate(fe: &mut FrontEnd, env: &mut FeEnv) {
     env.values.set_bool(0x6A, false);
     eq.online = env.values.int(0x22F);
     if eq.state == 0 {
-        fill_list(fe);
+        publish_list(fe, "dp_playable_characters");
         fe.publish.extend(
             [
-                "dp_playable_characters",
                 "dp_playable_characters_index",
                 "dp_equipment_items_index",
                 "dp_store_items_index",
+                "dp_equipment_categories",
+                "dp_equipment_categories_index",
             ]
             .map(String::from),
         );
-        fe.publish.extend(["dp_equipment_categories", "dp_equipment_categories_index"].map(String::from));
         if fe.equipment.rider_count == 1 {
             select(fe, env, List::Items, 0);
             return;
@@ -165,22 +187,9 @@ pub fn activate(fe: &mut FrontEnd, env: &mut FeEnv) {
     );
 }
 
-fn fill_list(fe: &mut FrontEnd) {
-    let Some((list, store)) = fe.equipment.inv.as_ref().map(|i| (i.owned_list.clone(), i.store_list.clone())) else {
-        return;
-    };
-    let eq = &mut fe.equipment;
-    if eq.category == 0 {
-        eq.rider_index = list.iter().position(|u| u.key == eq.last_rider).unwrap_or(0) as i32;
-        eq.rider_count = list.len() as i32;
-    }
-    eq.list = list;
-    eq.store = store;
-}
-
 fn equip(fe: &mut FrontEnd, env: &mut FeEnv, item: &UiItem) {
     let mut inv = inv(fe);
-    let kind = if fe.equipment.category == 0 { inventory::RIDER } else { i64::from(fe.equipment.category - 1) };
+    let kind = kind_of(fe.equipment.category);
     if kind == inventory::RIDER {
         inv.now_ms = (fe.time * 1000.0) as i64;
         inv.select_rider(&fe.career, &fe.profile, fe.equipment.drop, item.key);
@@ -328,80 +337,90 @@ fn save_state_reset(env: &mut FeEnv) {
     env.values.set_bool(0x6A, false);
 }
 
-fn highlight(fe: &mut FrontEnd, env: &mut FeEnv, item: &UiItem) {
+fn preview(fe: &mut FrontEnd, env: &mut FeEnv, item: Option<(u32, u8)>) {
     let mut inv = inv(fe);
-    let kind = if fe.equipment.category == 0 { inventory::RIDER } else { i64::from(fe.equipment.category - 1) };
-    if (0..=inventory::KINDS as i64).contains(&kind) {
-        inv.new_items[kind as usize].retain(|&e| e != (item.key, item.src));
-    }
     let drop = drop_info(fe);
-    if kind == inventory::RIDER {
-        inv.rider_bio(&fe.career, &fe.profile, env.loc, item.key);
-    } else if (0..4).contains(&kind) {
-        let k = kind as usize;
-        let slot = fe.equipment.slot.max(0) as usize;
-        let saved = inv.equipped[k].get(slot).copied();
-        if slot < inv.equipped[k].len() {
-            inv.equipped[k][slot] = (item.key, item.src);
+    let kind = kind_of(fe.equipment.category);
+    match item {
+        None => {
+            let score = inv.survival_score(&fe.career, &fe.profile, drop.as_ref());
+            env.values.set_int(0x6C, score);
         }
-        let score = inv.survival_score(&fe.career, &fe.profile, drop.as_ref());
-        if let Some(s) = saved {
-            inv.equipped[k][slot] = s;
+        Some(entry) => {
+            inv.seen(kind, entry);
+            if kind == inventory::RIDER {
+                inv.rider_bio(&fe.career, &fe.profile, env.loc, entry.0);
+            } else if let Some(k) = usize::try_from(kind).ok().filter(|&k| k < 4) {
+                let slot = usize::try_from(fe.equipment.slot).unwrap_or(0);
+                let saved = inv.equipped[k].get(slot).copied();
+                if let Some(e) = inv.equipped[k].get_mut(slot) {
+                    *e = entry;
+                }
+                let score = inv.survival_score(&fe.career, &fe.profile, drop.as_ref());
+                if let (Some(s), Some(e)) = (saved, inv.equipped[k].get_mut(slot)) {
+                    *e = s;
+                }
+                env.values.set_int(0x6C, score);
+            }
         }
-        env.values.set_int(0x6C, score);
     }
     fe.equipment.inv = Some(inv);
-    fe.equipment.gear_info = Some(item.clone());
 }
 
 fn purchase(fe: &mut FrontEnd, env: &mut FeEnv, list: List, index: usize) {
     let entries = if list == List::Store { &fe.equipment.store } else { &fe.equipment.list };
     let Some(item) = entries.get(index).cloned() else { return };
-    if item.cost > i64::from(env.values.int(0x228)) {
+    let available = item.has(flag::AVAILABLE);
+    if (!available || item.has(flag::LEVEL_PURCHASEABLE)) && item.cost > i64::from(env.values.int(0x228)) {
         env.nav_events.push("go_to_equip_not_enough_money_popup".into());
         return;
     }
-    if fe.equipment.state == state::GEAR && fe.profile.generated.len() + fe.profile.owned_items.len() >= 450 {
+    let state = fe.equipment.state;
+    if available || !matches!(state, state::GEAR | state::RIDER) {
+        return;
+    }
+    if state == state::GEAR && env.values.int(0x64) >= INVENTORY_LIMIT {
         env.nav_events.push("equip_open_inventory_full".into());
         fe.equipment.purchase_result = false;
         fe.publish.push("dp_equipment_purchase_result".into());
         return;
     }
     let mut inv = inv(fe);
-    let kind = if fe.equipment.category == 0 { inventory::RIDER } else { i64::from(fe.equipment.category - 1) };
-    let paid = if item.src == 1 {
-        let info = drop_info(fe);
-        let ctx = inv.store_context(&fe.career, &fe.profile, info.as_ref());
-        let data = inv.data.clone();
-        let now = inv.now_ms;
-        fe.profile
-            .buy_offer(&mut inv.store, &data, &ctx, kind.max(0) as usize, item.key, (fe.time as u32).max(1), now)
-            .map(|id| {
-                inv.new_items[kind as usize].push((id, 1));
+    let kind = kind_of(fe.equipment.category);
+    let new_list = usize::try_from(kind).ok().filter(|&k| k <= inventory::KINDS);
+    let paid = match (item.src, new_list) {
+        (1, Some(k)) if k < inventory::KINDS => {
+            let info = drop_info(fe);
+            let ctx = inv.store_context(&fe.career, &fe.profile, info.as_ref());
+            let data = inv.data.clone();
+            let now = inv.now_ms;
+            fe.profile.buy_offer(&mut inv.store, &data, &ctx, k, item.key, (fe.time as u32).max(1), now).map(|id| {
+                inv.new_items[k].push((id, 1));
                 item.cost
             })
-    } else {
-        fe.profile.buy_fixed(&inv.catalog, item.key).inspect(|_| {
-            if (0..=inventory::KINDS as i64).contains(&kind) {
-                inv.new_items[kind as usize].push((item.key, 0));
+        }
+        (1, _) => Err(ssx_assets::career::store::purchase::PurchaseError::Unknown),
+        _ => fe.profile.buy_fixed(&inv.catalog, item.key).inspect(|_| {
+            if let Some(k) = new_list {
+                inv.new_items[k].push((item.key, 0));
             }
-        })
+        }),
     };
     fe.equipment.inv = Some(inv);
     match paid {
         Ok(cost) => {
             fe.note(format!("equipment: bought {:#010x}/{} for {cost}", item.key, item.src));
             let adj = env.values.int(0x93);
-            env.values.set_int(0x93, adj - cost as i32);
-            fe.equipment.purchase_result = true;
+            env.values.set_int(0x93, adj.wrapping_sub(i32::try_from(cost).unwrap_or(i32::MAX)));
             set_category(fe, env, fe.equipment.category);
-            fill_list(fe);
-            fe.publish.extend(
-                ["dp_equipment_purchase_result", "dp_equipment_items", "dp_store_items", "dp_playable_characters"]
-                    .map(String::from),
-            );
         }
         Err(e) => fe.note(format!("equipment: purchase refused: {e:?}")),
+    }
+    if state == state::GEAR {
+        fe.equipment.purchase_result = true;
+        fe.publish.push("dp_equipment_purchase_result".into());
+    } else {
+        publish_list(fe, "dp_playable_characters");
     }
 }
 
@@ -420,12 +439,13 @@ pub fn nav_action(fe: &mut FrontEnd, env: &mut FeEnv, name: &str) -> bool {
                 fe.equipment.inv = Some(inv);
                 if let Some(p) = price {
                     let adj = env.values.int(0x93);
-                    env.values.set_int(0x93, adj + p as i32);
+                    env.values.set_int(0x93, adj.wrapping_add(i32::try_from(p).unwrap_or(i32::MAX)));
                     fe.note(format!("equipment: sold {:#010x}/{} for {p}", item.key, item.src));
                 }
                 set_category(fe, env, fe.equipment.category);
-                refresh_inventory_view(fe);
-                fe.publish.extend(["dp_inventory_items", "dp_inventory_items_index"].map(String::from));
+                fe.equipment.inventory_sold();
+                publish_list(fe, "dp_inventory_items");
+                fe.publish.push("dp_inventory_items_index".into());
             }
         }
         "advance_to_game" => advance(fe, env),

@@ -106,6 +106,21 @@ impl Ride {
                 };
                 (first, short)
             }
+            (None, true) => match setup.map.as_ref().and_then(|m| Some((m.heli.clone()?, m))) {
+                Some((heli, m)) => {
+                    let (id, objectives) = (m.id.to_string(), m.setup.objectives.clone());
+                    super::map_intro::intros(
+                        &mut setup.world,
+                        &setup.big_root,
+                        &setup.character,
+                        &heli,
+                        &id,
+                        objectives,
+                        setup.intro_visits,
+                    )
+                }
+                None => (None, None),
+            },
             _ => (None, None),
         };
         match &intro {
@@ -125,6 +140,7 @@ impl Ride {
             }
         }
         let mut state = level_start(&setup.world, setup.spawn, intro.as_ref())?;
+        state.tricks.classic = setup.classic;
         let course = setup.world.end_locator.map(|e| Course { start_y: setup.spawn.0.y, end_y: e.y });
         let event = match &setup.map {
             Some(m) => EventManager::new(m.setup.clone()),
@@ -138,9 +154,17 @@ impl Ride {
             Ok(names) => session.stats.rider = names.get(&setup.character).cloned(),
             Err(e) => warn!("the riders' names: {e:#}"),
         }
+        let heli_vaults = match setup.map.as_ref().and_then(|m| m.heli.as_ref()) {
+            Some(h) => h.vault_track.clone(),
+            None => Some(setup.track.clone()),
+        };
         if let Some(Ok(h)) = intro.as_ref().map(|i| &i.heli)
-            && let Some(e) =
-                ssx_physics::controllers::NamedEntity::load(&setup.big_root, &setup.track, "DropHeli", h.gameobject)
+            && let Some(e) = ssx_physics::controllers::NamedEntity::load_in(
+                &setup.big_root,
+                heli_vaults.as_deref(),
+                "DropHeli",
+                h.gameobject,
+            )
         {
             info!("controllers: DropHeli runs {}", e.script);
             session.named_entities.push(e);
@@ -217,6 +241,19 @@ impl Ride {
                 Err(e) => warn!("survive-to-death loop unavailable: {e:#}"),
             }
         }
+        if let Some(m) = setup.map.as_ref().filter(|_| !crate::render::post::env_is("SSX_OUTRO", "off"))
+            && let Some(loop_) = super::map_intro::survive_loop(
+                &setup.world,
+                &setup.big_root,
+                &setup.character,
+                m,
+                setup.spawn,
+                &intro,
+                &intro_short,
+            )
+        {
+            session.survive = Some(loop_);
+        }
         state.score.boost = setup.boost_meter.clamp(0.0, setup.world.tuning.scoring.max_boost);
         let pose = pose_of(&state);
         let clock = match setup.screenshot_steps {
@@ -226,7 +263,18 @@ impl Ride {
             }
             None => Clock::Fixed,
         };
+        let map_heli = setup.map.as_ref().and_then(|m| m.heli.as_ref());
         let heli_flight = match (&intro, setup.drop_key) {
+            (Some(_), None) if map_heli.is_some() => {
+                let grid = map_heli.and_then(|h| h.grid.clone());
+                match ssx_physics::helicopter::HeliFlightData::with_grid(&setup.big_root, grid) {
+                    Ok(f) => Some(std::sync::Arc::new(f)),
+                    Err(e) => {
+                        warn!("helicopter flight unavailable: {e:#}");
+                        None
+                    }
+                }
+            }
             (Some(_), Some(key)) => {
                 let scripts =
                     ssx_physics::spawn::drop_objective_scripts(&setup.big_root, &setup.track, key).unwrap_or_default();
@@ -439,6 +487,10 @@ impl Ride {
             back_was: false,
             back_press: false,
             autoplay: setup.autoplay || env_flag("SSX_RIDE_AUTOPLAY"),
+            classic: setup.classic,
+            classic_grind_ticks: 0.0,
+            classic_rewind_ticks: 0.0,
+            classic_wingsuit_ticks: 0.0,
             viewer_keys: !setup.game,
             a_lock: PadLock::default(),
             grind_since: None,
@@ -501,10 +553,7 @@ pub(super) fn level_start(
 ) -> Option<RiderState> {
     let q = ssx_physics::spawn::level_start_orientation(world, at, heading);
     match intro {
-        Some(i) => ssx_physics::nis::level_start(world, at, q, i.clone()).or_else(|| {
-            let hit = world.collision.ray_cast(at, -Vec3::Y, 20_000.0)?;
-            ssx_physics::nis::level_start_on(world, hit.point + Vec3::Y, at, q, i.clone())
-        }),
+        Some(i) => ssx_physics::nis::level_start_or_below(world, at, q, i.clone()),
         None => RiderState::level_start(world, at, q),
     }
 }

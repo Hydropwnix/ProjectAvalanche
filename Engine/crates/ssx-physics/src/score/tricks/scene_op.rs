@@ -143,10 +143,10 @@ impl TrickState {
             left_start: self.valid_left_start,
             right_start: self.valid_right_start,
         };
-        self.gestures.tick(pad, &gates, &t.added);
+        self.gestures.tick(pad, &gates, &t.added, self.classic);
         let (prev, cur) = (self.gestures.prev, self.gestures.cur);
-        self.grind.tick_gestures(&prev, &cur, ctx.is_grinding);
-        self.press.tick(&prev, &cur);
+        self.grind.tick_gestures(&prev, &cur, ctx.is_grinding, self.classic);
+        self.press.tick(&prev, &cur, self.classic);
         self.gesture_clock += 1.0;
         pad
     }
@@ -232,7 +232,9 @@ impl TrickState {
         }
         let prev_held = g.index > -1 && g.button[g.index as usize];
         let (gl, gg) = (self.gesture_len, g.group);
-        for (i, e) in GRIND_TRICKS.iter().enumerate() {
+        let table: &[crate::rider::grind::tricks::GrindEntry] =
+            if self.classic { &GRIND_TRICKS_CLASSIC } else { &GRIND_TRICKS };
+        for (i, e) in table.iter().enumerate() {
             if self.grind.button[i] && (e.len > gl || (!prev_held && e.group != gg)) {
                 self.trick_type = e.trick(ctx.awesome, ctx.super_awesome);
                 self.grind.group = e.group;
@@ -250,7 +252,8 @@ impl TrickState {
 
     pub(super) fn valid_air_trick_input(&self, added: &AddedAirTricks, goofy: bool) -> (bool, i32) {
         let g = &self.gestures;
-        for i in 0..AIR_TRICKS.len() {
+        let table = air_table(self.classic);
+        for i in 0..table.len() {
             if g.button[i] {
                 return (true, i as i32);
             }
@@ -261,7 +264,7 @@ impl TrickState {
         for i in 0..added.by_input.len() {
             if added.trick_for(i, goofy).is_some() {
                 if g.added.button[i] {
-                    return (true, (AIR_TRICKS.len() + i) as i32);
+                    return (true, (table.len() + i) as i32);
                 }
                 if g.added.stick[i] {
                     return (true, -1);
@@ -283,7 +286,7 @@ impl TrickState {
             self.gesture_len = -1;
         }
         let mut found = false;
-        for (i, e) in AIR_TRICKS.iter().enumerate() {
+        for (i, e) in air_table(self.classic).iter().enumerate() {
             let button = self.gestures.button[i];
             if e.len > self.gesture_len && (button || self.gestures.stick[i]) {
                 self.trick_type = if ctx.goofy { e.goofy } else { e.regular };
@@ -330,6 +333,10 @@ impl TrickState {
             (self.tweak_enter, self.tweak_wind) = (a, a);
         }
         self.trick_locked = true;
+        if self.classic {
+            self.tweak_blend = if self.gestures.tweak { 1.0 } else { 0.0 };
+            return;
+        }
         if self.gestures.tweak {
             self.tweak_blend = 1.0;
         } else if rs_mag > TWEAK_STICK_DEAD_ZONE {
@@ -357,6 +364,10 @@ impl TrickState {
     }
 
     pub(super) fn update_virtual_stick(&mut self, t: &TrickTuning, inp: &TrickInput, dt: f32) {
+        if self.classic {
+            (self.virtual_stick, self.virtual_stick_timer) = (Vec2::ZERO, -1.0);
+            return;
+        }
         self.virtual_stick_timer -= dt;
         let v = &mut self.virtual_stick;
         let pressed = if inp.y {

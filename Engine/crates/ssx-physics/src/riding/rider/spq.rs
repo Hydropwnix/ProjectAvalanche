@@ -27,7 +27,7 @@ pub(super) fn score(s: &mut RiderState, w: &World, input: &Input, ctx: &ScoringC
         wipeout,
         spin_speed: if in_air { o.spin_speed } else { 0.0 },
         flip_speed: if in_air { o.flip_speed } else { 0.0 },
-        flip_accel: input.stick().y,
+        flip_accel: input.air_stick(s.tricks.classic).y,
         goofy: s.goofy,
         trick_type: s.tricks.trick_type,
         tricking: s.tricks.is_tricking,
@@ -166,7 +166,7 @@ pub fn update_player_speed(s: &mut RiderState, in_air: bool) {
     s.player_speed_ratio = (s.player_speed / 45.0).min(1.0);
 }
 
-pub(super) fn update_prewind(s: &mut RiderState, w: &World, input: &Input, dt: f32) {
+pub(super) fn update_prewind(s: &mut RiderState, w: &World, input: &Input, prewind_hold: bool, dt: f32) {
     let r = &w.props;
     let in_air = s.state != RideState::Riding;
     let awesome = s.score.is_awesome;
@@ -176,7 +176,7 @@ pub(super) fn update_prewind(s: &mut RiderState, w: &World, input: &Input, dt: f
         (s.prewind, s.prewind_reset) = (0.0, false);
         return;
     }
-    let (target, rate) = if !in_air && input.jump {
+    let (target, rate) = if !in_air && (input.jump || prewind_hold) {
         (1.0, accum)
     } else if input.stick().length() >= 0.5 {
         (0.0, natural)

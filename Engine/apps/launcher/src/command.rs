@@ -124,6 +124,7 @@ pub fn game(s: &Settings, big_root: &Path) -> Invocation {
             push(&[name]);
         }
     }
+    args.extend(s.display.args().into_iter().map(OsString::from));
     Invocation { program: game_exe(), args, env: env(s) }
 }
 

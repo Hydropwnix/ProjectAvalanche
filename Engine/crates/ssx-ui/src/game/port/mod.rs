@@ -1,5 +1,6 @@
 pub mod files;
 pub mod overlay;
+pub mod scroll;
 #[cfg(feature = "net")]
 pub mod session;
 pub mod view;
@@ -26,7 +27,10 @@ macro_rules! port_files {
 pub const FILES: &[(&str, &str)] = port_files![
     "views/ava_keyboard.json",
     "views/ava_hub.json",
+    // TODO(guess): a port choice — the maps' list (9 rows of 36 px, 2 apart, at (101, 252), 730 wide) gets the disc's scroll bar 1 px right of its rows as globaldrop places its own (views/globaldrop.gfx: `ListMenu` at x -110, `ROW_WIDTH` 220, the bar at x 111): x 832, from the rows' top for their height, 340 = 9 · 36 + 8 · 2 (the track listing's bar, views/activityfeedtracklisting.gfx, is 275 long beside 8 rows of 34); the bar runs over the table panel's edge (x 839) and ends 1 px before the details panel (x 849); settle: none (the disc has no such list).
     "views/ava_maps.json",
+    // TODO(guess): a port choice — the disc's `SettingsMenu` (5 rows, `MAX_VISIBLE_MENU_ROWS`) places no scroll bar, and the port's Options list has 6 rows (8 with the network); the bar (`components.ScrollBar`, 16 px wide) is placed as globaldrop places its own (views/globaldrop.gfx: 1 px right of its rows, `ListMenu` at x -110 with `ROW_WIDTH` 220, the bar at x 111) at x 441 (the menu's x 90 + `MENU_WIDTH` 350 + 1), from the panel's top (y 190) for the panel's height, 251 = `ListMenu.RedrawPanel`'s 5 · 60 − 4 · 10 + 5 − 14; the menu is set up at the view's `Initialize` and shown at once, where `SettingsMenu` (0x05da…0x09be) hides it until `settings_init` is published and sets it up then (the provider answers that subscription in the same update); settle: none (the disc's list never scrolls).
+    "views/ava_options.json",
     "viewmodels/avakeyboard.vm",
     "viewmodels/avahub.vm",
     "viewmodels/avamaps.vm",
@@ -55,6 +59,7 @@ pub const FILES: &[(&str, &str)] = port_files![
 
 #[cfg(feature = "net")]
 pub const NET_FILES: &[(&str, &str)] = port_files![
+    // TODO(guess): a port choice — the server browser's list (as the maps': 9 rows of 36 px at (101, 252), 730 wide) gets the disc's scroll bar 1 px right of its rows as globaldrop places its own (views/globaldrop.gfx: `ListMenu` at x -110, `ROW_WIDTH` 220, the bar at x 111): x 832, 340 long (9 · 36 + 8 · 2); settle: none (the disc has no such list).
     "views/ava_browser.json",
     "viewmodels/avaserverbrowser.vm",
     "viewmodels/avabrowserfilters.vm",
@@ -66,6 +71,9 @@ pub const NET_FILES: &[(&str, &str)] = port_files![
     "popups/ava_browser_message.pop",
     "popups/ava_link_confirm.pop",
     "popups/ava_options_message.pop",
+    "popups/ava_name_refused.pop",
+    "popups/ava_name_settings_broken.pop",
+    // TODO(guess): a port choice — the Players screen's list (9 rows of 34 px, 2 apart, at (190, 298), 900 wide) gets the disc's scroll bar 1 px right of its rows as globaldrop places its own (views/globaldrop.gfx: the bar 1 px right of `ROW_WIDTH` 220): x 1091, 322 long (9 · 34 + 8 · 2); settle: none (the disc has no such list).
     "views/ava_players.json",
     "views/ava_chat.json",
     "views/ava_quickchat.json",
@@ -337,6 +345,7 @@ impl crate::game::GameUi {
     #[cfg(feature = "net")]
     pub fn open_link(&mut self, address: ssx_net_join::browse::ServerAddress) {
         if let Some(fe) = self.fe.as_mut() {
+            fe.ava.browser.enter_fresh();
             crate::game::fe::ava::browser::connect::open_link(fe, address);
         }
     }
@@ -378,6 +387,10 @@ impl crate::game::GameUi {
 
     pub(crate) fn port_open(&mut self) {
         let ready = self.nav.is_active(OPEN_FROM) && !self.views_loading();
+        #[cfg(feature = "net")]
+        if self.name_prompt_step(ready) {
+            return;
+        }
         let Some(port) = self.port.as_mut() else { return };
         if !ready || !port.registered {
             return;
@@ -392,20 +405,26 @@ impl crate::game::GameUi {
 fn install_classes(cx: &mut Ctx) -> Result<()> {
     let view_proto = view::global_path(cx, "ux.view.View.prototype");
     let fe_view_proto = view::global_path(cx, "ssx.FEView.prototype");
+    let feed_view_proto = view::global_path(cx, "ssx.FEActivityFeedView.prototype");
     let cell_proto = view::global_path(cx, "ux.view.component.Cell.prototype");
     let grid_cell = view::global_path(cx, "components.IGridMenuCell");
-    let (Some(view_proto), Some(fe_view_proto), Some(cell_proto), Some(grid_cell)) =
-        (view_proto.as_object(), fe_view_proto.as_object(), cell_proto.as_object(), grid_cell.as_object())
-    else {
+    let (Some(view_proto), Some(fe_view_proto), Some(feed_view_proto), Some(cell_proto), Some(grid_cell)) = (
+        view_proto.as_object(),
+        fe_view_proto.as_object(),
+        feed_view_proto.as_object(),
+        cell_proto.as_object(),
+        grid_cell.as_object(),
+    ) else {
         bail!(
-            "the framework's classes are missing (ux.view.View, ssx.FEView, ux.view.component.Cell, \
-             components.IGridMenuCell)"
+            "the framework's classes are missing (ux.view.View, ssx.FEView, ssx.FEActivityFeedView, \
+             ux.view.component.Cell, components.IGridMenuCell)"
         );
     };
     let pkg = cx.new_object();
     let classes = [
         ("View", view_proto, view::VIEW_METHODS, view::view_ctor as crate::avm1::object::NativeFn),
         ("FEView", fe_view_proto, view::VIEW_METHODS, view::view_ctor),
+        ("ActivityFeedView", feed_view_proto, view::VIEW_METHODS, view::view_ctor),
         ("Cell", cell_proto, view::CELL_METHODS, view::cell_ctor),
     ];
     for (name, base, methods, ctor) in classes {
@@ -447,6 +466,7 @@ fn register_view(vm: &mut Vm, lib: &mut Library, player: &mut Player, app: &str,
     let view_base = match l.logic.base {
         crate::author::Base::View => "View",
         crate::author::Base::FeView => "FEView",
+        crate::author::Base::ActivityFeedView => "ActivityFeedView",
     };
     let classes: Vec<(String, Arc<dyn std::any::Any + Send + Sync>, &str)> = l
         .symbols
@@ -596,6 +616,36 @@ mod tests {
             });
             for name in inputs.chain(layout.logic.paging.iter().map(|p| p.setup.as_str())) {
                 assert!(declared(name), "{view}: {name} is declared by no data definition");
+                checked += 1;
+            }
+        }
+        assert!(checked > 0);
+    }
+
+    #[test]
+    fn every_data_a_port_view_binds_is_declared_by_its_providers() {
+        let files = files::PortFiles;
+        let mut store = crate::game::store::DataStore::default();
+        for (path, _) in all_files() {
+            let text = || read_text(&files, &format!("{ROOT}{path}")).unwrap();
+            if let Some(dd) = path.strip_prefix("viewmodels/datadefinitions/").and_then(|p| p.strip_suffix(".dd")) {
+                store.add_definition(dd, &text()).unwrap();
+            } else if let Some(vm) = path.strip_prefix("viewmodels/").and_then(|p| p.strip_suffix(".vm")) {
+                store.add_view_model(vm, &text()).unwrap();
+            }
+        }
+        let mut checked = 0;
+        for (path, _) in all_files() {
+            let Some(view) = path.strip_prefix("views/") else { continue };
+            let layout = Layout::parse(view, &read_text(&files, &format!("{ROOT}{path}")).unwrap()).unwrap();
+            let providers: Vec<&String> =
+                store.view_models.values().filter(|m| m.view == layout.view).flat_map(|m| &m.providers).collect();
+            for name in &layout.logic.data {
+                let declared = providers
+                    .iter()
+                    .filter_map(|p| store.definitions.get(p.as_str()))
+                    .any(|d| d.data.iter().any(|(v, _, _)| v == name));
+                assert!(declared, "{view}: {name} is declared by none of the providers {providers:?}");
                 checked += 1;
             }
         }

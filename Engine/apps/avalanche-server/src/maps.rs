@@ -312,7 +312,7 @@ mod tests {
             assert!(e.contains(says), "{id} {t}: {e}");
         }
         let e = load_map(&rules, "tpl:map/course", (5, None), &tuning()).expect_err("no disc data");
-        assert!(e.starts_with("tpl:map/course: its level: "), "{e}");
+        assert!(e.starts_with("tpl:map/course: ") && e.contains("node \"course/flare\" ava_object"), "{e}");
         let text = "[game]\nmode = \"race\"\nmap = \"tpl:map/course\"\n";
         let mut config = crate::config::parse(Path::new("server.toml"), text).expect("a map's configuration");
         let mut maps = ServerMaps::new(server_rules(&rules));
@@ -381,7 +381,7 @@ mod tests {
             ("escape", "[map]\ntitle = \"t\"\nscene = \"../../../x.gltf\"\nmodes = [\"race\"]\n".to_string()),
             ("base", format!("{head}title = \"t\"\nmodes = [\"race\"]\nbase = \"ssx:drop/no_such_drop\"\n")),
             ("basekind", format!("{head}title = \"t\"\nmodes = [\"race\"]\nbase = \"tpl:object/x\"\n")),
-            ("heli", format!("{head}title = \"t\"\nmodes = [\"race\"]\nintro = \"heli\"\n")),
+            ("death", format!("{head}title = \"t\"\nmodes = [\"death\"]\nintro = \"spawn\"\n")),
             ("nottoml", "\u{0}\u{1}[[[".to_string()),
             ("big", big),
         ];

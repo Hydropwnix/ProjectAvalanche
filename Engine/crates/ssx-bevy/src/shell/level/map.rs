@@ -94,6 +94,11 @@ pub(super) fn load(spec: &LevelSpec, id: &ContentId) -> Result<LevelData> {
     };
     let live = spec.ride.as_ref().is_some_and(|o| o.live.is_some());
     let bots = live.then(|| ride::bots::load_live_only(&big_root, base_track.as_deref(), riders.as_ref())).flatten();
+    let heli = ride::helicopter::load_level(
+        Some(&big_root),
+        base_track.as_deref(),
+        ride.as_ref().and_then(ride::RideLoad::heli_intro),
+    );
     let particles = crate::particles::load_level(
         &big_root,
         ride.as_ref().map(ride::RideLoad::ride),
@@ -112,7 +117,7 @@ pub(super) fn load(spec: &LevelSpec, id: &ContentId) -> Result<LevelData> {
         post,
         status,
         ride,
-        heli: None,
+        heli,
         ghosts: None,
         geotags: None,
         bots,
@@ -206,7 +211,6 @@ fn map_ride(
         r.loops()
     );
     let spawn = ssx_physics::spawn::spawn_pose_for_drop(&level.world, level.drop, cli.spawn, cli.heading)?;
-    let loop_q = ssx_physics::spawn::level_start_orientation(&level.world, spawn.0, spawn.1);
     let data = big_root.parent().unwrap_or(big_root);
     let sim_content_id = match content.map_sim_content_id(data, &m.map, m.base.as_ref(), &m.object_list(), Some(&mode))
     {
@@ -232,6 +236,42 @@ fn map_ride(
     let mut map_ride = ride::MapRide::new(m.map.id.clone(), m.map.value.toml.title.clone(), level.gates, level.setup);
     (map_ride.markers, map_ride.drawn) = (markers, drawn);
     map_ride.mode = Some(ride::MapRideMode::of(&mode));
+    if let Some(h) = level.heli {
+        match &h.choice {
+            Ok(c) => info!(
+                "map {}: helicopter {} ({:?}, game object {:08x}), height grid {}",
+                m.map.id,
+                c.name,
+                c.source,
+                c.gameobject,
+                h.grid.as_ref().map_or("none".to_string(), |g| format!("{} × {}", g.width, g.height))
+            ),
+            Err(e) => warn!("map {}: no helicopter ({e})", m.map.id),
+        }
+        map_ride.heli = Some(std::sync::Arc::new(h));
+    }
+    let e = level.entities;
+    if e.entities > 0 {
+        info!(
+            "map {}: {} entities ({} with a controller, {} with a rigid body, {} trigger volumes)",
+            m.map.id, e.entities, e.scripted, e.bodies, e.volumes
+        );
+    }
+    map_ride.placed = m
+        .map
+        .value
+        .definition
+        .props
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| match &p.look {
+            ssx_content::map::PropLook::Object(id) => {
+                let key = m.objects.get(id)?.key?;
+                Some((u32::try_from(i).ok()?, key, ssx_physics::map::entities::prop_placement(p)))
+            }
+            _ => None,
+        })
+        .collect();
     let track_name = m.base.as_ref().map_or_else(|| m.map.id.path().to_string(), |b| b.track.clone());
     let w = RideWorld {
         world: level.world,
@@ -245,12 +285,7 @@ fn map_ride(
         sim_content_id,
     };
     let (setup, decision) = ride_setup(cli, character, big_root, Some(&lighting.level), w)?;
-    let mut load = ride::prepare(setup, big_root, Some(lighting))?;
-    if mode.rules.loops() {
-        info!("map {}: survive-to-death loop at the finish, back to {:.2}", m.map.id, spawn.0);
-        let s = &mut load.ride_mut().session;
-        s.survive = Some(ssx_physics::session::survive::SurviveLoop::new(None, None, spawn.0, loop_q));
-    }
+    let load = ride::prepare(setup, big_root, Some(lighting))?;
     Ok((load, decision))
 }
 

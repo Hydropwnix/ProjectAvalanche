@@ -89,12 +89,7 @@ pub enum NetProgress {
 }
 
 pub fn player_name(fe: &FrontEnd) -> String {
-    fe.ava
-        .options
-        .settings
-        .player_name
-        .clone()
-        .unwrap_or_else(|| crate::game::fe::ava::port_settings::DEFAULT_PLAYER_NAME.into())
+    crate::game::fe::ava::name_prompt::join_name(fe)
 }
 
 fn ask_keyboard(fe: &mut FrontEnd, env: &mut FeEnv, asked: Asked) {

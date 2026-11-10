@@ -19,6 +19,26 @@ impl Launcher {
              launcher; settings, saves and game data stay where they are.",
         );
         ui.add_space(8.0);
+        let mut repair = false;
+        if !self.program_missing.is_empty() {
+            let names = self.program_missing.join(", ");
+            widgets::status(
+                ui,
+                theme::ERROR,
+                format!(
+                    "This installation lacks {} of its files: {names}. (Launcher 0.2.0 did not know them when it \
+                     updated.) Without the movie decoder a mod's movies do not play.",
+                    self.program_missing.len()
+                ),
+            );
+            let can = matches!(self.update, Update::Idle | Update::UpToDate | Update::Failed(_));
+            if matches!(&self.update, Update::Available(r) if r.reinstall.is_empty()) {
+                widgets::note(ui, "The update below puts them back too.");
+            } else if can && widgets::button(ui, "Repair the installation", Kind::Primary, true).clicked() {
+                repair = true;
+            }
+            ui.add_space(8.0);
+        }
         let mut check = false;
         let mut download = false;
         let mut apply = false;
@@ -50,6 +70,21 @@ impl Launcher {
                 widgets::status(ui, theme::ERROR, e.clone());
                 if widgets::button(ui, "Try again", Kind::Primary, true).clicked() {
                     check = true;
+                }
+            }
+            Update::Available(release) if !release.reinstall.is_empty() => {
+                widgets::status(
+                    ui,
+                    theme::CYAN,
+                    format!(
+                        "The release of v{} holds the missing files: it is downloaded again, checked against its \
+                         SHA-256 and installed as an update is.",
+                        release.version
+                    ),
+                );
+                ui.add_space(8.0);
+                if widgets::button(ui, "Download and repair", Kind::Primary, true).clicked() {
+                    download = true;
                 }
             }
             Update::Available(release) => {
@@ -106,6 +141,10 @@ impl Launcher {
         }
         if check {
             self.update = Update::start_check(ui.ctx());
+        }
+        if repair {
+            let missing = self.program_missing.iter().map(|n| n.to_string()).collect();
+            self.update = Update::start_repair(ui.ctx(), missing);
         }
         if download && let Err(e) = self.update.download(ui.ctx()) {
             self.update = Update::Failed(e);

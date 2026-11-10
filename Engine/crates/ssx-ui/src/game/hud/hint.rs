@@ -26,6 +26,26 @@ pub struct HintPanel {
     suspend_input: bool,
     lock_taken: bool,
     timer: f32,
+    places: Option<Places>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Places {
+    wide: [[f32; 2]; 2],
+    narrow: [[f32; 2]; 2],
+}
+
+impl Places {
+    fn of(rec: &hint::Record) -> Places {
+        let panel = if !rec.narrow_alt {
+            let x = rec.panel[0];
+            [if x >= 640.0 { x - 136.0 } else { x + 136.0 }, rec.panel[1]]
+        } else {
+            rec.panel_alt
+        };
+        let gradient = if rec.narrow_alt { rec.gradient_alt } else { rec.gradient };
+        Places { wide: [rec.panel, rec.gradient], narrow: [panel, gradient] }
+    }
 }
 
 fn input_lock(env: &mut HudEnv, release: bool) {
@@ -46,6 +66,19 @@ impl HintPanel {
         let (w, h) = (env.values.int(DISPLAY_WIDTH) as f32, env.values.int(DISPLAY_HEIGHT) as f32);
         env.values.set_bool(HINT_DONE, false);
         HintPanel { wide: w / h > 1.55, ..Default::default() }
+    }
+
+    pub fn set_wide(&mut self, cx: &mut Ctx, wide: bool) {
+        self.wide = wide;
+        let Some(p) = self.places else { return };
+        let [[x, y], [gx, gy]] = if wide { p.wide } else { p.narrow };
+        let at = |x: f32, y: f32| DisplayInfo { x: f64::from(x), y: f64::from(y), ..Default::default() };
+        if let Some(c) = self.panel.as_mut() {
+            c.set_info(cx, &at(x, y), DI_X | DI_Y);
+        }
+        if let Some(c) = self.gradient.as_mut() {
+            c.set_info(cx, &at(gx, gy), DI_X | DI_Y);
+        }
     }
 
     pub fn destroy(&mut self, env: &mut HudEnv) {
@@ -75,6 +108,7 @@ impl HintPanel {
     pub fn unbind(&mut self, name: &str) {
         self.bound = false;
         self.intro_played = false;
+        self.places = None;
         match name {
             "db_hud_hint_container" => self.container = None,
             "db_hud_hint_gradient" => self.gradient = None,
@@ -151,15 +185,9 @@ impl HintPanel {
         }
         self.take_lock(env, rec.suspend_input);
         self.timer = rec.seconds;
-        let [x, y] = if self.wide {
-            rec.panel
-        } else if !rec.narrow_alt {
-            let x = rec.panel[0];
-            [if x >= 640.0 { x - 136.0 } else { x + 136.0 }, rec.panel[1]]
-        } else {
-            rec.panel_alt
-        };
-        let [gx, gy] = if !self.wide && rec.narrow_alt { rec.gradient_alt } else { rec.gradient };
+        let places = Places::of(rec);
+        self.places = Some(places);
+        let [[x, y], [gx, gy]] = if self.wide { places.wide } else { places.narrow };
         let first = !self.intro_played;
         self.intro_played = true;
         if let Some(c) = self.container.as_mut() {
@@ -185,8 +213,9 @@ impl HintPanel {
         for page in &rec.pages {
             let mut t = |s: &str| if s.is_empty() { Value::str("") } else { Value::str(&env.loc.text(s)) };
             let texts = if stats {
-                // TODO(guess): a type-3 record's text1 … text3 (the gear entry `TUTORIALGEAR_Entry`'s stat descriptions, UI 0x213, 0x824108F0) are left empty (no offline flow asks for one); settle: the gear entry's writer.
-                [Value::str(""), Value::str(""), Value::str(""), Value::str("")]
+                let [a, b, c] = hint::gear_entry_texts(env.values.item(hint::GEAR_ENTRY));
+                let mut d = |k: Option<String>| k.map_or_else(|| Value::str(""), |k| t(&k));
+                [d(a), d(b), d(c), Value::str("")]
             } else {
                 [t(&page.texts[0]), t(&page.texts[1]), t(&page.texts[2]), t(&page.texts[3])]
             };

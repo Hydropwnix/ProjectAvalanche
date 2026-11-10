@@ -12,6 +12,7 @@ pub mod port;
 pub mod prompts;
 pub mod ride;
 pub mod session_board;
+pub mod sim_hold;
 pub mod stats;
 pub mod store;
 pub mod tricks;
@@ -21,8 +22,10 @@ pub mod value_names;
 pub mod values;
 
 mod calls;
+pub mod display_class;
 mod frame;
 mod navigation;
+mod relayout;
 
 use anyhow::Result;
 
@@ -96,6 +99,10 @@ pub struct GameUi {
     pub nav_wait: Option<NavWait>,
     pub port: Option<port::PortFe>,
     fe_clock: f64,
+    pub display: display_class::DisplayClass,
+    relayout_due: bool,
+    relayout: Option<relayout::Relayout>,
+    views_display: display_class::DisplayClass,
 }
 
 impl GameUi {
@@ -136,6 +143,10 @@ impl GameUi {
             nav_wait: None,
             port: None,
             fe_clock: 0.0,
+            display: display_class::DisplayClass::WIDESCREEN,
+            relayout_due: false,
+            relayout: None,
+            views_display: display_class::DisplayClass::WIDESCREEN,
         })
     }
 
@@ -212,7 +223,7 @@ impl GameUi {
                 if served && !asked {
                     continue;
                 }
-                match front.build(cx, &self.values, &mut self.loc, &dp) {
+                match front.build(cx, &mut self.values, &mut self.loc, &dp) {
                     Some(v) => v,
                     None => continue,
                 }

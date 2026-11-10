@@ -119,7 +119,7 @@ fn ava(text: Option<&str>) -> Result<Ava, (String, String)> {
             "ava_hidden" => a.hidden = Some(v.as_bool().ok_or_else(|| field("true or false".into()))?),
             "ava_slot" => a.slot = Some(int_below(v, MAX_SPAWNS as u32).map_err(field)?),
             "ava_radius" => a.radius = Some(float_in(v, 0.01, MAX_COORDINATE).map_err(field)?),
-            "ava_order" => a.order = Some(int_below(v, MAX_HELI_POINTS as u32).map_err(field)?),
+            "ava_order" => a.order = Some(int_below(v, MAX_ORDER).map_err(field)?),
             "ava_name" => a.name = Some(name_of(v).map_err(field)?),
             "ava_object" => a.object = Some(id_value(v, crate::id::Kind::Object).map_err(field)?),
             "ava_marker" => a.marker = Some(id_value(v, crate::id::Kind::Marker).map_err(field)?),
@@ -183,7 +183,7 @@ struct Builder<'s> {
     def: MapDefinition,
     slots: BTreeMap<u32, Spawn>,
     orders: BTreeMap<u32, Volume>,
-    heli: BTreeMap<u32, [f32; 3]>,
+    heli: BTreeMap<u32, HeliPoint>,
     unused_cameras: (usize, Option<usize>),
 }
 
@@ -303,11 +303,25 @@ impl Builder<'_> {
                 self.def.markers.push(MarkerPlacement { node: path, marker, placement });
             }
             "heli_path" => {
-                let order = a.order.ok_or_else(|| self.err(i, "ava_order", "a heli_path point has its order"))?;
+                let order = a.order.ok_or_else(|| {
+                    self.err(
+                        i,
+                        "ava_order",
+                        "a heli_path point has its order (0 the intro locator, 1 the outro locator)",
+                    )
+                })?;
+                if order as usize >= HELI_PATH_POINTS {
+                    return Err(self.err(
+                        i,
+                        "ava_order",
+                        "0 (the intro locator) or 1 (the outro locator): the helicopter's path is its two locators",
+                    ));
+                }
                 let p = place(self)?;
-                if self.heli.insert(order, p.position).is_some() {
+                if self.heli.contains_key(&order) {
                     return Err(self.err(i, "ava_order", format!("order {order} twice")));
                 }
+                self.heli.insert(order, HeliPoint { node: path, order, position: p.position, rotation: p.rotation });
             }
             "camera" => {
                 let Some(yfov) = n.camera else { return Err(self.err(i, "ava_type", "a camera node has a camera")) };
@@ -525,8 +539,30 @@ impl Builder<'_> {
             let message = format!("the spawns' slots run 0, 1, 2 … without a gap; slot {k} is missing");
             return Err(MapError::new(self.file, format!("node \"{}\" ava_slot", s.node), message));
         }
-        if toml.intro == Intro::Heli && self.def.heli_path.len() < 2 {
-            return Err(whole("intro = \"heli\" needs a heli_path of two points or more".into()));
+        if self.def.heli_path.len() == 1 {
+            let p = &self.def.heli_path[0];
+            let missing = 1 - p.order;
+            return Err(MapError::new(
+                self.file,
+                format!("node \"{}\" ava_order", p.node),
+                format!(
+                    "the heli_path has both locators: order {missing} ({}) is missing",
+                    HELI_LOCATORS[missing as usize]
+                ),
+            ));
+        }
+        if toml.intro == Intro::Heli && !layout {
+            super::heli::check(&self.def).map_err(whole)?;
+        }
+        if toml.intro == Intro::Heli && !layout && self.def.heli_path.is_empty() {
+            return Err(whole(
+                "intro = \"heli\" on a new track needs a heli_path: two empties with ava_type \"heli_path\", \
+                 ava_order 0 (the intro locator) and 1 (the outro locator, where the helicopter waits at the end)"
+                    .into(),
+            ));
+        }
+        if !self.def.heli_path.is_empty() && toml.intro != Intro::Heli {
+            self.def.notes.push("the heli_path is flown with intro = \"heli\" (this map starts at its spawn)".into());
         }
         if let Some(b) = self.def.boundary.as_mut() {
             b.raster = super::boundary::raster(b).map_err(whole)?;

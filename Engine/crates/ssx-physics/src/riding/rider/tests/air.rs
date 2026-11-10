@@ -86,10 +86,10 @@ fn compression_from_the_a_hold_filter() {
     assert!((calculated_compression(0.5, 0.0, 1.0) - 0.85).abs() < 1e-6);
     let p = crate::testutil::tuning().player;
     let mut j = JumpState::default();
-    (0..9).for_each(|_| j.update_compression(true, DT_TICKS, &p));
+    (0..9).for_each(|_| j.update_compression(true, 0.0, DT_TICKS, &p));
     assert!((j.compression - (1.0 - (-1.98f32).exp())).abs() < 1e-5, "{}", j.compression);
     let held = j.compression;
-    j.update_compression(false, DT_TICKS, &p);
+    j.update_compression(false, 0.0, DT_TICKS, &p);
     assert!((j.compression - held * (-0.22f32).exp()).abs() < 1e-6);
     let w = world(plane(10.0, 0.0));
     let v = Vec3::Z * (100.0 / KMH_PER_M_PER_TICK);
@@ -294,11 +294,11 @@ fn prewind_builds_on_the_ground_and_decays_without_the_stick() {
     s.state = RideState::Airborne;
     let before = s.prewind;
     s.prewind_reset = false;
-    update_prewind(&mut s, &w, &held, DT_TICKS);
+    update_prewind(&mut s, &w, &held, false, DT_TICKS);
     assert!(s.prewind < before);
     s.state = RideState::Riding;
     s.landing.tumbling = true;
-    update_prewind(&mut s, &w, &held, DT_TICKS);
+    update_prewind(&mut s, &w, &held, false, DT_TICKS);
     assert_eq!(s.prewind, 0.0);
 }
 

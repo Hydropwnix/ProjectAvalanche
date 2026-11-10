@@ -70,7 +70,10 @@ pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: f64) {
     match action {
         "A_AvaSingleplayer" => env.nav_events.push("go_to_menu".into()),
         #[cfg(feature = "net")]
-        "A_AvaMultiplayer" => env.nav_events.push(crate::game::fe::ava::browser::OPEN.into()),
+        "A_AvaMultiplayer" => {
+            fe.ava.browser.enter_fresh();
+            env.nav_events.push(crate::game::fe::ava::browser::OPEN.into());
+        }
         "A_AvaMaps" => env.nav_events.push(crate::game::fe::ava::maps::OPEN.into()),
         "A_AvaOptions" => crate::game::fe::ava::options::open(fe, env),
         "A_AvaCredits" => env.nav_events.push("go_to_ava_credits".into()),

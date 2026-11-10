@@ -41,6 +41,7 @@ pub struct UiScene {
     pub window_hidden: bool,
     pub last_cpu: std::time::Duration,
     glyph_atlas: Option<Arc<GlyphAtlas>>,
+    opaque: ssx_ui::render::cover::OpaqueBitmaps,
 }
 
 impl UiScene {
@@ -57,6 +58,7 @@ impl UiScene {
             window_hidden: false,
             last_cpu: std::time::Duration::ZERO,
             glyph_atlas: None,
+            opaque: Default::default(),
         }
     }
 }
@@ -354,6 +356,17 @@ fn build_frame(
         }
         list
     };
+    // TODO(guess): beside a stage that a screen covers opaquely (the title's backdrop) a wider window shows black, not
+    // the 3-D layer under the screen (the globe), which the game's 16:9 picture never showed under such a screen; black
+    // is what the title's backdrop ends in at both edges (at 1920 x 1080: (0, 0, 0) to (0, 1, 2)); settle: none (the
+    // game drew nothing beside its 16:9 stage).
+    // TODO(guess): a colour or gradient backdrop over the whole stage (the pause's and the results' dimmers) reaches the
+    // window's edges, so the side is dimmed as the stage is; settle: none (the game drew nothing beside its stage).
+    let beside = list.shows_beside_stage();
+    let hidden_beside = beside && list.covers_stage(&scene.lib, &mut scene.opaque);
+    if beside {
+        list.extend_backdrops();
+    }
     let mut overlay = overlay;
     let extra = match overlay.as_deref_mut() {
         Some(o) if !scene.hidden && !o.draws.is_empty() => {
@@ -373,7 +386,7 @@ fn build_frame(
         scene.glyph_atlas = Some(Arc::new(atlas.clone()));
     }
     *frame = flatten(&scene.lib, &list, scene.glyph_atlas.clone(), &extra);
-    frame.clear = scene.clear;
+    frame.clear = scene.clear.or(hidden_beside.then_some([0.0; 3]));
     scene.last_cpu = t0.elapsed();
 }
 
@@ -432,6 +445,7 @@ mod tests {
             ],
             viewport: (64, 64),
             background: None,
+            stage: None,
         };
         let f = flatten(&lib, &list, None, &[]);
         assert_eq!(f.vertices.len(), 16);

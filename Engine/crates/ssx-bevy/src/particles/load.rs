@@ -109,6 +109,14 @@ pub(super) fn build(
             }
             Some(Err(e)) => warn!("particles: track effects unavailable: {e:#}"),
         }
+        if let Some(m) = ride.and_then(|r| r.map.as_ref()).filter(|m| !m.placed.is_empty())
+            && !crate::render::post::env_is("SSX_TRACK_FX", "off")
+        {
+            match world.track.add_map(root, &m.placed, &mut world.arena, &mut defs, &mut names) {
+                Ok(n) => info!("particles: {n} effect slots of the map's {} placed disc objects", m.placed.len()),
+                Err(e) => warn!("particles: the map's placed objects' effects unavailable: {e:#}"),
+            }
+        }
         if let Some(track) = track.filter(|_| ride.as_ref().is_some_and(|r| r.session.tombstones.is_some())) {
             match tombstone::TombstoneSlots::load(root, track, &mut defs, &mut names, &mut world.arena) {
                 Ok((t, line)) => {

@@ -555,3 +555,99 @@ fn a_views_image_bindings_read_and_are_checked() {
     bad(r#""field": "strIcon"}"#, r#""field": "strIcon", "fit": "shrink"}"#, "unknown member `fit`");
     bad(r#""field": "strIcon""#, r#""field": "str Icon""#, "not a name");
 }
+
+const SCROLL: &str = r##"{
+  "format": 1, "view": "ava_scrolltest", "layer": "activityfeed", "stage": [1280, 720], "frame_rate": 30,
+  "imports": [
+    {"name": "List", "url": "components/ListMenu.swf", "symbol": "components.ListMenu"},
+    {"name": "Bar", "url": "components/ScrollBar.swf", "symbol": "components.ScrollBar"},
+    {"name": "Cell", "url": "components/ListMenuCellLarge.swf", "symbol": "components.ListMenuCellLarge"}
+  ],
+  "symbols": [
+    {"name": "AvaScrollTestCell", "export": true, "cell": "mcCell", "children": [{"instance": "mcCell", "symbol": "Cell"}]},
+    {"name": "AvaScrollTest", "export": true, "children": [
+      {"instance": "mcMenu", "symbol": "List", "x": 90, "y": 190},
+      {"instance": "mcBar", "symbol": "Bar", "x": 441, "y": 190},
+      {"instance": "mcRows", "symbol": "List", "x": 500, "y": 190},
+      {"instance": "mcRowsBar", "symbol": "Bar", "x": 900, "y": 190}
+    ]}
+  ],
+  "view_symbol": {"symbol": "AvaScrollTest"},
+  "logic": {
+    "base": "activity_feed_view",
+    "data": ["ava_m", "ava_i", "ava_r", "ava_ri", "ava_w"],
+    "menus": [
+      {"target": "mcMenu", "rows": 5, "cell_width": 350, "cell_height": 60, "spacing": -10, "panel_gaps": [5, -14],
+        "wrap": true, "use_panel": true, "data": "ava_m", "index": "ava_i", "cell": "AvaScrollTestCell"},
+      {"target": "mcRows", "rows": 9, "cell_width": 300, "cell_height": 36, "spacing": 2,
+        "data": "ava_r", "index": "ava_ri", "cell": "AvaScrollTestCell"}
+    ],
+    "on_enter": {"clear_inputs": true},
+    "paging": {"menu": "mcRows", "setup": "A_AvaScrollTestSetup"},
+    "scrollbars": [
+      {"target": "mcBar", "menu": "mcMenu", "length": 251},
+      {"target": "mcRowsBar", "menu": "mcRows", "length": 340, "window": "ava_w"}
+    ],
+    "inputs": [{"key": "BACK", "menu": "mcMenu", "do": "back", "sound": "button_press_back"}]
+  }
+}"##;
+
+#[test]
+fn scroll_bars_read_and_are_checked() {
+    let l = Layout::parse("s.json", SCROLL).unwrap();
+    let g = &l.logic;
+    assert_eq!((g.base, g.base.class(), g.base.is_fe_view()), (Base::ActivityFeedView, "ssx.FEActivityFeedView", true));
+    assert!(matches!(g.menus[0].kind, MenuKind::List { use_panel: true, wrap: true, .. }));
+    assert!(matches!(g.menus[1].kind, MenuKind::List { use_panel: false, wrap: false, .. }));
+    let bars: Vec<_> =
+        g.scrollbars.iter().map(|b| (b.target.as_str(), b.menu.as_str(), b.length, b.window.as_deref())).collect();
+    assert_eq!(bars, [("mcBar", "mcMenu", 251.0, None), ("mcRowsBar", "mcRows", 340.0, Some("ava_w"))]);
+    let back = InputDo::Menu {
+        target: "mcMenu".into(),
+        op: MenuOp::Back,
+        blocked_sound: None,
+        sound: Some("button_press_back"),
+    };
+    assert_eq!(g.inputs[0].what, back);
+    let bad = |from: &str, to: &str, want: &str| {
+        assert!(SCROLL.contains(from), "{from}");
+        let e = match Layout::parse("s.json", &SCROLL.replacen(from, to, 1)) {
+            Ok(_) => panic!("{to}: expected an error"),
+            Err(e) => e,
+        };
+        assert!(e.message.contains(want), "{to}: {e}");
+        assert!(e.pos.line > 1, "{e}");
+    };
+    bad(r#""target": "mcBar""#, r#""target": "mcRows""#, "components.ScrollBar");
+    bad(r#""menu": "mcMenu", "length""#, r#""menu": "mcNone", "length""#, "not one of the logic's list menus");
+    bad(r#""length": 251"#, r#""length": 0"#, "outside");
+    bad(r#""window": "ava_w""#, r#""window": "ava_x""#, "not in the logic's `data`");
+    bad(r#""target": "mcRowsBar""#, r#""target": "mcBar""#, "given twice");
+    bad(r#""paging": {"menu": "mcRows""#, r#""paging": {"menu": "mcMenu""#, "is not the paging's");
+    bad(r#""length": 251}"#, r#""length": 251, "rows": 5}"#, "rows");
+    bad(r#""use_panel": true"#, r#""use_panel": 1"#, "use_panel");
+    bad(r#""do": "back", "sound""#, r#""do": "up", "blocked_sound": "menu_back", "sound""#, "not with `blocked_sound`");
+    bad(r#""base": "activity_feed_view""#, r#""base": "view""#, "`ClearInputs` is `ssx.FEView`'s");
+}
+
+#[test]
+fn the_4_3_section_reads_and_is_checked() {
+    let sd = |s: &str| with(r#""consume_unmapped": true,"#, &format!(r#""consume_unmapped": true, "sd": {s},"#));
+    let l = Layout::parse("t.json", &sd(r#"{"left": ["mcPanel"], "right": ["txtEntry"], "scale": 0.8}"#)).unwrap();
+    let d = l.logic.sd.unwrap();
+    assert_eq!(d.moves, vec![("mcPanel".to_string(), true), ("txtEntry".to_string(), false)]);
+    assert_eq!((d.scale, d.centre), (Some(0.8), (640.0, 360.0)));
+    assert!(Layout::parse("t.json", GOOD).unwrap().logic.sd.is_none());
+    let bad = |s: &str, want: &str| {
+        let e = match Layout::parse("t.json", &sd(s)) {
+            Ok(_) => panic!("{s}: expected an error"),
+            Err(e) => e,
+        };
+        assert!(e.message.contains(want), "{s}: {e}");
+    };
+    bad(r#"{"left": ["mcPanel"], "right": ["mcPanel"]}"#, "given twice");
+    bad(r#"{"left": ["mcNothing"]}"#, "mcNothing");
+    bad(r#"{"scale": 0.3}"#, "outside");
+    bad(r#"{"scale": 1.5}"#, "outside");
+    bad(r#"{"middle": ["mcPanel"]}"#, "middle");
+}

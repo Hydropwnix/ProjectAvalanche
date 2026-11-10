@@ -23,33 +23,83 @@ pub(super) fn common_fields(cx: &mut Ctx, o: &Value, u: &UiItem) {
 }
 
 pub(super) fn stat_fields(cx: &mut Ctx, loc: &mut Localization, o: &Value, u: &UiItem) {
-    let mut cols: [Vec<Value>; 5] = Default::default();
-    for &(t, v) in &u.stats {
-        if t < 0 {
-            continue;
+    for (k, v) in stat_columns(loc, u) {
+        let v = v.to_value(cx);
+        set(cx, o, k, v);
+    }
+}
+
+fn entry_fields(cx: &mut Ctx, o: &Value, u: &UiItem, i: usize, events: [&str; 3]) {
+    if u.has(flag::EMPTY) {
+        set(cx, o, "state", Value::Number(2.0));
+        set(cx, o, "strItem", Value::str(&u.name));
+    } else {
+        set(cx, o, "state", Value::Number(0.0));
+    }
+    let i = i as f64;
+    for (k, v) in [
+        ("itemId", Value::Number(i)),
+        ("bFocusable", Value::Bool(true)),
+        ("bEnabled", Value::Bool(true)),
+        ("eventAdvance", Value::str(events[0])),
+        ("eventAdvanceParam", Value::Number(i)),
+        ("eventHighlight", Value::str(events[1])),
+        ("eventHighlightParam", Value::Number(i)),
+        ("eventBack", Value::str(events[2])),
+    ] {
+        set(cx, o, k, v);
+    }
+}
+
+impl Equipment {
+    fn items_entries(&mut self) {
+        let live = self.inv.as_ref().map_or(&[][..], |i| &i.owned_list[..]);
+        if self.category == 0 {
+            self.list = live.to_vec();
+            let at = self.list.iter().position(|u| u.key == self.last_rider).unwrap_or(0);
+            self.rider_index = i32::try_from(at).unwrap_or(0);
+            self.rider_count = i32::try_from(self.list.len()).unwrap_or(i32::MAX);
+        } else {
+            self.list = live.iter().take(7).cloned().collect();
         }
-        cols[0].push(Value::Number(t as f64));
-        cols[1].push(Value::Number(v as f64));
-        cols[2].push(Value::Number(v as f64));
-        cols[3].push(Value::str(&loc.text(&format!("TXT_EQUIPSCREEN_STAT{t}_LONG"))));
-        cols[4].push(Value::str(&loc.text(&format!("TXT_EQUIPSCREEN_STAT{t}_DESCRIPTION"))));
     }
-    for (k, c) in ["itemStatTypes", "itemStatValues", "itemStatPercs", "itemStatNames", "itemStatDescription"]
-        .into_iter()
-        .zip(cols)
-    {
-        let a = Value::Object(cx.new_array(c));
-        set(cx, o, k, a);
+
+    fn store_entries(&mut self) {
+        self.store = self.inv.as_ref().map_or_else(Vec::new, |i| i.store_list.iter().take(4).cloned().collect());
     }
+
+    fn inventory_entries(&mut self) {
+        let live = self.inv.as_ref().map_or(&[][..], |i| &i.inventory_list[..]);
+        let mut window = Vec::new();
+        for i in 0..self.inv_max.max(0) {
+            let at = usize::try_from(self.inv_first.wrapping_add(i)).ok();
+            let Some(u) = at.and_then(|a| live.get(a)) else { break };
+            window.push(u.clone());
+        }
+        self.inventory = window;
+    }
+
+    pub fn rebuild(&mut self, dp: &str) {
+        let inventory = self.state == state::INVENTORY;
+        match dp {
+            "dp_playable_characters" | "dp_equipment_items" if !inventory => self.items_entries(),
+            "dp_store_items" if !inventory => self.store_entries(),
+            "dp_inventory_items" if inventory => self.inventory_entries(),
+            _ => {}
+        }
+    }
+}
+
+pub(super) fn publish_list(fe: &mut FrontEnd, dp: &str) {
+    fe.equipment.rebuild(dp);
+    fe.publish.push(dp.into());
 }
 
 pub(super) fn items_array(fe: &FrontEnd, cx: &mut Ctx, loc: &mut Localization) -> Value {
     let riders = fe.equipment.category == 0;
+    let highlight = if riders { "A_EquipmentRiderHighlighted" } else { "A_EquipmentItemHighlighted" };
     let mut out = Vec::new();
     for (i, u) in fe.equipment.list.iter().enumerate() {
-        if !riders && i == 7 {
-            break;
-        }
         let o = Value::Object(cx.new_object());
         common_fields(cx, &o, u);
         if riders {
@@ -57,27 +107,7 @@ pub(super) fn items_array(fe: &FrontEnd, cx: &mut Ctx, loc: &mut Localization) -
             set(cx, &o, "level", Value::Number(u.level as f64));
             set(cx, &o, "levelProgress", Value::Number(u.level_progress as f64));
         }
-        if u.has(flag::EMPTY) {
-            set(cx, &o, "state", Value::Number(2.0));
-            set(cx, &o, "strItem", Value::str(&u.name));
-        } else {
-            set(cx, &o, "state", Value::Number(0.0));
-        }
-        for (k, v) in [
-            ("itemId", Value::Number(i as f64)),
-            ("bFocusable", Value::Bool(true)),
-            ("bEnabled", Value::Bool(true)),
-            ("eventAdvance", Value::str("A_EquipmentItemSelected")),
-            ("eventAdvanceParam", Value::Number(i as f64)),
-            (
-                "eventHighlight",
-                Value::str(if riders { "A_EquipmentRiderHighlighted" } else { "A_EquipmentItemHighlighted" }),
-            ),
-            ("eventHighlightParam", Value::Number(i as f64)),
-            ("eventBack", Value::str("A_EquipmentBackCategory")),
-        ] {
-            set(cx, &o, k, v);
-        }
+        entry_fields(cx, &o, u, i, ["A_EquipmentItemSelected", highlight, "A_EquipmentBackCategory"]);
         out.push(o);
     }
     if !riders {
@@ -103,32 +133,24 @@ pub(super) fn items_array(fe: &FrontEnd, cx: &mut Ctx, loc: &mut Localization) -
     Value::Object(cx.new_array(out))
 }
 
-pub(super) fn store_array(cx: &mut Ctx, loc: &mut Localization, list: &[UiItem], store: bool) -> Value {
+pub(super) fn store_array(cx: &mut Ctx, loc: &mut Localization, list: &[UiItem]) -> Value {
     let mut out = Vec::new();
     for (i, u) in list.iter().enumerate() {
-        if store && i > 3 {
-            break;
-        }
         let o = Value::Object(cx.new_object());
         common_fields(cx, &o, u);
         let price = loc.currency(u.cost, true);
-        let (adv, hi) = if store {
-            ("A_EquipmentStoreItemSelected", "A_EquipmentStoreItemHighlighted")
-        } else {
-            ("A_EquipmentInventoryItemSelected", "A_EquipmentInventoryItemHighlighted")
-        };
+        set(cx, &o, "price", Value::str(&price));
+        set(cx, &o, "state", Value::Number(0.0));
+        let n = i as f64;
         for (k, v) in [
-            ("price", Value::str(&price)),
-            ("state", Value::Number(if u.has(flag::EMPTY) { 2.0 } else { 0.0 })),
-            ("strItem", Value::str(&u.name)),
-            ("itemId", Value::Number(i as f64)),
+            ("itemId", Value::Number(n)),
             ("bFocusable", Value::Bool(true)),
             ("bEnabled", Value::Bool(true)),
-            ("eventAdvance", Value::str(adv)),
-            ("eventAdvanceParam", Value::Number(i as f64)),
-            ("eventHighlight", Value::str(hi)),
-            ("eventHighlightParam", Value::Number(i as f64)),
-            ("eventBack", Value::str(if store { "A_EquipmentBackCategory" } else { "A_EquipmentInventoryItemBack" })),
+            ("eventAdvance", Value::str("A_EquipmentStoreItemSelected")),
+            ("eventAdvanceParam", Value::Number(n)),
+            ("eventHighlight", Value::str("A_EquipmentStoreItemHighlighted")),
+            ("eventHighlightParam", Value::Number(n)),
+            ("eventBack", Value::str("A_EquipmentBackCategory")),
         ] {
             set(cx, &o, k, v);
         }
@@ -137,43 +159,16 @@ pub(super) fn store_array(cx: &mut Ctx, loc: &mut Localization, list: &[UiItem],
     Value::Object(cx.new_array(out))
 }
 
-pub(super) fn gear_info(cx: &mut Ctx, loc: &mut Localization, u: &UiItem) -> Value {
-    let o = Value::Object(cx.new_object());
-    let price = loc.currency(u.cost, true);
-    let level = loc.format("TXT_EQUIP_LEVEL", &[&u.level.to_string()]);
-    let help = loc.text(&format!("TXT_EQUIPSCREEN_GEAR{}_HELP", u.slot));
-    let tag = loc.format("TXT_PROFILE_GAMERTAG", &[&u.gamertag]);
-    for (k, v) in [
-        ("state", Value::Number(if u.has(flag::EMPTY) { 2.0 } else { 0.0 })),
-        ("strItem", Value::str(&u.name)),
-        ("description", Value::str(&u.description)),
-        ("assetUrl", Value::str(&u.asset)),
-        ("secondaryAssetUrl", Value::str(&u.secondary)),
-        ("isAvailable", Value::Bool(u.has(flag::AVAILABLE))),
-        ("isPurchaseable", Value::Bool(u.has(flag::PURCHASEABLE))),
-        ("isLevelPurchaseable", Value::Bool(u.has(flag::LEVEL_PURCHASEABLE))),
-        ("isSellable", Value::Bool(u.has(flag::SELLABLE))),
-        ("price", Value::str(&price)),
-        ("level", Value::Number(u.level as f64)),
-        ("levelProgress", Value::Number(u.level_progress as f64)),
-        ("levelString", Value::str(&level)),
-        ("quality", Value::Number(u.quality as f64)),
-        ("qualityRating", Value::Number(u.rarity as f64)),
-        ("showStats", Value::Bool(u.has(flag::SHOW_STATS))),
-        ("showLevel", Value::Bool(u.has(flag::SHOW_LEVEL))),
-        ("isRecommended", Value::Bool(u.has(flag::RECOMMENDED))),
-        ("recommendText", Value::str(&u.recommend)),
-        ("gearItemType", Value::Number(u.slot as f64)),
-        ("strHelp", Value::str(&help)),
-        ("gamerTagCallout", Value::str(&tag)),
-        ("isNew", Value::Bool(u.has(flag::NEW))),
-        ("isEquipped", Value::Bool(u.has(flag::EQUIPPED))),
-        ("isMystery", Value::Bool(u.has(flag::MYSTERY))),
-    ] {
-        set(cx, &o, k, v);
+pub(super) fn inventory_array(cx: &mut Ctx, list: &[UiItem]) -> Value {
+    let mut out = Vec::new();
+    for (i, u) in list.iter().enumerate() {
+        let o = Value::Object(cx.new_object());
+        common_fields(cx, &o, u);
+        let events = ["A_EquipmentInventoryItemSelected", "A_EquipmentInventoryItemHighlighted"];
+        entry_fields(cx, &o, u, i, [events[0], events[1], "A_EquipmentInventoryItemBack"]);
+        out.push(o);
     }
-    stat_fields(cx, loc, &o, u);
-    o
+    Value::Object(cx.new_array(out))
 }
 
 pub(super) fn offer_clock(ms: i64) -> String {
@@ -182,7 +177,14 @@ pub(super) fn offer_clock(ms: i64) -> String {
     if h != 0 { format!("{h:02}:{m:02}:{s:02}") } else { format!("{m:02}:{s:02}") }
 }
 
-pub fn build(fe: &FrontEnd, cx: &mut Ctx, values: &UiValues, loc: &mut Localization, dp: &str) -> Option<Value> {
+pub fn build(
+    fe: &mut FrontEnd,
+    cx: &mut Ctx,
+    _values: &mut UiValues,
+    loc: &mut Localization,
+    dp: &str,
+) -> Option<Value> {
+    fe.equipment.rebuild(dp);
     let eq = &fe.equipment;
     match dp {
         "dp_screen_state" => Some(Value::Number(f64::from(eq.state))),
@@ -192,13 +194,13 @@ pub fn build(fe: &FrontEnd, cx: &mut Ctx, values: &UiValues, loc: &mut Localizat
         | "dp_store_items_index"
         | "dp_inventory_items_index" => Some(Value::Number(match eq.state {
             state::RIDER => f64::from(eq.rider_index),
-            state::INVENTORY => f64::from(eq.inv_focus),
+            state::INVENTORY => f64::from(eq.inv_index),
             _ => 0.0,
         })),
-        "dp_equipment_categories_index" => Some(Value::Number(f64::from(eq.category - 1))),
+        "dp_equipment_categories_index" => Some(Value::Number(f64::from(eq.category.wrapping_sub(1)))),
         "dp_playable_characters" | "dp_equipment_items" => Some(items_array(fe, cx, loc)),
-        "dp_store_items" => Some(store_array(cx, loc, &eq.store, true)),
-        "dp_inventory_items" => Some(store_array(cx, loc, &eq.inventory, false)),
+        "dp_store_items" => Some(store_array(cx, loc, &eq.store)),
+        "dp_inventory_items" => Some(inventory_array(cx, &eq.inventory)),
         "dp_selected_rider" => {
             let o = Value::Object(cx.new_object());
             if let Some(u) = eq.inv.as_ref().and_then(|i| i.selected_gear.first()) {
@@ -211,39 +213,7 @@ pub fn build(fe: &FrontEnd, cx: &mut Ctx, values: &UiValues, loc: &mut Localizat
             set(cx, &o, "isAvailable", Value::Bool(true));
             Some(o)
         }
-        "dp_equipment_categories" => {
-            let mut out = Vec::new();
-            let Some(inv) = eq.inv.as_ref() else { return Some(Value::Object(cx.new_array(out))) };
-            let mut gear = inv.selected_gear.iter().skip(1);
-            for (k, &n) in inv.category_slots.iter().enumerate() {
-                if n <= 0 {
-                    continue;
-                }
-                let cat = k as i32 + 1;
-                let o = Value::Object(cx.new_object());
-                set(cx, &o, "isAvailable", Value::Bool(cat != 5 || eq.online != 0));
-                set(cx, &o, "numSlots", Value::Number(n as f64));
-                if cat == eq.category {
-                    set(cx, &o, "selectedSlot", Value::Number(f64::from(eq.slot)));
-                }
-                let name = loc.text(&format!("TXT_EQUIP_CAT{cat}_NAME"));
-                let desc = loc.text(&format!("TXT_EQUIP_CAT{cat}_DESC"));
-                set(cx, &o, "strItem", Value::str(&name));
-                set(cx, &o, "description", Value::str(&desc));
-                let mut list = Vec::new();
-                for _ in 0..n {
-                    let Some(u) = gear.next() else { break };
-                    let g = Value::Object(cx.new_object());
-                    common_fields(cx, &g, u);
-                    stat_fields(cx, loc, &g, u);
-                    list.push(g);
-                }
-                let a = Value::Object(cx.new_array(list));
-                set(cx, &o, "gearList", a);
-                out.push(o);
-            }
-            Some(Value::Object(cx.new_array(out)))
-        }
+        "dp_equipment_categories" => Some(categories(fe, cx, loc)),
         "dp_equipment_score" => {
             let o = Value::Object(cx.new_object());
             let label = loc.text("TXT_EQUIP_SCORE_LABEL");
@@ -267,32 +237,63 @@ pub fn build(fe: &FrontEnd, cx: &mut Ctx, values: &UiValues, loc: &mut Localizat
             }))
         }
         "dp_equipment_purchase_result" => Some(Value::Bool(eq.purchase_result)),
-        "dp_selected_gear_info" => Some(match eq.gear_info.as_ref() {
-            Some(u) => gear_info(cx, loc, u),
-            None => Value::Object(cx.new_object()),
-        }),
-        "dp_selected_rider_info" => {
-            let o = Value::Object(cx.new_object());
-            if let Some(inv) = eq.inv.as_ref() {
-                let b = &inv.bio;
-                set(cx, &o, "gearAsset", Value::str(&b.gear_asset));
-                set(cx, &o, "gearName", Value::str(&b.gear_name));
-                let title = loc.text("TXT_SPECIAL_GEAR_TITLE");
-                set(cx, &o, "gearTitle", Value::str(&title));
-                let perks = loc.text("TXT_CHAR_PERKS_TITLE");
-                set(cx, &o, "perkTitle", Value::str(&perks));
-                let names: Vec<Value> = b.perks.iter().filter(|p| p.1 > 0).map(|p| Value::str(&p.0)).collect();
-                let vals: Vec<Value> = b.perks.iter().filter(|p| p.1 > 0).map(|p| Value::Number(p.1 as f64)).collect();
-                let n = Value::Object(cx.new_array(names));
-                let v = Value::Object(cx.new_array(vals));
-                set(cx, &o, "perkNames", n);
-                set(cx, &o, "perkValues", v);
-            }
-            Some(o)
-        }
-        _ => {
-            let _ = values;
-            None
-        }
+        "dp_selected_gear_info" => Some(eq.gear_info.to_value(cx)),
+        "dp_selected_rider_info" => Some(rider_info(fe, cx, loc)),
+        _ => None,
     }
+}
+
+fn categories(fe: &FrontEnd, cx: &mut Ctx, loc: &mut Localization) -> Value {
+    let eq = &fe.equipment;
+    let mut out = Vec::new();
+    let Some(inv) = eq.inv.as_ref() else { return Value::Object(cx.new_array(out)) };
+    let mut gear = inv.selected_gear.iter().skip(1);
+    for (k, &n) in inv.category_slots.iter().enumerate() {
+        if n <= 0 {
+            continue;
+        }
+        let cat = k as i32 + 1;
+        let o = Value::Object(cx.new_object());
+        set(cx, &o, "isAvailable", Value::Bool(cat != 5 || eq.online != 0));
+        set(cx, &o, "numSlots", Value::Number(n as f64));
+        if cat == eq.category {
+            set(cx, &o, "selectedSlot", Value::Number(f64::from(eq.slot)));
+        }
+        let name = loc.text(&format!("TXT_EQUIP_CAT{cat}_NAME"));
+        let desc = loc.text(&format!("TXT_EQUIP_CAT{cat}_DESC"));
+        set(cx, &o, "strItem", Value::str(&name));
+        set(cx, &o, "description", Value::str(&desc));
+        let mut list = Vec::new();
+        for _ in 0..n {
+            let Some(u) = gear.next() else { break };
+            let g = Value::Object(cx.new_object());
+            common_fields(cx, &g, u);
+            stat_fields(cx, loc, &g, u);
+            list.push(g);
+        }
+        let a = Value::Object(cx.new_array(list));
+        set(cx, &o, "gearList", a);
+        out.push(o);
+    }
+    Value::Object(cx.new_array(out))
+}
+
+fn rider_info(fe: &FrontEnd, cx: &mut Ctx, loc: &mut Localization) -> Value {
+    let o = Value::Object(cx.new_object());
+    if let Some(inv) = fe.equipment.inv.as_ref() {
+        let b = &inv.bio;
+        set(cx, &o, "gearAsset", Value::str(&b.gear_asset));
+        set(cx, &o, "gearName", Value::str(&b.gear_name));
+        let title = loc.text("TXT_SPECIAL_GEAR_TITLE");
+        set(cx, &o, "gearTitle", Value::str(&title));
+        let perks = loc.text("TXT_CHAR_PERKS_TITLE");
+        set(cx, &o, "perkTitle", Value::str(&perks));
+        let names: Vec<Value> = b.perks.iter().filter(|p| p.1 > 0).map(|p| Value::str(&p.0)).collect();
+        let vals: Vec<Value> = b.perks.iter().filter(|p| p.1 > 0).map(|p| Value::Number(p.1 as f64)).collect();
+        let n = Value::Object(cx.new_array(names));
+        let v = Value::Object(cx.new_array(vals));
+        set(cx, &o, "perkNames", n);
+        set(cx, &o, "perkValues", v);
+    }
+    o
 }

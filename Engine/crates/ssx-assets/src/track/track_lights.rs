@@ -139,6 +139,40 @@ pub fn load_track_lights(big_root: &Path, track: &str) -> Result<TrackLights> {
     })
 }
 
+pub fn map_lights(big_root: &Path, placed: &[(u32, Placement)]) -> Result<TrackLights> {
+    crate::vault_db::with_attribdb(big_root, |db| {
+        let mut out = TrackLights::default();
+        let mut by_key: HashMap<u32, Option<usize>> = HashMap::new();
+        for &(key, placement) in placed {
+            let idx = match by_key.get(&key) {
+                Some(i) => *i,
+                None => {
+                    let o = object_lights(db, crate::track_objects::CLASS_GAMEOBJECT, key)
+                        .with_context(|| format!("game object {key:#010x}"))?;
+                    let i = o.lods.iter().any(|l| !l.is_empty()).then(|| {
+                        out.objects.push(o);
+                        out.objects.len() - 1
+                    });
+                    by_key.insert(key, i);
+                    i
+                }
+            };
+            if let Some(idx) = idx {
+                out.instances.push((idx, vec![placement]));
+            }
+        }
+        Ok(out)
+    })
+}
+
+impl TrackLights {
+    pub fn extend(&mut self, other: TrackLights) {
+        let offset = self.objects.len();
+        self.objects.extend(other.objects);
+        self.instances.extend(other.instances.into_iter().map(|(i, p)| (i + offset, p)));
+    }
+}
+
 pub fn all_lights(db: &Db<'_>) -> Result<BTreeMap<&'static str, Vec<SceneLight>>> {
     let mut out = BTreeMap::new();
     for (class, name) in

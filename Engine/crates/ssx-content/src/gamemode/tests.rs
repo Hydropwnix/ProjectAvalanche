@@ -116,3 +116,13 @@ fn a_maps_records_per_mode() {
     assert_eq!(record::add_run(&mut full, &m, "one_more", t, run(1, false, 0), None), Err(record::RecordError::Full));
     assert_eq!(full, before, "nothing written");
 }
+
+#[test]
+fn survive_to_death_takes_only_a_helicopter_start() {
+    use crate::map::Intro;
+    let death = parse_toml(b"[gamemode]\ntitle = \"D\"\nevent = \"survive_to_death\"\nany_map = true\n").unwrap();
+    assert_eq!(death.takes_start(Intro::Spawn), Err(PairError::NoHelicopter));
+    assert_eq!(death.takes_start(Intro::Heli), Ok(()));
+    let race = parse_toml(b"[gamemode]\ntitle = \"R\"\nevent = \"race_clock\"\nany_map = true\n").unwrap();
+    assert_eq!((race.takes_start(Intro::Spawn), race.takes_start(Intro::Heli)), (Ok(()), Ok(())));
+}

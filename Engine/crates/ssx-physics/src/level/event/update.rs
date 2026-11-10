@@ -135,13 +135,7 @@ impl EventManager {
         match self.state {
             EventState::Finished => {
                 self.allow_outro = true;
-                // TODO(guess): a port choice — a map's survive-to-death run loops at its finish with no outro (the disc's 27 `exp_*` events play `nis_binding_outro_survive_til_die` at `nis_outro_locator`; a map has no locator and no helicopter until M8d) and restarts at its spawn under the loop's fade; settle: M8d's helicopter along the map's `heli_path`.
-                if self.setup.loop_without_outro {
-                    crate::guess_hit!();
-                    self.allow_outro = false;
-                    self.state = EventState::LoopOutro;
-                    self.count_loop(out);
-                } else if i.nis_outro_active {
+                if i.nis_outro_active {
                     self.allow_outro = false;
                     self.state = EventState::LoopOutro;
                 }

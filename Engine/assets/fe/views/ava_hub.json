@@ -25,6 +25,7 @@
   "view_symbol": {"symbol": "AvaHub", "x": 12, "y": 48},
   "logic": {
     "base": "fe_view",
+    "sd": {"left": ["mcPanel", "mcMenu", "mcButtonCalloutBar"]},
     "data": ["ava_hub_menu", "ava_hub_menu_index"],
     "menus": [
       {"target": "mcMenu", "rows": 6, "cell_width": 303, "cell_height": 80, "spacing": -10, "panel_gaps": [5, -14],

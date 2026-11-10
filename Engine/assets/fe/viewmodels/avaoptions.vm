@@ -1,5 +1,5 @@
 {
-	"view": "activityfeedsettingsmenu",
+	"view": "ava_options",
 	"dataproviders":
 	[
 		"avaoptions"

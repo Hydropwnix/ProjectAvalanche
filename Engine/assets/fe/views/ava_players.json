@@ -7,6 +7,7 @@
   "imports": [
     {"name": "Panel", "url": "components/Panel.swf", "symbol": "components.Panel"},
     {"name": "ListMenu", "url": "components/ListMenu.swf", "symbol": "components.ListMenu"},
+    {"name": "ScrollBar", "url": "components/ScrollBar.swf", "symbol": "components.ScrollBar"},
     {"name": "Highlight", "url": "components/Highlight.swf", "symbol": "components.Highlight"},
     {"name": "ImageLoader", "url": "components/ImageLoader.swf", "symbol": "components.ImageLoader"},
     {"name": "Callouts", "url": "components/ButtonCalloutBar.swf", "symbol": "components.ButtonCalloutBar"}
@@ -64,6 +65,7 @@
       {"instance": "txtColChat", "x": 998, "y": 274, "text": {"font": "DIN Mittelschrift Std", "size": 15,
         "color": "#6eb7c6", "align": "right", "width": 84, "height": 22}},
       {"instance": "mcRows", "symbol": "ListMenu", "x": 190, "y": 298},
+      {"instance": "mcScrollBar", "symbol": "ScrollBar", "x": 1091, "y": 298},
       {"instance": "txtNote", "x": 190, "y": 634, "text": {"font": "DIN Mittelschrift Std", "size": 15,
         "color": "#c3fdf9", "width": 900, "height": 22}},
       {"instance": "txtPingHelp", "x": 190, "y": 654, "text": {"font": "DIN Mittelschrift Std", "size": 12,
@@ -75,7 +77,8 @@
   "logic": {
     "input_priority": "popup",
     "consume_unmapped": true,
-    "data": ["ava_players", "ava_players_rows", "ava_players_rows_index"],
+    "sd": {"scale": 0.98},
+    "data": ["ava_players", "ava_players_rows", "ava_players_rows_index", "ava_players_window"],
     "texts": [
       {"target": "txtTitle", "data": "ava_players", "field": "title"},
       {"target": "txtServer", "data": "ava_players", "field": "server", "fit": "shrink"},
@@ -95,6 +98,7 @@
         "data": "ava_players_rows", "index": "ava_players_rows_index", "cell": "AvaPlayersRow"}
     ],
     "paging": {"menu": "mcRows", "setup": "A_AvaPlayersSetup"},
+    "scrollbars": [{"target": "mcScrollBar", "menu": "mcRows", "length": 322, "window": "ava_players_window"}],
     "panels": [
       {"target": "mcTablePanel", "width": 916, "height": 360, "dimmer": 60}
     ],

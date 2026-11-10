@@ -193,6 +193,12 @@ pub fn stick(fe: &mut FrontEnd, x: f32, y: f32) {
 }
 
 impl FrontEnd {
+    pub fn set_widescreen(&mut self, widescreen: bool) {
+        if let Some(s) = self.globe_scene.as_mut() {
+            s.set_widescreen(widescreen);
+        }
+    }
+
     pub fn globe_frame(&self, aspect: f32) -> Option<super::scene::GlobeFrame> {
         self.globe_scene.as_ref().map(|s| super::scene::GlobeFrame { fade: self.screen_fade(), ..s.frame(aspect) })
     }

@@ -15,6 +15,16 @@
 					{ "viewname": "back", "actionname": "A_GamePreviousScreen" },
 					{ "viewname": "resetToDefault", "actionname": "A_SettingsResetToDefault" }
 				] },
+			{ "viewname": "ava_opt_window", "type": "object", "dpname": "dp_ava_opt_window", "actions":
+				[
+					{ "viewname": "prev", "actionname": "A_TogglePreviousItem" },
+					{ "viewname": "next", "actionname": "A_ToggleNextItem" }
+				] },
+			{ "viewname": "ava_opt_render_resolution", "type": "object", "dpname": "dp_ava_opt_render_resolution", "actions":
+				[
+					{ "viewname": "prev", "actionname": "A_TogglePreviousItem" },
+					{ "viewname": "next", "actionname": "A_ToggleNextItem" }
+				] },
 			{ "viewname": "ava_opt_subdivide", "type": "object", "dpname": "dp_ava_opt_subdivide", "actions":
 				[
 					{ "viewname": "prev", "actionname": "A_TogglePreviousItem" },

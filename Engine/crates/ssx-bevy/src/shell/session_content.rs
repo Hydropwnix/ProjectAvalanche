@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use bevy::prelude::*;
 use ssx_assets::content::GameContent;
 use ssx_assets::content::server::SessionMount;
+use ssx_assets::folder::State;
 use ssx_content::data::SimContentId;
 use ssx_core::text::shown;
 use ssx_net_join::browse::{ContentCheck, ResourceJoin};
@@ -72,7 +73,7 @@ impl Drop for MountSlot {
 pub fn resource_join(big_root: &Path, app_dir: &Path, settings: ResourceSettings) -> (ResourceJoin, MountSlot) {
     let content = GameContent::of(big_root);
     let slot: Arc<Mutex<Slot>> = Arc::default();
-    let data = big_root.parent().unwrap_or(big_root).to_path_buf();
+    let data = data_folder(big_root).to_path_buf();
     let check: ContentCheck = {
         let (content, slot) = (content.clone(), slot.clone());
         Box::new(move |f: &Fetched| check(&content, &data, &slot, f))
@@ -88,6 +89,42 @@ pub fn resource_join(big_root: &Path, app_dir: &Path, settings: ResourceSettings
         blocklists: ssx_content::blocklist::Follow::Player(app_dir.to_path_buf()),
     };
     (ResourceJoin { options, progress: Arc::new(Progress::default()), check, release }, MountSlot { content, slot })
+}
+
+fn data_folder(big_root: &Path) -> &Path {
+    big_root.parent().unwrap_or(big_root)
+}
+
+pub fn join_data_check(big_root: &Path) -> Result<(), ssx_assets::folder::Incomplete> {
+    let data = data_folder(big_root);
+    let state = ssx_assets::folder::state(data);
+    if state.is_complete() {
+        return Ok(());
+    }
+    Err(ssx_assets::folder::Incomplete { data: data.to_path_buf(), state })
+}
+
+pub fn incomplete_text(state: &State, text: &mut dyn FnMut(&str, &[&str]) -> String) -> String {
+    const REPAIR: &str = "TXT_AVA_DATA_TODO_REPAIR";
+    const SETUP: &str = "TXT_AVA_DATA_TODO_SETUP";
+    let (what, todo) = match state {
+        State::Complete { .. } | State::Missing => ("TXT_AVA_DATA_MISSING", SETUP),
+        State::Unfinished => ("TXT_AVA_DATA_UNFINISHED", SETUP),
+        State::NoMovies => ("TXT_AVA_DATA_NO_MOVIES", REPAIR),
+        State::NoIndex => ("TXT_AVA_DATA_NO_INDEX", REPAIR),
+        State::IndexDamaged(_) => ("TXT_AVA_DATA_INDEX_DAMAGED", REPAIR),
+        State::MarkerDamaged(_) => ("TXT_AVA_DATA_MARKER_DAMAGED", REPAIR),
+    };
+    let (what, todo) = (text(what, &[]), text(todo, &[]));
+    text("TXT_AVA_JOIN_DATA_INCOMPLETE", &[&what, &todo])
+}
+
+fn note_data_folder(root: Res<SessionRoot>) {
+    let data = data_folder(&root.0);
+    match ssx_assets::folder::state(data) {
+        state if state.is_complete() => info!("game data: {} is {state}", data.display()),
+        state => warn!("game data: {}", ssx_assets::folder::Incomplete { data: data.to_path_buf(), state }),
+    }
 }
 
 fn take_down(content: &GameContent, slot: &Mutex<Slot>) {
@@ -252,6 +289,7 @@ impl Plugin for SessionContentPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<super::session_follow::Follow>();
         app.add_systems(Last, end_with_session).add_systems(Update, follow_mount);
+        app.add_systems(Update, note_data_folder.run_if(resource_added::<SessionRoot>));
         app.add_systems(Update, super::session_follow::follow_changes.before(follow_mount));
     }
 }
@@ -262,6 +300,23 @@ mod tests {
     use ssx_content::delivery::{ClientManifest, File, FileRole, FileStore, Resource};
     use ssx_content::policy::ClientMods;
     use ssx_content::{ContentHash, ContentId, Layer};
+
+    #[test]
+    fn a_refused_join_says_what_is_wrong_and_what_repairs_it() {
+        let mut keys = |key: &str, args: &[&str]| format!("{key}({})", args.join("|"));
+        let cases = [
+            (State::NoIndex, "TXT_AVA_DATA_NO_INDEX", "TXT_AVA_DATA_TODO_REPAIR"),
+            (State::NoMovies, "TXT_AVA_DATA_NO_MOVIES", "TXT_AVA_DATA_TODO_REPAIR"),
+            (State::IndexDamaged("line 3".into()), "TXT_AVA_DATA_INDEX_DAMAGED", "TXT_AVA_DATA_TODO_REPAIR"),
+            (State::MarkerDamaged("not JSON".into()), "TXT_AVA_DATA_MARKER_DAMAGED", "TXT_AVA_DATA_TODO_REPAIR"),
+            (State::Unfinished, "TXT_AVA_DATA_UNFINISHED", "TXT_AVA_DATA_TODO_SETUP"),
+            (State::Missing, "TXT_AVA_DATA_MISSING", "TXT_AVA_DATA_TODO_SETUP"),
+        ];
+        for (state, what, todo) in cases {
+            let text = incomplete_text(&state, &mut keys);
+            assert_eq!(text, format!("TXT_AVA_JOIN_DATA_INCOMPLETE({what}()|{todo}())"), "{state:?}");
+        }
+    }
 
     fn fetched(dir: &Path, scripts: bool) -> Fetched {
         let files: [(&str, &[u8], FileRole); 3] = [

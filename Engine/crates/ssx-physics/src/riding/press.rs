@@ -1,3 +1,5 @@
+use std::f32::consts::PI;
+
 use anyhow::Result;
 
 use crate::curve::Curve;
@@ -47,6 +49,17 @@ const NOSE_STEPS: [Step; 1] = [Step {
 }];
 const TAIL_MATCHER: Matcher = Matcher { test: Test::Button(Button::B), kind: MatchType::Hold, negate: false };
 
+const CLASSIC_NOSE: Matcher = Matcher {
+    test: Test::Stick { min_angle: 0.0, max_angle: PI, min_mag: 0.25, max_mag: 1.0 },
+    kind: MatchType::Hold,
+    negate: false,
+};
+const CLASSIC_TAIL: Matcher = Matcher {
+    test: Test::Stick { min_angle: PI, max_angle: 0.0, min_mag: 0.25, max_mag: 1.0 },
+    kind: MatchType::Hold,
+    negate: false,
+};
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PressGestures {
     pub nose_state: GestureState,
@@ -55,7 +68,13 @@ pub struct PressGestures {
 }
 
 impl PressGestures {
-    pub fn tick(&mut self, prev: &PadSample, cur: &PadSample) {
+    pub fn tick(&mut self, prev: &PadSample, cur: &PadSample, classic: bool) {
+        if classic {
+            self.nose_state = GestureState::default();
+            self.nose = CLASSIC_NOSE.eval(prev, cur) == MatchResult::Match;
+            self.tail = CLASSIC_TAIL.eval(prev, cur) == MatchResult::Match;
+            return;
+        }
         self.nose = match gesture_match(&NOSE_STEPS, &mut self.nose_state, prev, cur, 1.0) {
             MatchResult::Match => true,
             MatchResult::Pending => false,
@@ -142,16 +161,32 @@ mod tests {
     #[test]
     fn x_and_b_held_are_the_nose_and_tail_presses() {
         let mut g = PressGestures::default();
-        g.tick(&pad(false, false), &pad(true, false));
+        g.tick(&pad(false, false), &pad(true, false), false);
         assert!(g.nose && !g.tail, "X held: nose from the first tick");
         for _ in 0..200 {
-            g.tick(&pad(true, false), &pad(true, false));
+            g.tick(&pad(true, false), &pad(true, false), false);
             assert!(g.nose, "an open-ended step keeps matching while held");
         }
-        g.tick(&pad(true, false), &pad(false, true));
+        g.tick(&pad(true, false), &pad(false, true), false);
         assert!(!g.nose && g.tail);
-        g.tick(&pad(false, true), &pad(false, false));
+        g.tick(&pad(false, true), &pad(false, false), false);
         assert!(!g.nose && !g.tail);
+    }
+
+    #[test]
+    fn classic_press_reads_the_right_sticks_upper_and_lower_halves() {
+        let up = PadSample { angle: std::f32::consts::FRAC_PI_2, mag: 0.5, ..PadSample::default() };
+        let down = PadSample { angle: 3.0 * std::f32::consts::FRAC_PI_2, mag: 0.5, ..PadSample::default() };
+        let weak = PadSample { angle: std::f32::consts::FRAC_PI_2, mag: 0.24, ..PadSample::default() };
+        let mut g = PressGestures::default();
+        g.tick(&PadSample::default(), &up, true);
+        assert!(g.nose && !g.tail);
+        g.tick(&up, &down, true);
+        assert!(!g.nose && g.tail);
+        g.tick(&down, &weak, true);
+        assert!(!g.nose && !g.tail, "below the classic press's 0.25 magnitude");
+        g.tick(&PadSample::default(), &PadSample { x: true, ..PadSample::default() }, false);
+        assert!(g.nose && !g.tail);
     }
 
     #[test]

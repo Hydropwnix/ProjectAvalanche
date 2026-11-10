@@ -369,6 +369,10 @@ fn maps() {
         (8, H, true, json!(1)),
         (0, "name", false, json!(big)),
         (5, "extras", false, json!(H)),
+        (9, "ava_order", true, json!(H)),
+        (10, "ava_type", true, json!(H)),
+        (11, "ava_object", true, json!(H)),
+        (11, "ava_object", true, json!(format!("ssx:object/{H}"))),
     ];
     for (node, key, extra, value) in cases {
         let mut files = Files::default();

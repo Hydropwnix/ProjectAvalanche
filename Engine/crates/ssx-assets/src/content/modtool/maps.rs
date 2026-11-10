@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use ssx_content::check::{Checked, Severity};
-use ssx_content::map::{MAX_COLLISION_TRIANGLES, PropLook};
+use ssx_content::map::{MAX_BODIES, MAX_COLLISION_TRIANGLES, MAX_ENTITIES, MAX_VOLUMES, PropLook};
 use ssx_content::object::{ObjectCollision, ObjectDef};
 use ssx_content::{BASE_NAMESPACE, ContentId, PORT_NAMESPACE, Source};
 
@@ -68,7 +68,24 @@ pub(super) fn check(c: &mut Checked, big: &Path, base: Option<&BTreeSet<ContentI
             push(c, Severity::Error, &file, (0, 0), format!("midground {t}: {e:#}"));
         }
         let mut triangles = map.definition.collision_triangles();
+        let mut entities = Entities::default();
+        for p in &map.definition.props {
+            let PropLook::Object(oid) = &p.look else { continue };
+            let Some((_, def)) = c.objects.get(oid).filter(|_| oid.namespace() != BASE_NAMESPACE).cloned() else {
+                continue;
+            };
+            if let Some(ctl) = def.controller.as_ref().filter(|ctl| ctl.namespace() != BASE_NAMESPACE) {
+                let message = format!(
+                    "node \"{}\" ava_object {oid}: its controller {ctl} is a package's script: a placed object's \
+                     controller is one of the disc's (ssx:script/<path>); the scripting API has no entity controller",
+                    p.node
+                );
+                push(c, Severity::Error, &scene, (0, 0), message);
+            }
+            entities.count(&def, 0);
+        }
         let mut placed = BTreeSet::new();
+        let mut disc_entities: Vec<(Option<u32>, bool, bool)> = Vec::new();
         for p in &map.definition.props {
             let PropLook::Object(oid) = &p.look else { continue };
             if oid.namespace() != BASE_NAMESPACE || !base.is_some_and(|ids| ids.contains(oid)) {
@@ -93,14 +110,8 @@ pub(super) fn check(c: &mut Checked, big: &Path, base: Option<&BTreeSet<ContentI
                     continue;
                 }
             };
-            if def.controller.is_some() || def.rigid_body.is_some() {
-                let message = format!(
-                    "node \"{}\" ava_object {oid}: an entity with a controller or a rigid body, which a map does not \
-                     place",
-                    p.node
-                );
-                push(c, Severity::Error, &scene, (0, 0), message);
-            }
+            let key = r.as_ref().ok().and_then(|r| r.names().ok()).and_then(|n| n.by_id.get(oid).copied());
+            disc_entities.push((key.map(|(_, k)| k), def.controller.is_some(), def.rigid_body.is_some()));
             if let ObjectCollision::Decoded { collision, .. } = &def.collision {
                 triangles += collision.triangle_count();
             }
@@ -119,6 +130,40 @@ pub(super) fn check(c: &mut Checked, big: &Path, base: Option<&BTreeSet<ContentI
             );
             push(c, Severity::Note, &file, (0, 0), message);
         }
+        let keys: BTreeSet<u32> = disc_entities.iter().filter_map(|(k, ..)| *k).collect();
+        let volumes: std::collections::BTreeMap<u32, usize> = match keys.is_empty() {
+            true => Default::default(),
+            false => crate::vault_db::with_attribdb(big, |db| {
+                let count = |k: u32| {
+                    let obj =
+                        ssx_formats::attrib::RefSpec { class: ssx_rules::locators::CLASS_GAMEOBJECT, collection: k };
+                    anyhow::Ok((k, ssx_rules::locators::object_volumes(db, obj)?.len()))
+                };
+                keys.iter().map(|&k| count(k)).collect()
+            })
+            .unwrap_or_else(|e| {
+                push(c, Severity::Error, &scene, (0, 0), format!("{id}: the disc objects' trigger volumes: {e:#}"));
+                Default::default()
+            }),
+        };
+        for (key, controller, body) in disc_entities {
+            entities.count_parts(controller, body, key.and_then(|k| volumes.get(&k)).copied().unwrap_or(0));
+        }
+        let map_volumes = map.definition.checkpoints.len()
+            + map.definition.triggers.len()
+            + map.definition.deaths.len()
+            + usize::from(map.definition.finish.is_some());
+        for message in entities.problems(map_volumes) {
+            push(c, Severity::Error, &file, (0, 0), format!("{id}: {message}"));
+        }
+        if entities.entities > 0 {
+            let message = format!(
+                "{id}: {} entities (placed objects with trigger volumes or a controller: {} with a controller, {} with \
+                 a rigid body it moves, {} trigger volumes)",
+                entities.entities, entities.scripted, entities.bodies, entities.volumes
+            );
+            push(c, Severity::Note, &file, (0, 0), message);
+        }
         if map.toml.base.is_none() && map.definition.deaths.is_empty() {
             let message = format!(
                 "{id}: a new track without a death volume: a rider who leaves the ground falls until the ride ends \
@@ -126,5 +171,54 @@ pub(super) fn check(c: &mut Checked, big: &Path, base: Option<&BTreeSet<ContentI
             );
             push(c, Severity::Warning, &file, (0, 0), message);
         }
+    }
+}
+
+#[derive(Default)]
+struct Entities {
+    entities: usize,
+    scripted: usize,
+    bodies: usize,
+    volumes: usize,
+}
+
+impl Entities {
+    fn count(&mut self, def: &ObjectDef, volumes: usize) {
+        self.count_parts(def.controller.is_some(), def.rigid_body.is_some(), volumes);
+    }
+
+    fn count_parts(&mut self, controller: bool, body: bool, volumes: usize) {
+        if volumes == 0 && !controller {
+            return;
+        }
+        self.entities += 1;
+        self.volumes += volumes;
+        if controller {
+            self.scripted += 1;
+            self.bodies += usize::from(body);
+        }
+    }
+
+    fn problems(&self, map_volumes: usize) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.entities > MAX_ENTITIES {
+            out.push(format!(
+                "{} entities (placed objects with trigger volumes or a controller); at most {MAX_ENTITIES}",
+                self.entities
+            ));
+        }
+        if self.bodies > MAX_BODIES {
+            out.push(format!(
+                "{} placed objects with a rigid body and a controller; at most {MAX_BODIES}",
+                self.bodies
+            ));
+        }
+        if map_volumes + self.volumes > MAX_VOLUMES {
+            out.push(format!(
+                "{map_volumes} volumes of its own and {} of its objects; at most {MAX_VOLUMES} in all",
+                self.volumes
+            ));
+        }
+        out
     }
 }

@@ -67,7 +67,6 @@ fn race(rivals: Vec<u32>) -> EventManager {
         objectives: None,
         message: Default::default(),
         time_up_result: false,
-        loop_without_outro: false,
     };
     EventManager::new(setup)
 }
@@ -246,28 +245,27 @@ fn a_maps_time_limit_ends_by_the_rules() {
 }
 
 #[test]
-fn a_maps_survive_to_death_loops_without_an_outro() {
+fn a_survive_to_death_run_loops_only_through_its_outro() {
+    let mut timer = crate::death::DeathTimer::default();
     let mut m = race(Vec::new());
     m.setup.event_type = Some(EventType::SurviveToDeath);
-    m.setup.loop_without_outro = true;
     m.state = EventState::Finished;
-    let mut timer = crate::death::DeathTimer::default();
+    let u = m.update(&mut timer, &inputs(-900.0, true, true));
+    assert!(!u.looped && m.state == EventState::Finished && m.allow_outro, "it waits for its outro");
+    let mut on = inputs(-900.0, true, true);
+    on.nis_outro_active = true;
+    let u = m.update(&mut timer, &on);
+    assert!(!u.looped && m.state == EventState::LoopOutro && !m.allow_outro);
     let u = m.update(&mut timer, &inputs(-900.0, true, true));
     assert!(u.looped && m.request_loop_to_top && m.waiting);
     assert_eq!((m.state, m.loops), (EventState::LoopRestart, 1));
-    let mut disc = race(Vec::new());
-    disc.setup.event_type = Some(EventType::SurviveToDeath);
-    disc.state = EventState::Finished;
-    let u = disc.update(&mut timer, &inputs(-900.0, true, true));
-    assert!(!u.looped && disc.state == EventState::Finished, "a disc event waits for its outro");
 }
 
 #[test]
 fn a_rounds_end_ends_a_run_still_on_as_its_time_limit_would() {
     let mut timer = crate::death::DeathTimer::default();
     let mut m = race(Vec::new());
-    (m.setup.event_type, m.setup.loop_without_outro, m.setup.time_up_result) =
-        (Some(EventType::SurviveToDeath), true, true);
+    (m.setup.event_type, m.setup.time_up_result) = (Some(EventType::SurviveToDeath), true);
     m.on_trigger_race_start(&mut timer);
     for i in 0..300 {
         m.update(&mut timer, &inputs(-(i as f32), false, false));
@@ -281,9 +279,11 @@ fn a_rounds_end_ends_a_run_still_on_as_its_time_limit_would() {
     m.on_trigger_race_start(&mut timer);
     assert_eq!((m.state, m.result.as_ref()), (EventState::Results, Some(&r)), "a race start starts nothing");
     let mut m = race(Vec::new());
-    (m.setup.event_type, m.setup.loop_without_outro, m.setup.time_up_result) =
-        (Some(EventType::SurviveToDeath), true, true);
+    (m.setup.event_type, m.setup.time_up_result) = (Some(EventType::SurviveToDeath), true);
     m.state = EventState::Finished;
+    let mut on = inputs(-900.0, true, true);
+    on.nis_outro_active = true;
+    m.update(&mut timer, &on);
     assert!(m.update(&mut timer, &inputs(-900.0, true, true)).looped && m.request_loop_to_top);
     m.end_round(true);
     let u = m.update(&mut timer, &inputs(-900.0, false, true));

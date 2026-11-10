@@ -86,6 +86,7 @@ pub enum Base {
     #[default]
     View,
     FeView,
+    ActivityFeedView,
 }
 
 impl Base {
@@ -93,7 +94,12 @@ impl Base {
         match self {
             Base::View => "ux.view.View",
             Base::FeView => "ssx.FEView",
+            Base::ActivityFeedView => "ssx.FEActivityFeedView",
         }
+    }
+
+    pub fn is_fe_view(self) -> bool {
+        matches!(self, Base::FeView | Base::ActivityFeedView)
     }
 }
 
@@ -114,6 +120,25 @@ pub struct Logic {
     pub visibles: Vec<VisibleBinding>,
     pub images: Vec<ImageBinding>,
     pub consume_unmapped: bool,
+    pub scrollbars: Vec<ScrollBarDef>,
+    pub sd: Option<SdDef>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SdDef {
+    pub pos: Pos,
+    pub moves: Vec<(String, bool)>,
+    pub scale: Option<f32>,
+    pub centre: (f32, f32),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScrollBarDef {
+    pub pos: Pos,
+    pub target: String,
+    pub menu: String,
+    pub length: f32,
+    pub window: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -185,8 +210,24 @@ pub enum TextFit {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MenuKind {
-    Grid { columns: u32, rows: u32, cell_width: f32, cell_height: f32, spacing_x: f32, spacing_y: f32, wrap: bool },
-    List { rows: u32, cell_width: f32, cell_height: f32, spacing: f32, panel_gaps: Option<(f32, f32)>, wrap: bool },
+    Grid {
+        columns: u32,
+        rows: u32,
+        cell_width: f32,
+        cell_height: f32,
+        spacing_x: f32,
+        spacing_y: f32,
+        wrap: bool,
+    },
+    List {
+        rows: u32,
+        cell_width: f32,
+        cell_height: f32,
+        spacing: f32,
+        panel_gaps: Option<(f32, f32)>,
+        wrap: bool,
+        use_panel: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -235,7 +276,7 @@ pub enum MenuOp {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum InputDo {
-    Menu { target: String, op: MenuOp, blocked_sound: Option<&'static str> },
+    Menu { target: String, op: MenuOp, blocked_sound: Option<&'static str>, sound: Option<&'static str> },
     Action { name: String, sound: Option<&'static str>, param: Option<f64> },
     Take,
 }
@@ -252,8 +293,9 @@ impl Logic {
     pub(super) fn read(cx: &Cx, n: &Node, layout: &Layout) -> Result<Logic, LayoutError> {
         let mut o = cx.obj(n, "logic")?;
         let base = match o.opt("base") {
-            Some(v) => match cx.choice(v, "base", &["view", "fe_view"])? {
+            Some(v) => match cx.choice(v, "base", &["view", "fe_view", "activity_feed_view"])? {
                 "fe_view" => Base::FeView,
+                "activity_feed_view" => Base::ActivityFeedView,
                 _ => Base::View,
             },
             None => Base::View,
@@ -354,8 +396,10 @@ impl Logic {
                 sound: eo.opt("sound").map(|v| cx.choice(v, "sound", SOUNDS)).transpose()?,
             };
             eo.finish(cx)?;
-            if logic.on_enter.clear_inputs && logic.base != Base::FeView {
-                return Err(cx.err(e.pos, "on_enter.clear_inputs: `ClearInputs` is `ssx.FEView`'s (base `fe_view`)"));
+            if logic.on_enter.clear_inputs && !logic.base.is_fe_view() {
+                let why =
+                    "on_enter.clear_inputs: `ClearInputs` is `ssx.FEView`'s (base `fe_view`, `activity_feed_view`)";
+                return Err(cx.err(e.pos, why));
             }
         }
         if let Some(c) = o.opt("callouts") {
@@ -371,6 +415,23 @@ impl Logic {
             }
             co.finish(cx)?;
             logic.callouts = Some(CalloutsDef { pos: c.pos, target, buttons });
+        }
+        if let Some(n) = o.opt("sd") {
+            let mut so = cx.obj(n, "sd")?;
+            let mut moves: Vec<(String, bool)> = Vec::new();
+            for (side, left) in [("left", true), ("right", false)] {
+                for t in so.opt(side).map_or(Ok(&[][..]), |a| cx.array(a, side, limits::BINDINGS))? {
+                    let target = target(cx, t, layout, Want::Any)?;
+                    if moves.iter().any(|(m, _)| *m == target) {
+                        return Err(cx.err(t.pos, format!("sd: {target:?} is given twice")));
+                    }
+                    moves.push((target, left));
+                }
+            }
+            let scale = so.opt("scale").map(|v| cx.num(v, "sd scale", 0.5, 1.0)).transpose()?.map(|v| v as f32);
+            so.finish(cx)?;
+            let centre = (layout.stage.0 as f32 / 2.0, layout.stage.1 as f32 / 2.0);
+            logic.sd = Some(SdDef { pos: n.pos, moves, scale, centre });
         }
         if let Some(p) = o.opt("paging") {
             let mut po = cx.obj(p, "paging")?;
@@ -404,6 +465,13 @@ impl Logic {
             let field = cx.name(io.req(cx, "field")?, "field", "", limits::NAME)?.to_string();
             io.finish(cx)?;
             logic.images.push(ImageBinding { pos: i.pos, target, data, field });
+        }
+        for b in o.opt("scrollbars").map_or(Ok(&[][..]), |a| cx.array(a, "scrollbars", limits::MENUS))? {
+            let def = read_scrollbar(cx, b, layout, &logic, &known)?;
+            if logic.scrollbars.iter().any(|x| x.target == def.target || x.menu == def.menu) {
+                return Err(cx.err(b.pos, format!("scrollbar {:?}: a bar or its menu is given twice", def.target)));
+            }
+            logic.scrollbars.push(def);
         }
         let mut keys = HashSet::new();
         for i in o.opt("inputs").map_or(Ok(&[][..]), |a| cx.array(a, "inputs", limits::INPUTS))? {
@@ -515,6 +583,7 @@ fn read_menu(cx: &Cx, m: &Node, layout: &Layout, data: &[String], known: &Known)
             spacing: gap(cx, &mut mo, "spacing")?,
             panel_gaps,
             wrap,
+            use_panel: mo.opt("use_panel").map_or(Ok(false), |u| cx.bool(u, "use_panel"))?,
         }
     };
     let data_name = known(cx, mo.req(cx, "data")?, "menu data", data)?;
@@ -562,7 +631,11 @@ fn read_input(cx: &Cx, n: &Node, logic: &Logic) -> Result<InputDef, LayoutError>
             if blocked_sound.is_some() && !(list && matches!(op, MenuOp::Up | MenuOp::Down)) {
                 return Err(cx.err(m.pos, "blocked_sound: only for a list menu's up and down"));
             }
-            InputDo::Menu { target, op, blocked_sound }
+            let sound = io.opt("sound").map(|s| cx.choice(s, "sound", SOUNDS)).transpose()?;
+            if sound.is_some() && blocked_sound.is_some() {
+                return Err(cx.err(m.pos, "sound: not with `blocked_sound` (give one)"));
+            }
+            InputDo::Menu { target, op, blocked_sound, sound }
         }
         (None, Some(a), None) => {
             let name = cx.name(a, "action", "A_", limits::NAME)?.to_string();
@@ -579,4 +652,33 @@ fn read_input(cx: &Cx, n: &Node, logic: &Logic) -> Result<InputDef, LayoutError>
     let lock_ms = io.opt("lock_ms").map(|v| cx.num(v, "lock_ms", 1.0, 5000.0)).transpose()?;
     io.finish(cx)?;
     Ok(InputDef { pos: n.pos, key, what, lock_ms })
+}
+
+fn read_scrollbar(
+    cx: &Cx,
+    n: &Node,
+    layout: &Layout,
+    logic: &Logic,
+    known: &Known,
+) -> Result<ScrollBarDef, LayoutError> {
+    let mut bo = cx.obj(n, "scrollbar")?;
+    let target = target(cx, bo.req(cx, "target")?, layout, Want::Import("components.ScrollBar"))?;
+    let menu_node = bo.req(cx, "menu")?;
+    let menu = cx.str(menu_node, "scrollbar menu", limits::PATH)?.to_string();
+    if !logic.menus.iter().any(|m| m.target == menu && matches!(m.kind, MenuKind::List { .. })) {
+        return Err(cx.err(menu_node.pos, format!("scrollbar menu {menu:?}: not one of the logic's list menus")));
+    }
+    let length = cx.num(bo.req(cx, "length")?, "length", 1.0, limits::COORD)? as f32;
+    let window = match bo.opt("window") {
+        Some(w) => {
+            let data = known(cx, w, "scrollbar window", &logic.data)?;
+            if logic.paging.as_ref().is_none_or(|p| p.menu != menu) {
+                return Err(cx.err(w.pos, format!("scrollbar window: the menu {menu:?} is not the paging's")));
+            }
+            Some(data)
+        }
+        None => None,
+    };
+    bo.finish(cx)?;
+    Ok(ScrollBarDef { pos: n.pos, target, menu, length, window })
 }

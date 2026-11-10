@@ -46,6 +46,7 @@ pub enum VolumeShape {
 pub enum TriggerScope {
     Track,
     Drop(u32),
+    Map,
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -39,7 +39,28 @@ pub struct LiveSession {
     pub server: Option<String>,
     pub origin: LiveOrigin,
     #[cfg(feature = "scripts")]
+    pub serial: SessionSerial,
+    #[cfg(feature = "scripts")]
     pub content: LiveContent,
+}
+
+#[cfg(feature = "scripts")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SessionSerial(u64);
+
+#[cfg(feature = "scripts")]
+impl SessionSerial {
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+#[cfg(feature = "scripts")]
+impl Default for SessionSerial {
+    fn default() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        SessionSerial(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
 }
 
 #[cfg(feature = "scripts")]

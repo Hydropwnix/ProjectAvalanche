@@ -157,15 +157,21 @@ fn setup_local_lights(
     reserve: Res<DynamicLightReserve>,
     lighting: Option<Res<GameLighting>>,
     root: Option<Res<BigRoot>>,
+    ride: Option<Res<crate::ride::Ride>>,
     mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut images: ResMut<Assets<Image>>,
 ) {
     let t0 = std::time::Instant::now();
     let disabled = std::env::var("SSX_LOCAL_LIGHTS").is_ok_and(|v| v == "off");
+    let map: Vec<(u32, ssx_assets::track_objects::Placement)> = ride
+        .as_deref()
+        .and_then(|r| r.map.as_ref())
+        .map_or_else(Vec::new, |m| m.placed.iter().map(|&(_, key, p)| (key, p)).collect());
     let lights = match (&lighting, &root, disabled) {
         (_, _, true) => Ok((Vec::new(), "local lights off (SSX_LOCAL_LIGHTS=off)".to_string())),
         (Some(l), Some(r), false) => match l.disc_track() {
-            Some(track) => collect(&r.0, track),
+            Some(track) => collect(&r.0, Some(track), &map),
+            None if !map.is_empty() => collect(&r.0, None, &map),
             None => Ok((Vec::new(), "local lights: a map's new track places none".to_string())),
         },
         _ => Ok((Vec::new(), "local lights: no track lighting".to_string())),

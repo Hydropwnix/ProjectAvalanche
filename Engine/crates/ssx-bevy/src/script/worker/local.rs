@@ -53,7 +53,8 @@ impl Worker {
             return;
         }
         self.end_local("another level's gamemode");
-        if !self.session.is_empty() || self.held_session.is_some() || self.host.local_player().is_some() {
+        let alone = self.word == Some(None);
+        if !alone || !self.session.is_empty() || self.held_session.is_some() || self.host.local_player().is_some() {
             let line = format!("scripts: {}'s server scripts do not run locally in a network session", clean(package));
             return self.note(true, line);
         }

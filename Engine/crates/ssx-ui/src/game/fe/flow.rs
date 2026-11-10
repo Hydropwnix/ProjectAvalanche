@@ -8,8 +8,8 @@ pub struct NewGameHost {
 }
 
 pub fn signed_in(fe: &mut FrontEnd, env: &mut FeEnv, device: i32) {
-    // TODO(guess): the gamertag and picture come from Xbox Live; the port names the offline profile `Player`; settle: none (no Live in the port).
-    env.values.set_str(0x22B, "Player");
+    // TODO(guess): a port choice — the gamertag (`USER_gamertag`, UI 0x22B; in the port this sign-in and a confirmed player name are its only writers) and picture come from Xbox Live; the port's sign-in writes the player name (the launcher's `settings.json` `player_name`, else `Player`), which the Options and the name prompt write again when it changes; settle: none (no Live in the port).
+    env.values.set_str(0x22B, super::ava::profile_name(fe));
     env.values.set_bool(0x22D, false);
     env.values.set_bool(0x22E, false);
     env.values.set_str(0x22C, "assets/gamertagIcons/player.dds");
@@ -35,9 +35,9 @@ pub fn profile_job_done(fe: &mut FrontEnd, env: &mut FeEnv, _device: i32) {
     fe.busy.release(env, super::busy::LEVEL);
     fe.requests.push(super::pause::GameRequest::Save);
     fe.note("the save manager's save after the sign-in (0x82457FE8)");
-    // TODO(guess): the save completes at once in the port, so the second count comes off with the request (the game's after the callback 0x82395F50 switched the frame state: the sign-in adds two busy-icon counts, 0x8246A020 and 0x82396D78; the job's end 0x82396B58 takes one off and asks for the save, 0x82457FE8 → job 0x8250B278;
+    // TODO(guess): the save completes at once in the port, so the front end's frame state begins with the request (its 0x82469EB8: the second count off, message 0xCC21B341) (the game's after the callback 0x82395F50 switched the frame state: the sign-in adds two busy-icon counts, 0x8246A020 and 0x82396D78; the job's end 0x82396B58 takes one off and asks for the save, 0x82457FE8 → job 0x8250B278;
     // its end requests frame state 2, whose begin 0x82469EB8 takes the other off); settle: the save manager's job queue and callback timing.
-    fe.busy.release(env, super::busy::LEVEL);
+    front_end_frame_state_begins(fe, env);
     fe.note("the profile job's end: message 0xDDA6AD47");
     fe.messages.push(super::FeMessage::BootFlowLoaded);
     fe.note("FEBootFlowCompleteMessage (0xB17A59F5)");
@@ -342,9 +342,29 @@ fn camera_restore(saved: i32, camera_type: Option<i32>) -> (Option<i32>, bool) {
 }
 
 pub fn front_end_entered(fe: &mut FrontEnd, env: &mut FeEnv) {
-    fe.busy.release(env, super::busy::LEVEL);
+    front_end_frame_state_begins(fe, env);
     fe.note("the front end's frame state begins: 0xCE72F936 {2} → 0x824079A8: A_GameQuitComplete");
     fe.game_actions.push(("A_GameQuitComplete".into(), super::ActionParam::default()));
+}
+
+pub fn front_end_frame_state_begins(fe: &mut FrontEnd, env: &mut FeEnv) {
+    if front_end_meta_values(env.values, &mut fe.hud_ready_seen) {
+        fe.messages.push(super::FeMessage::PopupState(1));
+    }
+    fe.note("0xCC21B341 → 0x82381C88: HUD_NONISPROMPT (0x11A) and HUD_NISTitleEnabled (0x117) on");
+    fe.busy.release(env, super::busy::LEVEL);
+}
+
+pub fn front_end_meta_values(values: &mut crate::game::values::UiValues, hud_ready_seen: &mut bool) -> bool {
+    use crate::game::values::id;
+    let due = std::mem::take(hud_ready_seen);
+    values.set_bool(id::NO_NIS_PROMPT, true);
+    values.set_bool(id::NIS_TITLE_ENABLED, true);
+    due
+}
+
+pub fn hud_ready(fe: &mut FrontEnd, _env: &mut FeEnv) {
+    fe.hud_ready_seen = true;
 }
 
 pub fn game_quit_complete(fe: &mut FrontEnd, env: &mut FeEnv) {

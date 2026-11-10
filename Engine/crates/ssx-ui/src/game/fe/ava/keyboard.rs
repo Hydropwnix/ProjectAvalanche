@@ -119,6 +119,7 @@ pub struct Keyboard {
     pub title: String,
     pub password: bool,
     pub request: Option<TextRequest>,
+    pub note: String,
     pub glyphs: Option<BTreeSet<char>>,
     pub results: Vec<TextResult>,
 }
@@ -169,6 +170,7 @@ impl Keyboard {
             return Err(format!("an initial text longer than {}", req.max_len));
         }
         self.request = Some(req);
+        self.note.clear();
         Ok(())
     }
 
@@ -194,6 +196,7 @@ impl Keyboard {
         self.results.push(result.clone());
         self.text.clear();
         self.caret = 0;
+        self.note.clear();
         result
     }
 
@@ -202,6 +205,7 @@ impl Keyboard {
         let unanswered = self.request.is_some().then(|| self.finish(false));
         self.text.clear();
         self.caret = 0;
+        self.note.clear();
         unanswered
     }
 
@@ -239,6 +243,12 @@ pub fn request(fe: &mut FrontEnd, env: &mut FeEnv, req: TextRequest) -> Result<(
     fe.ava.keyboard.accept(req)?;
     fe.note(format!("keyboard: requested by {by:?}"));
     env.nav_events.push(OPEN.into());
+    Ok(())
+}
+
+pub fn request_with_note(fe: &mut FrontEnd, env: &mut FeEnv, req: TextRequest, note: &str) -> Result<(), String> {
+    request(fe, env, req)?;
+    fe.ava.keyboard.note = note.to_string();
     Ok(())
 }
 
@@ -347,6 +357,8 @@ pub fn build(fe: &FrontEnd, cx: &mut Ctx, loc: &mut crate::game::loc::Localizati
             let _ = cx.set_member(&o, "title", Value::str(&loc.text(&k.title)));
             let _ = cx.set_member(&o, "text", Value::str(&k.field()));
             let _ = cx.set_member(&o, "count", Value::str(&format!("{}/{}", k.text.len(), k.max_len)));
+            let note = if k.note.is_empty() { String::new() } else { loc.text(&k.note) };
+            let _ = cx.set_member(&o, "note", Value::str(&note));
             Some(o)
         }
         DP_KEYS => {

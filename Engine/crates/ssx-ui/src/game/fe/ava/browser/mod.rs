@@ -26,6 +26,7 @@ pub const DP_ROWS: &str = "dp_ava_browser_rows";
 pub const DP_ROWS_INDEX: &str = "dp_ava_browser_rows_index";
 pub const DP_DETAILS: &str = "dp_ava_browser_details";
 pub const DP_DROP: &str = "dp_ava_browser_drop";
+pub const DP_WINDOW: &str = "dp_ava_browser_window";
 pub const OPEN: &str = "go_to_ava_browser";
 pub const PROVIDER: &str = "avaserverbrowser";
 
@@ -35,9 +36,9 @@ pub const LIST_INTERVAL: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tab {
+    #[default]
     Internet,
     Lan,
-    #[default]
     Favourites,
     Recent,
 }
@@ -80,6 +81,12 @@ pub struct Browser {
     pub lan: Option<ssx_net_join::browse::lan::LanSearch>,
     pub icons: icons::Icons,
     pub blocklists: Option<ssx_net_join::blocklist::Refresh>,
+}
+
+impl Browser {
+    pub fn enter_fresh(&mut self) {
+        self.tab = Tab::default();
+    }
 }
 
 fn fake_drops(fe: &FrontEnd) -> Vec<String> {
@@ -272,6 +279,23 @@ pub fn build(fe: &FrontEnd, cx: &mut Ctx, loc: &mut Localization, dp: &str) -> O
         DP_ROWS | DP_ROWS_INDEX => Some(rows::build(fe, cx, loc, dp)),
         DP_DETAILS => Some(details::build(fe, cx, loc)),
         DP_DROP => Some(details::drop_panel(fe, cx)),
+        DP_WINDOW => {
+            Some(crate::game::fe::ava::window_object(cx, fe.ava.browser.view.len(), fe.ava.browser.window.first))
+        }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_fresh_entry_opens_on_internet() {
+        let mut b = Browser::default();
+        assert_eq!((b.tab, TABS[0].0), (Tab::Internet, Tab::Internet));
+        b.tab = Tab::Favourites;
+        b.enter_fresh();
+        assert_eq!(b.tab, Tab::Internet);
     }
 }

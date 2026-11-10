@@ -255,7 +255,8 @@ fn from_extraction(
     let known = marker.as_ref().is_some_and(|(f, s)| f == KNOWN_PRESSING.fingerprint && *s == KNOWN_PRESSING.iso_size);
     let mut c = checker(entries, known || marker.is_none());
     if marker.is_some() && !known {
-        c.reference = Some(index::read(dir).map_err(|e| format!("the extraction's index: {e}"))?);
+        let theirs = ssx_assets::folder::content_index(dir).map_err(|e| format!("the extraction's index: {e}"))?;
+        c.reference = Some(Index { rows: theirs.entries.into_iter().map(|(p, (size, h))| (p, (size, h.0))).collect() });
     }
     for track in tracks(entries) {
         let rel = md5check::list_member(&track).data_path();
@@ -316,4 +317,64 @@ fn from_extraction(
     state["complete"] = json!(true);
     write_state(&state)?;
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ssx_content::hash::{ContentHash, ContentIndex};
+
+    struct Temp(PathBuf);
+    impl Temp {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("ssx-server-extraction-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join("big/data0/data")).unwrap();
+            Temp(dir)
+        }
+    }
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn marker(dir: &Path, index: Option<&str>) {
+        let archives =
+            ssx_assets::setup::ARCHIVES.iter().map(|a| (a.to_string(), json!({}))).collect::<serde_json::Map<_, _>>();
+        let mut m = json!({ "format": 2, "fingerprint": "0123456789abcdef", "iso_size": 1, "complete": true,
+            "finished": archives, "movies": {} });
+        if let Some(text) = index {
+            let rows = text.lines().count() - 1;
+            m["content_index"] = json!({ "files": rows, "bytes": rows as u64 * 3, "blake3": ContentHash::of(text.as_bytes()).to_string() });
+        }
+        std::fs::write(dir.join(ssx_assets::setup::MARKER), m.to_string()).unwrap();
+    }
+
+    fn run(dir: &Path, out: &Path) -> Result<Report, String> {
+        from_extraction(dir, out, &[], &BTreeSet::new(), &AtomicBool::new(false), &mut |_| {})
+    }
+
+    #[test]
+    fn an_extraction_without_its_index_names_the_repair() {
+        let (t, out) = (Temp::new("noindex"), Temp::new("noindex-out"));
+        marker(&t.0, None);
+        let e = run(&t.0, &out.0).unwrap_err();
+        assert!(e.contains("Repair game data") && !e.contains("os error"), "{e}");
+    }
+
+    #[test]
+    fn a_whole_extractions_index_is_the_reference() {
+        let (t, out) = (Temp::new("whole"), Temp::new("whole-out"));
+        let mut index = ContentIndex::default();
+        for i in 0..5000 {
+            index.entries.insert(format!("big/data0/data/m{i:05}.bin"), (3, ContentHash::of(b"abc")));
+        }
+        index.entries.insert("disc/data/common/fmv/alps.vp6".into(), (3, ContentHash::of(b"abc")));
+        let text = index.to_tsv();
+        std::fs::write(t.0.join("content.tsv"), &text).unwrap();
+        marker(&t.0, Some(&text));
+        let report = run(&t.0, &out.0).unwrap();
+        assert_eq!(report.written, 0);
+    }
 }

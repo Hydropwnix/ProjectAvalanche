@@ -20,7 +20,9 @@ pub struct ScreenshotPlan {
 pub struct Launcher {
     pub settings: Settings,
     pub saved: Settings,
+    pub data_state: ssx_assets::folder::State,
     pub data_ready: bool,
+    pub data_disc: Option<String>,
     pub page: Page,
     pub cursor: MenuItem,
     pub settings_tab: SettingsTab,
@@ -30,6 +32,7 @@ pub struct Launcher {
     pub host: crate::host::HostPage,
     pub last_page: Page,
     pub update: Update,
+    pub program_missing: Vec<&'static str>,
     pub gallery: Gallery,
     pub check: Option<Result<DiscCheck, String>>,
     pub checking: Option<Background<Result<DiscCheck, String>>>,
@@ -40,6 +43,8 @@ pub struct Launcher {
     pub drops: DropCache,
     pub viewer: Option<Viewer>,
     pub started_game: bool,
+    pub displays: crate::display::Displays,
+    pub settings_save: crate::settings_flow::SettingsSave,
     pub launch_error: Option<String>,
     pub show_command: bool,
     pub screenshot: Option<ScreenshotPlan>,
@@ -58,6 +63,13 @@ pub struct Launcher {
     pub timing: Option<std::time::Instant>,
 }
 
+fn program_missing() -> Vec<&'static str> {
+    if !crate::update::install::release_build() {
+        return Vec::new();
+    }
+    crate::update::install::install_dir().map(|dir| crate::update::install::missing(&dir)).unwrap_or_default()
+}
+
 pub fn art_request(settings: &Settings) -> art::Request {
     art::Request { app_dir: crate::settings::app_dir(), game_data: settings.data_ready().then(|| settings.game_data()) }
 }
@@ -73,7 +85,9 @@ impl Launcher {
         gallery.attach(ctx);
         let mut app = Self {
             saved: settings.clone(),
-            data_ready: settings.data_ready(),
+            data_state: ssx_assets::folder::State::Missing,
+            data_ready: false,
+            data_disc: None,
             settings,
             page: Page::Play,
             cursor: MenuItem::Page(Page::Play),
@@ -84,6 +98,7 @@ impl Launcher {
             host: crate::host::HostPage::default(),
             last_page: Page::Play,
             update: Update::Idle,
+            program_missing: program_missing(),
             gallery,
             check: None,
             checking: None,
@@ -94,6 +109,8 @@ impl Launcher {
             drops: DropCache::default(),
             viewer: None,
             started_game: false,
+            displays: Default::default(),
+            settings_save: Default::default(),
             launch_error: None,
             show_command: false,
             screenshot: screenshot.map(|path| ScreenshotPlan { path, requested: false }),
@@ -111,6 +128,7 @@ impl Launcher {
             frame: 0,
             timing: None,
         };
+        app.read_data_state();
         app.refresh_mods(ctx);
         if app.data_ready {
             app.refresh_catalog();
@@ -145,11 +163,19 @@ impl Launcher {
     }
 
     pub fn data_changed(&mut self) {
-        self.data_ready = self.settings.data_ready();
+        self.read_data_state();
         if self.data_ready {
             self.refresh_catalog();
             self.gallery.restart(art_request(&self.settings));
         }
+    }
+
+    pub fn read_data_state(&mut self) {
+        let data = self.settings.game_data();
+        self.data_state = ssx_assets::folder::state(&data);
+        self.data_ready = self.data_state.playable();
+        self.data_disc =
+            ssx_assets::setup::read_marker(&data).and_then(|m| m["fingerprint"].as_str().map(str::to_owned));
     }
 
     pub fn running(&self) -> bool {
@@ -168,7 +194,10 @@ impl Launcher {
             return;
         }
         match Viewer::spawn(ctx, inv, if game { jobs::GAME_LOG } else { jobs::VIEWER_LOG }) {
-            Ok(v) => (self.viewer, self.started_game) = (Some(v), game),
+            Ok(v) => {
+                (self.viewer, self.started_game) = (Some(v), game);
+                self.displays.synced = !game;
+            }
             Err(e) => self.launch_error = Some(format!("could not start {}: {e}", inv.program.display())),
         }
     }

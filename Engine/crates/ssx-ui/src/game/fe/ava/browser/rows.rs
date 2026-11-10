@@ -109,7 +109,14 @@ pub fn rebuild(fe: &mut FrontEnd, env: &mut FeEnv) {
     b.window.clamp(b.view.len());
     b.dirty = false;
     super::details::refresh(fe, env);
-    fe.publish.extend([DP.into(), DP_ROWS.into(), DP_ROWS_INDEX.into(), DP_DETAILS.into(), DP_DROP.into()]);
+    fe.publish.extend([
+        DP.into(),
+        DP_ROWS.into(),
+        DP_ROWS_INDEX.into(),
+        DP_DETAILS.into(),
+        DP_DROP.into(),
+        super::DP_WINDOW.into(),
+    ]);
 }
 
 pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &ActionParam) {
@@ -131,7 +138,13 @@ pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &ActionPa
     };
     if moved {
         super::details::refresh(fe, env);
-        fe.publish.extend([DP_ROWS.into(), DP_ROWS_INDEX.into(), DP_DETAILS.into(), DP_DROP.into()]);
+        fe.publish.extend([
+            DP_ROWS.into(),
+            DP_ROWS_INDEX.into(),
+            DP_DETAILS.into(),
+            DP_DROP.into(),
+            super::DP_WINDOW.into(),
+        ]);
     }
 }
 

@@ -1,6 +1,7 @@
 mod boundary;
 mod build;
 mod encode;
+pub mod heli;
 pub mod template;
 mod toml;
 mod volume;
@@ -24,7 +25,11 @@ pub const MAX_CHECKPOINTS: usize = 50;
 pub const MAX_VOLUMES: usize = 2048;
 pub const MAX_NAME_BYTES: usize = 64;
 pub const MAX_MARKERS: usize = 1024;
-pub const MAX_HELI_POINTS: usize = 256;
+pub const MAX_ORDER: u32 = 256;
+pub const HELI_PATH_POINTS: usize = 2;
+pub const HELI_LOCATORS: [&str; HELI_PATH_POINTS] = ["nis_intro_locator", "nis_outro_locator"];
+pub const MAX_ENTITIES: usize = 2048;
+pub const MAX_BODIES: usize = 256;
 pub const MAX_CAMERAS: usize = 64;
 pub const MAX_COLLISION_TRIANGLES: usize = 1_824_266;
 pub const MAX_EXTRAS_BYTES: usize = 4096;
@@ -99,6 +104,14 @@ pub struct Spawn {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct HeliPoint {
+    pub node: String,
+    pub order: u32,
+    pub position: [f32; 3],
+    pub rotation: [f32; 4],
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct MarkerPlacement {
     pub node: String,
     pub marker: ContentId,
@@ -133,7 +146,7 @@ pub struct MapDefinition {
     pub deaths: Vec<Volume>,
     pub boundary: Option<BoundaryArea>,
     pub markers: Vec<MarkerPlacement>,
-    pub heli_path: Vec<[f32; 3]>,
+    pub heli_path: Vec<HeliPoint>,
     pub cameras: Vec<CameraDef>,
     pub notes: Vec<String>,
 }

@@ -1,7 +1,7 @@
 use eframe::egui::Ui;
-use ssx_assets::setup;
 
 use crate::app::Launcher;
+use crate::data_state;
 use crate::setup_flow::gb;
 use crate::ui::theme;
 use crate::ui::widgets::{self, Kind};
@@ -13,14 +13,9 @@ impl Launcher {
         let busy = self.job.is_some();
         let data = self.settings.game_data();
         ui.spacing_mut().item_spacing.y = 6.0;
-        if setup::needs_update(&data) && !busy {
-            widgets::status(
-                ui,
-                theme::ERROR,
-                "This folder was set up by an earlier version and has no movies: the game cannot play its intro and \
-                 stops after the World Tour tutorial pages. Select the same disc image and click Extract game data \
-                 — the archives are kept, only the movies (about 1.2 GB) are added.",
-            );
+        let notice = if busy { None } else { data_state::notice(&self.data_state) };
+        if let Some((colour, text)) = notice.clone().filter(|_| self.data_state.needs_repair()) {
+            widgets::status(ui, colour, text);
         } else {
             widgets::paragraph(
                 ui,
@@ -71,11 +66,20 @@ impl Launcher {
                 self.settings.game_data = None;
                 self.data_changed();
             }
-            let state = if self.data_ready { (theme::GOOD, "Ready") } else { (theme::WARN, "Not set up") };
-            widgets::status(ui, state.0, state.1);
+            let (colour, label) = data_state::status(&self.data_state);
+            widgets::status(ui, colour, label);
         });
-        if !setup::needs_update(&data) && setup::read_marker(&data).is_some() && !self.data_ready && !busy {
-            widgets::note(ui, "An earlier setup into this folder stopped; it resumes where it left off.");
+        if let Some((_, text)) = notice.filter(|_| self.data_state == ssx_assets::folder::State::Unfinished) {
+            widgets::note(ui, &text);
+        }
+        if let (Some(Ok(c)), Some(disc)) = (&self.check, &self.data_disc)
+            && *disc != c.fingerprint
+            && !busy
+        {
+            widgets::note(
+                ui,
+                "This image is not the one the folder was set up from: every file that differs from it is written again.",
+            );
         }
         ui.add_space(6.0);
         widgets::heading(ui, "Setup");
@@ -98,7 +102,7 @@ impl Launcher {
         } else {
             let ready = matches!(self.check, Some(Ok(_))) && !self.running();
             ui.horizontal(|ui| {
-                if widgets::button(ui, "Extract game data", Kind::Primary, ready).clicked() {
+                if widgets::button(ui, data_state::button(&self.data_state), Kind::Primary, ready).clicked() {
                     self.start_setup(ui.ctx());
                 }
                 if !ready {

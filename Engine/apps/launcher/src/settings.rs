@@ -1,6 +1,11 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value as Json};
+use ssx_assets::settings_file::{self, UpdateError};
+
+const MERGE_LEVELS: u32 = 2;
+const NAME_CHARS: usize = 64;
 
 pub fn app_dir() -> PathBuf {
     ssx_assets::setup::app_dir()
@@ -65,6 +70,21 @@ pub struct Settings {
     pub host: crate::host::HostSettings,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resources: Option<serde_json::Value>,
+    #[serde(deserialize_with = "display_leniently", serialize_with = "display_out")]
+    pub display: ssx_assets::display::DisplaySettings,
+    #[serde(skip)]
+    pub display_notes: Vec<String>,
+    #[serde(skip)]
+    pub notes: Vec<String>,
+}
+
+fn display_leniently<'de, D: serde::Deserializer<'de>>(d: D) -> Result<ssx_assets::display::DisplaySettings, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(ssx_assets::display::DisplaySettings::from_json(Some(&value)).0)
+}
+
+fn display_out<S: serde::Serializer>(s: &ssx_assets::display::DisplaySettings, out: S) -> Result<S::Ok, S::Error> {
+    s.to_json().serialize(out)
 }
 
 fn host_is_default(h: &crate::host::HostSettings) -> bool {
@@ -106,6 +126,9 @@ impl Default for Settings {
             old_masters: false,
             resources: None,
             host: crate::host::HostSettings::default(),
+            display: Default::default(),
+            display_notes: Vec::new(),
+            notes: Vec::new(),
         }
     }
 }
@@ -116,17 +139,102 @@ impl Settings {
     }
 
     pub fn load() -> Self {
-        std::fs::read_to_string(Self::path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+        Self::load_from(&Self::path())
     }
 
-    pub fn save(&self) -> std::io::Result<()> {
-        write_synced(&Self::path(), serde_json::to_string_pretty(self)?.as_bytes())
+    pub fn load_from(path: &Path) -> Self {
+        match settings_file::read_object(path) {
+            Ok(m) => Self::from_object(&m),
+            Err(e) => Settings {
+                notes: vec![format!(
+                    "{e:#}: the launcher's defaults are used; the file is kept until a change is saved"
+                )],
+                ..Settings::default()
+            },
+        }
+    }
+
+    pub fn from_object(m: &Map<String, Json>) -> Self {
+        let mut notes = Vec::new();
+        let mut s = match serde_json::from_value::<Settings>(Json::Object(m.clone())) {
+            Ok(s) => s,
+            Err(_) => {
+                let mut good = Map::new();
+                for (k, v) in m {
+                    let one = Map::from_iter([(k.clone(), v.clone())]);
+                    if serde_json::from_value::<Settings>(Json::Object(one)).is_ok() {
+                        good.insert(k.clone(), v.clone());
+                    } else {
+                        let k = ssx_core::text::quoted_max(k, NAME_CHARS);
+                        notes
+                            .push(format!("settings.json: {k} has a value the launcher cannot read: its default used"));
+                    }
+                }
+                serde_json::from_value(Json::Object(good)).unwrap_or_else(|e| {
+                    notes.push(format!("settings.json: {e}: the launcher's defaults used"));
+                    Settings::default()
+                })
+            }
+        };
+        (s.display, s.display_notes) =
+            ssx_assets::display::DisplaySettings::from_json(m.get(ssx_assets::display::MEMBER));
+        s.notes = notes;
+        s
+    }
+
+    fn object(&self) -> Result<Map<String, Json>, UpdateError> {
+        match serde_json::to_value(self) {
+            Ok(Json::Object(m)) => Ok(m),
+            Ok(_) => Err(UpdateError::Failed(anyhow::anyhow!("the settings are not an object"))),
+            Err(e) => Err(UpdateError::Failed(e.into())),
+        }
+    }
+
+    pub fn save(&self, base: &Settings) -> Result<Settings, UpdateError> {
+        self.save_to(&Self::path(), base)
+    }
+
+    pub fn save_to(&self, path: &Path, base: &Settings) -> Result<Settings, UpdateError> {
+        let (ours, base) = (self.object()?, base.object()?);
+        let written = settings_file::update_object(path, |m| {
+            settings_file::merge_changes(m, &base, &ours, MERGE_LEVELS);
+            m.remove("masters");
+            Ok(())
+        })?;
+        Ok(Self::from_object(&written))
+    }
+
+    pub fn reload(&mut self, base: &mut Settings) -> Result<(), String> {
+        self.reload_from(&Self::path(), base)
+    }
+
+    pub fn reload_from(&mut self, path: &Path, base: &mut Settings) -> Result<(), String> {
+        let theirs = settings_file::read_object(path).map_err(|e| format!("{e:#}"))?;
+        let (ours, old) = (self.object().map_err(|e| e.to_string())?, base.object().map_err(|e| e.to_string())?);
+        let mut merged = theirs.clone();
+        settings_file::merge_changes(&mut merged, &old, &ours, MERGE_LEVELS);
+        *self = Self::from_object(&merged);
+        *base = Self::from_object(&theirs);
+        Ok(())
+    }
+
+    pub fn replace_unreadable(&self) -> anyhow::Result<(PathBuf, Settings)> {
+        self.replace_unreadable_at(&Self::path())
+    }
+
+    pub fn replace_unreadable_at(&self, path: &Path) -> anyhow::Result<(PathBuf, Settings)> {
+        let members = self.object().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let aside = settings_file::replace_unreadable(path, members)?;
+        let written = settings_file::read_object(path)?;
+        Ok((aside, Self::from_object(&written)))
+    }
+
+    pub fn data_state(&self) -> ssx_assets::folder::State {
+        ssx_assets::folder::state(&self.game_data())
     }
 
     pub fn data_ready(&self) -> bool {
-        let gd = self.game_data();
-        let tree = gd.join("big/cache1/data/xenon/attribdb").is_dir() && gd.join("big/data0").is_dir();
-        ssx_assets::setup::is_complete(&gd) || (tree && !gd.join(ssx_assets::setup::MARKER).exists())
+        self.data_state().playable()
     }
 
     pub fn game_data(&self) -> PathBuf {
@@ -138,32 +246,9 @@ impl Settings {
     }
 }
 
-fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    ssx_files::create_dir_all(dir).map_err(ssx_files::Error::into_io)?;
-    ssx_files::replace(path, bytes, &ssx_files::Options::new()).map_err(ssx_files::Error::into_io)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_settings_are_written_whole_or_not_at_all() {
-        let dir = std::env::temp_dir().join(format!("launcher-settings-write-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let path = dir.join("settings.json");
-        write_synced(&path, b"{\"vsync\": true}").unwrap();
-        write_synced(&path, b"{\"vsync\": false}").unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), b"{\"vsync\": false}");
-        assert!(!dir.join("settings.json.partial").exists());
-        let blocked = dir.join("blocked.json");
-        std::fs::create_dir_all(blocked.join("inside")).unwrap();
-        assert!(write_synced(&blocked, b"{}").is_err());
-        assert!(blocked.join("inside").is_dir(), "the folder in the way is untouched");
-        assert!(!dir.join("blocked.json.partial").exists(), "the partial file is removed");
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
 
     #[test]
     fn the_games_player_name_survives_the_launchers_save() {
@@ -199,5 +284,88 @@ mod tests {
         assert!(!serde_json::to_string(&Settings::default()).unwrap().contains("masters"));
         assert!(crate::masters::old_member_note(true).is_some_and(|n| n.contains(ssx_core::OFFICIAL_MASTER)));
         assert_eq!(crate::masters::old_member_note(false), None);
+    }
+
+    fn temp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("launcher-settings-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("settings.json")
+    }
+
+    fn file(path: &Path) -> Json {
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn the_games_name_survives_a_launcher_save_from_an_older_copy() {
+        let path = temp("name");
+        std::fs::write(&path, r#"{"vsync": true, "track": "alps0101", "language": "fr"}"#).unwrap();
+        let mut saved = Settings::load_from(&path);
+        let mut settings = saved.clone();
+        settings_file::update_object(&path, |m| {
+            m.insert("player_name".into(), Json::String("Elise".into()));
+            Ok(())
+        })
+        .unwrap();
+        let base = ssx_assets::display::DisplaySettings::default();
+        let sized = ssx_assets::display::DisplaySettings { window: Some((1600, 900)), ..base.clone() };
+        ssx_assets::display::write_member(&path, &base, &sized).unwrap();
+        settings.display.mode = ssx_assets::display::WindowMode::Borderless;
+        let written = settings.save_to(&path, &saved).unwrap();
+        (settings, saved) = (written.clone(), written);
+        let v = file(&path);
+        assert_eq!((v["player_name"].clone(), v["language"].clone()), (Json::from("Elise"), Json::from("fr")));
+        assert_eq!(v["display"]["mode"], "Borderless");
+        assert_eq!(v["display"]["window"], serde_json::json!({"width": 1600, "height": 900}), "the game's size kept");
+        assert_eq!(settings.player_name.as_deref(), Some("Elise"), "the launcher shows the game's name");
+        assert_eq!(saved.display.window, Some((1600, 900)));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn the_launcher_takes_what_the_game_wrote_when_it_closes() {
+        let path = temp("reload");
+        std::fs::write(&path, r#"{"vsync": true, "sfx_volume": 1.0}"#).unwrap();
+        let mut saved = Settings::load_from(&path);
+        let mut settings = Settings { vsync: false, ..saved.clone() };
+        settings_file::update_object(&path, |m| {
+            m.insert("player_name".into(), Json::String("Elise".into()));
+            m.insert("sfx_volume".into(), Json::from(0.5));
+            Ok(())
+        })
+        .unwrap();
+        settings.reload_from(&path, &mut saved).unwrap();
+        assert_eq!((settings.player_name.as_deref(), settings.sfx_volume, settings.vsync), (Some("Elise"), 0.5, false));
+        assert_eq!((saved.sfx_volume, saved.vsync), (0.5, true));
+        assert_ne!(settings, saved, "the launcher's own change is still to be saved");
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_broken_file_is_never_written_over_and_unknown_members_are_kept() {
+        let path = temp("broken");
+        let settings = Settings { vsync: false, ..Settings::default() };
+        std::fs::write(&path, b"{\"vsync\": tru").unwrap();
+        let loaded = Settings::load_from(&path);
+        assert!(loaded == Settings { notes: loaded.notes.clone(), ..Settings::default() } && loaded.notes.len() == 1);
+        assert!(matches!(settings.save_to(&path, &loaded), Err(UpdateError::Unreadable(_))));
+        assert_eq!(std::fs::read(&path).unwrap(), b"{\"vsync\": tru", "left as it was");
+        let (aside, written) = settings.replace_unreadable_at(&path).unwrap();
+        assert_eq!(std::fs::read(&aside).unwrap(), b"{\"vsync\": tru");
+        assert!(!written.vsync && file(&path)["vsync"] == false);
+
+        let text = r#"{"future": {"a": [1]}, "hud": "yes", "objects": false, "masters": ["https://m.example.org"]}"#;
+        std::fs::write(&path, text).unwrap();
+        let saved = Settings::load_from(&path);
+        assert!(!saved.objects && saved.hud, "the rest read, `hud` its default");
+        assert!(saved.notes.len() == 1 && saved.notes[0].contains("\"hud\""), "{:?}", saved.notes);
+        let settings = Settings { sfx: false, ..saved.clone() };
+        let written = settings.save_to(&path, &saved).unwrap();
+        let v = file(&path);
+        assert_eq!((v["future"].clone(), v["hud"].clone()), (serde_json::json!({"a": [1]}), Json::from("yes")));
+        assert!(v["sfx"] == false && v.get("masters").is_none(), "{v}");
+        assert!(!written.sfx && !written.objects);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }

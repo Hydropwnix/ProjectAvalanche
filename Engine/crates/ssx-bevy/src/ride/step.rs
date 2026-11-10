@@ -11,7 +11,7 @@ use super::clock::{lerp_pose, pose_of};
 use super::controls::PadLock;
 use super::scripted::{AutoRewind, avalanche_override, back_script};
 use super::start::level_start;
-use super::{Clock, OutroRun, Ride};
+use super::{CLASSIC_GRIND_HOLD_TICKS, CLASSIC_REWIND_HOLD_TICKS, CLASSIC_WINGSUIT_HOLD_TICKS, Clock, OutroRun, Ride};
 use crate::rider::anim::RiderAnimation;
 
 impl Ride {
@@ -91,6 +91,7 @@ impl Ride {
         }
         if let Some(mut state) = level_start(&self.world, self.spawn, self.intro.as_ref()) {
             state.score.boost = self.boost_meter.clamp(0.0, self.world.tuning.scoring.max_boost);
+            state.tricks.classic = self.classic;
             state.carry_controller_state(&self.state);
             self.curr = pose_of(&state);
             self.prev = self.curr;
@@ -102,6 +103,8 @@ impl Ride {
                 .and_then(|l| l.intro.as_ref())
                 .map(|i| ssx_physics::helicopter::Helicopter::with_flight(i, self.heli_flight.clone()));
             self.state = state;
+            (self.classic_grind_ticks, self.classic_rewind_ticks) = (0.0, 0.0);
+            self.classic_wingsuit_ticks = 0.0;
             self.steps = 0;
             self.distance = 0.0;
             self.session.reset();
@@ -160,9 +163,6 @@ impl Ride {
             }
             a.reset();
         }
-        let pad = RewindPad { flip_accel: self.input.stick().y, ..self.rewind_pad };
-        self.state.grind.pad_l2 = self.l2;
-        self.state.wingsuit.pad_r1 = self.r1;
         let graph = anim.as_deref_mut().map(RiderAnimation::graph_mut);
         let was_in_area = self.state.avalanche.switches.carving_sensitivity > 0.0;
         if let Some(race) = self.session.bots.as_mut()
@@ -188,6 +188,24 @@ impl Ride {
         }
         let (input, tricks) = self.locked_controls();
         let at_start = self.state.start.is_some();
+        let (mut grind_held, mut wingsuit_held, mut rewind_held) = (self.l2, self.r1, self.rewind_pad.rewind_held);
+        if self.classic {
+            let dt = self.step_ticks;
+            let held = !(at_start || self.pads_held || self.chat_held);
+            self.classic_grind_ticks = if held && tricks.y { self.classic_grind_ticks + dt } else { 0.0 };
+            self.classic_rewind_ticks = if held && tricks.b { self.classic_rewind_ticks + dt } else { 0.0 };
+            self.classic_wingsuit_ticks = if held && input.jump { self.classic_wingsuit_ticks + dt } else { 0.0 };
+            grind_held = self.classic_grind_ticks >= CLASSIC_GRIND_HOLD_TICKS;
+            wingsuit_held = self.classic_wingsuit_ticks >= CLASSIC_WINGSUIT_HOLD_TICKS;
+            rewind_held = self.classic_rewind_ticks >= CLASSIC_REWIND_HOLD_TICKS;
+        } else {
+            (self.classic_grind_ticks, self.classic_rewind_ticks) = (0.0, 0.0);
+            self.classic_wingsuit_ticks = 0.0;
+        }
+        self.state.tricks.classic = self.classic;
+        self.state.grind.pad_l2 = grind_held;
+        self.state.wingsuit.pad_r1 = wingsuit_held;
+        let pad = RewindPad { flip_accel: input.stick().y, rewind_held, ..self.rewind_pad };
         let gate = if at_start { self.start_gate } else { super::live::StartGate::Free };
         let released =
             || (ssx_physics::rider::Input::default(), ssx_physics::rider::TrickInput::default(), RewindPad::default());

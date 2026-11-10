@@ -5,6 +5,7 @@ use crate::{DT_TICKS, KMH_PER_M_PER_TICK};
 
 mod air;
 mod boost_press;
+mod prewind;
 
 fn ride(w: &World, s: &mut RiderState, input: &Input, steps: usize, mut each: impl FnMut(&RiderState)) {
     for _ in 0..steps {
@@ -408,4 +409,56 @@ fn pid_drives_the_rate_to_the_set_point() {
         p.update(2.0, 5.0);
     }
     assert!((p.x - 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn the_classic_carve_adds_the_dpad_to_the_left_stick() {
+    let stick = Input { steer: 1.0, tuck: 0.5, ..Input::default() };
+    let dpad = Input { dpad: Vec2::new(1.0, 1.0), ..Input::default() };
+    let both = Input { steer: 1.0, tuck: 0.5, dpad: Vec2::new(1.0, 1.0), ..Input::default() };
+    assert_eq!(dpad.carve_stick(false), Vec2::ZERO);
+    assert_eq!(dpad.carve_stick_y(false), 0.0);
+    assert!((stick.carve_stick(false) - Vec2::new(1.0, 0.5).normalize()).length() < 1e-6);
+    assert_eq!(stick.carve_stick_y(false), 0.5);
+    assert_eq!(stick.carve_stick(true), stick.carve_stick(false));
+    assert!((dpad.carve_stick(true) - Vec2::new(1.0, 1.0).normalize()).length() < 1e-6);
+    assert_eq!(dpad.carve_stick_y(true), 1.0);
+    assert!((both.carve_stick(true) - Vec2::new(1.0, 1.0).normalize()).length() < 1e-6);
+    assert_eq!(both.carve_stick_y(true), 1.0, "the disc clamp does not reach the y axis function");
+    let cancel = Input { dpad: Vec2::new(-1.0, -0.5), ..stick };
+    assert!(cancel.carve_stick(true).length() < 1e-6 && cancel.carve_stick_y(true) == 0.0);
+}
+
+#[test]
+fn the_classic_air_reads_the_dpad_only() {
+    let stick = Input { steer: 0.5, brake: 0.25, ..Input::default() };
+    let dpad = Input { dpad: Vec2::new(-1.0, 1.0), ..Input::default() };
+    assert_eq!(stick.air_stick(false), Vec2::new(0.5, -0.25));
+    assert_eq!(dpad.air_stick(false), Vec2::ZERO);
+    assert_eq!(stick.air_stick(true), Vec2::ZERO);
+    assert_eq!(dpad.air_stick(true), Vec2::new(-1.0, 1.0));
+}
+
+#[test]
+fn the_classic_scheme_steers_with_the_left_stick() {
+    let theta = 10f32.to_radians();
+    let w = world(plane(3000.0, theta));
+    let at = Vec3::new(0.0, 2000.0 * theta.tan() + 1.0, -2000.0);
+    let turn = |classic: bool, input: Input| {
+        let mut s = moving(&w, at, Vec3::Z, 0.25);
+        s.tricks.classic = classic;
+        let start = s.heading;
+        ride(&w, &mut s, &input, 40, |_| {});
+        start.angle_between(s.heading)
+    };
+    let stick = turn(true, Input { steer: 1.0, ..Input::default() });
+    let dpad = turn(true, Input { dpad: Vec2::X, ..Input::default() });
+    let standard = turn(false, Input { steer: 1.0, ..Input::default() });
+    assert!(stick > 0.1, "the classic left stick carves: {stick}");
+    assert!(dpad > 0.05, "the classic D-pad carves: {dpad}");
+    assert!(standard > 0.1, "the standard left stick carves: {standard}");
+    assert!(
+        turn(false, Input { dpad: Vec2::X, ..Input::default() }) < 1e-3,
+        "the standard D-pad is not a carving input"
+    );
 }

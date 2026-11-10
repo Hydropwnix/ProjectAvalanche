@@ -140,8 +140,13 @@ impl EventObjectives {
 pub const EVENT_TYPE_SCRIPT: &str = "common/track_environment/drop_event_type.lua";
 
 impl EventObjectives {
-    pub fn for_event_type(big_root: &Path, drop: Option<&DropScripts>, event_type: crate::event::EventType) -> Self {
-        let scripts = DropScripts::of(big_root, &[EVENT_TYPE_SCRIPT.to_string()]);
+    pub fn for_map(
+        big_root: &Path,
+        drop: Option<&DropScripts>,
+        event_type: crate::event::EventType,
+        list: &[String],
+    ) -> Self {
+        let scripts = DropScripts::of(big_root, list);
         let slots = crate::character::GearStats::default_gear().slots;
         let batch = drop.map_or_else(|| scripts.batch(), |d| d.level_batch(Some(&scripts)));
         let probe = Probe::run(&batch, Some(event_type as i32), slots);

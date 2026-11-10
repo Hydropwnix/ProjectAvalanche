@@ -12,6 +12,7 @@ pub const DP: &str = "dp_ava_maps";
 pub const DP_ROWS: &str = "dp_ava_maps_rows";
 pub const DP_ROWS_INDEX: &str = "dp_ava_maps_rows_index";
 pub const DP_DETAILS: &str = "dp_ava_maps_details";
+pub const DP_WINDOW: &str = "dp_ava_maps_window";
 pub const OPEN: &str = "go_to_ava_maps";
 pub const MESSAGE: &str = "ava_maps_message";
 pub const MESSAGE_OK: &str = "do_ava_maps_message_ok";
@@ -165,7 +166,7 @@ pub fn activate(fe: &mut FrontEnd, env: &mut FeEnv) {
     m.listed = false;
     m.requests.push(MapRequest::List);
     fe.note("maps: open, the list asked of the host");
-    fe.publish.extend([DP.into(), DP_ROWS.into(), DP_ROWS_INDEX.into(), DP_DETAILS.into()]);
+    fe.publish.extend([DP.into(), DP_ROWS.into(), DP_ROWS_INDEX.into(), DP_DETAILS.into(), DP_WINDOW.into()]);
 }
 
 pub fn deactivate(fe: &mut FrontEnd) {
@@ -189,7 +190,7 @@ pub fn listed(fe: &mut FrontEnd, rows: Vec<MapRow>, more: usize) {
         m.mode = 0;
     }
     fe.note(format!("maps: {} listed ({} more not)", fe.ava.maps.rows.len(), more));
-    fe.publish.extend([DP.into(), DP_ROWS.into(), DP_ROWS_INDEX.into(), DP_DETAILS.into()]);
+    fe.publish.extend([DP.into(), DP_ROWS.into(), DP_ROWS_INDEX.into(), DP_DETAILS.into(), DP_WINDOW.into()]);
 }
 
 pub fn refused(fe: &mut FrontEnd, reason: &str) {
@@ -260,7 +261,7 @@ pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &ActionPa
     };
     if moved {
         fe.ava.maps.mode = 0;
-        fe.publish.extend([DP_ROWS.into(), DP_ROWS_INDEX.into(), DP_DETAILS.into()]);
+        fe.publish.extend([DP_ROWS.into(), DP_ROWS_INDEX.into(), DP_DETAILS.into(), DP_WINDOW.into()]);
     }
 }
 
@@ -396,6 +397,7 @@ pub fn build(fe: &FrontEnd, cx: &mut Ctx, loc: &mut Localization, dp: &str) -> O
             Some(o)
         }
         DP_ROWS_INDEX => Some(Value::Number(m.window.focus as f64)),
+        DP_WINDOW => Some(super::window_object(cx, m.rows.len(), m.window.first)),
         DP_ROWS => {
             let w = m.window;
             let mut out = Vec::new();

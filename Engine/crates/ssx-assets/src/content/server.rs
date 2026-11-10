@@ -89,10 +89,10 @@ impl GameContent {
                 changed.extend(registry.ids_of(Layer::Server, &name));
             }
             self.mount_records(&mut registry);
+            self.set_session_policy(Some(policy));
             aside
         };
         self.set_sim_policy(policy);
-        self.set_session_policy(Some(policy));
         self.clear_track_decisions();
         self.note_change(changed);
         SessionMount { policy_before, aside, resources, switched_off }
@@ -112,11 +112,19 @@ impl GameContent {
                     changed.extend(registry.ids_of(Layer::ClientMods, name));
                 }
             }
+            self.set_session_policy(None);
         }
         self.set_sim_policy(mount.policy_before);
-        self.set_session_policy(None);
         self.clear_track_decisions();
         self.note_change(changed);
+    }
+
+    pub fn without_session<R>(&self, f: impl FnOnce(&ssx_content::registry::Registry) -> R) -> Option<R> {
+        let registry = self.registry.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.session_policy().is_some() || registry.mounts().any(|m| m.layer == Layer::Server) {
+            return None;
+        }
+        Some(f(&registry))
     }
 
     pub fn swap_session_resource(&self, mount: &mut SessionMount, name: &str, source: Option<PackageSource>) {
@@ -146,9 +154,7 @@ impl GameContent {
 pub const MAX_NAMED_DIFFERENCES: usize = 8;
 
 pub fn content_index(data: &Path) -> Result<ContentIndex, String> {
-    let path = data.join(super::hash::INDEX_FILE);
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    ContentIndex::from_tsv(&text).map_err(|e| format!("{}: {e:?}", path.display()))
+    crate::folder::content_index(data).map_err(|e| e.to_string())
 }
 
 impl GameContent {
@@ -216,5 +222,36 @@ impl GameContent {
         };
         let sid = sid.map_err(|e| format!("{shown}: {e:#}"))?;
         Ok((sid.id, sid.rows))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_registry_is_read_without_a_session_only_while_none_is_mounted() {
+        let dir = std::env::temp_dir().join(format!("ssx-without-session-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let srv = dir.join("srv");
+        std::fs::create_dir_all(srv.join("models")).unwrap();
+        let manifest =
+            "[resource]\nname = \"srv\"\nversion = \"1.0.0\"\napi = 1\n[add]\n\"model/m\" = \"models/m.gltf\"\n";
+        std::fs::write(srv.join("resource.toml"), manifest).unwrap();
+        std::fs::write(srv.join("models/m.gltf"), br#"{"asset":{"version":"2.0"},"buffers":[]}"#).unwrap();
+        let content = GameContent::of(&dir.join("data/big"));
+        let id: ContentId = "srv:model/m".parse().unwrap();
+        assert_eq!(content.without_session(|r| r.has(&id)), Some(false));
+        let source = PackageSource::open_as(&srv, ssx_content::package::Origin::Server).unwrap();
+        let mount = content.mount_session(ClientMods::Presentation, vec![source]);
+        assert!(content.with_registry(|r| r.has(&id)), "the session's package is mounted");
+        assert_eq!(content.without_session(|r| r.has(&id)), None, "nothing is read while it is");
+        content.end_session(mount);
+        assert_eq!(content.without_session(|r| r.has(&id)), Some(false), "read again after the session's end");
+        let mount = content.mount_session(ClientMods::None, Vec::new());
+        assert_eq!(content.without_session(|_| ()), None, "a set-aside of the client mods is a session's too");
+        content.end_session(mount);
+        assert_eq!(content.without_session(|_| ()), Some(()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
