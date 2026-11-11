@@ -1,5 +1,8 @@
 use super::*;
 
+// TODO(guess): an uber crash still sliding after 5 s on the ground (counted across its bounces) is brought to a stop; known: each bounce lands afresh and restarts `carving.ride_ticks`, so on a bumpy slope `uber_crash_ticks_to_full_friction` was never reached and the rider kept tumbling on his back; settle: how the game counts an uber crash's ground time across bounces (its carving node's ride ticks on re-landing).
+const UBER_STUCK_TICKS: f32 = 300.0;
+
 pub(super) fn ride(s: &mut RiderState, w: &World, input: &Input, flags: (bool, bool), dt: f32) -> Vec3 {
     let (recovery_input, level_complete) = flags;
     let (t, c) = (&w.tuning, &w.tuning.carving);
@@ -71,10 +74,12 @@ pub(super) fn ride(s: &mut RiderState, w: &World, input: &Input, flags: (bool, b
     let av_on = !s.boost.is_boosting && !level_complete && s.grind.carving.state != 2;
     let av = s.avalanche.read_inputs(at, av_on, s.carving.ride_ticks);
     let alive = s.death.is_alive();
+    let uber_ticks = s.carving.ride_ticks.max(s.uber_slide_ticks);
     let latch = (speed < c.stopped_threshold
         && (s.force_stop
             || (is_dead && !vertical)
-            || (uber && !vertical && s.carving.ride_ticks >= c.uber_crash_ticks_to_full_friction)))
+            || (uber && !vertical && uber_ticks >= c.uber_crash_ticks_to_full_friction)))
+        || (uber && !vertical && s.uber_slide_ticks >= UBER_STUCK_TICKS)
         || s.janked.janked;
     let stopped = s.stopped || latch;
     let mut q = ground_frame(s.alignment, n);
@@ -140,7 +145,7 @@ pub(super) fn ride(s: &mut RiderState, w: &World, input: &Input, flags: (bool, b
             uber,
             grind_or_rock: s.grind.carving.state != 0 || s.landing.bailed_because_of_rock,
             vertical,
-            ride_ticks: s.carving.ride_ticks,
+            ride_ticks: uber_ticks,
             can_brake,
         },
     );
@@ -340,6 +345,7 @@ pub(super) fn ride(s: &mut RiderState, w: &World, input: &Input, flags: (bool, b
         s.carving.on_ground_ticks += dt;
     }
     s.carving.ride_ticks += dt;
+    s.uber_slide_ticks = if uber { s.uber_slide_ticks + dt } else { 0.0 };
     s.avalanche.end_of_update(s.landing.bail_on_landing, dt);
     s.carving.initialized = true;
     let request_stop = stop_test(t, speed_out, out.a.length(), &s.inputs, s.stopped, vertical, pressing);
