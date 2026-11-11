@@ -145,6 +145,16 @@ mod tests {
         builder.get_mut().extend_from_slice(&vec![0u8; pad]);
     }
 
+    fn sized(builder: &mut tar::Builder<&mut Vec<u8>>, name: &str, size: u64) {
+        let mut header = tar::Header::new_gnu();
+        header.set_path(name).unwrap();
+        header.set_size(size);
+        header.set_mode(0o644);
+        header.set_entry_type(EntryType::Regular);
+        header.set_cksum();
+        builder.get_mut().extend_from_slice(header.as_bytes());
+    }
+
     #[test]
     fn files_under_one_folder_are_written_bare() {
         let root = temp_dir("plain");
@@ -216,16 +226,6 @@ mod tests {
         std::fs::create_dir(&out).unwrap();
         assert!(extract(&path, &out).is_err());
         std::fs::remove_dir_all(&root).unwrap();
-    }
-
-    fn sized(builder: &mut tar::Builder<&mut Vec<u8>>, name: &str, size: u64) {
-        let mut header = tar::Header::new_gnu();
-        header.set_path(name).unwrap();
-        header.set_size(size);
-        header.set_mode(0o644);
-        header.set_entry_type(EntryType::Regular);
-        header.set_cksum();
-        builder.get_mut().extend_from_slice(header.as_bytes());
     }
 
     #[test]
