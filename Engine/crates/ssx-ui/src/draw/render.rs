@@ -190,6 +190,9 @@ impl Renderer {
         if !inst.visible && !inh.mask {
             return;
         }
+        if !inh.mask && hidden_side_dimmer(lib, player, inst) {
+            return;
+        }
         // TODO(guess): an instance with normal (or layer) blending pushes nothing, so the innermost other mode of its ancestors applies; settle: which render-tree nodes push.
         let blend = if inh.mask {
             BlendMode::Normal
@@ -611,6 +614,13 @@ fn bitmap_quad(b: crate::library::BitmapDef) -> ShapeMesh {
         smooth: true,
     };
     ShapeMesh { layers: vec![shape::ShapeLayer { paint, mesh: Arc::new(mesh) }] }
+}
+
+// TODO(guess): the menus' side dimmer (dimmer.gfx, `mcDimmer`'s character 2: a dark sheet down the left of the stage under the World Tour and Explore panels) is not drawn, since on a window wider than 16:9 it ends in a hard edge at the stage's side; the full-screen dimmer beside it (character 4, behind popups) is kept; a port choice; settle: none needed.
+fn hidden_side_dimmer(lib: &Library, player: &Player, inst: &Instance) -> bool {
+    inst.character.as_ref().is_some_and(|c| c.id == 2)
+        && inst.parent.and_then(|p| player.get(p)).is_some_and(|p| p.name == "mcDimmer")
+        && lib.movie(inst.movie).path.to_ascii_lowercase().rsplit(['/', '\\']).next() == Some("dimmer.gfx")
 }
 
 #[cfg(test)]
