@@ -111,6 +111,25 @@ pub struct GameFrame {
     pub keys: Vec<KeyEvent>,
     pub typing: bool,
     pub hud_busy: bool,
+    pub screen: Option<ScreenView>,
+    pub cursor: Option<(f32, f32)>,
+    pub multiplayer: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScreenView {
+    pub width: u32,
+    pub height: u32,
+    pub left: f32,
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+}
+
+impl Default for ScreenView {
+    fn default() -> Self {
+        ScreenView { width: 1280, height: 720, left: 0.0, top: 0.0, right: 1280.0, bottom: 720.0 }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -192,6 +211,7 @@ pub struct Orders {
     pub fade: Option<FadeOrder>,
     pub hud: Vec<HudOrder>,
     pub preload: Vec<ContentId>,
+    pub capture: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -260,6 +280,7 @@ pub struct GameState {
     pub(crate) last_position: Option<[f32; 3]>,
     pub(crate) made: BTreeMap<u64, ElementId>,
     pub(crate) session: BTreeMap<u16, (ElementId, ElementId)>,
+    pub(crate) capture: std::collections::BTreeSet<String>,
 }
 
 #[derive(Default)]

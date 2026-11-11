@@ -81,7 +81,12 @@ pub(super) fn pointer_system(
     mut shell: ResMut<super::Shell>,
     mut ui: ResMut<GameUiRes>,
     level: Option<Res<crate::shell::game_level::LevelGame>>,
+    #[cfg(feature = "scripts")] capture: Option<Res<crate::script::MenuCapture>>,
 ) {
+    #[cfg(feature = "scripts")]
+    let captured = capture.is_some_and(|c| c.0);
+    #[cfg(not(feature = "scripts"))]
+    let captured = false;
     let riding =
         level.as_ref().is_some_and(|l| l.takes_input()) && !ui.fe.as_ref().is_some_and(|f| f.game_pause.paused);
     let other_input = p.keys.get_just_pressed().len() > 0
@@ -101,13 +106,20 @@ pub(super) fn pointer_system(
             None => warn!("shell: pointer at window ({x}, {y}): no UI viewport to map it to (script)"),
         }
     }
-    pointer_frame(&mut p, &mut ui, scale, active, other_input);
+    pointer_frame(&mut p, &mut ui, scale, active, other_input, captured);
     for line in std::mem::take(&mut ui.pointer.log) {
         info!("{line}");
     }
 }
 
-fn pointer_frame(p: &mut PointerInput, ui: &mut GameUiRes, scale: f32, active: bool, other_input: bool) {
+fn pointer_frame(
+    p: &mut PointerInput,
+    ui: &mut GameUiRes,
+    scale: f32,
+    active: bool,
+    other_input: bool,
+    captured: bool,
+) {
     if other_input {
         p.state.shown = false;
     }
@@ -138,7 +150,7 @@ fn pointer_frame(p: &mut PointerInput, ui: &mut GameUiRes, scale: f32, active: b
         if down {
             p.state.shown = true;
         }
-        if active || !down {
+        if (active && !captured) || !down {
             ui.pointer_button(b, down);
         }
     }
@@ -154,15 +166,15 @@ fn pointer_frame(p: &mut PointerInput, ui: &mut GameUiRes, scale: f32, active: b
             }
         }
     }
-    if active && notches != 0 {
+    if active && !captured && notches != 0 {
         ui.pointer_wheel(notches);
     }
     let kind = match p.scene.as_deref_mut().and_then(|s| s.vm.as_mut().map(|vm| (vm, &mut s.lib, &mut s.player))) {
         Some((vm, lib, player)) => vm.pointer_cursor(lib, player),
         None => Cursor::Arrow,
     };
-    let visible = p.state.shown && active && kind != Cursor::Hidden;
-    let hand = kind == Cursor::Hand;
+    let visible = p.state.shown && (captured || (active && kind != Cursor::Hidden));
+    let hand = !captured && kind == Cursor::Hand;
     if p.state.applied != Some((visible, hand)) {
         p.state.applied = Some((visible, hand));
         info!(

@@ -6,6 +6,7 @@ mod net;
 mod orders;
 mod overlay;
 mod snapshot;
+pub(crate) use snapshot::MenuCapture;
 mod sounds;
 mod worker;
 
@@ -163,6 +164,7 @@ fn bridge_of(
 
 fn parts(world: &mut World, monitor: bool) {
     world.init_resource::<snapshot::Inbox>();
+    world.init_resource::<snapshot::MenuCapture>();
     world.init_resource::<local::LocalScripts>();
     world.init_resource::<markers::MarkerScene>();
     world.init_resource::<draw::DrawPool>();
@@ -238,7 +240,14 @@ impl Plugin for ScriptPlugin {
             FixedUpdate,
             snapshot::ride_events.after(RideStepSet).run_if(resource_exists::<crate::ride::Ride>).run_if(up),
         )
-        .add_systems(PreUpdate, (snapshot::keys, policy).chain().after(bevy::input::InputSystems).run_if(up))
+        .add_systems(
+            PreUpdate,
+            (snapshot::keys, snapshot::hold_menu_keys, policy)
+                .chain()
+                .after(bevy::input::InputSystems)
+                .before(crate::shell::game_mode::pads_frame)
+                .run_if(up),
+        )
         .add_systems(
             Update,
             (
@@ -335,6 +344,7 @@ struct Routes<'w> {
     sounds: ResMut<'w, sounds::ScriptSounds>,
     ui: ResMut<'w, crate::shell::game_mode::GameUiRes>,
     music: Option<Res<'w, crate::audio::music::Music>>,
+    capture: ResMut<'w, snapshot::MenuCapture>,
     #[cfg(feature = "net")]
     script_send: Option<ResMut<'w, ssx_net::client::ScriptSend>>,
 }
@@ -413,6 +423,7 @@ fn frame(
     };
     if std::mem::take(&mut bridge.clear) {
         fx.clear();
+        r.capture.0 = false;
         if let Some(m) = r.music.as_ref() {
             m.end_script_song();
         }
@@ -451,7 +462,12 @@ fn frame(
                 big_root: bridge.content.big_root().to_path_buf(),
                 scope: r.music.as_ref().map(|m| m.scope().clone()),
             };
+            let capture = out.report.orders.capture;
             fx.apply(out.report, place);
+            if r.capture.0 != capture {
+                info!("scripts: the menu keys (arrows, Enter, Backspace) {}", if capture { "held" } else { "let go" });
+                r.capture.0 = capture;
+            }
         }
     }
     let holds =
@@ -463,6 +479,9 @@ fn frame(
     let seen = bridge.seen(view.live());
     let mut f = view.build(&mut inbox, fx.state, &content, fx.values, loc, seen);
     f.typing = typing;
+    f.screen = fx.draws.screen;
+    f.cursor = fx.draws.cursor;
+    f.multiplayer = view.in_session() || multiplayer_screens(ui.fe.as_ref());
     let server = match (view.ride(), player) {
         (Some(ride), Some(name)) => local::server_frame(f.now, ride, &mut local, &name).map(Box::new),
         _ => None,
@@ -470,6 +489,18 @@ fn frame(
     if bridge.send(worker::Job::Frame(Box::new(f), server)) {
         bridge.in_flight = true;
         bridge.sent_epoch = bridge.epoch;
+    }
+}
+
+fn multiplayer_screens(fe: Option<&ssx_ui::game::fe::FrontEnd>) -> bool {
+    #[cfg(feature = "net")]
+    {
+        fe.is_some_and(|fe| fe.ava.browser.active)
+    }
+    #[cfg(not(feature = "net"))]
+    {
+        let _ = fe;
+        false
     }
 }
 

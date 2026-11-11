@@ -250,3 +250,16 @@ fn a_play_music_flood_loads_one_song_at_a_time() {
     assert_eq!(got.map(|(i, r)| (i.to_string(), r.ok())), Some(("ssx:music/licensed/59".into(), Some(59))));
     assert!(!loads.in_flight());
 }
+
+#[test]
+fn the_screen_is_the_part_of_the_stage_the_window_shows() {
+    use ssx_ui::render::ScaleMode;
+    let near = |a: f32, b: f32| (a - b).abs() < 0.01;
+    let s = draw::screen_view((1920, 1080), ScaleMode::NoBorder).unwrap();
+    assert!(near(s.left, 0.0) && near(s.top, 0.0) && near(s.right, 1280.0) && near(s.bottom, 720.0), "{s:?}");
+    let s = draw::screen_view((3440, 1440), ScaleMode::NoBorder).unwrap();
+    assert!(near(s.top, 0.0) && near(s.bottom, 720.0) && near(s.left, -220.0) && near(s.right, 1500.0), "{s:?}");
+    let s = draw::screen_view((1024, 768), ScaleMode::NoBorder).unwrap();
+    assert!(near(s.top, 0.0) && near(s.bottom, 720.0) && near(s.left, 160.0) && near(s.right, 1120.0), "{s:?}");
+    assert_eq!(draw::screen_view((0, 720), ScaleMode::NoBorder), None);
+}

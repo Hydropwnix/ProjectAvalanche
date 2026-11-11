@@ -196,6 +196,11 @@ impl ScriptHost {
         let mut w = self.shared.lock();
         let mut orders = std::mem::take(&mut w.game.orders);
         orders.draws = Some(drawn);
+        let held: Vec<String> = w.game.capture.iter().filter(|p| w.running(p).is_none()).cloned().collect();
+        for p in held {
+            w.game.capture.remove(&p);
+        }
+        orders.capture = !w.game.capture.is_empty();
         let markers = (w.game.markers.generation != generation_before).then(|| w.game.markers.list());
         Ok(FrameReport { orders, markers, skipped: w.game.skipped })
     }

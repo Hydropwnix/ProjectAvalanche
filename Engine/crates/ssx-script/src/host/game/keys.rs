@@ -2,7 +2,10 @@ pub const BINDABLE: &[&str] = &[
     "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f10", "f11", "f12", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
     "num_0", "num_1", "num_2", "num_3", "num_4", "num_5", "num_6", "num_7", "num_8", "num_9", "num_add", "num_sub",
     "num_mul", "num_div", "num_dec", "b", "m", "o", "p", "u", ",", ".", "/", ";", "'", "[", "]", "-", "=", "`", "\\",
-    "insert", "pause", "scroll",
+    "insert", "del", "pause", "scroll", "up", "down", "left", "right", "enter", "bksp", "dp_up", "dp_down", "dp_left",
+    "dp_right", "pad_a", "pad_b", "pad_x", "pad_y", "pad_lb", "pad_rb", "pad_view", "pad_menu", "pad_ls", "pad_rs",
+    "a", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "n", "q", "r", "s", "t", "v", "w", "x", "y", "z", "space",
+    "mouse1", "mouse2", "mouse3", "wheel_up", "wheel_dn",
 ];
 
 pub const STATES: &[&str] = &["down", "up", "both"];

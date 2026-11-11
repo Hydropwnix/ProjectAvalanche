@@ -6,7 +6,7 @@ use ssx_content::manifest::{Files, Scripts};
 use ssx_script::Limits;
 use ssx_script::host::game::{
     Catalog, ContentMeta, Draw, GameFrame, Ground, InstanceView, KeyEvent, LevelView, LocalState, MarkerBudget,
-    MarkerHitShape, MarkerMeta, RideEvent, RiderView, StandingView,
+    MarkerHitShape, MarkerMeta, RideEvent, RiderView, ScreenView, StandingView,
 };
 use ssx_script::host::limits::Budgets;
 use ssx_script::host::package::PackageScripts;
@@ -316,12 +316,12 @@ fn draws_are_taken_only_in_render_and_bounded_per_frame() {
 }
 
 #[test]
-fn only_keys_the_game_never_reads_can_be_bound_and_binds_are_capped() {
+fn only_bindable_keys_can_be_bound_and_binds_are_capped() {
     let h = host();
     let src = r#"
-        print(pcall(bindKey, "a", "down", print))
+        print(pcall(bindKey, "f1", "down", print))
         print(pcall(bindKey, "f9", "down", print))
-        print(pcall(bindKey, "space", "down", print))
+        print(pcall(bindKey, "tab", "down", print))
         bindKey("f5", "down", function(k, s) print("bind", k, s) end)
         -- each handler a closure of its own (Luau gives one function without upvalues the same object every time,
         -- and binding one function twice is no new bind)
@@ -492,4 +492,61 @@ fn an_endless_render_and_a_memory_bomb_stop_and_the_canary_goes_on() {
     assert!(h.take_last_output().is_empty());
     let r = h.frame(frame(frames + 1, [0.0, 0.0, 0.0])).unwrap();
     assert_eq!(r.orders.draws.map(|d| d.len()), Some(1), "the canary draws on");
+}
+
+#[test]
+fn a_script_sees_the_window_and_the_part_of_the_stage_it_shows() {
+    let h = host();
+    let src = r#"
+        addEventHandler("onClientRender", root, function()
+            local s = getScreen()
+            print(s.width, s.height, s.left, s.top, s.right, s.bottom)
+        end)
+    "#;
+    start(&h, "menu", src).unwrap();
+    h.frame(frame(1, [0.0; 3])).unwrap();
+    assert_eq!(out(&h, "menu"), ["1280\t720\t0\t0\t1280\t720"], "the whole stage before the game has told");
+    let wide = ScreenView { width: 3440, height: 1440, left: -220.0, top: 0.0, right: 1500.0, bottom: 720.0 };
+    h.frame(GameFrame { screen: Some(wide), ..frame(2, [0.0; 3]) }).unwrap();
+    assert_eq!(out(&h, "menu"), ["3440\t1440\t-220\t0\t1500\t720"], "an ultrawide window shows room beside the stage");
+}
+
+#[test]
+fn a_package_holds_the_menu_keys_until_it_lets_go_or_stops() {
+    let h = host();
+    let src = r#"
+        local n = 0
+        addEventHandler("onClientRender", root, function()
+            n += 1
+            if n == 1 then print(captureMenuKeys(true)) end
+        end)
+        addEventHandler("onClientKey", root, function(key, down) print("key", key, down) end)
+    "#;
+    start(&h, "menu", src).unwrap();
+    let r = h.frame(frame(1, [0.0; 3])).unwrap();
+    assert_eq!(out(&h, "menu"), ["true"]);
+    assert!(r.orders.capture, "the package holds the menu keys");
+    let keys = vec![KeyEvent { key: "enter", down: true }];
+    let r = h.frame(GameFrame { keys, ..frame(2, [0.0; 3]) }).unwrap();
+    assert_eq!(out(&h, "menu"), ["key\tenter\ttrue"], "Enter reaches the scripts");
+    assert!(r.orders.capture, "held until let go");
+    h.stop("menu", "the test is over");
+    let r = h.frame(frame(3, [0.0; 3])).unwrap();
+    assert!(!r.orders.capture, "a stopped package lets go");
+}
+
+#[test]
+fn a_script_sees_the_cursor_and_whether_the_game_is_in_multiplayer() {
+    let h = host();
+    let src = r#"
+        addEventHandler("onClientRender", root, function()
+            local c = getCursor()
+            print(c and c.x or "none", c and c.y or "none", isMultiplayer())
+        end)
+    "#;
+    start(&h, "menu", src).unwrap();
+    h.frame(frame(1, [0.0; 3])).unwrap();
+    assert_eq!(out(&h, "menu"), ["none\tnone\tfalse"]);
+    h.frame(GameFrame { cursor: Some((640.0, 360.0)), multiplayer: true, ..frame(2, [0.0; 3]) }).unwrap();
+    assert_eq!(out(&h, "menu"), ["640\t360\ttrue"]);
 }

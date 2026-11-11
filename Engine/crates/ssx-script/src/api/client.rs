@@ -65,6 +65,10 @@ pub static SPECS: &[Spec] = &[
         &[Ty::Opt(&Ty::Number { min: -WORLD, max: WORLD })],
         ground_height,
     ),
+    spec("captureMenuKeys", &[p("on", Ty::Bool)], &[Ty::Bool], capture_menu_keys),
+    spec("getScreen", &[], &[Ty::Record("Screen")], screen),
+    spec("getCursor", &[], &[Ty::Opt(&Ty::Record("Cursor"))], cursor),
+    spec("isMultiplayer", &[], &[Ty::Bool], is_multiplayer),
 ];
 
 fn local_rider(ctx: &Ctx, _: &Lua, _: Args) -> Result<Vec<Ret>, ApiError> {
@@ -195,6 +199,48 @@ fn ground_height(ctx: &Ctx, _: &Lua, a: Args) -> Result<Vec<Ret>, ApiError> {
     let Some(ground) = ground else { return Ok(vec![Ret::Nil]) };
     let h = ground.height(x, SKY, z).filter(|h| h.is_finite() && f64::from(h.abs()) <= WORLD);
     Ok(vec![h.map_or(Ret::Nil, |h| Ret::Num(f64::from(h)))])
+}
+
+fn screen(ctx: &Ctx, _: &Lua, _: Args) -> Result<Vec<Ret>, ApiError> {
+    let host = ctx.host()?;
+    let w = host.lock();
+    let s = w.game.frame.screen.unwrap_or_default();
+    let n = |v: f32| NetValue::Number(f64::from(v));
+    let v = record(vec![
+        ("width", Some(NetValue::Number(f64::from(s.width)))),
+        ("height", Some(NetValue::Number(f64::from(s.height)))),
+        ("left", Some(n(s.left))),
+        ("top", Some(n(s.top))),
+        ("right", Some(n(s.right))),
+        ("bottom", Some(n(s.bottom))),
+    ]);
+    Ok(vec![Ret::Value(v)])
+}
+
+fn cursor(ctx: &Ctx, _: &Lua, _: Args) -> Result<Vec<Ret>, ApiError> {
+    let host = ctx.host()?;
+    let w = host.lock();
+    let Some((x, y)) = w.game.frame.cursor else { return Ok(vec![Ret::Nil]) };
+    let n = |v: f32| Some(NetValue::Number(f64::from(v)));
+    Ok(vec![Ret::Value(record(vec![("x", n(x)), ("y", n(y))]))])
+}
+
+fn is_multiplayer(ctx: &Ctx, _: &Lua, _: Args) -> Result<Vec<Ret>, ApiError> {
+    let host = ctx.host()?;
+    let w = host.lock();
+    Ok(vec![Ret::Bool(w.game.frame.multiplayer)])
+}
+
+fn capture_menu_keys(ctx: &Ctx, _: &Lua, a: Args) -> Result<Vec<Ret>, ApiError> {
+    let on = a.bool(0).ok_or("no on")?;
+    let host = ctx.host()?;
+    let mut w = host.lock();
+    if on {
+        w.game.capture.insert(ctx.package.clone());
+    } else {
+        w.game.capture.remove(&ctx.package);
+    }
+    Ok(vec![Ret::Bool(true)])
 }
 
 #[cfg(test)]
