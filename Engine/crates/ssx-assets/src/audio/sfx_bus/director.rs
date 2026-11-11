@@ -17,6 +17,7 @@ pub struct SnapshotInputs {
     pub deadly_descent: bool,
     pub kind: i32,
     pub front_end: bool,
+    pub tricky_song: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -74,10 +75,13 @@ impl SnapshotDirector {
         layer2.set(15, on(bit(7) && s.time_dilation < td));
         layer2.set(4, on((bit(0) && bit(14)) || bit(21)));
         layer2.set(5, on(bit(5)));
-        layer2.set(6, on(bit(4)));
-        layer2.set(7, on(bit(5) && bit(4)));
-        layer2.set(8, on(bit(18)));
-        layer2.set(9, on(bit(18) && bit(5)));
+        // TODO(guess): Super Tricky selects the Tricky mixes (music pulled under the "It's Tricky" song) only while that song plays, and mixes as Awesome after it; known: with flag bit 18 alone Tricky_2 held the music down for the whole of Super Tricky and a mod's song never came back; settle: what selects gLayer2's Tricky_2 / Boost_3 in the game (the CSIS mixer's inputs for Super Tricky).
+        let tricky = bit(18) && s.tricky_song;
+        let awesome = bit(4) || bit(18);
+        layer2.set(6, on(awesome));
+        layer2.set(7, on(bit(5) && awesome));
+        layer2.set(8, on(tricky));
+        layer2.set(9, on(tricky && bit(5)));
         layer2.set(11, on(bit(3)));
         use crate::sfx_game::tuning;
         if bit(28) {

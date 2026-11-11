@@ -62,6 +62,14 @@ impl MusicSource for MusicBus {
         }
         done
     }
+
+    fn script_song(&self) -> bool {
+        #[cfg(feature = "scripts")]
+        if let Ok(s) = self.0.lock() {
+            return s.level.is_some();
+        }
+        false
+    }
 }
 
 #[derive(Resource, Clone)]

@@ -103,6 +103,7 @@ impl RiderSounds {
             avalanche_distance: r.avalanche.distance,
             reverb: sfx.reverb,
             front_end: sfx.game_state != 0,
+            tricky_song: matches!(sfx.tricky.playing, 1 | 3 | 5),
         };
         self.snapshots.frame(&mut sfx.mixer.graph, &inputs);
         if r.eog && !self.eog {
@@ -336,8 +337,9 @@ impl RiderSounds {
         if bit(f, 28) {
             sfx.fire_event("trigger_SFX_Awesome_Landing", &p);
         }
+        // TODO(guess): Tricky_State is 2 only while the "It's Tricky" song plays (1 for the rest of Super Tricky); settle: where the game sets the Tricky_State global.
         let tricky = if bit(f, 18) {
-            2
+            if matches!(sfx.tricky.playing, 1 | 3 | 5) { 2 } else { 1 }
         } else if aw {
             1
         } else {
