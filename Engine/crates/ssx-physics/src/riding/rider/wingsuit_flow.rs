@@ -86,7 +86,7 @@ fn aerial_slave_part(s: &mut RiderState, w: &World, input: &Input, side: &mut Ol
 }
 
 fn old_part(s: &mut RiderState, w: &World, input: &Input, node: &mut OldNode, depth: usize, j0: Quat, dt: f32) -> Part {
-    if depth >= MAX_ACTIVE_NODES {
+    if depth > MAX_ACTIVE_NODES {
         return ZERO;
     }
     let new = match &mut node.side {
@@ -109,6 +109,11 @@ fn blend_with(
     dt: f32,
 ) -> Part {
     let Some(b) = blend.as_mut() else { return new };
+    // TODO(guess): past the cap of active nodes the oldest blend is let go (its node dropped) rather than mixed in as no motion; known: a quick wingsuit tap stacks retract over fly over deploy, and the deploy mixed in as a zero part held the fresh fly and retract blends near zero, stopping the rider in mid-air; settle: what the game's blend tree does with a node past its active-node limit.
+    if depth >= MAX_ACTIVE_NODES {
+        *blend = None;
+        return new;
+    }
     match b.advance(dt) {
         None => {
             *blend = None;
