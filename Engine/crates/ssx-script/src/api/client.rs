@@ -65,6 +65,13 @@ pub static SPECS: &[Spec] = &[
         &[Ty::Opt(&Ty::Number { min: -WORLD, max: WORLD })],
         ground_height,
     ),
+    spec(
+        "musicPlayer",
+        &[p("action", Ty::Str { max: 16 }), p("id", Ty::Opt(&Ty::Str { max: 256 }))],
+        &[Ty::Bool],
+        music_player,
+    ),
+    spec("musicVolume", &[p("level", Ty::Number { min: 0.0, max: 1.0 })], &[Ty::Bool], music_volume),
 ];
 
 fn local_rider(ctx: &Ctx, _: &Lua, _: Args) -> Result<Vec<Ret>, ApiError> {
@@ -195,6 +202,55 @@ fn ground_height(ctx: &Ctx, _: &Lua, a: Args) -> Result<Vec<Ret>, ApiError> {
     let Some(ground) = ground else { return Ok(vec![Ret::Nil]) };
     let h = ground.height(x, SKY, z).filter(|h| h.is_finite() && f64::from(h.abs()) <= WORLD);
     Ok(vec![h.map_or(Ret::Nil, |h| Ret::Num(f64::from(h)))])
+}
+
+fn music_player(ctx: &Ctx, _: &Lua, a: Args) -> Result<Vec<Ret>, ApiError> {
+    use crate::host::game::PlayerOrder;
+    let action = a.str(0).ok_or("no action")?;
+    let host = ctx.host()?;
+    let mut w = host.lock();
+    let order = match action {
+        "play" => {
+            let id = a.str(1).ok_or("play: no music id")?;
+            let id = id.parse::<ContentId>().map_err(|e| ApiError::Refused(e.to_string()))?;
+            if id.kind() != Kind::Music {
+                return Err(format!("{id} is not a music id").into());
+            }
+            if !w.game.catalog.ids.contains_key(&id) {
+                return Err(format!("{id}: no source provides it").into());
+            }
+            PlayerOrder::Play { package: ctx.package.clone(), id }
+        }
+        "pause" => PlayerOrder::Pause(true),
+        "resume" => PlayerOrder::Pause(false),
+        "stop" => PlayerOrder::Stop,
+        "seek" => {
+            let secs = a.str(1).and_then(|s| s.trim().parse::<f32>().ok()).ok_or("seek: no seconds")?;
+            if !secs.is_finite() || secs < 0.0 {
+                return Err("seek: seconds from 0".into());
+            }
+            PlayerOrder::Seek(secs)
+        }
+        other => return Err(format!("{other:?}: play, pause, resume, stop or seek").into()),
+    };
+    if w.game.orders.player.len() >= 8 {
+        return Err("at most 8 musicPlayer calls a frame".into());
+    }
+    w.game.orders.player.push(order);
+    Ok(vec![Ret::Bool(true)])
+}
+
+fn music_volume(ctx: &Ctx, _: &Lua, a: Args) -> Result<Vec<Ret>, ApiError> {
+    use crate::host::game::PlayerOrder;
+    let level = a.num(0).ok_or("no level")?;
+    let host = ctx.host()?;
+    let mut w = host.lock();
+    w.game.orders.player.retain(|o| !matches!(o, PlayerOrder::Volume(_)));
+    if w.game.orders.player.len() >= 8 {
+        return Err("at most 8 musicPlayer calls a frame".into());
+    }
+    w.game.orders.player.push(PlayerOrder::Volume(level as f32));
+    Ok(vec![Ret::Bool(true)])
 }
 
 #[cfg(test)]

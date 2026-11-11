@@ -28,11 +28,15 @@ pub struct MusicStream {
 
 impl MusicStream {
     pub fn open(file: MusicFile, region: Option<LoopRegion>) -> Self {
+        Self::open_from(file, region, 0.0)
+    }
+
+    pub fn open_from(file: MusicFile, region: Option<LoopRegion>, from: f64) -> Self {
         let (tx, rx) = sync_channel(AHEAD);
         let name = file.rel.clone();
         let label = name.clone();
         let spawned = std::thread::Builder::new().name("ssx_music_stream".into()).spawn(move || {
-            let end = run(&file, region, &tx);
+            let end = run(&file, region, from, &tx);
             let _ = tx.send(Block::End(end));
         });
         let mut s = Self { name, rx, buf: Vec::new(), pos: 0, ended: None, starved: Arc::new(AtomicU64::new(0)) };
@@ -87,7 +91,7 @@ impl MusicStream {
     }
 }
 
-fn run(file: &MusicFile, region: Option<LoopRegion>, tx: &SyncSender<Block>) -> Result<(), String> {
+fn run(file: &MusicFile, region: Option<LoopRegion>, from: f64, tx: &SyncSender<Block>) -> Result<(), String> {
     let bytes = file.read()?;
     let limits = Limits::music();
     let mut dec = Decoder::open(&file.rel, bytes, &limits).map_err(|e| e.to_string())?;
@@ -107,6 +111,7 @@ fn run(file: &MusicFile, region: Option<LoopRegion>, tx: &SyncSender<Block>) -> 
     if region.is_some() && loop_end <= loop_start {
         return Err(format!("{}: the loop region holds no frames of the file", file.rel));
     }
+    let skip = if region.is_none() && from > 0.0 { at(from).min(info.frames) } else { 0 };
     let mut conv = (info.rate != MUSIC_RATE).then(|| Resampler::with_channels(info.rate, MUSIC_RATE, 2));
     let mut packet = Vec::new();
     let mut stereo: Vec<f32> = Vec::with_capacity(2 * BLOCK_FRAMES);
@@ -125,7 +130,7 @@ fn run(file: &MusicFile, region: Option<LoopRegion>, tx: &SyncSender<Block>) -> 
         let (from, to) = if region.is_some() {
             (loop_start.saturating_sub(start).min(n), loop_end.saturating_sub(start).min(n))
         } else {
-            (0, n)
+            (skip.saturating_sub(start).min(n), n)
         };
         for f in from..to {
             let k = f as usize * ch;

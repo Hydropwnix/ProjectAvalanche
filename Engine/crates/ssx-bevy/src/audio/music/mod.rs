@@ -150,6 +150,15 @@ impl Music {
         }
     }
 
+    pub(crate) fn stop_licensed(&self) {
+        let _turn = GameTurn::take();
+        if let Ok(mut shared) = self.shared.lock()
+            && let Engine::Licensed(lm) = &mut shared.engine
+        {
+            lm.stop(0.5);
+        }
+    }
+
     pub(crate) fn scope(&self) -> &AudioScope {
         &self.scope
     }

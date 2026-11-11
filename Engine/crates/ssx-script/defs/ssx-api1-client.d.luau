@@ -82,6 +82,8 @@ declare function getContent(id: string): ContentInfo?
 declare function listContent(kind: "texture" | "model" | "object" | "material" | "character" | "gear" | "board" | "anim" | "track" | "drop" | "event" | "lighting" | "sky" | "postfx" | "particles" | "sound" | "music" | "movie" | "ui" | "font" | "string" | "tuning" | "scoring" | "script" | "marker" | "map" | "gamemode" | "trick"): { string }
 declare function preloadContent(id: string): boolean
 declare function getGroundHeight(x: number, z: number): number?
+declare function musicPlayer(action: string, id: string?): boolean
+declare function musicVolume(level: number): boolean
 declare function createMarker(id: string, position: Vec3, options: MarkerOptions?): Element
 declare function setMarkerPosition(marker: Element, position: Vec3): boolean
 declare function getMarkerPosition(marker: Element): Vec3

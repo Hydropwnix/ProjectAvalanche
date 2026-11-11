@@ -6,7 +6,7 @@ use ssx_content::manifest::{Files, Scripts};
 use ssx_script::Limits;
 use ssx_script::host::game::{
     Catalog, ContentMeta, Draw, GameFrame, Ground, InstanceView, KeyEvent, LevelView, LocalState, MarkerBudget,
-    MarkerHitShape, MarkerMeta, RideEvent, RiderView, StandingView,
+    MarkerHitShape, MarkerMeta, PlayerOrder, RideEvent, RiderView, StandingView,
 };
 use ssx_script::host::limits::Budgets;
 use ssx_script::host::package::PackageScripts;
@@ -492,4 +492,27 @@ fn an_endless_render_and_a_memory_bomb_stop_and_the_canary_goes_on() {
     assert!(h.take_last_output().is_empty());
     let r = h.frame(frame(frames + 1, [0.0, 0.0, 0.0])).unwrap();
     assert_eq!(r.orders.draws.map(|d| d.len()), Some(1), "the canary draws on");
+}
+
+#[test]
+fn a_script_pauses_resumes_and_stops_the_music() {
+    let h = host();
+    let src = r#"
+        local n = 0
+        addEventHandler("onClientRender", root, function()
+            n += 1
+            if n == 1 then
+                print(musicPlayer("pause"), musicPlayer("resume"), musicPlayer("stop"))
+                print(pcall(musicPlayer, "rewind"))
+                print(pcall(musicPlayer, "play"))
+            end
+        end)
+    "#;
+    start(&h, "player", src).unwrap();
+    let r = h.frame(frame(1, [0.0; 3])).unwrap();
+    let got = out(&h, "player");
+    assert_eq!(got[0], "true\ttrue\ttrue");
+    assert!(got[1].starts_with("false"), "{got:?}");
+    assert!(got[2].starts_with("false"), "play needs a song: {got:?}");
+    assert_eq!(r.orders.player, [PlayerOrder::Pause(true), PlayerOrder::Pause(false), PlayerOrder::Stop]);
 }

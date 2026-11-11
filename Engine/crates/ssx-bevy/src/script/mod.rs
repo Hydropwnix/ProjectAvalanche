@@ -416,6 +416,8 @@ fn frame(
         if let Some(m) = r.music.as_ref() {
             m.end_script_song();
         }
+        ssx_assets::musicbox::set_script_paused(false);
+        ssx_assets::musicbox::set_script_volume(1.0);
         info!("scripts: what the scripts left up is taken down (their draws, markers, fade, camera, message, sounds)");
     }
     if bridge.gone_handled {
@@ -451,7 +453,54 @@ fn frame(
                 big_root: bridge.content.big_root().to_path_buf(),
                 scope: r.music.as_ref().map(|m| m.scope().clone()),
             };
+            let player = std::mem::take(&mut out.report.orders.player);
+            let in_ride = r.music.is_some();
+            let mut menu_player = Vec::new();
+            for order in player {
+                use ssx_script::host::game::PlayerOrder;
+                match order {
+                    PlayerOrder::Play { package, id } if in_ride => {
+                        ssx_assets::musicbox::set_script_paused(false);
+                        out.report.orders.music = Some((package, id));
+                    }
+                    PlayerOrder::Pause(on) => ssx_assets::musicbox::set_script_paused(on),
+                    PlayerOrder::Volume(level) => ssx_assets::musicbox::set_script_volume(level),
+                    PlayerOrder::Seek(secs) => ssx_assets::musicbox::request_seek(secs),
+                    PlayerOrder::Stop if in_ride => {
+                        ssx_assets::musicbox::set_script_paused(false);
+                        if let Some(m) = r.music.as_ref() {
+                            m.stop_licensed();
+                        }
+                    }
+                    other => menu_player.push(other),
+                }
+            }
             fx.apply(out.report, place);
+            if let Some(fe) = ui.fe.as_mut() {
+                use ssx_ui::game::fe::music::MusicRequest;
+                for order in menu_player {
+                    match order {
+                        ssx_script::host::game::PlayerOrder::Play { id, .. } => {
+                            ssx_assets::musicbox::set_script_paused(false);
+                            let licensed = (id.namespace() == ssx_content::BASE_NAMESPACE)
+                                .then(|| id.path().strip_prefix("licensed/").and_then(|n| n.parse::<u32>().ok()))
+                                .flatten();
+                            let request = match licensed {
+                                Some(n) => MusicRequest::Preview { id: n, key: None },
+                                None => MusicRequest::Preview { id: 0, key: Some(id) },
+                            };
+                            fe.music.requests.push(request);
+                        }
+                        ssx_script::host::game::PlayerOrder::Stop => {
+                            ssx_assets::musicbox::set_script_paused(false);
+                            fe.music.requests.push(MusicRequest::StopPreview);
+                        }
+                        ssx_script::host::game::PlayerOrder::Pause(_)
+                        | ssx_script::host::game::PlayerOrder::Volume(_)
+                        | ssx_script::host::game::PlayerOrder::Seek(_) => {}
+                    }
+                }
+            }
         }
     }
     let holds =

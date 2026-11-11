@@ -192,6 +192,16 @@ pub struct Orders {
     pub fade: Option<FadeOrder>,
     pub hud: Vec<HudOrder>,
     pub preload: Vec<ContentId>,
+    pub player: Vec<PlayerOrder>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PlayerOrder {
+    Play { package: String, id: ContentId },
+    Pause(bool),
+    Stop,
+    Volume(f32),
+    Seek(f32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
