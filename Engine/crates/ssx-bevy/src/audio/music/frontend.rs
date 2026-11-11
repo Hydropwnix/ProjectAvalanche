@@ -388,6 +388,11 @@ impl FrontEndAudio {
         if let Ok(mut p) = self.preview.lock() {
             *p = Some(preview);
         }
+        if let Ok(mut o) = self.out.lock()
+            && o.music_tail.take().is_some()
+        {
+            info!("music: the ride's song left playing stops for the preview");
+        }
     }
 
     pub fn stop_preview(&mut self) {
