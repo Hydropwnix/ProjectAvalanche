@@ -336,6 +336,10 @@ pub(super) fn display_class_frame(
     if w == 0 || h == 0 {
         return;
     }
+    if let Some(vm) = scene.vm.as_mut() {
+        let extra = ssx_ui::game::display_class::hud_extra_for(w, h);
+        ui.set_hud_extra(vm, &mut scene.lib, &mut scene.player, extra);
+    }
     let Some(class) = display_due(pending, DisplayClass::of_window(w, h), ui.display, started, now) else { return };
     let Some(vm) = scene.vm.as_mut() else { return };
     *pending = None;
