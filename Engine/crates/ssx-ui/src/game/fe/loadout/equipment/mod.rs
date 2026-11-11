@@ -148,6 +148,15 @@ pub fn activate(fe: &mut FrontEnd, env: &mut FeEnv) {
     eq.category = env.values.int(0x5F);
     eq.slot = env.values.int(0x61);
     eq.last_rider = env.values.int(0x65) as u32;
+    // TODO(guess): with no rider picked yet this session (0x65 starts at 0 at every launch) the character select opens on the profile's last rider (LURI) rather than the first in the list; known: Explore always opened on the first rider after a restart; settle: where the game seeds 0x65 from the profile.
+    if eq.last_rider == 0
+        && let Some(&last) = fe.profile.attribs.get(&ssx_assets::career::profile::ATTRIB_LAST_RIDER)
+        && let Ok(last) = u32::try_from(last)
+        && last != 0
+    {
+        eq.last_rider = last;
+        env.values.set_int(0x65, last as i32);
+    }
     eq.rider_count = env.values.int(0x60);
     for id in [0x5F, 0x61, 0x62, 0x60] {
         env.values.set_int(id, 0);
