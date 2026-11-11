@@ -1,6 +1,6 @@
 import bevy_pbr::render::{
     pbr_fragment::pbr_input_from_standard_material,
-    forward_io::{VertexOutput, FragmentOutput},
+    forward_io::VertexOutput,
     pbr_functions::main_pass_post_lighting_processing,
 };
 import package::render::lighting::game_lighting as gl;
@@ -20,8 +20,16 @@ struct ForegroundParams {
 @group(constants::MATERIAL_BIND_GROUP) @binding(107) var occlusion_texture: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(108) var normal_texture: texture_2d<f32>;
 
+// TODO(guess): the foreground mountains' depth is pushed far back (kept in order among themselves) so the course draws over them wherever both cover a pixel; known: on Silverthrone (Race It / Unsanctioned) fg_mt_alaska objects about 1 km wide stand over the run with no collision and hid the course as "ghost mountains"; the game seems to draw them only where the course drew nothing; settle: terrain_foreground.fx's depth and stencil state in the game's draw.
+const FAR_DEPTH_SCALE: f32 = 0.01;
+
+struct ForegroundOutput {
+    @location(0) color: vec4<f32>,
+    @builtin(frag_depth) depth: f32,
+}
+
 @fragment
-fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
+fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> ForegroundOutput {
     let pbr_input = pbr_input_from_standard_material(in, is_front);
     var n = normalize(in.world_normal);
     var alb = vec3(0.5);
@@ -48,7 +56,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let diffuse = gl::forward_ramp(light, n, gl::to_eye(in.world_position.xyz));
     let c = diffuse * mix(light.ramp_shade.rgb, vec3(1.0), ao) * alb;
     let fogged = gl::apply_fog(light, c, in.world_position.w);
-    var out: FragmentOutput;
+    var out: ForegroundOutput;
     out.color = main_pass_post_lighting_processing(pbr_input, vec4(fogged, 1.0));
+    out.depth = in.position.z * FAR_DEPTH_SCALE;
     return out;
 }
