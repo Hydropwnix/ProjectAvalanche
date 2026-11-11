@@ -6,7 +6,7 @@ on:
     tags: ["v*"]
   pull_request:
     branches: [main, "release/**"]
-    types: [opened, synchronize, reopened, ready_for_review, labeled]
+    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
   workflow_dispatch:
 
@@ -32,7 +32,7 @@ jobs:
   changes:
     name: Changed files
     # The fast PR check only needs to run when code changed. A job skipped by `if` reports success, so the
-    # required `CI` check still reports; a workflow skipped by `paths` would not. On push/merge_group the
+    # required `CI` check still reports; a workflow skipped by `paths` would not. On push the
     # cheap output is "true": those refs must be checked, the full matrix is gated separately.
     if: |
       github.ref_type != 'tag' &&
@@ -64,7 +64,7 @@ jobs:
               - '!.github/release.yml'
 
   # The one required check. It runs even when its jobs were skipped, and fails if any of them failed or
-  # was cancelled: the fast `check` gates a PR, the full matrix gates the merge queue and the snapshot.
+  # was cancelled: the fast `check` gates a PR and the merge queue, the full matrix only a snapshot or a manual run.
   ci-ok:
     name: CI
     if: always() && github.ref_type != 'tag'
@@ -82,7 +82,8 @@ jobs:
     name: fmt, clippy, tests (Linux)
     needs: changes
     # The fast gate: every PR that changes code, the merge queue, snapshot pushes and manual runs. The full
-    # Windows/Linux matrix is below and only runs in the queue, on a snapshot or with the `full-ci` label.
+    # Windows/Linux matrix is below and only runs on a deliberate `Snapshot …` push or a manual dispatch — never
+    # on a PR or a merge-queue run.
     if: |
       github.ref_type != 'tag' &&
       (github.event_name == 'push' ||
@@ -135,10 +136,8 @@ jobs:
     name: Windows build (launcher + game)
     if: |
       github.ref_type != 'tag' &&
-      (github.event_name == 'merge_group' ||
-       github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'Snapshot ')) ||
-       (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci')))
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'Snapshot ')))
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -280,10 +279,8 @@ jobs:
     name: Windows dedicated server
     if: |
       github.ref_type != 'tag' &&
-      (github.event_name == 'merge_group' ||
-       github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'Snapshot ')) ||
-       (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci')))
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'Snapshot ')))
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -370,10 +367,8 @@ jobs:
     name: Windows package (game + its server)
     if: |
       github.ref_type != 'tag' &&
-      (github.event_name == 'merge_group' ||
-       github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'Snapshot ')) ||
-       (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci')))
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'Snapshot ')))
     needs: [windows, windows-server]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -407,10 +402,8 @@ jobs:
     name: Windows tests (movie decoder's sandbox, crash-safe writes)
     if: |
       github.ref_type != 'tag' &&
-      (github.event_name == 'merge_group' ||
-       github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'Snapshot ')) ||
-       (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci')))
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'Snapshot ')))
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -477,10 +470,8 @@ jobs:
     name: Linux build (launcher + game)
     if: |
       github.ref_type != 'tag' &&
-      (github.event_name == 'merge_group' ||
-       github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'Snapshot ')) ||
-       (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci')))
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'Snapshot ')))
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -616,10 +607,8 @@ jobs:
     name: Server without desktop packages (Linux)
     if: |
       github.ref_type != 'tag' &&
-      (github.event_name == 'merge_group' ||
-       github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'Snapshot ')) ||
-       (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci')))
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'Snapshot ')))
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     # a bare Ubuntu: no ALSA, udev, Wayland, xkbcommon, GTK or X11 development packages (the check job installs them)
