@@ -6,7 +6,7 @@ pub const MAX_ENTRIES: usize = 16384;
 pub const MAX_LIST: usize = 1024;
 pub const MAX_SHORT_TEXT: usize = 256;
 pub const MAX_LONG_TEXT: usize = 4096;
-pub const MAX_PACKAGE_BYTES: u64 = 2 << 30;
+pub const MAX_PACKAGE_BYTES: u64 = 8 << 30;
 pub const MAX_ZIP_RATIO: u64 = 100;
 pub const RATIO_FLOOR: u64 = 1 << 20;
 

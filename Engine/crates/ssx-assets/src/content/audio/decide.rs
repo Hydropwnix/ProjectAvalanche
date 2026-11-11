@@ -25,7 +25,7 @@ pub struct AudioBudget {
 }
 
 pub const BUDGET: AudioBudget =
-    AudioBudget { sound_bytes: 512 << 20, sound_files: 4096, music_bytes: 1 << 30, music_files: 2048 };
+    AudioBudget { sound_bytes: 512 << 20, sound_files: 4096, music_bytes: 4 << 30, music_files: 2048 };
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AudioScope {
