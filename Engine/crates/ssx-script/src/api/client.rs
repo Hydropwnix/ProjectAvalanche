@@ -69,6 +69,7 @@ pub static SPECS: &[Spec] = &[
     spec("getScreen", &[], &[Ty::Record("Screen")], screen),
     spec("getCursor", &[], &[Ty::Opt(&Ty::Record("Cursor"))], cursor),
     spec("isMultiplayer", &[], &[Ty::Bool], is_multiplayer),
+    spec("openFolder", &[p("path", Ty::Str { max: 1024 })], &[Ty::Bool], open_folder),
 ];
 
 fn local_rider(ctx: &Ctx, _: &Lua, _: Args) -> Result<Vec<Ret>, ApiError> {
@@ -241,6 +242,57 @@ fn capture_menu_keys(ctx: &Ctx, _: &Lua, a: Args) -> Result<Vec<Ret>, ApiError> 
         w.game.capture.remove(&ctx.package);
     }
     Ok(vec![Ret::Bool(true)])
+}
+
+fn open_folder(ctx: &Ctx, _: &Lua, a: Args) -> Result<Vec<Ret>, ApiError> {
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static LAST: Mutex<Option<Instant>> = Mutex::new(None);
+    if ctx.host()?.lock().game.frame.multiplayer {
+        return Ok(vec![Ret::Bool(false)]);
+    }
+    let raw = a.str(0).ok_or("no path")?;
+    if raw.starts_with("\\\\") || raw.starts_with("//") || raw.contains('\0') {
+        return Err("only a local folder".into());
+    }
+    let path = Path::new(raw);
+    if !path.is_absolute() {
+        return Err(format!("{raw}: not a full path").into());
+    }
+    let meta = std::fs::symlink_metadata(path).map_err(|e| ApiError::Refused(format!("{raw}: {e}")))?;
+    if !meta.is_dir() {
+        return Err(format!("{raw}: not a folder").into());
+    }
+    let real = std::fs::canonicalize(path).map_err(|e| ApiError::Refused(format!("{raw}: {e}")))?;
+    let shown = real.to_string_lossy().to_string();
+    let shown = match shown.strip_prefix("\\\\?\\") {
+        Some(rest) if rest.starts_with("UNC\\") => return Err("only a local folder".into()),
+        Some(rest) => rest.to_string(),
+        None => shown,
+    };
+    let real = PathBuf::from(shown);
+    if !real.is_dir() {
+        return Err(format!("{raw}: not a folder").into());
+    }
+    {
+        let mut last = LAST.lock().map_err(|_| "busy")?;
+        if last.is_some_and(|t| t.elapsed() < Duration::from_secs(1)) {
+            return Ok(vec![Ret::Bool(false)]);
+        }
+        *last = Some(Instant::now());
+    }
+    let program = if cfg!(windows) {
+        "explorer.exe"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    match std::process::Command::new(program).arg(&real).spawn() {
+        Ok(_) => Ok(vec![Ret::Bool(true)]),
+        Err(e) => Err(format!("{program}: {e}").into()),
+    }
 }
 
 #[cfg(test)]

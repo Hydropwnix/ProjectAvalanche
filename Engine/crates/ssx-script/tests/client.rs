@@ -550,3 +550,22 @@ fn a_script_sees_the_cursor_and_whether_the_game_is_in_multiplayer() {
     h.frame(GameFrame { cursor: Some((640.0, 360.0)), multiplayer: true, ..frame(2, [0.0; 3]) }).unwrap();
     assert_eq!(out(&h, "menu"), ["640\t360\ttrue"]);
 }
+
+#[test]
+fn open_folder_takes_only_an_existing_local_folder_and_not_in_multiplayer() {
+    let h = host();
+    let src = r#"
+        addEventHandler("onClientRender", root, function()
+            print(pcall(openFolder, "relative/path"))
+            print(pcall(openFolder, "//server/share"))
+            print(pcall(openFolder, "/no/such/folder/anywhere"))
+        end)
+    "#;
+    start(&h, "menu", src).unwrap();
+    h.frame(frame(1, [0.0; 3])).unwrap();
+    let lines = out(&h, "menu");
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert!(lines.iter().all(|l| l.starts_with("false\t")), "{lines:?}");
+    h.frame(GameFrame { multiplayer: true, ..frame(2, [0.0; 3]) }).unwrap();
+    assert_eq!(out(&h, "menu"), ["true\tfalse", "true\tfalse", "true\tfalse"], "refused in multiplayer");
+}

@@ -88,6 +88,7 @@ declare function captureMenuKeys(on: boolean): boolean
 declare function getScreen(): Screen
 declare function getCursor(): Cursor?
 declare function isMultiplayer(): boolean
+declare function openFolder(path: string): boolean
 declare function createMarker(id: string, position: Vec3, options: MarkerOptions?): Element
 declare function setMarkerPosition(marker: Element, position: Vec3): boolean
 declare function getMarkerPosition(marker: Element): Vec3
