@@ -103,6 +103,7 @@ impl RiderSounds {
             avalanche_distance: r.avalanche.distance,
             reverb: sfx.reverb,
             front_end: sfx.game_state != 0,
+            tricky_song: matches!(sfx.tricky.playing, 1 | 3 | 5) || !sfx.script_song,
         };
         self.snapshots.frame(&mut sfx.mixer.graph, &inputs);
         if r.eog && !self.eog {
@@ -336,8 +337,11 @@ impl RiderSounds {
         if bit(f, 28) {
             sfx.fire_event("trigger_SFX_Awesome_Landing", &p);
         }
+        // `Tricky_State` 2 for the whole of Super Tricky, as the game has it (0x830EB7D8); a mod's script song has no
+        // Tricky remix, so it is 2 only while the "It's Tricky" clip plays (a port behaviour; the game ships no mod
+        // songs, so there is no disc behaviour to compare with).
         let tricky = if bit(f, 18) {
-            2
+            if matches!(sfx.tricky.playing, 1 | 3 | 5) || !sfx.script_song { 2 } else { 1 }
         } else if aw {
             1
         } else {

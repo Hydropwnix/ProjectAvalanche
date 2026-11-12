@@ -143,6 +143,10 @@ impl TrickySong {
             self.playing = -1;
             self.sample_end = -1;
             self.log.push("TrickySampleEnd".into());
+            if let Some(h) = self.handle.take() {
+                aems.stop(h);
+                self.log.push("released after its sample".into());
+            }
         }
         self.countdown = self.countdown.saturating_sub(1);
         if self.super_tricky && self.race_event_type != SURVIVE_IT && !self.paused && self.countdown == 0 {
