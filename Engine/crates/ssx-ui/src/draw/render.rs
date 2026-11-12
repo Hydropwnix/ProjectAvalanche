@@ -662,7 +662,6 @@ fn wide_leaderboard(lib: &Library, player: &Player, inst: &Instance) -> Option<M
     let m = inst.matrix;
     Some(Mat2d { tx: m.tx + up.d * dx / det, ty: m.ty - up.b * dx / det, ..m })
 }
-}
 
 #[cfg(test)]
 mod tests {
