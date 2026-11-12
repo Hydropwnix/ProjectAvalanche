@@ -198,25 +198,21 @@ impl Renderer {
         } else {
             inst.blend
         };
-        let here = Inherited {
-            xf: inh.xf.mul(&inst.matrix),
-            cx: inh.cx.concat(&inst.cxform),
-            blend,
-            mask: inh.mask,
-            slice: None,
-        };
+        let matrix = wide_leaderboard(lib, player, inst).unwrap_or(inst.matrix);
+        let here =
+            Inherited { xf: inh.xf.mul(&matrix), cx: inh.cx.concat(&inst.cxform), blend, mask: inh.mask, slice: None };
         match &inst.kind {
             InstanceKind::Sprite(s) => {
                 // TODO(guess): the nine regions' mapping is Flash's model; settle: the consumer of the key data 0x82687D48 fills (kept at the mesh's +0x34, 0x82688BE8 → 0x82687250).
                 let slice = match inst.scale9 {
                     Some(grid) => {
-                        let (sx, sy, rest) = Slice9::split(&inst.matrix);
+                        let (sx, sy, rest) = Slice9::split(&matrix);
                         let scaled = (sx - 1.0).abs() >= 1e-3 || (sy - 1.0).abs() >= 1e-3;
                         let bounds = player.local_bounds(lib, id);
                         (scaled && !bounds.is_empty())
                             .then(|| (Slice9 { grid, bounds, sx, sy }, inh.xf.mul(&rest), Mat2d::IDENTITY))
                     }
-                    None => inh.slice.map(|(sl, base, to_grid)| (sl, base, to_grid.mul(&inst.matrix))),
+                    None => inh.slice.map(|(sl, base, to_grid)| (sl, base, to_grid.mul(&matrix))),
                 };
                 let here = Inherited { slice, ..here };
                 let mut masks: Vec<(i32, InstanceId)> = Vec::new();
@@ -244,7 +240,7 @@ impl Renderer {
                 match &inh.slice {
                     Some((sl, base, to_grid)) => {
                         let sliced = Inherited { xf: *base, ..here };
-                        let shape = to_grid.mul(&inst.matrix);
+                        let shape = to_grid.mul(&matrix);
                         for layer in &mesh.layers {
                             let m = Arc::new(sl.slice(&layer.mesh, &shape));
                             let item = DrawItem {
@@ -611,6 +607,47 @@ fn bitmap_quad(b: crate::library::BitmapDef) -> ShapeMesh {
         smooth: true,
     };
     ShapeMesh { layers: vec![shape::ShapeLayer { paint, mesh: Arc::new(mesh) }] }
+}
+
+// TODO(guess): on a window wider than 16:9 the HUD's leaderboard movies (the standings, top right) move out with its other right-hand panels; they place themselves outside RepositionIfSD, so the shift is made when drawn, on the movie's topmost clip; a port choice for ultrawide windows; settle: none needed.
+fn is_leaderboard_movie(lib: &Library, inst: &Instance) -> bool {
+    let path = lib.movie(inst.movie).path.to_ascii_lowercase();
+    path.rsplit(['/', '\\']).next().is_some_and(|f| f.contains("leaderboard"))
+}
+
+fn wide_leaderboard(lib: &Library, player: &Player, inst: &Instance) -> Option<Mat2d> {
+    let extra = crate::game::display_class::hud_extra();
+    if extra < 0.5 {
+        return None;
+    }
+    if inst.parent.and_then(|p| player.get(p)).is_some_and(|p| p.movie == inst.movie) {
+        return None;
+    }
+    if !is_leaderboard_movie(lib, inst) {
+        return None;
+    }
+    let mut up = Mat2d::IDENTITY;
+    let mut cur = inst.parent;
+    let mut steps = 0;
+    while let Some(c) = cur {
+        let i = player.get(c)?;
+        if is_leaderboard_movie(lib, i) {
+            return None;
+        }
+        up = i.matrix.mul(&up);
+        cur = i.parent;
+        steps += 1;
+        if steps > 64 {
+            return None;
+        }
+    }
+    let det = up.determinant();
+    if det.abs() < 1e-9 {
+        return None;
+    }
+    let dx = extra * 20.0;
+    let m = inst.matrix;
+    Some(Mat2d { tx: m.tx + up.d * dx / det, ty: m.ty - up.b * dx / det, ..m })
 }
 
 #[cfg(test)]
