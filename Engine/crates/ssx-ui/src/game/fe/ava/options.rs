@@ -30,10 +30,10 @@ pub enum Category {
     PlayerName,
 }
 
-const BASE_CATEGORIES: [(Category, &str); 7] = [
+// Port mod: Video Calibration (Category::Game(3)) is left out of the options menu.
+const BASE_CATEGORIES: [(Category, &str); 6] = [
     (Category::Game(1), "TXT_GAMEPLAY_SETTINGS"),
     (Category::Game(2), "TXT_AUDIO_SETTINGS"),
-    (Category::Game(3), "TXT_VIDEO_CALIBRATION"),
     (Category::Port(Page::Display), "TXT_AVA_OPTIONS_DISPLAY"),
     (Category::Port(Page::Effects), "TXT_AVA_OPTIONS_EFFECTS"),
     (Category::Port(Page::Sound), "TXT_AVA_OPTIONS_SOUND"),

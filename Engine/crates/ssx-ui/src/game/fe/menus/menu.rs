@@ -63,10 +63,8 @@ pub fn build_list(fe: &mut FrontEnd, env: &mut FeEnv) {
     let open = !v.bool(0x1B4);
     let campaign = open && v.bool(0xA1);
     let explore = open && v.bool(0xA2);
-    let live = open && v.bool(0xA3);
-    let (dd, done, total, earnings) = (v.int(0x58), v.int(0x6F), v.int(0x70), v.int(0x16E));
+    let (dd, done, total) = (v.int(0x58), v.int(0x6F), v.int(0x70));
     let loc = &mut *env.loc;
-    let earnings = loc.currency(i64::from(earnings), true);
     let back = if fe.ava.hub.on { crate::game::fe::ava::hub::MAIN_MENU_BACK } else { "" };
     fe.menu.items = vec![
         MenuItem {
@@ -89,36 +87,10 @@ pub fn build_list(fe: &mut FrontEnd, env: &mut FeEnv) {
             rider_net: false,
             back,
         },
-        MenuItem {
-            item: loc.text("TXT_M_GLOBE_LIVE_EVENTS"),
-            desc: loc.format("TXT_MAIN_MENU_GLOBEL_EVENT_EARNINGS", &[&earnings]),
-            enabled: live,
-            focusable: live,
-            advance: "A_MenuLiveEvents",
-            highlight: "A_MenuLiveEventsHighlight",
-            rider_net: false,
-            back,
-        },
-        MenuItem {
-            item: String::new(),
-            desc: loc.text("TXT_MAIN_MENU_RIDERNET_DESC"),
-            enabled: open,
-            focusable: true,
-            advance: "A_MenuRiderNet",
-            highlight: "",
-            rider_net: true,
-            back,
-        },
+        // Port mod: Global Events is left out of the main menu (no live events in the port), and so is the RiderNet
+        // item (the Select button opens RiderNet anyway).
     ];
-    fe.menu.index = if campaign {
-        0
-    } else if explore {
-        1
-    } else if live {
-        2
-    } else {
-        0
-    };
+    fe.menu.index = if !campaign && explore { 1 } else { 0 };
 }
 
 pub fn update(fe: &mut FrontEnd, env: &mut FeEnv) {
@@ -202,11 +174,34 @@ pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str) {
 
 pub fn build(fe: &FrontEnd, cx: &mut Ctx, dp: &str) -> Option<Value> {
     match dp {
-        "dp_debug_menu" => Some(items_value(cx, &fe.menu.items)),
+        "dp_debug_menu" => {
+            fit_last_row(cx, &fe.menu.items);
+            Some(items_value(cx, &fe.menu.items))
+        }
         "dp_debug_menu_index" => Some(Value::Number(f64::from(fe.menu.index))),
         _ => Some(no_sponsored_events(cx)),
     }
 }
+
+// TODO(guess): a port choice — the main menu's panel (MainMenu.RepositionElements, views/mainmenu.gfx) is sized as
+// `(items - 1) * DEFAULT_HEIGHT + RIDERNET_HEIGHT`: the disc's last row is always the 60-high RiderNet cell. With that
+// item left out the last row is a full 80-high one, so `RIDERNET_HEIGHT` is set to `DEFAULT_HEIGHT` for the panel to
+// fit it (and back to 60 when the last item is a RiderNet cell); settle: none (the disc always has the RiderNet row).
+fn fit_last_row(cx: &mut Ctx, items: &[MenuItem]) {
+    let class = crate::game::port::view::global_path(cx, "components.MainMenuCell");
+    if class.is_nullish() {
+        return;
+    }
+    let last = if items.last().is_some_and(|it| it.rider_net) {
+        Value::Number(RIDERNET_ROW)
+    } else {
+        cx.get_member(&class, "DEFAULT_HEIGHT").unwrap_or(Value::Number(FULL_ROW))
+    };
+    let _ = cx.set_member(&class, "RIDERNET_HEIGHT", last);
+}
+
+const RIDERNET_ROW: f64 = 60.0;
+const FULL_ROW: f64 = 80.0;
 
 pub fn items_value(cx: &mut Ctx, items: &[MenuItem]) -> Value {
     let mut out = Vec::new();

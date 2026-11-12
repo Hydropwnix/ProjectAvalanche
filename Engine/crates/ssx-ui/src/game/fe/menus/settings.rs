@@ -334,8 +334,8 @@ pub fn build(fe: &FrontEnd, cx: &mut Ctx, values: &UiValues, loc: &mut Localizat
     match dp {
         "dp_settings_menu" => {
             let mut out = Vec::new();
-            for (k, key) in ["TXT_GAMEPLAY_SETTINGS", "TXT_AUDIO_SETTINGS", "TXT_VIDEO_CALIBRATION"].iter().enumerate()
-            {
+            // Port mod: Video Calibration is left out of the settings menu.
+            for (k, key) in ["TXT_GAMEPLAY_SETTINGS", "TXT_AUDIO_SETTINGS"].iter().enumerate() {
                 let o = Value::Object(cx.new_object());
                 let text = loc.text(key);
                 let _ = cx.set_member(&o, "strItem", Value::str(&text));
