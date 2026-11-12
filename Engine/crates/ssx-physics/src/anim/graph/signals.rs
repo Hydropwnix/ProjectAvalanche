@@ -192,11 +192,21 @@ impl RiderGraph {
         self.put("FLT_WingsuitEffectiveness", ws.effectiveness);
         let ia = &s.ice_axe;
         self.put_bool("BLN_IceAxeEnabled", ia.enabled);
+        // TODO(guess): the rider graph starts its own deploy sequence (SEQ_ice_axe_deploy) on BLN_IceAxeDeploy, the
+        // player update's IceAxeDeployAsset, which the port never set. The player update clears it in the air and in a
+        // NIS (0x82CF9AF0); here it also stays down through a crash, so the graph's crash states aren't held up by the
+        // axe; settle: the IceAxeDeploy writer.
+        self.put_bool("BLN_IceAxeDeploy", ia.enabled && riding && !s.landing.is_bailing());
         self.put_bool("BLN_ice_axe_start_chop_left", ia.start_chop[0]);
         self.put_bool("BLN_ice_axe_start_chop_right", ia.start_chop[1]);
         self.put_bool("BLN_ice_axe_deployed", ia.deployed);
         self.put_bool("BLN_ice_axe_chopped", ia.chopped);
         self.put("FLT_IceAxe_BlendWeight", ia.blend_weight);
+        // The carving op's IceAxeEffectsActive pin: the axe biting the ice (chopped, on ice and leaning), which the
+        // rider's graph reads, under both of its names, to hold the axe in the ice rather than swing it.
+        self.put_bool("BLN_IceAxeEffectsActive", ia.frame.active);
+        self.put_bool("BLN_carving_ice_axe_effects_enabled", ia.frame.active);
+        self.put("FLT_IceAxeBlendWeight", ia.blend_weight);
         self.put("FLT_ice_axe_layer_weight", ia.layer_weight);
         self.put("FLT_ice_axe_chop_weight_left", ia.chop_weight[0]);
         self.put("FLT_ice_axe_chop_weight_right", ia.chop_weight[1]);
