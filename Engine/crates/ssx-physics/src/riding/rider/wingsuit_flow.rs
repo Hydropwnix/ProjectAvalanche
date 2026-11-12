@@ -1,3 +1,8 @@
+//! `SF_Ride`'s wingsuit nodes in the step (`Docs/research/wingsuit.md` §2, §5): the transitions into, between and
+//! out of `state_wingsuit_enter` / `_fly` / `_exit` and their controllers with the transition blends (old nodes run
+//! as blend slaves, the node three links down the chain frozen; a window splits an update, 0x82DE1F88; parts
+//! composed by 0x82DC4498).
+
 use glam::{Quat, Vec3};
 
 use super::{Input, RideState, RiderState, World, air};
@@ -9,15 +14,22 @@ use crate::wingsuit::{
     WingsuitController, ballistic_step, joint_of, traj_of,
 };
 
+/// The physics controller classes a wingsuit update stands for (the graph's physics delta sets).
 pub const WINGSUIT_CLASSES: &[&str] =
     &["WingsuitControllerAsset", "BallisticControllerAsset", "AerialControllerAsset", "CarvingControllerAsset"];
 
+/// `SF_Ride`'s `MaxActiveNodes` (3, `anim_all.cba`): `0x82B671B0` walks `MaxActiveNodes` links down the blend chain
+/// from the new node and freezes the node it reaches (the fourth node, counting the current one), dropping that
+/// node's own blend (`+0x288 = 0`). A frozen node keeps its pose and writes a zero delta (`FrozenController_Create`
+/// 0x82B64778, `_Update` 0x82B64848). `SF_Camera`'s 1 freezes the blend's old side, as its doc records.
 const MAX_ACTIVE_NODES: usize = 3;
 
+/// `state_wingsuit_enter`'s entry conditions (module docs).
 fn enter_allowed(s: &RiderState) -> bool {
     s.wingsuit.enabled && s.wingsuit.press()
 }
 
+/// One part of an update: the world translation, the rotation in the trajectory joint's frame (`None`: no channel).
 #[derive(Clone, Copy, Debug)]
 struct Part {
     dp: Vec3,
@@ -26,6 +38,7 @@ struct Part {
 
 const ZERO: Part = Part { dp: Vec3::ZERO, q: Some(Quat::IDENTITY) };
 
+/// `Pose_BlendDeltaTrajectory` 0x83184298 at new-side weight `w`.
 fn mix(old: Part, new: Part, w: f32) -> Part {
     let q = match (old.q, new.q) {
         (Some(a), Some(b)) => Some(nlerp(a, b, w)),
@@ -35,6 +48,7 @@ fn mix(old: Part, new: Part, w: f32) -> Part {
     Part { dp: old.dp.lerp(new.dp, w), q }
 }
 
+/// `DeltaAccumKernel_Compose` 0x82DC4498 in world terms (`j0` = the update's trajectory joint).
 fn accumulate(first: Part, last: Part, j0: Quat) -> Part {
     let q1 = first.q.unwrap_or(Quat::IDENTITY);
     let dp = first.dp + j0 * (q1 * (j0.conjugate() * last.dp));
@@ -46,6 +60,7 @@ fn accumulate(first: Part, last: Part, j0: Quat) -> Part {
     Part { dp, q }
 }
 
+/// A `WingsuitController` update on the update's velocity, angular velocity, wind and stick (writes the shared state).
 fn wingsuit_part(s: &mut RiderState, w: &World, input: &Input, c: &mut WingsuitController, j0: Quat, dt: f32) -> Part {
     let i = ControllerInputs {
         j: j0,
@@ -65,6 +80,7 @@ fn wingsuit_part(s: &mut RiderState, w: &World, input: &Input, c: &mut WingsuitC
     Part { dp: j0 * o.t, q: Some(o.dq) }
 }
 
+/// `ballistic_airborne`'s update: the translation; the stance when it is the current node.
 fn ballistic_part(s: &mut RiderState, w: &World, j0: Quat, current: bool, dt: f32) -> Part {
     let (v, goofy) = ballistic_step(&w.props, s.traj_velocity, s.grind.wind, j0, s.goofy, dt);
     if current {
@@ -73,6 +89,7 @@ fn ballistic_part(s: &mut RiderState, w: &World, j0: Quat, current: bool, dt: f3
     Part { dp: if dt.abs() <= super::TINY { Vec3::ZERO } else { v * dt }, q: None }
 }
 
+/// The exited aerial controller (`AerialController_Exit` 0x82CD8BF0; `WriteOutputs` 0x82CDC6CC stops).
 fn aerial_slave_part(s: &mut RiderState, w: &World, input: &Input, side: &mut OldSide, j0: Quat, dt: f32) -> Part {
     let OldSide::Aerial { alignment, jump, first } = side else { return ZERO };
     let saved = (s.state, s.alignment, s.goofy, s.air_jumped, s.first_air_tick, s.velocity);
@@ -85,8 +102,10 @@ fn aerial_slave_part(s: &mut RiderState, w: &World, input: &Input, side: &mut Ol
     Part { dp, q: Some(q.normalize()) }
 }
 
+/// An old node of the chain at `depth` (1 = the node left by the current one).
 fn old_part(s: &mut RiderState, w: &World, input: &Input, node: &mut OldNode, depth: usize, j0: Quat, dt: f32) -> Part {
-    if depth > MAX_ACTIVE_NODES {
+    if depth >= MAX_ACTIVE_NODES {
+        node.blend = None; // the game drops the frozen node's blend; it writes a zero delta (`FrozenController_Update`)
         return ZERO;
     }
     let new = match &mut node.side {
@@ -97,6 +116,7 @@ fn old_part(s: &mut RiderState, w: &World, input: &Input, node: &mut OldNode, de
     blend_with(s, w, input, &mut node.blend, new, depth, j0, dt)
 }
 
+/// `new` blended with the old side of `blend` (advanced by `dt`; released when its weight is spent).
 #[allow(clippy::too_many_arguments)]
 fn blend_with(
     s: &mut RiderState,
@@ -109,11 +129,6 @@ fn blend_with(
     dt: f32,
 ) -> Part {
     let Some(b) = blend.as_mut() else { return new };
-    // TODO(guess): past the cap of active nodes the oldest blend is let go (its node dropped) rather than mixed in as no motion; known: a quick wingsuit tap stacks retract over fly over deploy, and the deploy mixed in as a zero part held the fresh fly and retract blends near zero, stopping the rider in mid-air; settle: what the game's blend tree does with a node past its active-node limit.
-    if depth >= MAX_ACTIVE_NODES {
-        *blend = None;
-        return new;
-    }
     match b.advance(dt) {
         None => {
             *blend = None;
@@ -126,6 +141,7 @@ fn blend_with(
     }
 }
 
+/// The current node's controller for `dt` ticks with its blend chain.
 fn node_part(s: &mut RiderState, w: &World, input: &Input, before: RideState, j0: Quat, dt: f32) -> Part {
     let new = match s.state {
         RideState::WingsuitEnter | RideState::WingsuitFly => {
@@ -141,11 +157,12 @@ fn node_part(s: &mut RiderState, w: &World, input: &Input, before: RideState, j0
         }
     };
     let mut blend = s.wingsuit.blend.take();
-    let p = blend_with(s, w, input, &mut blend, new, 1, j0, dt);
+    let p = blend_with(s, w, input, &mut blend, new, 0, j0, dt);
     s.wingsuit.blend = blend;
     p
 }
 
+/// The node left as a blend's old side: its controller and its own blend.
 fn old_node(s: &mut RiderState, w: &World) -> OldNode {
     let side = match s.state {
         RideState::WingsuitEnter | RideState::WingsuitFly => OldSide::Wingsuit(
@@ -157,6 +174,8 @@ fn old_node(s: &mut RiderState, w: &World) -> OldNode {
     OldNode { side, blend: s.wingsuit.blend.take() }
 }
 
+/// A transition into the wingsuit node `to` with a `BlendCurve` of `blend_time` over the node left; the air states'
+/// `SF_AirTricks` and `SF_Jump` are left.
 fn enter(s: &mut RiderState, w: &World, to: RideState, blend_time: f32) {
     let from = s.state;
     let old = old_node(s, w);
@@ -173,6 +192,7 @@ fn enter(s: &mut RiderState, w: &World, to: RideState, blend_time: f32) {
     s.wingsuit.blend = Some(NodeBlend::new(old, blend_time));
 }
 
+/// `state_wingsuit_exit → state_airborne` at the retract's `End`: a new aerial controller with the window's blend.
 fn leave_to_airborne(s: &mut RiderState, w: &World) {
     let old = old_node(s, w);
     (s.state, s.first_air_tick, s.jump_airborne) = (RideState::Airborne, true, false);
@@ -181,12 +201,15 @@ fn leave_to_airborne(s: &mut RiderState, w: &World) {
     s.wingsuit.blend = Some(NodeBlend::new(old, BLEND_EXIT_TO_AIRBORNE));
 }
 
+/// `conduit_land → state_riding` from a wingsuit node: the chain is dropped (`TimeScaleBlend`).
 pub(super) fn land(s: &mut RiderState) {
     s.state = RideState::Riding;
     s.wingsuit.signal = false;
     (s.wingsuit.controller, s.wingsuit.blend, s.wingsuit.ticks) = (None, None, 0.0);
 }
 
+/// The wingsuit transitions of `SF_Ride` at the update's start in list order (`correcting`: the recovery hop's
+/// correction); a node entered takes its own due transitions too (0x82DE1F88). Returns whether the state changed.
 pub(super) fn transition(s: &mut RiderState, w: &World, correcting: bool) -> bool {
     let mut changed = false;
     for _ in 0..25 {
@@ -213,11 +236,13 @@ fn transition_once(s: &mut RiderState, w: &World, correcting: bool) -> bool {
                 return false;
             }
         }
+        // `BLN_InAir` (set after the update that ran the air node): true once a jump state ran.
         RideState::Jump if s.wingsuit.can_use() && enter_allowed(s) => {
             enter(s, w, RideState::WingsuitEnter, BLEND_JUMP_TO_ENTER)
         }
         RideState::WingsuitEnter | RideState::WingsuitFly if very_close => land(s),
         RideState::WingsuitExit if very_close && !s.uber_trigger => land(s),
+        // `fly → exit`: `BlendCurve` 15, the default 8 with the board particle.
         RideState::WingsuitFly if !s.wingsuit.hold => {
             let blend = if s.board_particle.enabled { BLEND_DEFAULT } else { BLEND_FLY_TO_EXIT };
             enter(s, w, RideState::WingsuitExit, blend)
@@ -227,6 +252,8 @@ fn transition_once(s: &mut RiderState, w: &World, correcting: bool) -> bool {
     true
 }
 
+/// The wingsuit nodes' physics for the update: the displacement and the orientation it leaves; a window splits the
+/// update. `flags` = `ride`'s.
 pub(super) fn motion(
     s: &mut RiderState,
     w: &World,
@@ -255,7 +282,7 @@ pub(super) fn motion(
             } else {
                 leave_to_airborne(s, w);
                 if s.close.is_very_close {
-                    land(s);
+                    land(s); // `state_airborne`'s `conduit_land`, due at the window
                 }
             }
             let rest = dt - due;
