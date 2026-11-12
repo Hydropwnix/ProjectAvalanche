@@ -258,3 +258,39 @@ fn advance_catches_up_at_most_two_frames() {
     assert_eq!(p.tick(&lib, 0.0), 2);
     assert_eq!(p.frames(root), Some((6, 8)));
 }
+
+/// `Sprite::SetVisible` 0x8268CEA0 copies the flag to the children (0x8268C160) while the parent is visible; the play
+/// list (0x82644CF8) advances each listed clip on its own, so a child set visible again runs while its parent holds.
+#[test]
+fn no_invisible_advance_freezes_the_hidden_clip_but_not_a_child_shown_again() {
+    let mut lib = empty_lib();
+    let m = movie(&mut lib, vec![vec![]]);
+    let mut p = Player::new();
+    p.script_events = true;
+    p.no_invisible_advance = true;
+    let root = p.load_level(&lib, m, 0);
+    let buffer = p.attach_movie(&lib, root, "Clip", "mcBuffer", 1).unwrap();
+    let loader = p.attach_movie(&lib, buffer, "Clip", "mcImageLoader", 2).unwrap();
+    for id in [buffer, loader] {
+        p.get_mut(id).unwrap().scripted = true;
+    }
+    p.set_visible(buffer, false);
+    assert!(!p.get(buffer).unwrap().visible);
+    assert!(!p.get(loader).unwrap().visible, "hiding the buffer copied its flag to the loader");
+    p.set_visible(loader, true);
+    assert!(p.get(loader).unwrap().visible, "the loader's own _visible clears its flag again");
+    p.advance_frame(&lib);
+    p.take_actions();
+    p.advance_frame(&lib);
+    let entered: Vec<InstanceId> = p
+        .take_actions()
+        .into_iter()
+        .filter_map(|a| match a {
+            QueuedAction::EnterFrame { instance } => Some(instance),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(entered, vec![loader], "the hidden clip's child still gets onEnterFrame");
+    assert_eq!(p.frames(buffer), Some((1, 3)), "the hidden clip's timeline holds");
+    assert_eq!(p.frames(loader), Some((3, 3)), "its visible child plays on");
+}
