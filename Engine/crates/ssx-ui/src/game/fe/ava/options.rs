@@ -30,10 +30,10 @@ pub enum Category {
     PlayerName,
 }
 
-const BASE_CATEGORIES: [(Category, &str); 6] = [
+// Port mod: Video Calibration (Category::Game(3)) is left out of the options menu.
+const BASE_CATEGORIES: [(Category, &str); 5] = [
     (Category::Game(1), "TXT_GAMEPLAY_SETTINGS"),
     (Category::Game(2), "TXT_AUDIO_SETTINGS"),
-    (Category::Game(3), "TXT_VIDEO_CALIBRATION"),
     (Category::Port(Page::Display), "TXT_AVA_OPTIONS_DISPLAY"),
     (Category::Port(Page::Effects), "TXT_AVA_OPTIONS_EFFECTS"),
     (Category::Port(Page::Sound), "TXT_AVA_OPTIONS_SOUND"),
@@ -43,13 +43,13 @@ const BASE_CATEGORIES: [(Category, &str); 6] = [
 pub const CATEGORIES: &[(Category, &str)] = &BASE_CATEGORIES;
 #[cfg(feature = "net")]
 pub const CATEGORIES: &[(Category, &str)] = &{
-    let mut all = [(Category::PlayerName, "TXT_AVA_OPTIONS_PLAYER_NAME"); 8];
+    let mut all = [(Category::PlayerName, "TXT_AVA_OPTIONS_PLAYER_NAME"); 7];
     let mut k = 0;
     while k < BASE_CATEGORIES.len() {
         all[k] = BASE_CATEGORIES[k];
         k += 1;
     }
-    all[7] = (Category::Port(Page::Multiplayer), "TXT_AVA_OPTIONS_MULTIPLAYER");
+    all[6] = (Category::Port(Page::Multiplayer), "TXT_AVA_OPTIONS_MULTIPLAYER");
     all
 };
 

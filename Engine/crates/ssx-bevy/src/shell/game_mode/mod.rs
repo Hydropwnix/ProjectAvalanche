@@ -321,6 +321,8 @@ struct Shell {
 }
 
 const LAUNCH_BOOT_WAIT: f64 = 20.0;
+/// The mod whose presence skips the boot's logo movie, start screen and autosave notice (a port addition).
+const SKIP_INTROS_MOD: &str = "skip-intros";
 
 pub fn run(a: GameArgs) -> Result<AppExit> {
     use ssx_ui::game::fe::host::parse_script;
@@ -356,6 +358,10 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
         Profile::new(),
     )?;
     fe.ava.options.file = Some(ssx_assets::setup::app_dir().join("settings.json"));
+    fe.boot.skip_intros = mods.iter().flat_map(|r| &r.mounted).any(|m| m.name == SKIP_INTROS_MOD);
+    if fe.boot.skip_intros {
+        info!("mods: {SKIP_INTROS_MOD} enabled: the logo movie, the start screen and the autosave notice are skipped");
+    }
     ssx_ui::game::fe::ava::options::reload(&mut fe);
     #[cfg(feature = "net")]
     {

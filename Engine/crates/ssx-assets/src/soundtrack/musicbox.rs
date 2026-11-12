@@ -288,6 +288,17 @@ pub fn set_paused(on: bool) {
     PAUSED.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+static STARTUP_GAIN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3F80_0000);
+
+pub fn set_startup_gain(level: f32) {
+    let level = if level.is_finite() { level.clamp(0.0, 1.0) } else { 1.0 };
+    STARTUP_GAIN.store(level.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn startup_gain() -> f32 {
+    f32::from_bits(STARTUP_GAIN.load(std::sync::atomic::Ordering::Relaxed))
+}
+
 struct SongStream {
     id: u32,
     source: SongSource,

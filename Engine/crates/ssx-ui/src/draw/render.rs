@@ -190,6 +190,9 @@ impl Renderer {
         if !inst.visible && !inh.mask {
             return;
         }
+        if !inh.mask && hidden_dock_tab(player, inst) {
+            return;
+        }
         // TODO(guess): an instance with normal (or layer) blending pushes nothing, so the innermost other mode of its ancestors applies; settle: which render-tree nodes push.
         let blend = if inh.mask {
             BlendMode::Normal
@@ -198,25 +201,21 @@ impl Renderer {
         } else {
             inst.blend
         };
-        let here = Inherited {
-            xf: inh.xf.mul(&inst.matrix),
-            cx: inh.cx.concat(&inst.cxform),
-            blend,
-            mask: inh.mask,
-            slice: None,
-        };
+        let matrix = narrow_popup(player, inst).unwrap_or(inst.matrix);
+        let here =
+            Inherited { xf: inh.xf.mul(&matrix), cx: inh.cx.concat(&inst.cxform), blend, mask: inh.mask, slice: None };
         match &inst.kind {
             InstanceKind::Sprite(s) => {
                 // TODO(guess): the nine regions' mapping is Flash's model; settle: the consumer of the key data 0x82687D48 fills (kept at the mesh's +0x34, 0x82688BE8 → 0x82687250).
                 let slice = match inst.scale9 {
                     Some(grid) => {
-                        let (sx, sy, rest) = Slice9::split(&inst.matrix);
+                        let (sx, sy, rest) = Slice9::split(&matrix);
                         let scaled = (sx - 1.0).abs() >= 1e-3 || (sy - 1.0).abs() >= 1e-3;
                         let bounds = player.local_bounds(lib, id);
                         (scaled && !bounds.is_empty())
                             .then(|| (Slice9 { grid, bounds, sx, sy }, inh.xf.mul(&rest), Mat2d::IDENTITY))
                     }
-                    None => inh.slice.map(|(sl, base, to_grid)| (sl, base, to_grid.mul(&inst.matrix))),
+                    None => inh.slice.map(|(sl, base, to_grid)| (sl, base, to_grid.mul(&matrix))),
                 };
                 let here = Inherited { slice, ..here };
                 let mut masks: Vec<(i32, InstanceId)> = Vec::new();
@@ -244,7 +243,7 @@ impl Renderer {
                 match &inh.slice {
                     Some((sl, base, to_grid)) => {
                         let sliced = Inherited { xf: *base, ..here };
-                        let shape = to_grid.mul(&inst.matrix);
+                        let shape = to_grid.mul(&matrix);
                         for layer in &mesh.layers {
                             let m = Arc::new(sl.slice(&layer.mesh, &shape));
                             let item = DrawItem {
@@ -661,4 +660,48 @@ mod tests {
             .collect();
         assert_eq!(kinds, ["begin", "draw", "end", "draw", "pop", "draw", "popend", "draw"]);
     }
+}
+
+// Port mod: the front-end dock's three empty tab boxes (left of the menu options) are not drawn.
+fn hidden_dock_tab(player: &Player, inst: &Instance) -> bool {
+    matches!(inst.name.as_str(), "mcTabTop" | "mcTabMiddle" | "mcTabBottom")
+        && inst.parent.and_then(|p| player.get(p)).is_some_and(|p| p.name == "mcDockFE")
+}
+
+// Port mod: the standard popup's band (`mcPanel`, as wide as the screen) and its title glow
+// (`mcTitleVapor`) are drawn narrower, so prompts such as quitting sit in a centred box.
+// Popups showing a loaded picture keep the full band.
+const POPUP_BOX: f32 = 0.36;
+
+fn narrow_popup(player: &Player, inst: &Instance) -> Option<Mat2d> {
+    let parent = player.get(inst.parent?)?;
+    let (popup, about) = match inst.name.as_str() {
+        "mcPanel" if parent.name == "mcPanelContainer" => (inst.parent.and_then(|p| player.get(p)?.parent)?, 0.0),
+        "mcTitleVapor" if parent.name == "mcPopup" => (inst.parent?, 640.0 * 20.0),
+        _ => return None,
+    };
+    let popup_inst = player.get(popup)?;
+    if popup_inst.name != "mcPopup" || popup_shows_picture(player, popup) {
+        return None;
+    }
+    let k = POPUP_BOX;
+    let m = inst.matrix;
+    Some(Mat2d { a: m.a * k, c: m.c * k, tx: about + (m.tx - about) * k, ..m })
+}
+
+fn popup_shows_picture(player: &Player, popup: InstanceId) -> bool {
+    let Some(image) = player.child_by_name(popup, "mcPopupImage", true) else { return false };
+    let mut stack = vec![image];
+    while let Some(id) = stack.pop() {
+        let Some(i) = player.get(id) else { continue };
+        if !i.visible {
+            continue;
+        }
+        match &i.kind {
+            InstanceKind::Bitmap => return true,
+            InstanceKind::Sprite(s) => stack.extend(s.children.values().copied()),
+            _ => {}
+        }
+    }
+    false
 }

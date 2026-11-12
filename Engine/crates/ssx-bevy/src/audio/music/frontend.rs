@@ -51,6 +51,14 @@ impl MusicSource for FeMusicBus {
                 *menu = None;
             }
         }
+        // The `skip-intros` mod's startup: all of the menus' music silent, then fading in with the picture.
+        let start = ssx_assets::musicbox::startup_gain();
+        if start < 1.0 {
+            let g = start * start;
+            for x in out.iter_mut() {
+                *x *= g;
+            }
+        }
     }
 
     fn finished(&self) -> bool {

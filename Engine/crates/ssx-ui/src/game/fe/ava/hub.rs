@@ -25,12 +25,12 @@ pub fn activate(fe: &mut FrontEnd, env: &mut FeEnv) {
     env.values.set_str(0x32, title);
     env.values.set_str(0x33, "");
     menu::write_progress(fe, env);
-    let v = &*env.values;
-    let (dd, medals, total) = (v.int(0x58), v.int(0x6F), v.int(0x70));
     let loc = &mut *env.loc;
-    let item = |loc: &mut crate::game::loc::Localization, key: &str, desc: String, enabled: bool, advance| MenuItem {
+    // TODO(guess): a port choice — the hub's items show their names only (no line under each; port/view.rs gives
+    // such a cell the 60-high glow).
+    let item = |loc: &mut crate::game::loc::Localization, key: &str, enabled: bool, advance| MenuItem {
         item: loc.text(key),
-        desc,
+        desc: String::new(),
         enabled,
         focusable: enabled,
         advance,
@@ -38,23 +38,13 @@ pub fn activate(fe: &mut FrontEnd, env: &mut FeEnv) {
         rider_net: false,
         back: "",
     };
-    let sp = loc.format("TXT_AVA_HUB_SINGLEPLAYER_DESC", &[&dd.to_string(), &medals.to_string(), &total.to_string()]);
-    let mp = loc.text(if cfg!(feature = "net") {
-        "TXT_AVA_HUB_MULTIPLAYER_DESC"
-    } else {
-        "TXT_AVA_HUB_MULTIPLAYER_DESC_OFF"
-    });
-    let maps = loc.text("TXT_AVA_HUB_MAPS_DESC");
-    let options = loc.text("TXT_AVA_HUB_OPTIONS_DESC");
-    let credits = loc.text("TXT_AVA_HUB_CREDITS_DESC");
-    let exit = loc.text("TXT_AVA_HUB_EXIT_DESC");
     fe.ava.hub.items = vec![
-        item(loc, "TXT_AVA_HUB_SINGLEPLAYER", sp, true, "A_AvaSingleplayer"),
-        item(loc, "TXT_AVA_HUB_MULTIPLAYER", mp, cfg!(feature = "net"), "A_AvaMultiplayer"),
-        item(loc, "TXT_AVA_HUB_MAPS", maps, true, "A_AvaMaps"),
-        item(loc, "TXT_AVA_HUB_OPTIONS", options, true, "A_AvaOptions"),
-        item(loc, "TXT_AVA_HUB_CREDITS", credits, true, "A_AvaCredits"),
-        item(loc, "TXT_AVA_HUB_EXIT", exit, true, "A_AvaExit"),
+        item(loc, "TXT_AVA_HUB_SINGLEPLAYER", true, "A_AvaSingleplayer"),
+        item(loc, "TXT_AVA_HUB_MULTIPLAYER", cfg!(feature = "net"), "A_AvaMultiplayer"),
+        item(loc, "TXT_AVA_HUB_MAPS", true, "A_AvaMaps"),
+        item(loc, "TXT_AVA_HUB_OPTIONS", true, "A_AvaOptions"),
+        item(loc, "TXT_AVA_HUB_CREDITS", true, "A_AvaCredits"),
+        item(loc, "TXT_AVA_HUB_EXIT", true, "A_AvaExit"),
     ];
     fe.ava.hub.index = 0;
     fe.ava.hub.active = true;
