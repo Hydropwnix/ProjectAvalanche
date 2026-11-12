@@ -7,6 +7,8 @@ use crate::tuning::{AssetView, Bundle};
 pub const NO_TIME: f32 = f32::MAX;
 const EPS16: f32 = 1.525_878_9e-5;
 const EPS23: f32 = 1.192_092_9e-7;
+// TODO(guess): a port choice — the helicopter waits twice the tuned shut-out before it offers the next interaction.
+const SHUT_OUT_SCALE: f32 = 2.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum InteractionKind {
@@ -298,16 +300,18 @@ pub fn execute(
         }
     } else if (h.time - NO_TIME).abs() > EPS16 {
         if r.pre_anim_velocity.abs().max_element() > EPS23 {
-            velocity = Some(r.pre_anim_velocity);
+            velocity = Some(release_velocity(r.pre_anim_velocity, v));
             r.pre_anim_velocity = Vec3::ZERO;
         }
         let left = h.time - x.dt;
-        time = if -t.min_shut_out > left { NO_TIME } else { left };
+        time = if -(t.min_shut_out * SHUT_OUT_SCALE) > left { NO_TIME } else { left };
     } else {
         if not_above(v_hat.length(), EPS23) {
             return None;
         }
-        let toward = (x.heli_position - x.boarder_position).dot(v);
+        // TODO(guess): a port choice — the cone test takes the angle between the rider's travel and the way to the
+        // helicopter (the unnormalised product passed nearly every time the rider headed its way).
+        let toward = (x.heli_position - x.boarder_position).normalize_or_zero().dot(v_hat);
         let horizontal = v.with_y(0.0).length();
         if x.dt.abs() > EPS23 && toward > t.cone_cos && horizontal > t.min_horizontal_velocity {
             let mut found = h.time;
@@ -333,6 +337,16 @@ pub fn execute(
     }
     write_out(t, n, h, r, x, (check_avoid, abort, pulse, interact), (time, location, orientation));
     velocity
+}
+
+// TODO(guess): a port choice — letting go keeps the speed the rider had before the grab, along the way the swing
+// carried them (the game restores the grab's velocity whatever way the rider now faces), never losing height speed.
+pub fn release_velocity(before: Vec3, now: Vec3) -> Vec3 {
+    let flat_now = now.with_y(0.0);
+    let flat_before = before.with_y(0.0);
+    let speed = flat_before.length().max(flat_now.length());
+    let dir = if flat_now.length() > 1.0 { flat_now.normalize() } else { flat_before.normalize_or_zero() };
+    dir * speed + Vec3::Y * before.y.max(now.y)
 }
 
 fn select(t: &InteractionTuning, x: &InteractionInputs) -> Option<(f32, Vec3)> {
@@ -413,7 +427,7 @@ fn ground(t: &InteractionTuning, h: &mut HeliInteractionBoard, r: &mut RiderHeli
     let mut time = h.time;
     if (time - NO_TIME).abs() > EPS16 {
         time -= x.dt;
-        if not_at_least(time, -t.min_shut_out) {
+        if not_at_least(time, -(t.min_shut_out * SHUT_OUT_SCALE)) {
             time = NO_TIME;
         }
     }

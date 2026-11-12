@@ -438,7 +438,8 @@ impl HeliBoard {
             dir += Vec3::Y;
         }
         let dir = dir.normalize_or_zero();
-        let distance = if ib.prepare { t.prepare_target_distance } else { t.target_distance };
+        // TODO(guess): a port choice — the helicopter follows a quarter further off than its tuning outside an interaction.
+        let distance = if ib.prepare { t.prepare_target_distance } else { t.target_distance * 1.25 };
         self.desired_position = self.target_position + (dir - Vec3::Y * t.target_drop_scale) * distance;
         self.avoid = None;
         if ib.avoid {
