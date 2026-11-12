@@ -21,7 +21,10 @@ impl DisplayClass {
     pub const WIDESCREEN: DisplayClass = DisplayClass { widescreen: true };
 
     pub fn of_window(width: u32, height: u32) -> DisplayClass {
-        // TODO(guess): a port choice — the console told the movies its video mode's widescreen flag (`XGetVideoMode` at 0x82FB57A0: 1280 × 720 or 960 × 720); a PC window has no such flag, so its shape is classed by the movies' own test (`ViewUtil.IsWidescreen`: displayWidth / displayHeight > 1.55, classloader.gfx 0x0f9f): 16:10 (1.6) is widescreen, 3:2 (1.5) and 4:3 are not; settle: none (the port's window).
+        // Port feature: the console told the movies its video mode's widescreen flag (`XGetVideoMode` at 0x82FB57A0:
+        // 1280 × 720 or 960 × 720); a PC window has no such flag, so its shape is classed by the movies' own test
+        // (`ViewUtil.IsWidescreen`: displayWidth / displayHeight > 1.55, classloader.gfx 0x0f9f): 16:10 (1.6) is
+        // widescreen, 3:2 (1.5) and 4:3 are not.
         let widescreen = height == 0 || f64::from(width) / f64::from(height) > SD_PROPORTIONS_UPPER_BOUND;
         DisplayClass { widescreen }
     }
@@ -89,7 +92,8 @@ fn reposition_if_sd(cx: &mut Ctx, _this: Value, a: &[Value]) -> R {
     }
     if let Some(id) = cx.display_of(&clip) {
         keep(&mut cx.vm.natives.sd_moves, cx.player, id, anchored_left);
-        // TODO(guess): on a window wider than 16:9 the HUD's side panels (its RepositionIfSD clips) move out to the window's edges, a port choice for ultrawide windows (the game's HUD keeps to the 16:9 stage); settle: none needed.
+        // Port feature for ultrawide windows: the HUD's side panels (its RepositionIfSD clips) move out to the
+        // window's edges; the game's HUD keeps to the 16:9 stage.
         if in_hud(cx.player, id) {
             let extra = cx.vm.natives.hud_extra;
             if extra > 0.0 {

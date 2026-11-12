@@ -190,6 +190,9 @@ impl Renderer {
         if !inst.visible && !inh.mask {
             return;
         }
+        if !inh.mask && hidden_side_dimmer(lib, player, inst) {
+            return;
+        }
         // TODO(guess): an instance with normal (or layer) blending pushes nothing, so the innermost other mode of its ancestors applies; settle: which render-tree nodes push.
         let blend = if inh.mask {
             BlendMode::Normal
@@ -609,7 +612,17 @@ fn bitmap_quad(b: crate::library::BitmapDef) -> ShapeMesh {
     ShapeMesh { layers: vec![shape::ShapeLayer { paint, mesh: Arc::new(mesh) }] }
 }
 
-// TODO(guess): on a window wider than 16:9 the HUD's leaderboard movies (the standings, top right) move out with its other right-hand panels; they place themselves outside RepositionIfSD, so the shift is made when drawn, on the movie's topmost clip; a port choice for ultrawide windows; settle: none needed.
+// Port feature for ultrawide windows (the game's HUD is 16:9): the menus' side dimmer (`dimmer.gfx`, `mcDimmer`'s
+// character 2) ends in a hard edge at the stage's side, so it is not drawn; the full-screen dimmer beside it
+// (character 4, behind popups) is kept.
+fn hidden_side_dimmer(lib: &Library, player: &Player, inst: &Instance) -> bool {
+    inst.character.as_ref().is_some_and(|c| c.id == 2)
+        && inst.parent.and_then(|p| player.get(p)).is_some_and(|p| p.name == "mcDimmer")
+        && lib.movie(inst.movie).path.to_ascii_lowercase().rsplit(['/', '\\']).next() == Some("dimmer.gfx")
+}
+
+// Port feature for ultrawide windows (the game's HUD is 16:9): the leaderboard movies place themselves outside
+// `RepositionIfSD`, so the shift is made when drawn, on the movie's topmost clip.
 fn is_leaderboard_movie(lib: &Library, inst: &Instance) -> bool {
     let path = lib.movie(inst.movie).path.to_ascii_lowercase();
     path.rsplit(['/', '\\']).next().is_some_and(|f| f.contains("leaderboard"))
@@ -648,6 +661,7 @@ fn wide_leaderboard(lib: &Library, player: &Player, inst: &Instance) -> Option<M
     let dx = extra * 20.0;
     let m = inst.matrix;
     Some(Mat2d { tx: m.tx + up.d * dx / det, ty: m.ty - up.b * dx / det, ..m })
+}
 }
 
 #[cfg(test)]
