@@ -2,6 +2,10 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use bevy::ecs::system::SystemParam;
+use bevy::input::ButtonState;
+use bevy::input::gamepad::{GamepadAxisChangedEvent, GamepadButtonChangedEvent, GamepadInput};
+use bevy::input::keyboard::{KeyboardFocusLost, KeyboardInput};
+use bevy::input::mouse::{MouseButtonInput, MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 use ssx_physics::event::EventType;
 use ssx_physics::rider::{RideState, World as PhysicsWorld};
@@ -60,6 +64,28 @@ const KEYS: &[(KeyCode, &str)] = &[
     (KeyCode::KeyO, "o"),
     (KeyCode::KeyP, "p"),
     (KeyCode::KeyU, "u"),
+    (KeyCode::KeyA, "a"),
+    (KeyCode::KeyC, "c"),
+    (KeyCode::KeyD, "d"),
+    (KeyCode::KeyE, "e"),
+    (KeyCode::KeyF, "f"),
+    (KeyCode::KeyG, "g"),
+    (KeyCode::KeyH, "h"),
+    (KeyCode::KeyI, "i"),
+    (KeyCode::KeyJ, "j"),
+    (KeyCode::KeyK, "k"),
+    (KeyCode::KeyL, "l"),
+    (KeyCode::KeyN, "n"),
+    (KeyCode::KeyQ, "q"),
+    (KeyCode::KeyR, "r"),
+    (KeyCode::KeyS, "s"),
+    (KeyCode::KeyT, "t"),
+    (KeyCode::KeyV, "v"),
+    (KeyCode::KeyW, "w"),
+    (KeyCode::KeyX, "x"),
+    (KeyCode::KeyY, "y"),
+    (KeyCode::KeyZ, "z"),
+    (KeyCode::Space, "space"),
     (KeyCode::Comma, ","),
     (KeyCode::Period, "."),
     (KeyCode::Slash, "/"),
@@ -72,9 +98,121 @@ const KEYS: &[(KeyCode, &str)] = &[
     (KeyCode::Backquote, "`"),
     (KeyCode::Backslash, "\\"),
     (KeyCode::Insert, "insert"),
+    (KeyCode::Delete, "del"),
     (KeyCode::Pause, "pause"),
     (KeyCode::ScrollLock, "scroll"),
+    (KeyCode::ArrowUp, "up"),
+    (KeyCode::ArrowDown, "down"),
+    (KeyCode::ArrowLeft, "left"),
+    (KeyCode::ArrowRight, "right"),
+    (KeyCode::Enter, "enter"),
+    (KeyCode::NumpadEnter, "enter"),
+    (KeyCode::Backspace, "bksp"),
 ];
+
+/// A port addition for mods' menus: the gamepad buttons a script may bind, any pad's.
+const PAD_BUTTONS: &[(GamepadButton, &str)] = &[
+    (GamepadButton::DPadUp, "dp_up"),
+    (GamepadButton::DPadDown, "dp_down"),
+    (GamepadButton::DPadLeft, "dp_left"),
+    (GamepadButton::DPadRight, "dp_right"),
+    (GamepadButton::South, "pad_a"),
+    (GamepadButton::East, "pad_b"),
+    (GamepadButton::West, "pad_x"),
+    (GamepadButton::North, "pad_y"),
+    (GamepadButton::LeftTrigger, "pad_lb"),
+    (GamepadButton::RightTrigger, "pad_rb"),
+    (GamepadButton::Select, "pad_view"),
+    (GamepadButton::Start, "pad_menu"),
+    (GamepadButton::LeftThumb, "pad_ls"),
+    (GamepadButton::RightThumb, "pad_rs"),
+];
+
+/// The gamepad buttons a package holds with the menu keys (the left stick, which scripts see as the D-pad, is held
+/// too).
+const PAD_MENU: [GamepadButton; 7] = [
+    GamepadButton::DPadUp,
+    GamepadButton::DPadDown,
+    GamepadButton::DPadLeft,
+    GamepadButton::DPadRight,
+    GamepadButton::South,
+    GamepadButton::East,
+    GamepadButton::RightThumb,
+];
+
+/// A button's value at or past this is a press, and at or under [`BUTTON_RELEASE`] its release.
+const BUTTON_PRESS: f32 = 0.75;
+const BUTTON_RELEASE: f32 = 0.25;
+
+/// The left stick past this is a D-pad press, and back under [`STICK_RELEASE`] its release.
+const STICK_PRESS: f32 = 0.6;
+const STICK_RELEASE: f32 = 0.35;
+const STICK_KEYS: [&str; 4] = ["dp_up", "dp_down", "dp_left", "dp_right"];
+
+/// The keys a package may hold for its menu (`captureMenuKeys`): while held, the game does not see them. (Port
+/// addition: the letters and the space bar too, for typing in a menu.)
+const MENU_CODES: &[KeyCode] = &[
+    KeyCode::ArrowUp,
+    KeyCode::ArrowDown,
+    KeyCode::ArrowLeft,
+    KeyCode::ArrowRight,
+    KeyCode::Enter,
+    KeyCode::NumpadEnter,
+    KeyCode::Backspace,
+    KeyCode::KeyA,
+    KeyCode::KeyB,
+    KeyCode::KeyC,
+    KeyCode::KeyD,
+    KeyCode::KeyE,
+    KeyCode::KeyF,
+    KeyCode::KeyG,
+    KeyCode::KeyH,
+    KeyCode::KeyI,
+    KeyCode::KeyJ,
+    KeyCode::KeyK,
+    KeyCode::KeyL,
+    KeyCode::KeyM,
+    KeyCode::KeyN,
+    KeyCode::KeyO,
+    KeyCode::KeyP,
+    KeyCode::KeyQ,
+    KeyCode::KeyR,
+    KeyCode::KeyS,
+    KeyCode::KeyT,
+    KeyCode::KeyU,
+    KeyCode::KeyV,
+    KeyCode::KeyW,
+    KeyCode::KeyX,
+    KeyCode::KeyY,
+    KeyCode::KeyZ,
+    KeyCode::Space,
+];
+
+/// A package holds the menu keys (the last frame report said so). (Port addition: the game's pointer leaves the
+/// mouse's clicks and wheel to it then, too.)
+#[derive(Resource, Default)]
+pub(crate) struct MenuCapture(pub bool);
+
+/// Runs after [`keys`] (the scripts have their events) and before the game reads its keys.
+pub(super) fn hold_menu_keys(
+    capture: Res<MenuCapture>,
+    mut keys: ResMut<ButtonInput<KeyCode>>,
+    mut pads: Query<&mut Gamepad>,
+) {
+    if capture.0 {
+        for &code in MENU_CODES {
+            keys.reset(code);
+        }
+        for mut pad in &mut pads {
+            for b in PAD_MENU {
+                pad.digital_mut().reset(b);
+            }
+            for axis in [GamepadAxis::LeftStickX, GamepadAxis::LeftStickY] {
+                pad.analog_mut().set(GamepadInput::Axis(axis), 0.0);
+            }
+        }
+    }
+}
 
 #[derive(Resource, Default)]
 pub(super) struct Inbox {
@@ -89,6 +227,15 @@ pub(super) struct Inbox {
     seen_pushed: Option<ssx_physics::scoring::TrickRecord>,
     ride_seen: bool,
     level_markers: Option<Arc<Vec<ssx_script::host::game::LevelMarker>>>,
+    held: std::collections::BTreeSet<&'static str>,
+    /// Pixel-unit wheel scrolling not yet a whole notch (40 pixels a notch, as the game's pointer).
+    wheel_px: f32,
+    /// Each pad's left stick (from its own events, which the menu hold leaves alone) and the D-pad directions it
+    /// holds down for the scripts (up, down, left, right).
+    sticks: std::collections::HashMap<Entity, (Vec2, [bool; 4])>,
+    /// The pad buttons down, each pad's own, from their values: the pads' pressed / released events can't be used, as
+    /// bevy sends a release only for a button its state has as pressed, and the menu hold takes them out of it.
+    pad_buttons: std::collections::HashSet<(Entity, GamepadButton)>,
 }
 
 impl Inbox {
@@ -156,20 +303,131 @@ pub(super) fn ride_events(
     inbox.in_air = air;
 }
 
-pub(super) fn keys(keys: Res<ButtonInput<KeyCode>>, mut inbox: ResMut<Inbox>, ui: Res<GameUiRes>) {
+impl Inbox {
+    fn push_key(&mut self, key: &'static str, down: bool) {
+        if self.keys.len() == MAX_EVENTS {
+            self.keys.pop_front();
+            self.dropped += 1;
+        }
+        self.keys.push_back(KeyEvent { key, down });
+    }
+
+    /// Every key a script was told is down goes up (focus lost, typing started).
+    fn let_go(&mut self) {
+        for key in std::mem::take(&mut self.held) {
+            self.push_key(key, false);
+        }
+        for (_, dirs) in self.sticks.values_mut() {
+            *dirs = [false; 4];
+        }
+        self.pad_buttons.clear();
+    }
+
+    fn press(&mut self, name: &'static str, down: bool) {
+        if down {
+            if self.held.insert(name) {
+                self.push_key(name, true);
+            }
+        } else if self.held.remove(name) {
+            self.push_key(name, false);
+        }
+    }
+}
+
+/// The scripts' keys come from the keyboard's own events, not from `ButtonInput`: [`hold_menu_keys`] takes the menu
+/// keys out of `ButtonInput` while a package holds them, which would hide their releases. The OS's auto-repeat is
+/// left out (a script repeats on its own), and every press a script saw gets its release.
+pub(super) fn keys(
+    mut typed: MessageReader<KeyboardInput>,
+    mut lost: MessageReader<KeyboardFocusLost>,
+    (mut buttons, mut axes): (MessageReader<GamepadButtonChangedEvent>, MessageReader<GamepadAxisChangedEvent>),
+    mut inbox: ResMut<Inbox>,
+    ui: Res<GameUiRes>,
+    (mut mouse, mut wheel): (MessageReader<MouseButtonInput>, MessageReader<MouseWheel>),
+) {
+    let focus_lost = lost.read().count() > 0;
     if ui.text_focused() {
+        typed.clear();
+        buttons.clear();
+        axes.clear();
+        mouse.clear();
+        wheel.clear();
+        inbox.let_go();
         return;
     }
-    for &(code, name) in KEYS {
-        for (down, hit) in [(true, keys.just_pressed(code)), (false, keys.just_released(code))] {
-            if hit {
-                if inbox.keys.len() == MAX_EVENTS {
-                    inbox.keys.pop_front();
-                    inbox.dropped += 1;
-                }
-                inbox.keys.push_back(KeyEvent { key: name, down });
+    // The mouse (a port addition): its buttons as keys, and each wheel notch as a press of wheel_up / wheel_dn.
+    for e in mouse.read() {
+        let name = match e.button {
+            MouseButton::Left => "mouse1",
+            MouseButton::Right => "mouse2",
+            MouseButton::Middle => "mouse3",
+            _ => continue,
+        };
+        inbox.press(name, e.state == ButtonState::Pressed);
+    }
+    let mut notches = 0i32;
+    for e in wheel.read() {
+        match e.unit {
+            MouseScrollUnit::Line => notches = notches.saturating_add(e.y.round().clamp(-16.0, 16.0) as i32),
+            MouseScrollUnit::Pixel => {
+                inbox.wheel_px += e.y.clamp(-4096.0, 4096.0);
+                let n = (inbox.wheel_px / 40.0).trunc();
+                inbox.wheel_px -= n * 40.0;
+                notches = notches.saturating_add(n as i32);
             }
         }
+    }
+    for _ in 0..notches.unsigned_abs().min(16) {
+        let name = if notches > 0 { "wheel_up" } else { "wheel_dn" };
+        inbox.push_key(name, true);
+        inbox.push_key(name, false);
+    }
+    for e in typed.read() {
+        let Some(&(_, name)) = KEYS.iter().find(|(code, _)| *code == e.key_code) else { continue };
+        match e.state {
+            ButtonState::Pressed if !e.repeat && inbox.held.insert(name) => inbox.push_key(name, true),
+            ButtonState::Released if inbox.held.remove(name) => inbox.push_key(name, false),
+            _ => {}
+        }
+    }
+    // Gamepads, from their own events too (the menu hold resets the pads' state, which would hide releases), each
+    // button by its value.
+    for e in buttons.read() {
+        let Some(&(_, name)) = PAD_BUTTONS.iter().find(|(b, _)| *b == e.button) else { continue };
+        let key = (e.entity, e.button);
+        let was = inbox.pad_buttons.contains(&key);
+        if !was && e.value >= BUTTON_PRESS {
+            inbox.pad_buttons.insert(key);
+            inbox.press(name, true);
+        } else if was && e.value <= BUTTON_RELEASE {
+            inbox.pad_buttons.remove(&key);
+            if !inbox.pad_buttons.iter().any(|(_, b)| *b == e.button) {
+                inbox.press(name, false);
+            }
+        }
+    }
+    for e in axes.read() {
+        let (stick, dirs) = inbox.sticks.entry(e.entity).or_insert((Vec2::ZERO, [false; 4]));
+        match e.axis {
+            GamepadAxis::LeftStickX => stick.x = e.value,
+            GamepadAxis::LeftStickY => stick.y = e.value,
+            _ => continue,
+        }
+        let values = [stick.y, -stick.y, -stick.x, stick.x];
+        let mut changes = Vec::new();
+        for (k, v) in values.into_iter().enumerate() {
+            let on = if dirs[k] { v > STICK_RELEASE } else { v >= STICK_PRESS };
+            if on != dirs[k] {
+                dirs[k] = on;
+                changes.push((STICK_KEYS[k], on));
+            }
+        }
+        for (name, on) in changes {
+            inbox.press(name, on);
+        }
+    }
+    if focus_lost {
+        inbox.let_go();
     }
 }
 
@@ -223,6 +481,11 @@ impl FrameView<'_> {
 
     pub(super) fn live(&self) -> Option<&crate::shell::live::LiveSession> {
         self.live.as_deref()
+    }
+
+    /// A network session is up: its profile is the server's, so the scripts get none.
+    pub(super) fn in_session(&self) -> bool {
+        self.live.is_some()
     }
 
     pub(super) fn rider_name(&self) -> Option<String> {

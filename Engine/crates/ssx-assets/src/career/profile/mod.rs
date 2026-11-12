@@ -304,7 +304,30 @@ pub struct Profile {
     pub mod_state: ssx_content::profile_state::ModState,
     pub mod_keys: BTreeMap<u32, mod_state::ModKey>,
     pub mod_disc_riders: BTreeMap<u32, String>,
+    /// A port addition for mods, not the game's and not saved: while set, credits never go down and the front end
+    /// shows the bank as infinite. A mod sets it again at each start.
+    pub infinite_credits: bool,
+    /// A port addition for mods, not saved: the shops offer items of at least this rarity (0 = every item).
+    pub shop_min_rarity: i64,
+    /// A port addition for mods, not saved: the gear that never wears out or runs down on a drop, one bit each
+    /// ([`unlimited_gear`]).
+    pub unlimited_gear: u32,
 }
+
+/// The bits of [`Profile::unlimited_gear`] (a mod's `setUnlimitedGear`).
+pub mod unlimited_gear {
+    /// The wingsuit's wear and its flight time (its lift never fades).
+    pub const WINGSUIT: u32 = 1;
+    pub const ICE_AXE: u32 = 2;
+    pub const ARMOUR: u32 = 4;
+    pub const HEAD_LAMP: u32 = 8;
+    pub const PULSE_GOGGLES: u32 = 16;
+    pub const OXYGEN_TANK: u32 = 32;
+    pub const ALL: u32 = 63;
+}
+
+/// The bank the port keeps while credits are infinite (the game's largest bank), so every price passes its check.
+pub const INFINITE_CREDITS_BANK: i64 = 999_979_999;
 
 pub const RECENT_BADGES: usize = 5;
 
@@ -368,6 +391,15 @@ impl Profile {
         self.attribs.get(&ATTRIB_CREDITS).copied().unwrap_or(0)
     }
 
+    /// A port addition for mods: infinite credits on (the bank is held at [`INFINITE_CREDITS_BANK`]) or off (the
+    /// bank stays where it is; the caller restores what it wants).
+    pub fn set_infinite_credits(&mut self, on: bool) {
+        self.infinite_credits = on;
+        if on {
+            self.attribs.insert(ATTRIB_CREDITS, INFINITE_CREDITS_BANK);
+        }
+    }
+
     pub fn award_badge(&mut self, key: u32) -> bool {
         if self.stats.awarded(key) {
             return false;
@@ -409,6 +441,10 @@ impl Profile {
     }
 
     pub fn add_credits(&mut self, amount: i64, earned: bool) {
+        if self.infinite_credits {
+            self.attribs.insert(ATTRIB_CREDITS, INFINITE_CREDITS_BANK);
+            return;
+        }
         let max = i64::from(i32::MAX);
         let bill = match self.attribs.get(&ATTRIB_CREDITS) {
             None => amount.max(0),

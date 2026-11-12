@@ -189,7 +189,7 @@ fn the_list_round_trips() {
 fn a_hand_placed_package_over_the_caps_is_refused_at_the_mount() {
     let app = App::new("caps");
     app.package("big", "big", 0, 7, "");
-    for i in 0..6 {
+    for i in 0..18 {
         let p = app.0.join(MODS_DIR).join("big").join(format!("t/fill{i}.bin"));
         std::fs::File::create(&p).unwrap().set_len(512 << 20).unwrap();
     }
@@ -200,7 +200,7 @@ fn a_hand_placed_package_over_the_caps_is_refused_at_the_mount() {
     let mut registry = Registry::new();
     let report = mount_enabled_except(&mut registry, &app.0, None);
     let reason = |folder: &str| report.skipped.iter().find(|s| s.folder == folder).map(|s| s.reason.clone());
-    assert!(reason("big").is_some_and(|r| r.contains("in all (a package is at most 2147483648)")), "{report:?}");
+    assert!(reason("big").is_some_and(|r| r.contains("in all (a package is at most 8589934592)")), "{report:?}");
     assert!(reason("huge").is_some_and(|r| r.contains("a file is at most 536870912")), "{report:?}");
     assert!(reason("fine").is_none(), "{report:?}");
     assert!(registry.has(&rock()));

@@ -355,3 +355,43 @@ fn a_modded_best_is_kept_only_with_its_sim_content_id() {
     assert_eq!(p.explore_scores[&key("t")].score, 90_000);
     assert_eq!(p.explore_scores[&key("x")].attempts, 6);
 }
+
+#[test]
+fn a_mod_sets_a_rider_to_a_level_past_its_price_gates() {
+    let thresholds = [1000, 2000, 4000, 8000, 16000];
+    let prices = [0, 0, 500, 0, 900];
+    let mut s = RiderStats { money_earned: 50, ..RiderStats::default() };
+    assert_eq!(update_rider_level(&mut s.clone(), &thresholds, &prices).0, 0);
+    assert_eq!(set_rider_level(&mut s, 3, &thresholds, &prices), 3, "the gate before level 2 is bought");
+    assert_eq!((s.money_earned, s.max_purchased_level, s.max_achieved_level), (8000, 3, 3));
+    assert_eq!(update_rider_level(&mut s.clone(), &thresholds, &prices).0, 3, "it stays");
+    assert_eq!(set_rider_level(&mut s, 99, &thresholds, &prices), 4, "at most the last level");
+    assert_eq!(set_rider_level(&mut s, 1, &thresholds, &prices), 1, "and back down");
+}
+
+#[test]
+fn a_mods_level_cap_adds_free_levels_past_the_games() {
+    let thresholds = [1000, 2000, 4000, 8000, 12000];
+    let prices = [0, 0, 500, 0, 0];
+    assert_eq!(extended_thresholds(&thresholds, 5), None, "no more than the game's");
+    assert_eq!(extended_thresholds(&thresholds, 7).unwrap(), [1000, 2000, 4000, 8000, 12000, 16000, 20000]);
+    let mut s = RiderStats::default();
+    assert_eq!(set_rider_level_capped(&mut s, 6, &thresholds, &prices, 7), 6, "level 7 as the game shows it");
+    assert_eq!(s.money_earned, 20000);
+    assert_eq!(update_rider_level_capped(&mut s.clone(), &thresholds, &prices, 7).0, 6, "it stays");
+    assert_eq!(update_rider_level_capped(&mut s.clone(), &thresholds, &prices, 0).0, 4, "without the cap, the last");
+    assert_eq!(set_rider_level_capped(&mut s, 99, &thresholds, &prices, 99), LEVEL_CAP_MAX - 1, "at most 20");
+}
+
+#[test]
+fn infinite_credits_hold_the_bank_and_never_go_down() {
+    let mut p = Profile::new();
+    p.set_infinite_credits(true);
+    assert_eq!(p.credits(), INFINITE_CREDITS_BANK);
+    p.add_credits(-250_000, true);
+    p.add_credits(1_000, true);
+    assert_eq!(p.credits(), INFINITE_CREDITS_BANK);
+    p.set_infinite_credits(false);
+    p.add_credits(-250_000, true);
+    assert_eq!(p.credits(), INFINITE_CREDITS_BANK - 250_000);
+}

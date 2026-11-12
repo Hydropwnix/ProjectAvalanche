@@ -156,6 +156,8 @@ pub struct StoreContext {
     pub required_gear: u32,
     pub blocked: [bool; KINDS],
     pub geotags_online: bool,
+    /// A port addition for mods: the lowest rarity the store offers (0, the game's, offers every rarity).
+    pub min_rarity: i64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -250,6 +252,11 @@ impl Store {
     pub fn refresh(&mut self, data: &StoreData, ctx: &StoreContext, now_ms: i64) {
         if ctx.rider == 0 {
             return;
+        }
+        if ctx.min_rarity > 0 {
+            for list in &mut self.stock {
+                list.retain(|i| i.rarity >= ctx.min_rarity);
+            }
         }
         let blocked = |k: usize| ctx.blocked[k] || (k == KIND_GEOTAG as usize && !ctx.geotags_online);
         for k in 0..KINDS {

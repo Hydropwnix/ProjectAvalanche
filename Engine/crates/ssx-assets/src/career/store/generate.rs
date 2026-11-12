@@ -7,6 +7,22 @@ fn scale(value: i64, factor: f32) -> i64 {
     ((value as f32) * factor).floor() as i64
 }
 
+/// A port addition for mods (levels past the game's, `setMaxLevel`): a per-level (min, max) row. Within the table it is
+/// the game's row; past its last row each level adds the step between the last two rows once more, so gear keeps
+/// scaling with the rider.
+pub fn level_row(rows: &[(i64, i64)], level: i64) -> (i64, i64) {
+    let Some(&last) = rows.last() else { return (0, 0) };
+    let n = rows.len() as i64;
+    let level = level.max(0);
+    if level < n {
+        return rows[level as usize];
+    }
+    let prev = if n >= 2 { rows[rows.len() - 2] } else { last };
+    let extra = level - (n - 1);
+    let step = |a: i64, b: i64| (b - a).max(0).saturating_mul(extra);
+    (last.0.saturating_add(step(prev.0, last.0)), last.1.saturating_add(step(prev.1, last.1)))
+}
+
 pub fn score(data: &StoreData, item: &StoreItem) -> i64 {
     let s = match item.kind {
         KIND_SUIT => data.tables.suit_score,
@@ -39,6 +55,10 @@ impl Store {
             let free: Vec<i64> = (0..15).filter(|&s| blocked & (1 << s) == 0 && have & (1 << s) != 0).collect();
             slot = if free.is_empty() { 3 } else { free[self.rng.pick(free.len())] };
         }
+        // A port addition for mods: past the highest level any template reaches (a mod's levels past the game's), the
+        // templates of that level; the stats still scale with the item's whole level (`level_row`).
+        let top = data.group(kind).iter().filter_map(|k| data.templates.get(k)).map(|t| t.max_level).max();
+        let level = top.map_or(level, |top| level.min(top));
         let mut candidates = Vec::new();
         for key in data.group(kind) {
             let Some(t) = data.templates.get(key) else { continue };
@@ -120,7 +140,7 @@ impl Store {
                 break;
             }
         }
-        item.rarity = item.rarity.max(req.min_rarity);
+        item.rarity = item.rarity.max(req.min_rarity).max(ctx.min_rarity);
         item.template = self.choose_template(data, ctx, kind as i64, req.slot, item.level, item.rarity)?;
         let t = data.templates.get(&item.template)?;
         item.id = self.next_id;
@@ -138,7 +158,7 @@ impl Store {
         item.duration_ms = tb.durations.get(d).copied().unwrap_or(0) * 60_000;
         item.expires_ms = now_ms + item.duration_ms;
         let li = (item.level.max(0) as usize).min(tb.stat_points.len().saturating_sub(1));
-        let (min, max) = tb.stat_points.get(li).copied().unwrap_or((0, 0));
+        let (min, max) = level_row(&tb.stat_points, item.level);
         let (mut lo, mut hi) = (min, min);
         for (i, &b) in tb.rarity_bands.iter().enumerate().take(5) {
             let part = b * (max - min + 1) / 100;
@@ -199,7 +219,8 @@ impl Store {
                 item.stats[5].0 = t.bonus_stats[self.rng.pick(t.bonus_stats.len())];
             }
             if item.stats[5].0 != -1 {
-                let (bmin, bmax) = tb.bonus_points.get(li).copied().unwrap_or((0, 0));
+                let (bmin, bmax) = level_row(&tb.bonus_points, item.level);
+                let (bmin, bmax) = (bmin.clamp(0, 100), bmax.clamp(0, 100));
                 item.stats[5].1 = self.rng.range(bmin, bmax) as u8;
                 bonus = item.stats[5].1 != 0;
                 if !bonus {

@@ -158,7 +158,10 @@ impl Inventory {
     pub fn store_context(&self, db: &CareerDb, profile: &Profile, drop: Option<&DropInfo>) -> StoreContext {
         StoreContext {
             rider: self.rider,
+            // A mod's levels past the game's (`setMaxLevel`) stock the shops at the rider's own level: the game's
+            // highest gear designs, with stats that keep scaling (`store::generate::level_row`).
             level: Self::rider_level(db, profile, self.rider).0,
+            min_rarity: profile.shop_min_rarity,
             gear_types: profile.gear_types(),
             equipped_gear: self.worn_gear,
             unk_gear_mask: self.gear_mask,

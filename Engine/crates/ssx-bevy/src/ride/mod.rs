@@ -1,6 +1,6 @@
 use bevy::prelude::{
-    App, FixedUpdate, IntoScheduleConfigs, PostUpdate, Quat, Resource, SystemSet, Update, Vec2, Vec3, World, info,
-    resource_exists, warn,
+    App, FixedUpdate, IntoScheduleConfigs, PostUpdate, Quat, Res, ResMut, Resource, SystemSet, Update, Vec2, Vec3,
+    World, info, resource_exists, warn,
 };
 use ssx_assets::postfx_overlay::OverlayDrop;
 use ssx_physics::SIM_HZ;
@@ -265,6 +265,11 @@ pub struct Ride {
     pub pose_blocks: Option<ssx_physics::graph::LiveBlocks>,
     pub start_gate: live::StartGate,
     pub go_step: Option<u64>,
+    /// A port addition for mods (`setUnlimitedGear`): the gear that never wears out or runs down, one bit each
+    /// (`ssx_assets::career::profile::unlimited_gear`). Never in a network session.
+    pub unlimited_gear: u32,
+    /// The flight time unlimited flight holds the wingsuit at (worked out from its tuning at the first use).
+    wingsuit_hold: Option<f32>,
 }
 
 impl Ride {
@@ -446,6 +451,16 @@ pub fn insert(world: &mut World, r: RideLoad) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The profile's unlimited gear (a mod's `setUnlimitedGear`) onto the ride, so a change from the menu takes hold
+/// mid-drop.
+fn sync_unlimited_gear(ui: Option<Res<crate::shell::game_mode::GameUiRes>>, mut ride: ResMut<Ride>) {
+    let mask = ui.as_ref().and_then(|u| u.0.fe.as_ref()).map_or(0, |fe| fe.profile.unlimited_gear);
+    if ride.unlimited_gear != mask {
+        info!("ride: unlimited gear {mask:#04x} (1 wingsuit, 2 ice axe, 4 armour, 8 head lamp, 16 goggles, 32 oxygen)");
+        ride.unlimited_gear = mask;
+    }
+}
+
 pub fn register(app: &mut App, hud: bool) {
     let riding = resource_exists::<Ride>;
     app.init_resource::<PausedFrames>()
@@ -470,6 +485,7 @@ pub fn register(app: &mut App, hud: bool) {
                 .run_if(riding),
         )
         .add_systems(PostUpdate, late_controls.run_if(riding))
+        .add_systems(Update, sync_unlimited_gear.before(RideStepSet).run_if(riding))
         .add_systems(Update, draw_rail_debug.after(place_rider).run_if(riding))
         .add_systems(Update, strip::capture.after(report).run_if(riding))
         .add_systems(Update, world_render.after(place_rider))

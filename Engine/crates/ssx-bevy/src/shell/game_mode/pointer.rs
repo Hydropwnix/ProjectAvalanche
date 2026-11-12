@@ -20,6 +20,7 @@ pub(super) struct PointerShell {
     last: Option<Vec2>,
     scroll: f32,
     applied: Option<(bool, bool)>,
+    held: bool,
 }
 
 #[derive(SystemParam)]
@@ -81,7 +82,9 @@ pub(super) fn pointer_system(
     mut shell: ResMut<super::Shell>,
     mut ui: ResMut<GameUiRes>,
     level: Option<Res<crate::shell::game_level::LevelGame>>,
+    capture: Option<Res<crate::script::MenuCapture>>,
 ) {
+    let captured = capture.is_some_and(|c| c.0);
     let riding =
         level.as_ref().is_some_and(|l| l.takes_input()) && !ui.fe.as_ref().is_some_and(|f| f.game_pause.paused);
     let other_input = p.keys.get_just_pressed().len() > 0
@@ -101,25 +104,45 @@ pub(super) fn pointer_system(
             None => warn!("shell: pointer at window ({x}, {y}): no UI viewport to map it to (script)"),
         }
     }
-    pointer_frame(&mut p, &mut ui, scale, active, other_input);
+    pointer_frame(&mut p, &mut ui, scale, active, other_input, captured);
     for line in std::mem::take(&mut ui.pointer.log) {
         info!("{line}");
     }
 }
 
-fn pointer_frame(p: &mut PointerInput, ui: &mut GameUiRes, scale: f32, active: bool, other_input: bool) {
+/// `captured`: a mod's menu holds the menu keys (port addition): the mouse is its, so the game's screens get no
+/// moves, clicks or wheel, and the cursor shows (in a ride too). When the menu lets go, the game's pointer catches up
+/// with the cursor.
+fn pointer_frame(
+    p: &mut PointerInput,
+    ui: &mut GameUiRes,
+    scale: f32,
+    active: bool,
+    other_input: bool,
+    captured: bool,
+) {
     if other_input {
         p.state.shown = false;
     }
     let moved: Vec<Vec2> = p.moved.read().map(|m| m.position).collect();
+    let released = std::mem::replace(&mut p.state.held, captured) && !captured;
     if let Some(&pos) = moved.last()
         && p.state.last != Some(pos)
     {
         p.state.last = Some(pos);
         p.state.shown = true;
-        if active && let Some((x, y)) = p.stage_point(pos, scale) {
+        if active
+            && !captured
+            && let Some((x, y)) = p.stage_point(pos, scale)
+        {
             ui.pointer_move(x, y);
         }
+    } else if released
+        && active
+        && let Some(pos) = p.state.last
+        && let Some((x, y)) = p.stage_point(pos, scale)
+    {
+        ui.pointer_move(x, y);
     }
     let buttons: Vec<(UiButton, bool)> = p
         .buttons
@@ -138,7 +161,7 @@ fn pointer_frame(p: &mut PointerInput, ui: &mut GameUiRes, scale: f32, active: b
         if down {
             p.state.shown = true;
         }
-        if active || !down {
+        if (active && !captured) || !down {
             ui.pointer_button(b, down);
         }
     }
@@ -154,15 +177,15 @@ fn pointer_frame(p: &mut PointerInput, ui: &mut GameUiRes, scale: f32, active: b
             }
         }
     }
-    if active && notches != 0 {
+    if active && !captured && notches != 0 {
         ui.pointer_wheel(notches);
     }
     let kind = match p.scene.as_deref_mut().and_then(|s| s.vm.as_mut().map(|vm| (vm, &mut s.lib, &mut s.player))) {
         Some((vm, lib, player)) => vm.pointer_cursor(lib, player),
         None => Cursor::Arrow,
     };
-    let visible = p.state.shown && active && kind != Cursor::Hidden;
-    let hand = kind == Cursor::Hand;
+    let visible = p.state.shown && (captured || (active && kind != Cursor::Hidden));
+    let hand = !captured && kind == Cursor::Hand;
     if p.state.applied != Some((visible, hand)) {
         p.state.applied = Some((visible, hand));
         info!(

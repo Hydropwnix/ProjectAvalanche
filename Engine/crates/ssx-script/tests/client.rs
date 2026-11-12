@@ -6,7 +6,8 @@ use ssx_content::manifest::{Files, Scripts};
 use ssx_script::Limits;
 use ssx_script::host::game::{
     Catalog, ContentMeta, Draw, GameFrame, Ground, InstanceView, KeyEvent, LevelView, LocalState, MarkerBudget,
-    MarkerHitShape, MarkerMeta, RideEvent, RiderView, StandingView,
+    MarkerHitShape, MarkerMeta, PlayerOrder, ProfileOrder, ProfileRiderView, ProfileView, RideEvent, RiderView,
+    ScreenView, StandingView,
 };
 use ssx_script::host::limits::Budgets;
 use ssx_script::host::package::PackageScripts;
@@ -492,4 +493,139 @@ fn an_endless_render_and_a_memory_bomb_stop_and_the_canary_goes_on() {
     assert!(h.take_last_output().is_empty());
     let r = h.frame(frame(frames + 1, [0.0, 0.0, 0.0])).unwrap();
     assert_eq!(r.orders.draws.map(|d| d.len()), Some(1), "the canary draws on");
+}
+
+#[test]
+fn a_single_player_profile_is_read_and_set_and_none_is_refused() {
+    let h = host();
+    let src = r#"
+        addEventHandler("onClientRender", root, function()
+            local p = getProfile()
+            if not p then
+                print("none", setCredits(5), setRiderXp("Elise", 5))
+                return
+            end
+            print(p.credits, #p.riders, p.riders[1].name, p.riders[1].xp, p.riders[1].level)
+            print(setCredits(99999), setRiderXp("elise", 1234), getProfile().credits, getProfile().riders[1].xp)
+            print(pcall(setRiderXp, "Nobody", 1))
+            print(pcall(setCredits, -1))
+        end)
+    "#;
+    start(&h, "menu", src).unwrap();
+    let elise = ProfileRiderView { key: 7, name: "Elise".into(), display_name: "Elise Riggs".into(), xp: 10, level: 1 };
+    let profile = ProfileView {
+        credits: 4500,
+        infinite_credits: false,
+        unlimited_gear: 0,
+        shop_min_rarity: 0,
+        max_level: 10,
+        riders: vec![elise],
+    };
+    let r = h.frame(GameFrame { profile: Some(profile), ..frame(1, [0.0; 3]) }).unwrap();
+    let lines = out(&h, "menu");
+    assert_eq!(lines[0], "4500\t1\tElise\t10\t1");
+    assert_eq!(lines[1], "true\ttrue\t99999\t1234");
+    assert!(lines[2].starts_with("false\t") && lines[2].contains("Nobody"), "{}", lines[2]);
+    assert!(lines[3].starts_with("false\t") && lines[3].contains("bad argument #1"), "{}", lines[3]);
+    assert_eq!(
+        r.orders.profile,
+        [
+            ProfileOrder::Credits { package: "menu".into(), credits: 99_999 },
+            ProfileOrder::RiderXp { package: "menu".into(), rider: 7, xp: 1234 },
+        ]
+    );
+    let r = h.frame(frame(2, [0.0; 3])).unwrap();
+    assert_eq!(out(&h, "menu"), ["none\tfalse\tfalse"], "no profile (a network session): nothing is set");
+    assert!(r.orders.profile.is_empty());
+}
+
+#[test]
+fn levels_infinite_credits_and_the_menu_keys_are_ordered() {
+    let h = host();
+    let src = r#"
+        local done = false
+        addEventHandler("onClientRender", root, function()
+            if done then return end
+            done = true
+            local p = getProfile()
+            print(p.maxLevel, p.infiniteCredits)
+            print(setRiderLevel("Elise", 10), setInfiniteCredits(true), captureMenuKeys(true))
+            print(getProfile().riders[1].level, getProfile().infiniteCredits)
+            print(setShopMinRarity(3), getProfile().shopMinRarity)
+            print(setUnlimitedGear(9), getProfile().unlimitedGear)
+            print(setMaxLevel(15), getProfile().maxLevel)
+        end)
+        addEventHandler("onClientKey", root, function(key, down) print("key", key, down) end)
+    "#;
+    start(&h, "menu", src).unwrap();
+    let elise = ProfileRiderView { key: 7, name: "Elise".into(), display_name: "Elise".into(), xp: 10, level: 1 };
+    let profile = ProfileView {
+        credits: 4500,
+        infinite_credits: false,
+        unlimited_gear: 0,
+        shop_min_rarity: 0,
+        max_level: 10,
+        riders: vec![elise],
+    };
+    let r = h.frame(GameFrame { profile: Some(profile), ..frame(1, [0.0; 3]) }).unwrap();
+    let lines = out(&h, "menu");
+    assert_eq!(lines[..6], ["10\tfalse", "true\ttrue\ttrue", "10\ttrue", "true\t3", "true\t9", "true\t15"]);
+    assert_eq!(
+        r.orders.profile,
+        [
+            ProfileOrder::RiderLevel { package: "menu".into(), rider: 7, level: 10 },
+            ProfileOrder::InfiniteCredits { package: "menu".into(), on: true },
+            ProfileOrder::ShopMinRarity { package: "menu".into(), rarity: 3 },
+            ProfileOrder::UnlimitedGear { package: "menu".into(), mask: 9 },
+            ProfileOrder::MaxLevel { package: "menu".into(), level: 15 },
+        ]
+    );
+    assert!(r.orders.capture, "the package holds the menu keys");
+    let keys = vec![KeyEvent { key: "enter", down: true }];
+    let r = h.frame(GameFrame { keys, ..frame(2, [0.0; 3]) }).unwrap();
+    assert_eq!(out(&h, "menu"), ["key\tenter\ttrue"], "Enter reaches the scripts");
+    assert!(r.orders.capture, "held until let go");
+    h.stop("menu", "the test is over");
+    let r = h.frame(frame(3, [0.0; 3])).unwrap();
+    assert!(!r.orders.capture, "a stopped package lets go");
+}
+
+#[test]
+fn a_script_sees_the_window_and_the_part_of_the_stage_it_shows() {
+    let h = host();
+    let src = r#"
+        addEventHandler("onClientRender", root, function()
+            local s = getScreen()
+            print(s.width, s.height, s.left, s.top, s.right, s.bottom)
+        end)
+    "#;
+    start(&h, "menu", src).unwrap();
+    h.frame(frame(1, [0.0; 3])).unwrap();
+    assert_eq!(out(&h, "menu"), ["1280\t720\t0\t0\t1280\t720"], "the whole stage before the game has told");
+    let wide = ScreenView { width: 3440, height: 1440, left: -220.0, top: 0.0, right: 1500.0, bottom: 720.0 };
+    h.frame(GameFrame { screen: Some(wide), ..frame(2, [0.0; 3]) }).unwrap();
+    assert_eq!(out(&h, "menu"), ["3440\t1440\t-220\t0\t1500\t720"], "an ultrawide window shows room beside the stage");
+}
+
+#[test]
+fn a_script_pauses_resumes_and_stops_the_music() {
+    let h = host();
+    let src = r#"
+        local n = 0
+        addEventHandler("onClientRender", root, function()
+            n += 1
+            if n == 1 then
+                print(musicPlayer("pause"), musicPlayer("resume"), musicPlayer("stop"))
+                print(pcall(musicPlayer, "rewind"))
+                print(pcall(musicPlayer, "play"))
+            end
+        end)
+    "#;
+    start(&h, "player", src).unwrap();
+    let r = h.frame(frame(1, [0.0; 3])).unwrap();
+    let got = out(&h, "player");
+    assert_eq!(got[0], "true\ttrue\ttrue");
+    assert!(got[1].starts_with("false"), "{got:?}");
+    assert!(got[2].starts_with("false"), "play needs a song: {got:?}");
+    assert_eq!(r.orders.player, [PlayerOrder::Pause(true), PlayerOrder::Pause(false), PlayerOrder::Stop]);
 }

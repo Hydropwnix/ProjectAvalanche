@@ -69,6 +69,76 @@ pub struct KeyEvent {
     pub down: bool,
 }
 
+/// One rider's career progress as the profile holds it: `xp` is the rider's earnings (the save's `MONEYEARNED`),
+/// which the game turns into the rider's level.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProfileRiderView {
+    pub key: u32,
+    pub name: String,
+    pub display_name: String,
+    pub xp: i64,
+    /// The level as the game shows it (1 and up).
+    pub level: i64,
+}
+
+/// The single-player profile the front end holds; `None` in a network session or before the front end is up.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProfileView {
+    pub credits: i64,
+    pub infinite_credits: bool,
+    /// The gear that never wears out or runs down on a drop, one bit each (`GEAR_ALL` for every piece).
+    pub unlimited_gear: i64,
+    /// The lowest rarity the shops offer (0 = every rarity).
+    pub shop_min_rarity: i64,
+    /// The highest level a rider can reach (as the game shows it).
+    pub max_level: i64,
+    pub riders: Vec<ProfileRiderView>,
+}
+
+/// A change a mod asked for to the single-player profile; the game applies it and saves.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProfileOrder {
+    Credits {
+        package: String,
+        credits: i64,
+    },
+    RiderXp {
+        package: String,
+        rider: u32,
+        xp: i64,
+    },
+    /// `level` as the game shows it (1 and up).
+    RiderLevel {
+        package: String,
+        rider: u32,
+        level: i64,
+    },
+    InfiniteCredits {
+        package: String,
+        on: bool,
+    },
+    ShopMinRarity {
+        package: String,
+        rarity: i64,
+    },
+    UnlimitedGear {
+        package: String,
+        mask: i64,
+    },
+    /// The highest level a rider can reach, as the game shows it (the game's own when at most its count).
+    MaxLevel {
+        package: String,
+        level: i64,
+    },
+}
+
+/// Every piece of gear `setUnlimitedGear` knows: 1 wingsuit (wear and flight time), 2 ice axe, 4 armour, 8 head lamp,
+/// 16 pulse goggles, 32 oxygen tank.
+pub const GEAR_ALL: i64 = 63;
+
+/// The most credits or XP a script may set (the game keeps both within a signed 32-bit value).
+pub const PROFILE_MAX: i64 = i32::MAX as i64;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LevelView {
     pub id: u64,
@@ -111,6 +181,37 @@ pub struct GameFrame {
     pub keys: Vec<KeyEvent>,
     pub typing: bool,
     pub hud_busy: bool,
+    pub profile: Option<ProfileView>,
+    /// A port addition for mods: the window and the part of the draw stage it shows; `None` before the game knows.
+    pub screen: Option<ScreenView>,
+    /// A port addition for mods (`getCursor`): the mouse cursor in stage units; `None` outside the window.
+    pub cursor: Option<(f32, f32)>,
+    /// A port addition for mods (`isMultiplayer`): a network session is up, or the server browser is open.
+    pub multiplayer: bool,
+    /// A port addition for mods (`isMainMenu`): the port's hub or the game's main menu is the screen up.
+    pub main_menu: bool,
+    /// A port addition for mods (`getMainMenu`): on the port's hub, its menu panel `[x, y, width, height]` in stage
+    /// units.
+    pub main_menu_box: Option<[f32; 4]>,
+}
+
+/// A port addition for mods (`getScreen`): the window's size in pixels and what it covers in the units of the 1280 x
+/// 720 stage the scripts draw on: past the stage on an ultrawide window (left below 0, right past 1280), a part of it
+/// on a 4:3 or 16:10 one (its sides cropped).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScreenView {
+    pub width: u32,
+    pub height: u32,
+    pub left: f32,
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+}
+
+impl Default for ScreenView {
+    fn default() -> Self {
+        ScreenView { width: 1280, height: 720, left: 0.0, top: 0.0, right: 1280.0, bottom: 720.0 }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -192,6 +293,27 @@ pub struct Orders {
     pub fade: Option<FadeOrder>,
     pub hud: Vec<HudOrder>,
     pub preload: Vec<ContentId>,
+    pub profile: Vec<ProfileOrder>,
+    /// A running package holds the menu keys (arrows, Enter, Backspace): the game does not see them this frame.
+    pub capture: bool,
+    /// A port addition for mods (`musicPlayer`): play, pause, resume or stop the music, in a ride or the menus.
+    pub player: Vec<PlayerOrder>,
+}
+
+/// A port addition for mods: what `musicPlayer` asks of the game's music.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PlayerOrder {
+    /// Play this song now: in a ride the level's music gives way to it (as `playMusic`), in the menus it takes over
+    /// from the menus' music (as RiderNet's music menu plays a song).
+    Play { package: String, id: ContentId },
+    /// Hold the music where it is (true) or carry on (false).
+    Pause(bool),
+    /// Stop the music that plays.
+    Stop,
+    /// The licensed music's level, 0 to 1 (`musicVolume`).
+    Volume(f32),
+    /// Move the playing song (a package's) to this many seconds in (`musicPlayer("seek", seconds)`).
+    Seek(f32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -260,12 +382,15 @@ pub struct GameState {
     pub(crate) last_position: Option<[f32; 3]>,
     pub(crate) made: BTreeMap<u64, ElementId>,
     pub(crate) session: BTreeMap<u16, (ElementId, ElementId)>,
+    pub(crate) capture: std::collections::BTreeSet<String>,
 }
 
 #[derive(Default)]
 pub(crate) struct DrawList {
     pub items: Vec<(String, Draw)>,
     pub per_package: BTreeMap<String, usize>,
+    /// A port addition for mods (`drawOnTop`): the packages whose draws this frame go after the others'.
+    pub on_top: std::collections::BTreeSet<String>,
     pub glyphs: usize,
     pub pixels: f64,
 }

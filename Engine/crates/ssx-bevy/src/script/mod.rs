@@ -5,7 +5,9 @@ mod markers;
 mod net;
 mod orders;
 mod overlay;
+mod profile;
 mod snapshot;
+pub(crate) use snapshot::MenuCapture;
 mod sounds;
 mod worker;
 
@@ -163,6 +165,7 @@ fn bridge_of(
 
 fn parts(world: &mut World, monitor: bool) {
     world.init_resource::<snapshot::Inbox>();
+    world.init_resource::<snapshot::MenuCapture>();
     world.init_resource::<local::LocalScripts>();
     world.init_resource::<markers::MarkerScene>();
     world.init_resource::<draw::DrawPool>();
@@ -238,7 +241,14 @@ impl Plugin for ScriptPlugin {
             FixedUpdate,
             snapshot::ride_events.after(RideStepSet).run_if(resource_exists::<crate::ride::Ride>).run_if(up),
         )
-        .add_systems(PreUpdate, (snapshot::keys, policy).chain().after(bevy::input::InputSystems).run_if(up))
+        .add_systems(
+            PreUpdate,
+            (snapshot::keys, snapshot::hold_menu_keys, policy)
+                .chain()
+                .after(bevy::input::InputSystems)
+                .before(crate::shell::game_mode::pads_frame)
+                .run_if(up),
+        )
         .add_systems(
             Update,
             (
@@ -335,6 +345,7 @@ struct Routes<'w> {
     sounds: ResMut<'w, sounds::ScriptSounds>,
     ui: ResMut<'w, crate::shell::game_mode::GameUiRes>,
     music: Option<Res<'w, crate::audio::music::Music>>,
+    capture: ResMut<'w, snapshot::MenuCapture>,
     #[cfg(feature = "net")]
     script_send: Option<ResMut<'w, ssx_net::client::ScriptSend>>,
 }
@@ -413,9 +424,12 @@ fn frame(
     };
     if std::mem::take(&mut bridge.clear) {
         fx.clear();
+        r.capture.0 = false;
         if let Some(m) = r.music.as_ref() {
             m.end_script_song();
         }
+        ssx_assets::musicbox::set_script_paused(false);
+        ssx_assets::musicbox::set_script_volume(1.0);
         info!("scripts: what the scripts left up is taken down (their draws, markers, fade, camera, message, sounds)");
     }
     if bridge.gone_handled {
@@ -451,7 +465,63 @@ fn frame(
                 big_root: bridge.content.big_root().to_path_buf(),
                 scope: r.music.as_ref().map(|m| m.scope().clone()),
             };
+            let changes = std::mem::take(&mut out.report.orders.profile);
+            let capture = out.report.orders.capture;
+            let player = std::mem::take(&mut out.report.orders.player);
+            let in_ride = r.music.is_some();
+            let mut menu_player = Vec::new();
+            for order in player {
+                use ssx_script::host::game::PlayerOrder;
+                match order {
+                    // In a ride: the level's music gives way to the song, as playMusic.
+                    PlayerOrder::Play { package, id } if in_ride => {
+                        ssx_assets::musicbox::set_script_paused(false);
+                        out.report.orders.music = Some((package, id));
+                    }
+                    PlayerOrder::Pause(on) => ssx_assets::musicbox::set_script_paused(on),
+                    PlayerOrder::Volume(level) => ssx_assets::musicbox::set_script_volume(level),
+                    PlayerOrder::Seek(secs) => ssx_assets::musicbox::request_seek(secs),
+                    PlayerOrder::Stop if in_ride => {
+                        ssx_assets::musicbox::set_script_paused(false);
+                        if let Some(m) = r.music.as_ref() {
+                            m.stop_licensed();
+                        }
+                    }
+                    other => menu_player.push(other),
+                }
+            }
             fx.apply(out.report, place);
+            if r.capture.0 != capture {
+                info!("scripts: the menu keys (arrows, Enter, Backspace) {}", if capture { "held" } else { "let go" });
+                r.capture.0 = capture;
+            }
+            profile::apply(changes, ui.fe.as_mut(), fx.values, view.in_session());
+            // In the menus: the song takes over from the menus' music, as RiderNet's music menu plays one.
+            if let Some(fe) = ui.fe.as_mut() {
+                use ssx_ui::game::fe::music::MusicRequest;
+                for order in menu_player {
+                    match order {
+                        ssx_script::host::game::PlayerOrder::Play { id, .. } => {
+                            ssx_assets::musicbox::set_script_paused(false);
+                            let licensed = (id.namespace() == ssx_content::BASE_NAMESPACE)
+                                .then(|| id.path().strip_prefix("licensed/").and_then(|n| n.parse::<u32>().ok()))
+                                .flatten();
+                            let request = match licensed {
+                                Some(n) => MusicRequest::Preview { id: n, key: None },
+                                None => MusicRequest::Preview { id: 0, key: Some(id) },
+                            };
+                            fe.music.requests.push(request);
+                        }
+                        ssx_script::host::game::PlayerOrder::Stop => {
+                            ssx_assets::musicbox::set_script_paused(false);
+                            fe.music.requests.push(MusicRequest::StopPreview);
+                        }
+                        ssx_script::host::game::PlayerOrder::Pause(_)
+                        | ssx_script::host::game::PlayerOrder::Volume(_)
+                        | ssx_script::host::game::PlayerOrder::Seek(_) => {}
+                    }
+                }
+            }
         }
     }
     let holds =
@@ -463,6 +533,21 @@ fn frame(
     let seen = bridge.seen(view.live());
     let mut f = view.build(&mut inbox, fx.state, &content, fx.values, loc, seen);
     f.typing = typing;
+    f.profile = profile::view(ui.fe.as_ref(), view.in_session());
+    f.screen = fx.draws.screen;
+    f.cursor = fx.draws.cursor;
+    f.multiplayer = view.in_session() || multiplayer_screens(ui.fe.as_ref());
+    f.main_menu = !f.multiplayer
+        && view.ride().is_none()
+        && ui
+            .fe
+            .as_ref()
+            .is_some_and(|fe| !fe.in_drop && (fe.ava.hub.active || fe.menu.shown) && fe.menu.covered_by.is_empty());
+    f.main_menu_box = if f.main_menu && ui.fe.as_ref().is_some_and(|fe| fe.ava.hub.active) {
+        ssx_ui::game::port::hub_panel()
+    } else {
+        None
+    };
     let server = match (view.ride(), player) {
         (Some(ride), Some(name)) => local::server_frame(f.now, ride, &mut local, &name).map(Box::new),
         _ => None,
@@ -470,6 +555,19 @@ fn frame(
     if bridge.send(worker::Job::Frame(Box::new(f), server)) {
         bridge.in_flight = true;
         bridge.sent_epoch = bridge.epoch;
+    }
+}
+
+/// The front end's multiplayer screens before a session (the server browser): `isMultiplayer` is true there too.
+fn multiplayer_screens(fe: Option<&ssx_ui::game::fe::FrontEnd>) -> bool {
+    #[cfg(feature = "net")]
+    {
+        fe.is_some_and(|fe| fe.ava.browser.active)
+    }
+    #[cfg(not(feature = "net"))]
+    {
+        let _ = fe;
+        false
     }
 }
 

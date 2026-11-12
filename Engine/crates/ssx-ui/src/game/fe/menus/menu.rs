@@ -22,7 +22,14 @@ pub struct MainMenu {
     pub index: i32,
     pub locked: bool,
     pub active: bool,
+    pub shown: bool,
+    /// A port addition: the screens open over the main menus (the options, the maps...), by provider, for mods.
+    pub covered_by: std::collections::BTreeSet<String>,
 }
+
+/// A port addition: the providers of screens shown over the hub or the main menu (which stay active under them).
+pub const COVERING: &[&str] =
+    &["avaoptions", "avamaps", "avacredits", "avakeyboard", "settings", "credits", "music", "activityfeed", "badges"];
 
 pub fn write_progress(fe: &FrontEnd, env: &mut FeEnv) {
     let cpro = fe.profile.attribs.get(&u32::from_be_bytes(*b"CPRO")).copied().unwrap_or(0);
@@ -54,6 +61,7 @@ pub fn activate(fe: &mut FrontEnd, env: &mut FeEnv) {
     write_progress(fe, env);
     build_list(fe, env);
     fe.menu.active = true;
+    fe.menu.shown = true;
     fe.publish.extend(["dp_debug_menu".into(), "dp_debug_menu_index".into(), "dp_sponsored_events_data".into()]);
     env.nav_events.push("backgroundcontainer_disable".into());
 }

@@ -221,3 +221,16 @@ fn the_next_equip_id_wraps_as_a_word() {
     p.generated.insert(u32::MAX, GeneratedItem::default());
     assert_eq!(p.next_equip_id(), 0);
 }
+
+#[test]
+fn a_mods_rarity_floor_fills_the_store_with_that_rarity_and_up() {
+    let (d, c) = (data(), ctx());
+    let mut s = Store::new(5);
+    s.update(&d, &c, false, 0);
+    assert!(s.stock.iter().flatten().any(|i| i.rarity < 3), "the game's own draw has lower rarities");
+    let floor = StoreContext { min_rarity: 3, ..c.clone() };
+    s.update(&d, &floor, false, 1);
+    assert!(s.stock.iter().flatten().all(|i| i.rarity >= 3), "lower rarities leave the stock");
+    let shown: Vec<usize> = (0..KINDS).map(|k| s.offers(&d, &floor, k).len()).collect();
+    assert_eq!(shown, vec![0, 4, 4, 4, 0], "and are replaced");
+}

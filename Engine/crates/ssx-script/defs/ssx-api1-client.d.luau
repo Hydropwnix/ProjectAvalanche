@@ -8,7 +8,7 @@ declare extern type LatentHandle with
 end
 
 type NetValue = nil | boolean | number | string | Element | { [any]: any }
-type BindableKey = "f2" | "f3" | "f4" | "f5" | "f6" | "f7" | "f8" | "f10" | "f11" | "f12" | "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "num_0" | "num_1" | "num_2" | "num_3" | "num_4" | "num_5" | "num_6" | "num_7" | "num_8" | "num_9" | "num_add" | "num_sub" | "num_mul" | "num_div" | "num_dec" | "b" | "m" | "o" | "p" | "u" | "," | "." | "/" | ";" | "'" | "[" | "]" | "-" | "=" | "`" | "\\" | "insert" | "pause" | "scroll"
+type BindableKey = "f2" | "f3" | "f4" | "f5" | "f6" | "f7" | "f8" | "f10" | "f11" | "f12" | "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "num_0" | "num_1" | "num_2" | "num_3" | "num_4" | "num_5" | "num_6" | "num_7" | "num_8" | "num_9" | "num_add" | "num_sub" | "num_mul" | "num_div" | "num_dec" | "b" | "m" | "o" | "p" | "u" | "," | "." | "/" | ";" | "'" | "[" | "]" | "-" | "=" | "`" | "\\" | "insert" | "del" | "pause" | "scroll" | "up" | "down" | "left" | "right" | "enter" | "bksp" | "dp_up" | "dp_down" | "dp_left" | "dp_right" | "pad_a" | "pad_b" | "pad_x" | "pad_y" | "pad_lb" | "pad_rb" | "pad_view" | "pad_menu" | "pad_ls" | "pad_rs" | "a" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j" | "k" | "l" | "n" | "q" | "r" | "s" | "t" | "v" | "w" | "x" | "y" | "z" | "space" | "mouse1" | "mouse2" | "mouse3" | "wheel_up" | "wheel_dn"
 type LatentStatus = { total: number, sent: number, percent: number }
 type Vec3 = { x: number, y: number, z: number }
 type RiderState = { name: string, position: Vec3, velocity: Vec3?, speed: number?, air: boolean?, grind: boolean?, trick: string?, score: number?, health: number?, finished: boolean?, isLocal: boolean }
@@ -21,6 +21,11 @@ type ServerRiderState = { name: string, number: number, progress: "joined" | "dr
 type MarkerOptions = { heading: number?, size: number?, color: number?, visible: boolean? }
 type ServerMarkerOptions = { heading: number?, size: number?, color: number?, visible: boolean?, instance: Element? }
 type TextOptions = { size: number?, align: ("left" | "center" | "right")?, shadow: boolean? }
+type ProfileRider = { name: string, displayName: string, xp: number, level: number }
+type Profile = { credits: number, infiniteCredits: boolean, unlimitedGear: number, shopMinRarity: number, maxLevel: number, riders: { ProfileRider } }
+type Screen = { width: number, height: number, left: number, top: number, right: number, bottom: number }
+type Cursor = { x: number, y: number }
+type MainMenu = { x: number, y: number, width: number, height: number }
 type OnClientResourceStartHandler = () -> ()
 type OnClientResourceStopHandler = () -> ()
 type OnClientElementDataChangeHandler = (key: string, old: NetValue, new: NetValue) -> ()
@@ -82,6 +87,24 @@ declare function getContent(id: string): ContentInfo?
 declare function listContent(kind: "texture" | "model" | "object" | "material" | "character" | "gear" | "board" | "anim" | "track" | "drop" | "event" | "lighting" | "sky" | "postfx" | "particles" | "sound" | "music" | "movie" | "ui" | "font" | "string" | "tuning" | "scoring" | "script" | "marker" | "map" | "gamemode" | "trick"): { string }
 declare function preloadContent(id: string): boolean
 declare function getGroundHeight(x: number, z: number): number?
+declare function getProfile(): Profile?
+declare function setCredits(credits: number): boolean
+declare function setRiderXp(rider: string, xp: number): boolean
+declare function setRiderLevel(rider: string, level: number): boolean
+declare function setInfiniteCredits(on: boolean): boolean
+declare function captureMenuKeys(on: boolean): boolean
+declare function setShopMinRarity(rarity: number): boolean
+declare function setUnlimitedGear(mask: number): boolean
+declare function setMaxLevel(level: number): boolean
+declare function getScreen(): Screen
+declare function getCursor(): Cursor?
+declare function isMultiplayer(): boolean
+declare function isMainMenu(): boolean
+declare function drawOnTop(): boolean
+declare function getMainMenu(): MainMenu?
+declare function musicPlayer(action: string, id: string?): boolean
+declare function musicVolume(level: number): boolean
+declare function openFolder(path: string): boolean
 declare function createMarker(id: string, position: Vec3, options: MarkerOptions?): Element
 declare function setMarkerPosition(marker: Element, position: Vec3): boolean
 declare function getMarkerPosition(marker: Element): Vec3

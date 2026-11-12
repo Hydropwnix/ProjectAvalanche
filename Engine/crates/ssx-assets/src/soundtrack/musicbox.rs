@@ -288,6 +288,40 @@ pub fn set_paused(on: bool) {
     PAUSED.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// A port addition for mods (`musicPlayer("pause")`): a script holds the licensed music where it is. Kept apart from
+/// the game's own pause (the pause menu's), so neither undoes the other.
+static SCRIPT_PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn script_paused() -> bool {
+    SCRIPT_PAUSED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_script_paused(on: bool) {
+    SCRIPT_PAUSED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A port addition for mods (`musicVolume`): a script's level for the licensed music, 0 to 1 (the f32's bits; 1 at
+/// the start). On top of the game's own music volume.
+static SCRIPT_VOLUME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3F80_0000);
+
+/// A port addition for mods (`musicPlayer("seek")`): a point to move the playing package song to, in seconds (the
+/// f64's bits; u64::MAX for none), taken by the player whose song it can move.
+static SEEK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+
+pub fn request_seek(secs: f32) {
+    let secs = if secs.is_finite() { f64::from(secs.max(0.0)) } else { 0.0 };
+    SEEK.store(secs.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn script_volume() -> f32 {
+    f32::from_bits(SCRIPT_VOLUME.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+pub fn set_script_volume(level: f32) {
+    let level = if level.is_finite() { level.clamp(0.0, 1.0) } else { 1.0 };
+    SCRIPT_VOLUME.store(level.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
 struct SongStream {
     id: u32,
     source: SongSource,
@@ -524,12 +558,33 @@ impl LicensedMusic {
         self.cur.is_none() && self.game.is_none() && self.fade.is_none() && self.playlist.ids.is_empty()
     }
 
+    /// Moves the playing package song to the seek point asked for, if any (its stream opened again from there).
+    fn take_seek(&mut self) {
+        let Some(s) = self.cur.as_mut() else { return };
+        if !matches!(s.source, SongSource::Package(_)) {
+            return;
+        }
+        let bits = SEEK.swap(u64::MAX, std::sync::atomic::Ordering::Relaxed);
+        if bits == u64::MAX {
+            return;
+        }
+        let secs = f64::from_bits(bits);
+        let Some(a) = self.mb.package_audio(s.id).cloned() else { return };
+        ssx_core::eprintln!("musicbox: seek to {secs:.1} s in {}", a.file.rel);
+        let stream = crate::content::audio::stream::MusicStream::open_from(a.file, a.looping, secs);
+        s.source = SongSource::Package(Box::new(stream));
+        s.buf.clear();
+        s.pos = 0;
+    }
+
     pub fn render(&mut self, out: &mut [f32], gain: f32) {
-        if paused() {
+        self.take_seek();
+        if paused() || script_paused() {
             out.fill(0.0);
             return;
         }
-        self.render_songs(out, gain);
+        let v = script_volume();
+        self.render_songs(out, gain * v * v); // squared: a slider's steps sound even
         let Some((mut level, step, mut left)) = self.fade else { return };
         let (frames, _) = out.as_chunks_mut::<2>();
         let fading = frames.len().min(usize::try_from(left).unwrap_or(usize::MAX));

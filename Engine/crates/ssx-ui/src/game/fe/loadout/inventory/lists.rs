@@ -219,7 +219,7 @@ impl Inventory {
                     let boost_ok = rec.kind != 3 || item.sort >= 1;
                     if kind == RIDER {
                         self.owned_list.push(item.clone());
-                    } else if gear_ok && boost_ok {
+                    } else if gear_ok && boost_ok && item.rarity >= profile.shop_min_rarity {
                         self.store_list.push(item.clone());
                     }
                 } else if !equipped || kind == RIDER {

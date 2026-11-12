@@ -504,6 +504,8 @@ impl Ride {
             pose_blocks: setup.live.map(|_| ssx_physics::graph::LiveBlocks::default()),
             start_gate: super::live::StartGate::Free,
             go_step: None,
+            unlimited_gear: 0,
+            wingsuit_hold: None,
         })
     }
 }

@@ -90,6 +90,27 @@ pub const NET_FILES: &[(&str, &str)] = port_files![
 #[cfg(not(feature = "net"))]
 pub const NET_FILES: &[(&str, &str)] = &[];
 
+/// A port addition for mods (`getMainMenu`): the hub's menu panel as its layout places it with all its rows,
+/// `[x, y, width, height]` in the 1280 × 720 stage.
+pub fn hub_panel() -> Option<[f32; 4]> {
+    static BOX: std::sync::OnceLock<Option<[f32; 4]>> = std::sync::OnceLock::new();
+    *BOX.get_or_init(|| {
+        let (file, text) = FILES.iter().find(|f| f.0 == "views/ava_hub.json")?;
+        let layout = crate::author::Layout::parse(file, text).ok()?;
+        let panel = layout.logic.panels.first()?;
+        let child = layout.resolve_path(&panel.target)?;
+        let crate::author::PanelHeight::FitMenu(target) = &panel.height else { return None };
+        let menu = layout.logic.menus.iter().find(|m| &m.target == target)?;
+        let crate::author::MenuKind::List { rows, cell_height, spacing, panel_gaps, .. } = menu.kind else {
+            return None;
+        };
+        let (top, bottom) = panel_gaps.unwrap_or((0.0, 0.0));
+        let n = rows as f32;
+        let height = n * cell_height + (n - 1.0) * spacing + top + bottom;
+        Some([layout.view_x + child.x, layout.view_y + child.y, panel.width, height])
+    })
+}
+
 pub fn all_files() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
     FILES.iter().chain(NET_FILES.iter())
 }
