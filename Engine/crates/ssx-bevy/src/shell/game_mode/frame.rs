@@ -55,8 +55,9 @@ pub(super) fn shell_input(
     }
     let keyboard = ssx_ui::game::input::KEYBOARD_DEVICE;
     let search = ui.browser_active();
+    let pad_only = ui.fe.as_ref().is_some_and(|fe| ssx_ui::game::fe::screens::pad_only(fe.screen));
     for (b, device) in pad_presses(&keys, &pads, &slots, &mut s.stick_dpad, search) {
-        if focused && device == keyboard {
+        if (focused || pad_only) && device == keyboard {
             continue;
         }
         s.host.press_from(&mut ui, b, device);
@@ -66,7 +67,7 @@ pub(super) fn shell_input(
         stick +=
             Vec2::new(pad.get(GamepadAxis::LeftStickX).unwrap_or(0.0), pad.get(GamepadAxis::LeftStickY).unwrap_or(0.0));
     }
-    let key = |k: KeyCode| if keys.pressed(k) && !focused { 1.0 } else { 0.0 };
+    let key = |k: KeyCode| if keys.pressed(k) && !focused && !pad_only { 1.0 } else { 0.0 };
     stick += Vec2::new(key(KeyCode::KeyD) - key(KeyCode::KeyA), key(KeyCode::KeyW) - key(KeyCode::KeyS));
     if (stick != Vec2::ZERO || s.last_stick != Vec2::ZERO)
         && let Some(fe) = ui.fe.as_mut()
