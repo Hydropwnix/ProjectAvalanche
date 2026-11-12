@@ -79,7 +79,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let effect = u32(round(params.shading.x));
     let p = in.world_position.xyz;
 
-    // TODO(guess): the glow of glowing apparel and boards is masked by the diffuse texel's alpha read before `alpha_discard` (which sets it to 1 for opaque materials); known: `glowEnable` materials are opaque and their textures carry the glow pattern in alpha (with the alpha after the discard the whole outfit glowed); settle: the game's character pixel shader.
+    // The glow term uses the diffuse texel's alpha (`d.a`; player_apparel PS9@35-40,60, from the diffuse fetch at @9),
+    // read before `alpha_discard` (which sets the alpha to 1 for opaque materials).
     var glow_mask = pbr_input.material.base_color.a;
     var tex_n = vec2(0.5);
     var s = vec3(1.0);
