@@ -101,7 +101,11 @@ pub enum SessionLevel {
     Drop(String),
     // The network session constructs it (`src/net/session.rs`); without the `net` feature it is only matched.
     #[cfg_attr(not(feature = "net"), allow(dead_code))]
-    Map { id: String, event_type: u8, mode: String },
+    Map {
+        id: String,
+        event_type: u8,
+        mode: String,
+    },
 }
 
 impl core::fmt::Display for SessionLevel {
