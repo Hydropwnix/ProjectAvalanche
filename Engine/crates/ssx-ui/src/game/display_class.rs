@@ -21,7 +21,10 @@ impl DisplayClass {
     pub const WIDESCREEN: DisplayClass = DisplayClass { widescreen: true };
 
     pub fn of_window(width: u32, height: u32) -> DisplayClass {
-        // TODO(guess): a port choice — the console told the movies its video mode's widescreen flag (`XGetVideoMode` at 0x82FB57A0: 1280 × 720 or 960 × 720); a PC window has no such flag, so its shape is classed by the movies' own test (`ViewUtil.IsWidescreen`: displayWidth / displayHeight > 1.55, classloader.gfx 0x0f9f): 16:10 (1.6) is widescreen, 3:2 (1.5) and 4:3 are not; settle: none (the port's window).
+        // Port feature: the console told the movies its video mode's widescreen flag (`XGetVideoMode` at 0x82FB57A0:
+        // 1280 × 720 or 960 × 720); a PC window has no such flag, so its shape is classed by the movies' own test
+        // (`ViewUtil.IsWidescreen`: displayWidth / displayHeight > 1.55, classloader.gfx 0x0f9f): 16:10 (1.6) is
+        // widescreen, 3:2 (1.5) and 4:3 are not.
         let widescreen = height == 0 || f64::from(width) / f64::from(height) > SD_PROPORTIONS_UPPER_BOUND;
         DisplayClass { widescreen }
     }
@@ -89,8 +92,49 @@ fn reposition_if_sd(cx: &mut Ctx, _this: Value, a: &[Value]) -> R {
     }
     if let Some(id) = cx.display_of(&clip) {
         keep(&mut cx.vm.natives.sd_moves, cx.player, id, anchored_left);
+        // Port feature for ultrawide windows: the HUD's side panels (its RepositionIfSD clips) move out to the
+        // window's edges; the game's HUD keeps to the 16:9 stage.
+        if in_hud(cx.player, id) {
+            let extra = cx.vm.natives.hud_extra;
+            if extra > 0.0 {
+                let x = number(cx, &clip, "_x")?;
+                cx.set_member(&clip, "_x", Value::Number(if anchored_left { x - extra } else { x + extra }))?;
+            }
+            keep(&mut cx.vm.natives.hud_wide, cx.player, id, (anchored_left, extra));
+        }
     }
     Ok(Value::Undefined)
+}
+
+fn in_hud(player: &Player, id: InstanceId) -> bool {
+    let mut cur = Some(id);
+    let mut steps = 0;
+    while let Some(c) = cur {
+        let Some(i) = player.get(c) else { return false };
+        if i.name.starts_with("ssx_hud") {
+            return true;
+        }
+        cur = i.parent;
+        steps += 1;
+        if steps > 64 {
+            return false;
+        }
+    }
+    false
+}
+
+static HUD_EXTRA: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+pub fn hud_extra() -> f32 {
+    f32::from_bits(HUD_EXTRA.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+pub fn hud_extra_for(width: u32, height: u32) -> f64 {
+    if width == 0 || height == 0 {
+        return 0.0;
+    }
+    let visible = 720.0 * f64::from(width) / f64::from(height);
+    ((visible - 1280.0) / 2.0).max(0.0).floor()
 }
 
 pub fn scale_if_sd(cx: &mut Ctx, view: &Value, k: f64, centre: (f64, f64)) -> Result<(), Fault> {
@@ -144,6 +188,26 @@ fn move_kept(cx: &mut Ctx, widescreen: bool) -> usize {
 }
 
 impl GameUi {
+    pub fn set_hud_extra(&mut self, vm: &mut Vm, lib: &mut Library, player: &mut Player, extra: f64) {
+        HUD_EXTRA.store((extra as f32).to_bits(), std::sync::atomic::Ordering::Relaxed);
+        if (extra - vm.natives.hud_extra).abs() < 0.5 {
+            return;
+        }
+        let mut cx = vm.ctx(lib, player);
+        cx.vm.natives.hud_extra = extra;
+        let mut kept = std::mem::take(&mut cx.vm.natives.hud_wide);
+        kept.retain(|c, _| cx.player.get(*c).is_some());
+        for (&id, (left, applied)) in kept.iter_mut() {
+            let clip = Value::Object(cx.object_for(id));
+            let Ok(x) = number(&mut cx, &clip, "_x") else { continue };
+            let d = extra - *applied;
+            if cx.set_member(&clip, "_x", Value::Number(if *left { x - d } else { x + d })).is_ok() {
+                *applied = extra;
+            }
+        }
+        cx.vm.natives.hud_wide = kept;
+    }
+
     pub fn set_display(&mut self, vm: &mut Vm, lib: &mut Library, player: &mut Player, class: DisplayClass) {
         let changed = class != self.display;
         self.display = class;

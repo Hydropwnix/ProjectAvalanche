@@ -296,6 +296,26 @@ pub struct SpeechStep {
 }
 
 impl SpeechStep {
+    pub fn merge(a: Option<SpeechStep>, b: Option<SpeechStep>) -> Option<SpeechStep> {
+        match (a, b) {
+            (Some(a), Some(b)) => {
+                let mut m = SpeechStep {
+                    race_start: a.race_start || b.race_start,
+                    rider_dead: b.rider_dead.or(a.rider_dead),
+                    death_timer_end: a.death_timer_end || b.death_timer_end,
+                    flushed: a.flushed,
+                };
+                for f in b.flushed.into_iter().flatten() {
+                    if let Some(slot) = m.flushed.iter_mut().find(|s| s.is_none()) {
+                        *slot = Some(f);
+                    }
+                }
+                Some(m)
+            }
+            (a, b) => a.or(b),
+        }
+    }
+
     pub fn new(e: &ssx_physics::session::Execution, s: &RiderState) -> Self {
         SpeechStep {
             race_start: e.race_start,

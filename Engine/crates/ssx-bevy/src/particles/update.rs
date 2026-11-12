@@ -13,7 +13,11 @@ use crate::rider::anim::JointRecord;
 use crate::rider::skin::RiderRig;
 
 fn newest_joints(rig: &RiderRig, ride: &Ride) -> Vec<JointRecord> {
+    let drawn = rig.anim.drawn_records();
     let (pose, graph, _) = rig.anim.posed();
+    if drawn.len() == graph.nodes.len() {
+        return drawn.to_vec();
+    }
     crate::rider::anim::world_records(graph, &pose.nodes, ride.step().0.traj)
 }
 

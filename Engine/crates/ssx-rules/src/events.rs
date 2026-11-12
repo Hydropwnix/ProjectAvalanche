@@ -67,6 +67,14 @@ impl EventType {
     pub fn ranks_ascending(self) -> bool {
         self.is_race()
     }
+
+    pub fn has_explore_ghosts(self) -> bool {
+        matches!(self, EventType::RaceGhosts | EventType::TrickGhosts)
+    }
+}
+
+pub fn shows_explore_ghosts(event_type: Option<EventType>, has_bots: bool) -> bool {
+    !has_bots && event_type.is_some_and(EventType::has_explore_ghosts)
 }
 
 pub const CLASS_UI_DROP: u32 = fnv1(b"ui_drop");
@@ -236,12 +244,29 @@ pub fn load_ui_drops(big_root: &Path) -> Result<Vec<UiDropRecord>> {
 
 #[cfg(test)]
 mod tests {
-    use super::EventType;
+    use super::{EventType, shows_explore_ghosts};
 
     #[test]
     fn each_event_type_has_its_kind_word() {
         let words: Vec<&str> = (0..9).map(|v| EventType::from_raw(v).expect("a type").kind_word()).collect();
         assert_eq!(words, ["trick", "trick", "trick", "survive", "survive", "race", "race", "race", "freeride"]);
         assert_eq!(EventType::from_raw(9), None);
+    }
+
+    #[test]
+    fn only_ghost_events_race_explore_ghosts() {
+        let ghosts: Vec<u32> =
+            (0..9).filter(|&v| EventType::from_raw(v).expect("a type").has_explore_ghosts()).collect();
+        assert_eq!(ghosts, [EventType::TrickGhosts as u32, EventType::RaceGhosts as u32]);
+    }
+
+    #[test]
+    fn explore_ghosts_show_only_in_ghost_events_without_bots() {
+        assert!(shows_explore_ghosts(Some(EventType::RaceGhosts), false));
+        assert!(shows_explore_ghosts(Some(EventType::TrickGhosts), false));
+        assert!(!shows_explore_ghosts(Some(EventType::RaceGhosts), true));
+        assert!(!shows_explore_ghosts(Some(EventType::SurviveToBottom), false));
+        assert!(!shows_explore_ghosts(Some(EventType::SurviveToDeath), false));
+        assert!(!shows_explore_ghosts(None, false));
     }
 }
