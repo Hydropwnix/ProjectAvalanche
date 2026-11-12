@@ -75,7 +75,10 @@ impl SnapshotDirector {
         layer2.set(15, on(bit(7) && s.time_dilation < td));
         layer2.set(4, on((bit(0) && bit(14)) || bit(21)));
         layer2.set(5, on(bit(5)));
-        // TODO(guess): a port choice — Super Tricky (bit 18) holds the Tricky mixes (music pulled under the "It's Tricky" song) for its whole length, as the game does (0x830EB7D8 keeps Tricky_State 2), except over a mod's song, which has no Tricky remix: once "It's Tricky" is over the rest of Super Tricky mixes as Awesome and the mod's song comes back; settle: none (the game has no mod songs).
+        // Super Tricky (bit 18) holds the Tricky mixes (music pulled under the "It's Tricky" song) for its whole
+        // length, as the game does (0x830EB7D8 keeps Tricky_State 2). A mod's script song has no Tricky remix, so
+        // once "It's Tricky" is over, the rest of Super Tricky mixes as Awesome and the mod's song comes back (a port
+        // behaviour; the game ships no mod songs).
         let tricky = bit(18) && s.tricky_song;
         let awesome = bit(4) || bit(18);
         layer2.set(6, on(awesome));
