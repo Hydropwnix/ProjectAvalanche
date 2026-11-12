@@ -79,6 +79,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let effect = u32(round(params.shading.x));
     let p = in.world_position.xyz;
 
+    // The glow term uses the diffuse texel's alpha (`d.a`; player_apparel PS9@35-40,60, from the diffuse fetch at @9),
+    // read before `alpha_discard` (which sets the alpha to 1 for opaque materials).
+    var glow_mask = pbr_input.material.base_color.a;
     var tex_n = vec2(0.5);
     var s = vec3(1.0);
     var ao_map = 1.0;
@@ -90,6 +93,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         ao_map = ao_uv0;
     }
     pbr_input.material.base_color = gl::diffuse_texel(in.uv, params.lod_bias.x);
+    glow_mask = pbr_input.material.base_color.a;
 }
 @if(VERTEX_UVS_B) {
     let ao_uv1 = textureSampleBias(ambient_map, character_sampler, in.uv_b, params.lod_bias.w).y;
@@ -170,9 +174,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         col = albedo * tint * (lit.rgb + rim_light * rider.rim_color.rgb + fill * rider.fill_color.rgb)
             + spec * spec_light * dyn_ao;
         if effect == APPAREL {
-            col += params.glow.rgb * d.a * rider_dynamic().y / max(light.misc.y, 1e-6);
+            col += params.glow.rgb * glow_mask * rider_dynamic().y / max(light.misc.y, 1e-6);
         } else if effect == BOARD {
-            col += params.board.y * d.a * rider_dynamic().y * albedo / max(light.misc.y, 1e-6);
+            col += params.board.y * glow_mask * rider_dynamic().y * albedo / max(light.misc.y, 1e-6);
         }
         col += holo_glow * albedo;
     }
