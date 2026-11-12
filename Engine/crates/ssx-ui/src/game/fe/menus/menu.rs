@@ -22,6 +22,9 @@ pub struct MainMenu {
     pub index: i32,
     pub locked: bool,
     pub active: bool,
+    // TODO(guess): a port choice — the item last picked (its advance action) is focused again when the menu comes
+    // back, where the disc focuses the first open mode; settle: none (a port addition).
+    pub last: Option<&'static str>,
 }
 
 pub fn write_progress(fe: &FrontEnd, env: &mut FeEnv) {
@@ -110,7 +113,7 @@ pub fn build_list(fe: &mut FrontEnd, env: &mut FeEnv) {
             back,
         },
     ];
-    fe.menu.index = if campaign {
+    let start = if campaign {
         0
     } else if explore {
         1
@@ -119,6 +122,9 @@ pub fn build_list(fe: &mut FrontEnd, env: &mut FeEnv) {
     } else {
         0
     };
+    let last =
+        fe.menu.last.and_then(|a| fe.menu.items.iter().position(|it| it.advance == a && it.enabled && it.focusable));
+    fe.menu.index = last.map_or(start, |i| i as i32);
 }
 
 pub fn update(fe: &mut FrontEnd, env: &mut FeEnv) {
@@ -134,6 +140,9 @@ pub fn update(fe: &mut FrontEnd, env: &mut FeEnv) {
 }
 
 pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str) {
+    if let Some(it) = fe.menu.items.iter().find(|it| it.advance == action) {
+        fe.menu.last = Some(it.advance);
+    }
     match action {
         "A_MenuCampaign" => {
             fe.note("FE manager event 5 (FEMoveFromModeSelectToGlobe {1}): game mode 1");

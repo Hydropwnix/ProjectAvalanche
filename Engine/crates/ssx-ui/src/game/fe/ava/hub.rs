@@ -44,7 +44,10 @@ pub fn activate(fe: &mut FrontEnd, env: &mut FeEnv) {
         item(loc, "TXT_AVA_HUB_CREDITS", true, "A_AvaCredits"),
         item(loc, "TXT_AVA_HUB_EXIT", true, "A_AvaExit"),
     ];
-    fe.ava.hub.index = 0;
+    let last = usize::try_from(fe.ava.hub.index).ok().and_then(|i| fe.ava.hub.items.get(i));
+    if !last.is_some_and(|it| it.enabled && it.focusable) {
+        fe.ava.hub.index = 0;
+    }
     fe.ava.hub.active = true;
     fe.publish.extend([DP_MENU.into(), DP_INDEX.into()]);
     env.nav_events.push("backgroundcontainer_disable".into());

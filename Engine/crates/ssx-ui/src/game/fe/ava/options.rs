@@ -64,6 +64,7 @@ pub struct Options {
     pub originals: PortSettings,
     pub page: Option<Page>,
     pub changed: bool,
+    pub menu_index: usize,
 }
 
 pub fn open(fe: &mut FrontEnd, env: &mut FeEnv) {
@@ -125,6 +126,7 @@ pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &ActionPa
                 fe.note(format!("options: no category {k}"));
                 return;
             };
+            fe.ava.options.menu_index = k as usize;
             match cat {
                 Category::Game(c) => {
                     env.values.set_int(settings::CATEGORY, c);
@@ -319,7 +321,7 @@ pub fn build(fe: &FrontEnd, cx: &mut Ctx, loc: &mut Localization, dp: &str) -> O
             }
             Some(Value::Object(cx.new_array(out)))
         }
-        DP_MENU_INDEX => Some(Value::Number(0.0)),
+        DP_MENU_INDEX => Some(Value::Number(o.menu_index.min(CATEGORIES.len() - 1) as f64)),
         DP_INIT => {
             let v = Value::Object(cx.new_object());
             let _ = cx.set_member(&v, "doneButtonLabel", Value::str(&loc.text("TXT_SETTINGS_SAVE")));
