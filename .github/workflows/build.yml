@@ -71,6 +71,10 @@ jobs:
     needs: [changes, check, windows, windows-server, windows-package, windows-tests, linux, server-headless]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    # this job checks out nothing; the workflow's Engine working directory does not exist here
+    defaults:
+      run:
+        working-directory: .
     steps:
       - name: All required jobs passed or were skipped
         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
