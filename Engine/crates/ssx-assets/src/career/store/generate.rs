@@ -37,7 +37,15 @@ impl Store {
             let blocked = ctx.equipped_gear | ctx.unk_gear_mask;
             let have = ctx.gear_types | ctx.required_gear;
             let free: Vec<i64> = (0..15).filter(|&s| blocked & (1 << s) == 0 && have & (1 << s) != 0).collect();
-            slot = if free.is_empty() { 3 } else { free[self.rng.pick(free.len())] };
+            let needed: Vec<i64> = free.iter().copied().filter(|&s| ctx.required_gear & (1 << s) != 0).collect();
+            // TODO(guess): a port choice — gear the drop needs (a headlamp for a dark cave) is picked more often.
+            slot = if free.is_empty() {
+                3
+            } else if !needed.is_empty() && self.rng.below(100) < super::NEEDED_GEAR_CHANCE {
+                needed[self.rng.pick(needed.len())]
+            } else {
+                free[self.rng.pick(free.len())]
+            };
         }
         let mut candidates = Vec::new();
         for key in data.group(kind) {

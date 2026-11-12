@@ -162,7 +162,7 @@ impl Inventory {
             gear_types: profile.gear_types(),
             equipped_gear: self.worn_gear,
             unk_gear_mask: self.gear_mask,
-            required_gear: drop.map_or(0, DropInfo::required_gear),
+            required_gear: drop.map_or(0, DropInfo::store_gear),
             blocked: drop.map_or([false; KINDS], DropInfo::forced_kinds),
             geotags_online: false,
         }

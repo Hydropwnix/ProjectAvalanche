@@ -115,6 +115,8 @@ pub const SLOT_SUIT_BOTTOM: i64 = 0xD;
 pub const FIRST_STOCK_ID: u32 = 1_000_000;
 pub const OFFERS_PER_KIND: usize = 4;
 pub const FIRST_SPECIAL_MS: i64 = 60_000;
+pub const NEEDED_GEAR_CHANCE: i64 = 60;
+pub const NEEDED_GEAR_TRIES: usize = 8;
 
 pub fn stat_gear_type(stat: i64) -> Option<i64> {
     (5..=25).contains(&stat).then(|| (stat - 5) / 3 + 1)
@@ -265,6 +267,9 @@ impl Store {
             for _ in shown..OFFERS_PER_KIND {
                 self.generate(data, ctx, k, &Request::NORMAL, now_ms);
             }
+            if k == KIND_GEAR as usize {
+                self.offer_needed_gear(data, ctx, now_ms);
+            }
         }
         if self.special_due_ms - now_ms < 0 {
             let k = self.rng.range(0, KINDS as i64 - 1) as usize;
@@ -274,6 +279,31 @@ impl Store {
             }
             let (lo, hi) = data.tables.special_interval;
             self.special_due_ms = now_ms + self.rng.range(lo * 60_000, hi * 60_000);
+        }
+    }
+
+    // TODO(guess): a port choice — the store keeps one offer of each gear type the drop needs (a headlamp for a dark
+    // cave), the game only the four random ones.
+    fn offer_needed_gear(&mut self, data: &StoreData, ctx: &StoreContext, now_ms: i64) {
+        let blocked = ctx.equipped_gear | ctx.unk_gear_mask;
+        for slot in (0..15).filter(|&s| ctx.required_gear & (1 << s) != 0 && blocked & (1 << s) == 0) {
+            let shown =
+                |i: &StoreItem| i.slot == slot && at_level(i, ctx) && fits_rider(data, &mut i.clone(), ctx.rider);
+            if self.stock[KIND_GEAR as usize].iter().any(shown) {
+                continue;
+            }
+            for _ in 0..NEEDED_GEAR_TRIES {
+                let req = Request { slot, ..Request::NORMAL };
+                let made = self.generate(data, ctx, KIND_GEAR as usize, &req, now_ms);
+                let gear = &mut self.stock[KIND_GEAR as usize];
+                match made.and_then(|id| gear.iter().position(|i| i.id == id)) {
+                    Some(at) if shown(&gear[at]) => break,
+                    Some(at) => {
+                        gear.remove(at);
+                    }
+                    None => {}
+                }
+            }
         }
     }
 

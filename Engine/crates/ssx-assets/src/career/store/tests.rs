@@ -221,3 +221,32 @@ fn the_next_equip_id_wraps_as_a_word() {
     p.generated.insert(u32::MAX, GeneratedItem::default());
     assert_eq!(p.next_equip_id(), 0);
 }
+
+#[test]
+fn the_gear_a_drop_needs_is_offered_and_picked_more_often() {
+    let mut d = data();
+    d.templates.insert(16, template(16, 2, 5, vec![17, 18]));
+    d.templates.get_mut(&102).unwrap().members.push(16);
+    let plain = StoreContext { gear_types: 1 << 3 | 1 << 5, ..ctx() };
+    let needs = StoreContext { required_gear: 1 << 5, ..plain.clone() };
+    let count = |c: &StoreContext| {
+        let mut s = Store::new(9);
+        for _ in 0..400 {
+            s.generate(&d, c, KIND_GEAR as usize, &Request::NORMAL, 0);
+        }
+        s.stock[KIND_GEAR as usize].iter().filter(|i| i.slot == 5).count()
+    };
+    assert!(count(&needs) > count(&plain) + 80);
+    let mut s = Store::new(5);
+    let only3 = StoreContext { gear_types: 1 << 3, required_gear: 1 << 5, ..ctx() };
+    s.stock[KIND_GEAR as usize] =
+        (0..4).map(|_| StoreItem { kind: 2, slot: 3, level: 1, ..Default::default() }).collect();
+    s.refresh(&d, &only3, 0);
+    assert_eq!(s.stock[KIND_GEAR as usize].iter().filter(|i| i.slot == 5).count(), 1);
+    s.refresh(&d, &only3, 0);
+    assert_eq!(s.stock[KIND_GEAR as usize].iter().filter(|i| i.slot == 5).count(), 1);
+    let worn = StoreContext { equipped_gear: 1 << 5, ..only3.clone() };
+    let mut s = Store::new(5);
+    s.refresh(&d, &worn, 0);
+    assert!(s.stock[KIND_GEAR as usize].iter().all(|i| i.slot != 5));
+}

@@ -8,6 +8,7 @@ pub struct DropInfo {
     pub weights: Vec<i64>,
     pub forced: Vec<u32>,
     pub rider_forced: bool,
+    pub range_gear: u32,
 }
 
 impl DropInfo {
@@ -24,7 +25,14 @@ impl DropInfo {
                 }
             }
         }
+        let range = db.peak_and_range(e).1;
+        let range_gear = if range == 0 {
+            0
+        } else {
+            db.events.iter().filter(|o| db.peak_and_range(o).1 == range).fold(0, |m, o| m | gear_mask(&o.required))
+        };
         Some(DropInfo {
+            range_gear,
             event_type: e.event_type,
             difficulty: e.difficulty,
             required: e.required.clone(),
@@ -39,12 +47,13 @@ impl DropInfo {
     }
 
     pub fn required_gear(&self) -> u32 {
-        self.required
-            .iter()
-            .filter(|&&r| r != 7)
-            .filter_map(|&r| requirement_gear(r).and_then(|(g, _)| g))
-            .filter(|g| (0..32).contains(g))
-            .fold(0, |m, g| m | 1 << g)
+        gear_mask(&self.required)
+    }
+
+    /// The gear the drop needs and, a port addition, the gear any drop on its mountain range needs (the store keeps one
+    /// offer of each).
+    pub fn store_gear(&self) -> u32 {
+        self.required_gear() | self.range_gear
     }
 
     pub fn forced_kinds(&self) -> [bool; KINDS] {
@@ -54,6 +63,15 @@ impl DropInfo {
     pub(super) fn survive(&self) -> bool {
         matches!(self.event_type, 3 | 4)
     }
+}
+
+fn gear_mask(required: &[i64]) -> u32 {
+    required
+        .iter()
+        .filter(|&&r| r != 7)
+        .filter_map(|&r| requirement_gear(r).and_then(|(g, _)| g))
+        .filter(|g| (0..32).contains(g))
+        .fold(0, |m, g| m | 1 << g)
 }
 
 pub(super) fn requirement_gear(r: i64) -> Option<(Option<i64>, Vec<i64>)> {
