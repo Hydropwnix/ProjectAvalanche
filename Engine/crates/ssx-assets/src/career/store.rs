@@ -240,7 +240,7 @@ impl Store {
         let mut out = Vec::new();
         for item in self.stock.get(kind).into_iter().flatten() {
             let mut it = item.clone();
-            if it.level == ctx.level && fits_rider(data, &mut it, ctx.rider) {
+            if at_level(&it, ctx) && fits_rider(data, &mut it, ctx.rider) {
                 out.push(it);
             }
         }
@@ -258,7 +258,7 @@ impl Store {
             }
             let mut shown = 0;
             for item in &mut self.stock[k] {
-                if item.level == ctx.level && fits_rider(data, item, ctx.rider) {
+                if at_level(item, ctx) && fits_rider(data, item, ctx.rider) {
                     shown += 1;
                 }
             }
@@ -281,6 +281,10 @@ impl Store {
         self.purge(force, now_ms);
         self.refresh(data, ctx, now_ms);
     }
+}
+
+fn at_level(item: &StoreItem, ctx: &StoreContext) -> bool {
+    item.kind == KIND_SUIT || item.level == ctx.level
 }
 
 pub fn fits_rider(data: &StoreData, item: &mut StoreItem, rider: u32) -> bool {

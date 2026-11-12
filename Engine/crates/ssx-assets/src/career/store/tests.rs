@@ -149,10 +149,10 @@ fn refresh_fills_four_per_kind_and_purges() {
     let mut s = Store::new(1);
     s.update(&d, &c, false, 0);
     let shown: Vec<usize> = (0..KINDS).map(|k| s.offers(&d, &c, k).len()).collect();
-    assert_eq!(shown, vec![0, 4, 4, 4, 0]);
+    assert_eq!(shown, vec![4, 4, 4, 4, 0], "suits too, made at level 0 for a rider past it");
     assert_eq!(s.stock[0].len(), 4);
     s.update(&d, &c, false, 1);
-    assert_eq!((s.stock[0].len(), s.stock[1].len()), (8, 4));
+    assert_eq!((s.stock[0].len(), s.stock[1].len()), (4, 4), "and not made again on every visit");
     let online = StoreContext { geotags_online: true, ..c.clone() };
     s.update(&d, &online, false, FIRST_SPECIAL_MS + 1);
     assert_eq!(s.stock.iter().flatten().filter(|i| i.special).count(), 1);
