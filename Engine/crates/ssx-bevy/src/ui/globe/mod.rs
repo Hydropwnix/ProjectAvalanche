@@ -47,6 +47,9 @@ pub struct GlobeView {
     pub post: Option<Arc<FePost>>,
     pub dt: f32,
     pub dump: Option<Arc<PathBuf>>,
+    /// A port addition: a mod's background movie's picture, shown in place of the globe's own backdrop around the
+    /// globe (the globe and its halo are drawn over it, in the globe's last pass).
+    pub background: Option<bevy::prelude::Handle<bevy::prelude::Image>>,
 }
 
 #[derive(Clone, Debug, Default)]

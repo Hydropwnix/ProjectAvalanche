@@ -211,6 +211,9 @@ pub fn boot_ui(big_root: &Path, lang: Language, classic: bool, display: DisplayC
 }
 
 const MOVIE_LAYER: usize = 7;
+/// A port addition: the menus' background movie (a mod's `menu-background:movie/background`), drawn under the globe
+/// (in place of its backdrop) and the menus.
+const BACKGROUND_LAYER: usize = 8;
 
 const FE_BACKGROUND: Color = Color::BLACK;
 
@@ -291,6 +294,15 @@ struct Shell {
     stick_dpad: StickDpad,
     movie_sprite: Entity,
     movie_camera: Entity,
+    /// The menus' background movie in place of the globe (a port addition): its player, sprite and camera, whether
+    /// a mod has one (known after the first look), and whether the globe would show this frame.
+    background: Option<ui::movie::MoviePlayback>,
+    background_sprite: Entity,
+    background_camera: Entity,
+    background_found: Option<bool>,
+    background_wanted: bool,
+    /// The picture last shown (kept while the movie opens again for its loop).
+    background_shown: Option<bevy::prelude::Handle<bevy::prelude::Image>>,
     ready_frames: u32,
     started: bool,
     hold: u32,
@@ -473,6 +485,25 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
             ui::fade::FadeCamera,
         ))
         .id();
+    let background_layer = RenderLayers::layer(BACKGROUND_LAYER);
+    let background_sprite = app
+        .world_mut()
+        .spawn((
+            Sprite { custom_size: Some(Vec2::new(w, h)), ..default() },
+            Visibility::Hidden,
+            background_layer.clone(),
+        ))
+        .id();
+    let background_camera = app
+        .world_mut()
+        .spawn((
+            Camera2d,
+            Camera { order: -1, clear_color: ClearColorConfig::Custom(FE_BACKGROUND), is_active: false, ..default() },
+            Tonemapping::None,
+            Msaa::Off,
+            background_layer,
+        ))
+        .id();
     app.insert_resource(GameUiRes(game))
         .insert_resource(Shell {
             host,
@@ -517,6 +548,12 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
             stick_dpad: StickDpad::default(),
             movie_sprite,
             movie_camera,
+            background: None,
+            background_sprite,
+            background_camera,
+            background_found: None,
+            background_wanted: false,
+            background_shown: None,
             ready_frames: 0,
             started: false,
             hold: 0,

@@ -83,12 +83,37 @@ fn post_uniform(
     }
     out.extend(floats_bytes(&[vig_colour[0], vig_colour[1], vig_colour[2], vig_on]));
     out.extend(floats_bytes(&[vig_bounds[0], vig_bounds[1], fm[0], fm[1]]));
-    out.extend(floats_bytes(&[view.raw_scale.unwrap_or(0.0), 0.0, 0.0, 0.0]));
+    // debug.yzw (a port addition): with a background movie, the globe's circle on the screen (centre in uv, radius
+    // in uv heights), outside of which the composite leaves the movie showing.
+    let (mx, my, mr) = if view.background.is_some() && frame.visible { globe_circle(frame) } else { (0.0, 0.0, 0.0) };
+    out.extend(floats_bytes(&[view.raw_scale.unwrap_or(0.0), mx, my, mr]));
     let q = UVec2::new((size.x / 4).max(1), (size.y / 4).max(1));
     for v in [size.x, size.y, q.x, q.y] {
         out.extend(v.to_le_bytes());
     }
     out
+}
+
+/// The globe with its atmosphere on the screen: its centre (uv) and radius (in uv heights), from the view and
+/// projection (the globe sits at the world's origin).
+fn globe_circle(frame: &GlobeFrame) -> (f32, f32, f32) {
+    let v = &frame.view;
+    let c = [v[3][0], v[3][1], v[3][2]];
+    let p = &frame.proj;
+    let clip = |i: usize| p[0][i] * c[0] + p[1][i] * c[1] + p[2][i] * c[2] + p[3][i];
+    let w = clip(3);
+    if w.abs() < 1e-6 {
+        return (0.0, 0.0, 0.0);
+    }
+    let (nx, ny) = (clip(0) / w, clip(1) / w);
+    let d = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt();
+    let r = frame.atmos_r[0].max(frame.globe_r[0]);
+    if d <= r {
+        return (0.0, 0.0, 0.0); // (inside it: no circle to keep)
+    }
+    let half = (r / d).clamp(0.0, 0.999).asin();
+    let ndc_r = half.tan() * p[1][1].abs();
+    (nx * 0.5 + 0.5, 0.5 - ny * 0.5, (ndc_r * 0.5).max(1e-4))
 }
 
 #[allow(clippy::too_many_arguments)]

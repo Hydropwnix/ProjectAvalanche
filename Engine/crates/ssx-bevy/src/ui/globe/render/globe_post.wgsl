@@ -142,6 +142,7 @@ fn reduce(@builtin(local_invocation_index) li: u32) {
 @group(0) @binding(5) var linear_clamp: sampler;
 @group(0) @binding(6) var bloom_tex: texture_2d<f32>;
 @group(0) @binding(7) var lut: texture_3d<f32>;
+@group(0) @binding(8) var under_tex: texture_2d<f32>;
 
 @fragment
 fn fs_threshold(in: FullOut) -> @location(0) vec4<f32> {
@@ -254,5 +255,19 @@ fn fs_composite(in: FullOut) -> @location(0) vec4<f32> {
         lin = mix(lin, u.vignette.rgb, t * t * (3.0 - 2.0 * t));
     }
     let v = clamp(sqrt(lin) * u.bounds.z + u.bounds.w, vec3<f32>(0.0), vec3<f32>(1.0));
+    // A port addition: with a background movie, only the globe and its glow are kept (debug.yzw: its circle),
+    // fading out past its edge into the movie's picture, which covers the screen (cropped to fit).
+    if (u.debug.w > 0.0) {
+        let screen = vec2<f32>(f32(u.sizes.x), f32(u.sizes.y));
+        let aspect = screen.x / max(screen.y, 1.0);
+        let d = vec2<f32>((in.uv.x - u.debug.y) * aspect, in.uv.y - u.debug.z);
+        let dist = sqrt(dot(d, d));
+        let keep = 1.0 - smoothstep(u.debug.w * 1.02, u.debug.w * 1.35, dist);
+        let video = vec2<f32>(textureDimensions(under_tex));
+        let scale = max(screen.x / video.x, screen.y / video.y);
+        let at = ((in.uv * screen - screen * 0.5) / scale + video * 0.5) / video;
+        let under = textureSampleLevel(under_tex, linear_clamp, at, 0.0).rgb;
+        return vec4<f32>(mix(under, to_linear(v), keep), 1.0);
+    }
     return vec4<f32>(to_linear(v), 1.0);
 }

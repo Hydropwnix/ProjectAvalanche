@@ -153,6 +153,7 @@ pub(super) struct Frame<'w, 's> {
     exit: MessageWriter<'w, AppExit>,
     live: Option<ResMut<'w, crate::shell::live::LiveSession>>,
     render_scale: Option<Res<'w, super::display::RenderScale>>,
+    fe_camera: Query<'w, 's, Entity, With<super::FrontEndCamera>>,
 }
 
 pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mut f: Frame) {
@@ -169,10 +170,13 @@ pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mu
     }
     if f.ui_frame.viewport.y > 0 {
         let aspect = f.ui_frame.viewport.x as f32 / f.ui_frame.viewport.y as f32;
-        f.globe.frame = match s.stage {
+        let globe = match s.stage {
             Stage::Level => None,
             _ => ui.fe.as_ref().and_then(|fe| fe.globe_frame(aspect)),
         };
+        // A mod's background movie shows behind the globe, in place of its backdrop (a port addition).
+        s.background_wanted = globe.is_some() && s.background_available();
+        f.globe.frame = globe;
     }
     if let Some(window) = f.windows.iter().next() {
         let now = f.real.elapsed_secs_f64();
@@ -278,6 +282,8 @@ pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mu
         .filter(|r| r.enabled)
         .map_or_else(|| f.windows.iter().next().map_or(Vec2::new(1280.0, 720.0), |w| w.size()), |r| r.size.as_vec2());
     s.play_movie(&mut ui, dt, window, &mut f.images, &mut f.sprites, &mut f.cameras, f.audio.as_deref_mut());
+    let fe_camera = f.fe_camera.iter().next();
+    f.globe.background = s.play_background(dt, window, &mut f.images, &mut f.sprites, &mut f.cameras, fe_camera);
     s.stage_step(&mut ui, f.level.as_deref(), f.ride.as_deref(), f.live.as_deref_mut());
     let sc = &mut *f.scene;
     let t0 = Instant::now();

@@ -13,6 +13,10 @@ use crate::shell::game_level;
 use crate::shell::level::{self, LevelData, LevelSpec};
 use crate::ui;
 
+/// The movie a mod gives the menus' background (a port addition): the package `menu-background` adding
+/// `movie/background` (a WebM file).
+const BACKGROUND_MOVIE: &str = "menu-background:movie/background";
+
 impl Shell {
     pub(super) fn fade_shot(&mut self, commands: &mut Commands, alpha: f32, fe_time: f64) {
         if self.fade_shots == 0 {
@@ -110,6 +114,78 @@ impl Shell {
             c.clear_color = bevy::prelude::ClearColorConfig::Custom(bevy::prelude::Color::BLACK);
         }
         self.host.viewer_movie_frame = self.movie.as_ref().map(ui::movie::MoviePlayback::frame);
+    }
+
+    /// Whether a mod gives the menus a background movie (looked for once).
+    pub(super) fn background_available(&mut self) -> bool {
+        if let Some(found) = self.background_found {
+            return found;
+        }
+        let content = ssx_assets::content::GameContent::of(&self.big_root);
+        let found = BACKGROUND_MOVIE.parse::<ssx_content::ContentId>().ok().and_then(|id| content.fmv(&id)).is_some();
+        if found {
+            info!("shell: the menus' background: {BACKGROUND_MOVIE} in place of the globe");
+        }
+        self.background_found = Some(found);
+        found
+    }
+
+    /// The menus' background movie, looping, under the menus and the globe while the globe shows (a port addition);
+    /// whether it shows.
+    pub(super) fn play_background(
+        &mut self,
+        dt: f64,
+        window: Vec2,
+        images: &mut Assets<Image>,
+        sprites: &mut Query<(&mut Sprite, &mut Visibility)>,
+        cameras: &mut Query<&mut Camera>,
+        fe_camera: Option<bevy::prelude::Entity>,
+    ) -> Option<bevy::prelude::Handle<Image>> {
+        if !self.background_wanted {
+            self.background = None;
+            self.background_shown = None;
+        }
+        // Its end: it opens again at once, and the last picture stays up until the new one has its first (a
+        // loop without a black frame).
+        if let Some(m) = self.background.as_mut()
+            && m.advance(dt, images)
+        {
+            if let Some((id, source, why)) = m.failure() {
+                error!("shell: the menus' background ({id} of {source}) stopped: {why}; the globe instead");
+                self.background_found = Some(false);
+            }
+            self.background = None;
+        }
+        if self.background_wanted && self.background.is_none() && self.background_found == Some(true) {
+            let content = ssx_assets::content::GameContent::of(&self.big_root);
+            let opened = BACKGROUND_MOVIE
+                .parse::<ssx_content::ContentId>()
+                .map_err(|e| anyhow::anyhow!("{e}"))
+                .and_then(|id| content.fmv(&id).ok_or_else(|| anyhow::anyhow!("{id} not found")))
+                .and_then(|f| ui::movie::MoviePlayback::open_fmv("menu background", &f, &content, images, None));
+            match opened {
+                Ok(m) => self.background = Some(m),
+                Err(e) => {
+                    error!("shell: the menus' background: {e:#}; the globe instead");
+                    self.background_found = Some(false);
+                }
+            }
+        }
+        if let Some(m) = &self.background
+            && m.frame() > 0
+        {
+            self.background_shown = Some(m.image.clone());
+        }
+        let shown = if self.background.is_some() { self.background_shown.clone() } else { None };
+        // (the globe's last pass draws it, around the globe)
+        if let Ok((_, mut v)) = sprites.get_mut(self.background_sprite) {
+            *v = Visibility::Hidden;
+        }
+        if let Ok(mut c) = cameras.get_mut(self.background_camera) {
+            c.is_active = false;
+        }
+        let _ = (window, fe_camera);
+        shown
     }
 
     pub(super) fn stage_step(

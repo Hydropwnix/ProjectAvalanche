@@ -148,6 +148,7 @@ pub(super) fn init(
                 (5, sampler(SamplerBindingType::Filtering)),
                 (6, texture_2d(float)),
                 (7, texture_3d(float)),
+                (8, texture_2d(float)),
             ),
         ),
     );
