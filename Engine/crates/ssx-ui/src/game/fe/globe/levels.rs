@@ -117,20 +117,20 @@ impl GlobeScene {
         }
         let Some((msg, node)) = self.queue.pop_front() else { return };
         self.dispatches = self.dispatches.wrapping_add(1);
-        self.state = msg;
+        self.set_state(msg);
         self.state_node = node;
         self.controller_message(msg, node);
         match msg {
-            3 => self.state = 4,
+            3 => self.set_state(4),
             5 | 7 => {
                 self.dd = false;
                 self.set_lighting(0, if msg == 5 { 0.5 } else { 1.0 });
-                self.state = msg + 1;
+                self.set_state(msg + 1);
             }
             9 => {
                 self.midground_visible = false;
                 self.midground_range = node;
-                self.state = 10;
+                self.set_state(10);
             }
             12 => {
                 self.midground_range = self.nodes.range_of(node).unwrap_or(0);
@@ -138,10 +138,10 @@ impl GlobeScene {
             }
             14 => {
                 self.swap_lighting = true;
-                self.state = 15;
+                self.set_state(15);
             }
             16 => {
-                self.state = 17;
+                self.set_state(17);
                 let peak = self.nodes.peak_of(node).unwrap_or(0);
                 self.dd = self.nodes.peaks.get(&peak).is_some_and(|p| p.dd);
                 if self.dd {
@@ -149,7 +149,7 @@ impl GlobeScene {
                 }
             }
             18 => {
-                self.state = 19;
+                self.set_state(19);
                 if self.dd {
                     self.dd = false;
                     self.set_lighting(1, 0.9);
@@ -287,17 +287,17 @@ impl GlobeScene {
     fn entity_update(&mut self) {
         let done = |s: &GlobeScene| s.shots.progress() < 0.0;
         match self.state {
-            4 | 6 | 8 | 10 if done(self) => self.state = 0x16,
-            0xB | 0x11 | 0x13 => self.state = 0x16,
+            4 | 6 | 8 | 10 if done(self) => self.set_state(0x16),
+            0xB | 0x11 | 0x13 => self.set_state(0x16),
             0xC => {
-                self.state = 0xD;
+                self.set_state(0xD);
                 self.cloud = 0;
             }
             0xD => self.cloud_transition(),
             0xF => {
                 let mut p = self.shots.progress();
                 if p < 0.0 {
-                    self.state = 0x16;
+                    self.set_state(0x16);
                     p = 1.0;
                 }
                 let f = (f64::from(p) * 1.5) as f32;
@@ -320,15 +320,15 @@ impl GlobeScene {
             }
             0x14 if done(self) => {
                 self.midground_visible = false;
-                self.state = 0x16;
+                self.set_state(0x16);
             }
             0x15 => {
                 if done(self) {
-                    self.state = 0x16;
+                    self.set_state(0x16);
                 }
                 self.midground_visible = true;
             }
-            0x16 if !self.busy() => self.state = 0,
+            0x16 if !self.busy() => self.set_state(0),
             _ => {}
         }
     }
@@ -378,7 +378,7 @@ impl GlobeScene {
                     return;
                 }
                 4 if done => {
-                    self.state = 0x16;
+                    self.set_state(0x16);
                     return;
                 }
                 _ => return,

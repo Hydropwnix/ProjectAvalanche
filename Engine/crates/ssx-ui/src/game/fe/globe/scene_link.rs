@@ -130,7 +130,11 @@ pub fn scene_update(fe: &mut FrontEnd, env: &mut FeEnv, dt: f64) {
     }
     let dispatched = scene.dispatches != dispatches;
     let visible = scene.level.is_some() && (scene.visible() || scene.level.is_some_and(|l| l >= 4));
+    let sounds = std::mem::take(&mut scene.sounds);
     fe.globe_scene = Some(scene);
+    for id in sounds {
+        fe.play_sound(id);
+    }
     if dispatched {
         crate::game::fe::progression::globe_dispatched(fe);
     }
@@ -143,6 +147,9 @@ pub fn scene_update(fe: &mut FrontEnd, env: &mut FeEnv, dt: f64) {
     }
     if let Some(a) = ev.audio {
         fe.note(format!("globe: the game manager's audio state {a} (0x82511A90)"));
+        for &id in super::scene::focus_sounds(a) {
+            fe.play_sound(id);
+        }
     }
     if let Some(r) = ev.range {
         fe.note(format!("globe: the stick selects range {r:#x}"));

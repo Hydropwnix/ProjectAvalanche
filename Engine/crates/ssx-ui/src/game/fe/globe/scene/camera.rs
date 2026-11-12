@@ -103,6 +103,9 @@ impl GlobeScene {
         if allow {
             picked = self.pick().filter(|&k| flow.range_valid(k));
             if let Some(p) = picked {
+                if p != self.focus {
+                    self.sounds.extend(focus_sounds(1));
+                }
                 self.focus = p;
                 self.repeat = 0.225;
             }

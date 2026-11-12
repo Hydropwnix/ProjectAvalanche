@@ -122,6 +122,8 @@ pub struct GlobeScene {
     pub node: u32,
     pub queue: std::collections::VecDeque<(u32, u32)>,
     pub state: u32,
+    /// UI sounds (UI_SOUNDS ids) the scene's state changes and focus moves asked for this frame.
+    pub sounds: Vec<i32>,
     pub state_node: u32,
     pub cloud: u32,
     pub cloud_in: f32,
@@ -180,6 +182,7 @@ impl GlobeScene {
             node: 0,
             queue: std::collections::VecDeque::new(),
             state: 0,
+            sounds: Vec::new(),
             state_node: 0,
             cloud: 0,
             cloud_in: 0.0,
@@ -291,5 +294,39 @@ mod tests {
         let v = c.view();
         let t = transform(s.target, &v);
         assert!(t[0].abs() < 1e-2 && t[1].abs() < 1e-2 && t[2] < 0.0, "{t:?}");
+    }
+}
+
+impl GlobeScene {
+    pub(crate) fn set_state(&mut self, state: u32) {
+        self.state = state;
+        self.sounds.extend(state_sounds(state));
+    }
+}
+
+/// The front end's audio for a globe scene state (message 0x898463CA → 0x82510FE8): the menu sound and the camera
+/// transition's whoosh. States with no sound give none.
+pub fn state_sounds(state: u32) -> &'static [i32] {
+    match state {
+        5 => &[62],        // globe_intro
+        7 => &[63],        // globe_modeselect_intro
+        0xC => &[69, 57],  // RS_menu_select, trans_globe_range_start
+        0xD => &[58],      // trans_globe_range_transit
+        0xE => &[4, 59],   // menu_back, trans_range_globe
+        0x10 => &[71, 60], // PS_menu_select, trans_range_to_peak
+        0x12 => &[4, 56],  // menu_back, trans_peak_to_range
+        0x14 => &[73],     // DS_menu_select
+        _ => &[],
+    }
+}
+
+/// The sound for the stick moving the focus to another range (1), peak (2) or drop (3): the game manager's audio
+/// state (0x82511A90 → 0x82511348).
+pub fn focus_sounds(level: i32) -> &'static [i32] {
+    match level {
+        1 => &[68],     // RS_menu_highlight
+        2 => &[70, 55], // PS_menu_highlight, trans_peak_to_peak
+        3 => &[72],     // DS_menu_highlight
+        _ => &[],
     }
 }
