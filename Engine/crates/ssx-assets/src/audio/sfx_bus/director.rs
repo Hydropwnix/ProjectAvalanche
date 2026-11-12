@@ -75,7 +75,7 @@ impl SnapshotDirector {
         layer2.set(15, on(bit(7) && s.time_dilation < td));
         layer2.set(4, on((bit(0) && bit(14)) || bit(21)));
         layer2.set(5, on(bit(5)));
-        // TODO(guess): Super Tricky selects the Tricky mixes (music pulled under the "It's Tricky" song) only while that song plays, and mixes as Awesome after it; known: with flag bit 18 alone Tricky_2 held the music down for the whole of Super Tricky and a mod's song never came back; settle: what selects gLayer2's Tricky_2 / Boost_3 in the game (the CSIS mixer's inputs for Super Tricky).
+        // TODO(guess): a port choice — Super Tricky (bit 18) holds the Tricky mixes (music pulled under the "It's Tricky" song) for its whole length, as the game does (0x830EB7D8 keeps Tricky_State 2), except over a mod's song, which has no Tricky remix: once "It's Tricky" is over the rest of Super Tricky mixes as Awesome and the mod's song comes back; settle: none (the game has no mod songs).
         let tricky = bit(18) && s.tricky_song;
         let awesome = bit(4) || bit(18);
         layer2.set(6, on(awesome));
