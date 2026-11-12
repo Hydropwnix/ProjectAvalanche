@@ -32,10 +32,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-The CI's **fast check** runs these on Linux (with `cargo nextest`) and the movie decoder's sandbox. The full
-Windows + Linux build, the dedicated server and the downloads run in the merge queue, once per merge; add the
-`full-ci` label to a pull request to run that full matrix on the pull request itself. Draft pull requests run no
-CI until they are marked ready for review.
+The CI's **fast check** runs these on Linux (with `cargo nextest`) and the movie decoder's sandbox, on pull
+requests and merge-queue runs. The full Windows + Linux build, the dedicated server and the downloads run **only**
+on a deliberate snapshot (a release-branch export) or a manual dispatch — never on a pull request or a merge.
+Draft pull requests run no CI until they are marked ready for review.
 
 ## Code conventions
 
@@ -60,11 +60,19 @@ CI until they are marked ready for review.
 - Describe what you changed, how you verified it (the checks, and what you saw in the game) and what is left open.
 - Pull requests are squash-merged; the title becomes the commit's subject, so make it a short sentence.
 
+**Review.** Maintainers check the **whole** diff — every hunk and test — against the original executable and disc. A
+pull request that adds a new unresolved `TODO(guess)`, an invented behaviour, or code that does not build on the
+current branch is not merged as-is. The verified behaviour is ported into the development tree, then either the clean
+pull request is squash-merged (your authorship kept) or, if it was superseded or still guesses, it is closed with the
+evidence and the verified version lands in the next snapshot. Either way you are credited.
+
 **How changes land.** The code here is published as snapshots of the project's working tree. A merged pull request
 is carried into that tree by the maintainers, so it stays in every later snapshot; the snapshot commits that follow
 contain it again together with the other changes of the time. The `release/<version>` branch receives the snapshots
-and the merged pull requests; at release it is merged into `main` and tagged. The full matrix runs on the merge
-queue and on every snapshot.
+and the merged pull requests; at release it is merged into `main` and tagged. Snapshots are deliberate — the next
+version is exported only when its content is ready to build and test — and a snapshot build is not a release: the
+release is tagged from a green snapshot run. The full matrix runs only on a snapshot (and a manual dispatch), never
+per pull request or merge.
 
 ## License
 
