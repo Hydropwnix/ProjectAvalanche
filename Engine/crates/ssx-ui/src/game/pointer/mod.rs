@@ -43,7 +43,7 @@ pub struct Entry {
     pub item: i32,
 }
 
-// TODO(guess): a port choice — a hover on an entry of a list the pad drives presses the pad's D-pad (one step a read, toward the entry's slot, the other axis when a step moved nothing within 8 reads, at most 64 steps) until the list's selection is that entry, and a click is the pad's A on it once selected; the wheel's notches are capped at 8 a read; settle: none (the console has no pointer: the disc's lists answer only the pad's input).
+// TODO(guess): a port choice — a hover on an entry of a list the pad drives presses the pad's D-pad (one step a read, toward the entry's slot, the other axis when a step moved nothing within 8 reads, at most 64 steps) until the list's selection is that entry, and a click is the pad's A on it once selected; an entry a carousel shows outside the band its selection stays in (`components.RiderMenu`'s `mUnselectableLeft` / `mUnselectableRight` cells, a `GridMenu`'s unselectable grids) takes no hover — a step toward it turns the carousel and puts another item under a pointer that did not move — and a click on it only selects it; the wheel's notches are capped at 8 a read; settle: none (the console has no pointer: the disc's lists answer only the pad's input).
 #[derive(Clone, Copy, Debug)]
 struct Focus {
     entry: Entry,
@@ -137,6 +137,7 @@ struct Under {
     prompts_shown: bool,
     globe: Option<(u32, usize)>,
     entry: Option<(Entry, usize)>,
+    preview: bool,
     prompt: Option<(Button, usize)>,
 }
 
@@ -207,7 +208,10 @@ impl GameUi {
         if let Some((_, nodes)) = &globe {
             under.globe = globe_under(cx, &order, nodes, stage);
         }
-        if moved && let Some((e, _)) = under.entry {
+        if moved
+            && let Some((e, _)) = under.entry
+            && !under.preview
+        {
             let same = self.pointer.focus.is_some_and(|f| f.entry == e);
             if !same {
                 self.pointer.focus = Some(Focus { entry: e, step: Step::default() });
@@ -410,7 +414,10 @@ impl GameUi {
             Some(s) if s == e.item => self.pointer_press(Button::DigitalOne, "a click on the selected entry: A"),
             Some(_) => {
                 self.pointer.focus = Some(Focus { entry: e, step: Step::default() });
-                self.pointer.click = Some(e);
+                self.pointer.click = (!under.preview).then_some(e);
+                if under.preview {
+                    self.pointer.note(format!("pointer: a click on {} outside the carousel's band: select it", e.item));
+                }
             }
             None => {}
         }
@@ -479,6 +486,7 @@ fn under(cx: &mut Ctx, order: &[InstanceId], reach: &Reach, stage: (f32, f32)) -
                 let Some(&r) = rank.get(&c.clip) else { continue };
                 if lists::cell_hit(cx, &mut hit, c, stage) && out.entry.is_none_or(|(_, o)| r > o) {
                     out.entry = Some((Entry { menu: l.clip, item: c.item }, r));
+                    out.preview = c.preview;
                 }
             }
         }
@@ -536,7 +544,8 @@ pub fn targets(cx: &mut Ctx, subscribers: &[String]) -> Vec<String> {
         for c in &l.cells {
             let parent = cx.player.get(c.clip).and_then(|i| i.parent);
             let w = parent.map_or(crate::geom::Mat2d::IDENTITY, |p| cx.player.world_matrix(p));
-            out.push(format!("  entry {} {}", c.item, px(c.slot.transform(&w))));
+            let outside = if c.preview { " outside the band" } else { "" };
+            out.push(format!("  entry {} {}{outside}", c.item, px(c.slot.transform(&w))));
         }
     }
     {
