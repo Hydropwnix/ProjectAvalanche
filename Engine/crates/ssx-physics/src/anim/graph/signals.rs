@@ -192,11 +192,6 @@ impl RiderGraph {
         self.put("FLT_WingsuitEffectiveness", ws.effectiveness);
         let ia = &s.ice_axe;
         self.put_bool("BLN_IceAxeEnabled", ia.enabled);
-        // TODO(guess): the rider graph starts its own deploy sequence (SEQ_ice_axe_deploy) on BLN_IceAxeDeploy, the
-        // player update's IceAxeDeployAsset, which the port never set. The player update clears it in the air and in a
-        // NIS (0x82CF9AF0); here it also stays down through a crash, so the graph's crash states aren't held up by the
-        // axe; settle: the IceAxeDeploy writer.
-        self.put_bool("BLN_IceAxeDeploy", ia.enabled && riding && !s.landing.is_bailing());
         self.put_bool("BLN_ice_axe_start_chop_left", ia.start_chop[0]);
         self.put_bool("BLN_ice_axe_start_chop_right", ia.start_chop[1]);
         self.put_bool("BLN_ice_axe_deployed", ia.deployed);
