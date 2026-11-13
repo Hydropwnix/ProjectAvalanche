@@ -264,13 +264,7 @@ impl IceAxeState {
                 (l.chop, l.chopped_node, l.exiting) = (None, true, true);
             }
             (Some(t), _) => l.chop = Some(t + dt),
-            // TODO(guess): leaving the chopped node for neutral takes the side's chop weight to 0, as cancelling a chop
-            // does; settle: the rider graph's chopped → neutral transition. Without it the weight stayed at 1 after a
-            // full chop (the clip's end restores it), on both sides, and the arms kept the chop layers on.
-            (None, true) if !trigger => {
-                l.chopped_node = false;
-                transition_weight = Some(0.0);
-            }
+            (None, true) if !trigger => l.chopped_node = false, // chopped → neutral (no tag)
             _ => {}
         }
         if let Some(w) = transition_weight {
@@ -372,9 +366,11 @@ mod tests {
         assert_eq!(weights[0], 1.0);
         assert_eq!(weights[12], 0.0, "clip tick 26");
         assert_eq!(weights[13], 1.0, "restored on leave");
+        // chopped → neutral: the transition {450af909} has no tag, the weight stays at 1.
+        assert!(s.layers[1].chopped_node);
         s.start_chop = [false, false];
         s.layers_update(false, 2.0);
-        assert_eq!(s.chop_weight[1], 0.0, "chopped → neutral");
+        assert!(!s.layers[1].chopped_node && s.chop_weight[1] == 1.0, "chopped → neutral");
         s.start_chop = [false, true];
         assert!(s.read_inputs(&t, 1.0, 0.9, 0.5, 0.3, 0.25, 2.0).active, "chopped and leaning: the bite");
         assert!(!s.read_inputs(&t, 1.0, 0.1, 0.5, 0.3, 0.25, 2.0).active, "off ice");
