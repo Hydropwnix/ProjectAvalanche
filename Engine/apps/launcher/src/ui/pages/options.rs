@@ -1,5 +1,5 @@
 use eframe::egui::{self, RichText, Ui};
-use ssx_assets::port_options::RangeMovies;
+use ssx_assets::port_options::{BootMovie, RangeMovies};
 
 use crate::app::Launcher;
 use crate::settings::{Music, Shading};
@@ -21,6 +21,13 @@ fn music_label(m: Music) -> &'static str {
         Music::DeadlyDescent => "Deadly Descent",
         Music::Licensed => "Licensed tracks",
         Music::Off => "Off",
+    }
+}
+
+fn boot_movie_label(b: BootMovie) -> &'static str {
+    match b {
+        BootMovie::EveryStart => "Every start (as the original game)",
+        BootMovie::Skip => "Skip (as the game's restart after a sign-out)",
     }
 }
 
@@ -141,6 +148,28 @@ impl Launcher {
             "The original game plays a range's video every time you choose the range in World Tour. First time only \
              plays it the first time in a profile; a new profile plays them again. The game starts with this option, \
              and its Options (Movie Settings) change it too.",
+        );
+        ui.add_space(8.0);
+        widgets::heading(ui, "Boot movie");
+        egui::Grid::new("boot_movie").num_columns(2).spacing([16.0, 10.0]).show(ui, |ui| {
+            widgets::field(ui, "Play");
+            let combo =
+                egui::ComboBox::from_id_salt("boot_movie").selected_text(boot_movie_label(s.boot_movie)).width(330.0);
+            widgets::combo(ui, combo, |ui| {
+                for v in BootMovie::ALL {
+                    ui.selectable_value(&mut s.boot_movie, v, boot_movie_label(v));
+                }
+            })
+            .response
+            .on_hover_text("The video the game starts with, before the start screen.");
+            ui.end_row();
+        });
+        ui.add_space(8.0);
+        widgets::note(
+            ui,
+            "The original game plays its boot video at every start. Skip starts the way the game restarts itself \
+             after a sign-out: straight to the start screen; the start screen and the sign-in stay as they are. The \
+             game's Options (Movie Settings) change it too.",
         );
     }
 

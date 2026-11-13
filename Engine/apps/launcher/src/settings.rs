@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as Json};
-use ssx_assets::port_options::RangeMovies;
+use ssx_assets::port_options::{BootMovie, RangeMovies};
 use ssx_assets::settings_file::{self, UpdateError};
 
 const MERGE_LEVELS: u32 = 2;
@@ -65,6 +65,8 @@ pub struct Settings {
     pub boost_meter: f32,
     #[serde(deserialize_with = "range_movies_in", serialize_with = "range_movies_out")]
     pub range_movies: RangeMovies,
+    #[serde(deserialize_with = "boot_movie_in", serialize_with = "boot_movie_out")]
+    pub boot_movie: BootMovie,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub player_name: Option<String>,
     #[serde(rename = "masters", deserialize_with = "crate::masters::present", skip_serializing)]
@@ -97,6 +99,15 @@ fn range_movies_in<'de, D: serde::Deserializer<'de>>(d: D) -> Result<RangeMovies
 
 fn range_movies_out<S: serde::Serializer>(r: &RangeMovies, out: S) -> Result<S::Ok, S::Error> {
     out.serialize_str(r.name())
+}
+
+fn boot_movie_in<'de, D: serde::Deserializer<'de>>(d: D) -> Result<BootMovie, D::Error> {
+    let name = String::deserialize(d)?;
+    BootMovie::from_name(&name).ok_or_else(|| serde::de::Error::custom("not a boot movie choice"))
+}
+
+fn boot_movie_out<S: serde::Serializer>(b: &BootMovie, out: S) -> Result<S::Ok, S::Error> {
+    out.serialize_str(b.name())
 }
 
 fn host_is_default(h: &crate::host::HostSettings) -> bool {
@@ -135,6 +146,7 @@ impl Default for Settings {
             game_sky: true,
             boost_meter: 0.0,
             range_movies: RangeMovies::EveryTime,
+            boot_movie: BootMovie::EveryStart,
             player_name: None,
             old_masters: false,
             resources: None,
@@ -285,6 +297,21 @@ mod tests {
             let s = Settings::from_object(&m);
             assert_eq!((s.range_movies, s.vsync), (RangeMovies::EveryTime, false), "{bad}: the rest read");
             assert!(s.notes.len() == 1 && s.notes[0].contains("range_movies"), "{bad}: {:?}", s.notes);
+        }
+    }
+
+    #[test]
+    fn the_boot_movie_choice_is_kept_by_its_name() {
+        let s: Settings = serde_json::from_str(r#"{"boot_movie": "Skip"}"#).unwrap();
+        assert_eq!(s.boot_movie, BootMovie::Skip);
+        assert!(serde_json::to_string(&s).unwrap().contains(r#""boot_movie":"Skip""#));
+        assert_eq!(Settings::default().boot_movie, BootMovie::EveryStart, "the game's by default");
+        for bad in [r#""skip""#, r#""Off""#, "true", "0", "null", r#"["Skip"]"#] {
+            let m: Map<String, Json> = serde_json::from_str(&format!(r#"{{"boot_movie": {bad}, "vsync": false}}"#))
+                .unwrap_or_else(|e| panic!("{bad}: {e}"));
+            let s = Settings::from_object(&m);
+            assert_eq!((s.boot_movie, s.vsync), (BootMovie::EveryStart, false), "{bad}: the rest read");
+            assert!(s.notes.len() == 1 && s.notes[0].contains("boot_movie"), "{bad}: {:?}", s.notes);
         }
     }
 

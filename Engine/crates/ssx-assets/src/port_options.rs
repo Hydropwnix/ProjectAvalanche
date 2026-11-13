@@ -49,6 +49,58 @@ impl FromStr for RangeMovies {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum BootMovie {
+    #[default]
+    EveryStart,
+    Skip,
+}
+
+impl BootMovie {
+    pub const ALL: [BootMovie; 2] = [BootMovie::EveryStart, BootMovie::Skip];
+    pub const MEMBER: &str = "boot_movie";
+    pub const FLAG: &str = "--boot-movie";
+
+    pub fn name(self) -> &'static str {
+        match self {
+            BootMovie::EveryStart => "EveryStart",
+            BootMovie::Skip => "Skip",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<BootMovie> {
+        BootMovie::ALL.into_iter().find(|b| b.name() == name)
+    }
+
+    pub fn arg(self) -> &'static str {
+        match self {
+            BootMovie::EveryStart => "every-start",
+            BootMovie::Skip => "skip",
+        }
+    }
+
+    pub fn skip_intro(self) -> bool {
+        self == BootMovie::Skip
+    }
+}
+
+impl fmt::Display for BootMovie {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.arg())
+    }
+}
+
+impl FromStr for BootMovie {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        BootMovie::ALL.into_iter().find(|b| b.arg() == s).ok_or_else(|| {
+            let values: Vec<&str> = BootMovie::ALL.iter().map(|b| b.arg()).collect();
+            format!("{}: one of {}", ssx_core::text::quoted_max(s, 64), values.join(", "))
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,5 +121,24 @@ mod tests {
         }
         let e = "x\u{1b}[2J".repeat(100).parse::<RangeMovies>().unwrap_err();
         assert!(!e.contains('\u{1b}') && e.len() < 200 && e.ends_with("every-time, first-time-only"), "{e}");
+    }
+
+    #[test]
+    fn the_boot_movie_choices_read_back_by_name_and_by_flag_value() {
+        assert_eq!(BootMovie::default(), BootMovie::EveryStart);
+        assert!(!BootMovie::EveryStart.skip_intro() && BootMovie::Skip.skip_intro());
+        for b in BootMovie::ALL {
+            assert_eq!(BootMovie::from_name(b.name()), Some(b));
+            assert_eq!(b.arg().parse::<BootMovie>(), Ok(b));
+            assert_eq!(b.to_string(), b.arg());
+        }
+        for bad in ["", "Skip", "skip ", "SKIP", "every_start", "EveryStart", "off", "true"] {
+            assert!(bad.parse::<BootMovie>().is_err(), "{bad:?}");
+        }
+        for bad in ["", "skip", "every-start", "Skip ", "Off", "true"] {
+            assert_eq!(BootMovie::from_name(bad), None, "{bad:?}");
+        }
+        let e = "x\u{1b}[2J".repeat(100).parse::<BootMovie>().unwrap_err();
+        assert!(!e.contains('\u{1b}') && e.len() < 200 && e.ends_with("every-start, skip"), "{e}");
     }
 }

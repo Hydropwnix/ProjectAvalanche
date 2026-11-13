@@ -490,16 +490,27 @@ const ALPHA_ENABLED: f64 = 100.0;
 const ALPHA_DISABLED: f64 = 50.0;
 
 fn child_call(cx: &mut Ctx, this: &Value, child: &str, method: &str, args: &[Value]) -> R {
+    reach_child(cx, this, child, method, args, false)
+}
+
+fn title_call(cx: &mut Ctx, this: &Value, child: &str, method: &str, args: &[Value]) -> R {
+    reach_child(cx, this, child, method, args, true)
+}
+
+fn reach_child(cx: &mut Ctx, this: &Value, child: &str, method: &str, args: &[Value], title: bool) -> R {
     let inner = cx.get_member(this, child)?;
     let (f, home) =
         if inner.is_nullish() { (Value::Undefined, Value::Undefined) } else { cx.get_method(&inner, method)? };
     let pending = cx.get_member(this, PENDING)?;
     if cx.is_function(&f) && pending.is_undefined() {
-        return cx.call(&f, inner, args, home);
+        return if title { title_frames(cx, &inner, method, args) } else { cx.call(&f, inner, args, home) };
     }
     let call = Value::Object(cx.new_object());
     cx.set_member(&call, "c", Value::str(child))?;
     cx.set_member(&call, "m", Value::str(method))?;
+    if title {
+        cx.set_member(&call, "t", Value::Bool(true))?;
+    }
     let list = Value::Object(cx.new_array(args.to_vec()));
     cx.set_member(&call, "a", list)?;
     let queue = if pending.is_undefined() {
@@ -538,7 +549,12 @@ pub fn cell_replay(cx: &mut Ctx, this: Value, _: &[Value]) -> R {
         for j in 0..k {
             args.push(cx.get_member(&list, &j.to_string())?);
         }
-        call_method(cx, &inner, &method, &args)?;
+        let title = cx.get_member(&call, "t")?;
+        if matches!(title, Value::Bool(true)) {
+            title_frames(cx, &inner, &method, &args)?;
+        } else {
+            call_method(cx, &inner, &method, &args)?;
+        }
         i += 1;
     }
     if i < n {
@@ -556,6 +572,51 @@ pub fn cell_replay(cx: &mut Ctx, this: Value, _: &[Value]) -> R {
     Ok(Value::Undefined)
 }
 
+fn title_frames(cx: &mut Ctx, inner: &Value, method: &str, args: &[Value]) -> R {
+    const CLASS: &str = "components.MainMenuCell";
+    let timeline = cx.get_member(inner, "mcCell")?;
+    let mut frame = String::new();
+    let highlighted = match method {
+        "Highlight" => true,
+        "Unhighlight" => false,
+        "Update" => {
+            let data = arg(args, 0);
+            let title = cx.get_member(&data, "strItem")?;
+            for field in ["mcTitle.txt", "mcTitleGlow.txt"] {
+                let text = path_from(cx, &timeline, field);
+                if !text.is_nullish() {
+                    cx.set_member(&text, "text", title.clone())?;
+                }
+            }
+            let animated = cx.get_member(inner, "mIsAnimatedIn")?;
+            if !cx.to_bool(&animated) {
+                cx.set_member(inner, "mIsAnimatedIn", Value::Bool(true))?;
+                let off = constant(cx, CLASS, "FRAME_OFF");
+                frame.push_str(&cx.to_string(&off)?);
+            }
+            let h = cx.get_member(inner, "mIsHighlighted")?;
+            cx.to_bool(&h)
+        }
+        _ => return Ok(Value::Undefined),
+    };
+    if method != "Update" {
+        cx.set_member(inner, "mIsHighlighted", Value::Bool(highlighted))?;
+    }
+    let set = constant(cx, CLASS, if highlighted { "FRAME_HIGHLIGHT" } else { "FRAME_UNHIGHLIGHT" });
+    frame.push_str(&cx.to_string(&set)?);
+    call_method(cx, &timeline, "gotoAndPlay", &[Value::str(&frame)])?;
+    if method == "Update" {
+        let data = arg(args, 0);
+        let focus = cx.get_member(&data, "bFocusable")?;
+        let focus = cx.to_bool(&focus);
+        call_method(cx, inner, "CanFocus", &[Value::Bool(focus)])?;
+        let on = cx.get_member(&data, "bEnabled")?;
+        let on = cx.to_bool(&on);
+        call_method(cx, inner, if on { "Enable" } else { "Disable" }, &[])?;
+    }
+    Ok(Value::Undefined)
+}
+
 fn cell_def(cx: &mut Ctx, this: &Value) -> Option<crate::author::CellDef> {
     class_of::<CellClass>(cx, this).map(|c| c.def.clone())
 }
@@ -566,16 +627,22 @@ fn set_enabled(cx: &mut Ctx, this: &Value, on: bool) -> R {
     Ok(Value::Undefined)
 }
 
+fn forward(cx: &mut Ctx, this: &Value, child: &str, method: &str, args: &[Value]) -> R {
+    if method == "IsEnabled" && !cx.get_member(this, PENDING)?.is_undefined() {
+        return Ok(Value::Undefined);
+    }
+    child_call(cx, this, child, method, args)
+}
+
 fn cell_method(cx: &mut Ctx, this: Value, method: &str, args: &[Value]) -> R {
     use crate::author::CellDef;
     match cell_def(cx, &this) {
         None => Ok(Value::Undefined),
-        Some(CellDef::Forward(child)) => {
-            if method == "IsEnabled" && !cx.get_member(&this, PENDING)?.is_undefined() {
-                return Ok(Value::Undefined);
-            }
-            child_call(cx, &this, &child, method, args)
-        }
+        Some(CellDef::Forward(child)) => forward(cx, &this, &child, method, args),
+        Some(CellDef::ForwardTitle(child)) => match method {
+            "Update" | "Highlight" | "Unhighlight" => title_call(cx, &this, &child, method, args),
+            _ => forward(cx, &this, &child, method, args),
+        },
         Some(CellDef::Own { texts, images, shrink, highlight, width, height }) => match method {
             "Initialize" => {
                 for text in &shrink {

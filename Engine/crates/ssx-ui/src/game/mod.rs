@@ -150,6 +150,10 @@ impl GameUi {
         })
     }
 
+    pub fn set_launch_data(&mut self, boot_movie: ssx_assets::port_options::BootMovie) {
+        fe::boot::set_launch_data(&mut self.values, boot_movie.skip_intro());
+    }
+
     pub fn game_input(&mut self, start: bool) {
         self.fe_call(|fe, env| fe::pause::game_input(fe, env, start));
     }

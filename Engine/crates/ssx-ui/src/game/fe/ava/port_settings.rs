@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde_json::{Map, Value as Json};
 use ssx_assets::display::{DisplaySettings, WindowMode};
-use ssx_assets::port_options::RangeMovies;
+use ssx_assets::port_options::{BootMovie, RangeMovies};
 
 use crate::game::loc::Localization;
 
@@ -41,6 +41,8 @@ const RANGE_MOVIES: [(RangeMovies, &str); 2] = [
     (RangeMovies::EveryTime, "TXT_AVA_OPT_RANGE_MOVIES_EVERY_TIME"),
     (RangeMovies::FirstTimeOnly, "TXT_AVA_OPT_RANGE_MOVIES_FIRST_TIME_ONLY"),
 ];
+const BOOT_MOVIES: [(BootMovie, &str); 2] =
+    [(BootMovie::EveryStart, "TXT_AVA_OPT_BOOT_MOVIE_EVERY_START"), (BootMovie::Skip, "TXT_AVA_OPT_BOOT_MOVIE_SKIP")];
 const MUSICS: [(Music, &str, &str); 4] = [
     (Music::Auto, "Auto", "TXT_AVA_OPT_MUSIC_AUTO"),
     (Music::DeadlyDescent, "DeadlyDescent", "TXT_AVA_OPT_MUSIC_DEADLY_DESCENT"),
@@ -65,6 +67,7 @@ pub struct PortSettings {
     pub sfx: bool,
     pub sfx_volume: f32,
     pub range_movies: RangeMovies,
+    pub boot_movie: BootMovie,
     #[cfg(feature = "net")]
     pub player_name: Option<String>,
     #[cfg(feature = "net")]
@@ -96,6 +99,7 @@ impl Default for PortSettings {
             sfx: true,
             sfx_volume: 1.0,
             range_movies: RangeMovies::EveryTime,
+            boot_movie: BootMovie::EveryStart,
             #[cfg(feature = "net")]
             player_name: None,
             #[cfg(feature = "net")]
@@ -137,6 +141,12 @@ impl PortSettings {
             match x.as_str().and_then(RangeMovies::from_name) {
                 Some(v) => s.range_movies = v,
                 None => bad(RangeMovies::MEMBER),
+            }
+        }
+        if let Some(x) = m.get(BootMovie::MEMBER) {
+            match x.as_str().and_then(BootMovie::from_name) {
+                Some(v) => s.boot_movie = v,
+                None => bad(BootMovie::MEMBER),
             }
         }
         for (k, field) in [
@@ -186,6 +196,7 @@ impl PortSettings {
         m.insert("shading".into(), Json::String(shading.into()));
         m.insert("music".into(), Json::String(music.into()));
         m.insert(RangeMovies::MEMBER.into(), Json::String(self.range_movies.name().into()));
+        m.insert(BootMovie::MEMBER.into(), Json::String(self.boot_movie.name().into()));
         for (k, b) in [
             ("vsync", self.vsync),
             ("objects", self.objects),
@@ -278,6 +289,7 @@ pub enum Item {
     Sfx,
     SfxVolume,
     RangeMovies,
+    BootMovie,
     #[cfg(feature = "net")]
     DownloadLimit,
     #[cfg(feature = "net")]
@@ -310,7 +322,7 @@ impl Page {
             ],
             Page::Effects => &[Item::Particles, Item::SnowTracks, Item::LocalLights, Item::Post, Item::Sky],
             Page::Sound => &[Item::Music, Item::MusicVolume, Item::Sfx, Item::SfxVolume],
-            Page::Movies => &[Item::RangeMovies],
+            Page::Movies => &[Item::RangeMovies, Item::BootMovie],
             #[cfg(feature = "net")]
             Page::Multiplayer => &[Item::DownloadLimit, Item::ResourceCache, Item::ServerScripts],
         }
@@ -322,7 +334,7 @@ const NET_ITEMS: [Item; 3] = [Item::DownloadLimit, Item::ResourceCache, Item::Se
 #[cfg(not(feature = "net"))]
 const NET_ITEMS: [Item; 0] = [];
 
-const ALL: [Item; 17] = [
+const ALL: [Item; 18] = [
     Item::WindowMode,
     Item::RenderResolution,
     Item::Subdivide,
@@ -340,6 +352,7 @@ const ALL: [Item; 17] = [
     Item::Sfx,
     Item::SfxVolume,
     Item::RangeMovies,
+    Item::BootMovie,
 ];
 
 const RENDER_HEIGHTS: [Option<u32>; 7] = [None, Some(2160), Some(1440), Some(1080), Some(900), Some(720), Some(540)];
@@ -367,6 +380,7 @@ impl Item {
             Item::Sfx => "ava_opt_sfx",
             Item::SfxVolume => "ava_opt_sfx_volume",
             Item::RangeMovies => "ava_opt_range_movies",
+            Item::BootMovie => "ava_opt_boot_movie",
             #[cfg(feature = "net")]
             Item::DownloadLimit => "ava_opt_download_limit",
             #[cfg(feature = "net")]
@@ -395,6 +409,7 @@ impl Item {
             Item::Sfx => "TXT_AVA_OPT_SFX",
             Item::SfxVolume => "TXT_AVA_OPT_SFX_VOLUME",
             Item::RangeMovies => "TXT_AVA_OPT_RANGE_MOVIES",
+            Item::BootMovie => "TXT_AVA_OPT_BOOT_MOVIE",
             #[cfg(feature = "net")]
             Item::DownloadLimit => "TXT_AVA_OPT_DOWNLOAD_LIMIT",
             #[cfg(feature = "net")]
@@ -443,6 +458,7 @@ impl Item {
             Item::MusicVolume => s.music_volume = defaults.music_volume,
             Item::SfxVolume => s.sfx_volume = defaults.sfx_volume,
             Item::RangeMovies => s.range_movies = defaults.range_movies,
+            Item::BootMovie => s.boot_movie = defaults.boot_movie,
             #[cfg(feature = "net")]
             Item::DownloadLimit => s.resources.download_limit_mib = defaults.resources.download_limit_mib,
             #[cfg(feature = "net")]
@@ -485,6 +501,7 @@ impl Item {
             Item::MusicVolume => volume_step(s.music_volume).to_string(),
             Item::SfxVolume => volume_step(s.sfx_volume).to_string(),
             Item::RangeMovies => loc.text(RANGE_MOVIES.iter().find(|x| x.0 == s.range_movies).map_or("", |x| x.1)),
+            Item::BootMovie => loc.text(BOOT_MOVIES.iter().find(|x| x.0 == s.boot_movie).map_or("", |x| x.1)),
             #[cfg(feature = "net")]
             Item::DownloadLimit => super::resource_settings::size_label(s.resources.download_limit_mib, loc),
             #[cfg(feature = "net")]
@@ -537,6 +554,10 @@ impl Item {
                 s.range_movies = wrap(&RangeMovies::ALL, s.range_movies, next);
                 true
             }
+            Item::BootMovie => {
+                s.boot_movie = wrap(&BootMovie::ALL, s.boot_movie, next);
+                true
+            }
             #[cfg(feature = "net")]
             Item::DownloadLimit => super::resource_settings::step(
                 &mut s.resources.download_limit_mib,
@@ -582,11 +603,11 @@ mod tests {
         let (s, problems) = PortSettings::from_json(&serde_json::json!({
             "iso": "/x.iso", "subdivide": 1, "shading": "Height", "vsync": false, "music": "Off",
             "music_volume": 0.37, "sfx": "yes", "sfx_volume": 2.5, "particles": false, "unknown": [1],
-            "range_movies": "FirstTimeOnly"
+            "range_movies": "FirstTimeOnly", "boot_movie": "Skip"
         }));
         assert_eq!(
-            (s.subdivide, s.shading, s.vsync, s.music, s.particles, s.range_movies),
-            (1, Shading::Height, false, Music::Off, false, RangeMovies::FirstTimeOnly)
+            (s.subdivide, s.shading, s.vsync, s.music, s.particles, s.range_movies, s.boot_movie),
+            (1, Shading::Height, false, Music::Off, false, RangeMovies::FirstTimeOnly, BootMovie::Skip)
         );
         assert!(s.sfx && problems.len() == 1 && problems[0].contains("`sfx`"));
         assert_eq!((volume_step(s.music_volume), volume_step(s.sfx_volume)), (4, 10));
@@ -600,6 +621,8 @@ mod tests {
             serde_json::json!({"music_volume": "1"}),
             serde_json::json!({"range_movies": "first-time-only"}),
             serde_json::json!({"range_movies": true}),
+            serde_json::json!({"boot_movie": "skip"}),
+            serde_json::json!({"boot_movie": 1}),
         ] {
             let (s, p) = PortSettings::from_json(&bad);
             assert!(s == PortSettings::default() && p.len() == 1, "{bad}");
@@ -629,6 +652,11 @@ mod tests {
         assert!(Item::RangeMovies.step(&mut s, false) && s.range_movies == RangeMovies::FirstTimeOnly);
         Item::RangeMovies.reset(&mut s, &PortSettings::default());
         assert_eq!(s.range_movies, RangeMovies::EveryTime);
+        assert!(Item::BootMovie.step(&mut s, true) && s.boot_movie == BootMovie::Skip);
+        assert!(Item::BootMovie.step(&mut s, false) && s.boot_movie == BootMovie::EveryStart);
+        assert!(Item::BootMovie.step(&mut s, false) && s.boot_movie == BootMovie::Skip);
+        Item::BootMovie.reset(&mut s, &PortSettings::default());
+        assert_eq!(s.boot_movie, BootMovie::EveryStart);
         #[cfg(feature = "net")]
         {
             assert_eq!(&NET_ITEMS[..], Page::Multiplayer.items());

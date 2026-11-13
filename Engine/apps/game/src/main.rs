@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use bevy::prelude::AppExit;
 use clap::Parser;
-use ssx_assets::port_options::RangeMovies;
+use ssx_assets::port_options::{BootMovie, RangeMovies};
 use ssx_bevy::{RenderArgs, game_mode, terrain_look};
 
 /// The game: the front end from the boot movie to a drop and back in one window, the profile loaded and saved. The
@@ -40,6 +40,11 @@ struct Cli {
     /// setting.
     #[arg(long, value_name = "WHEN", default_value_t = RangeMovies::EveryTime)]
     range_movies: RangeMovies,
+
+    /// Whether the game starts with its boot movie: `every-start` (the game's) or `skip` (the start the game makes
+    /// after a sign-out: no boot movie, the start screen with its intro). The launcher passes its setting.
+    #[arg(long, value_name = "WHEN", default_value_t = BootMovie::EveryStart)]
+    boot_movie: BootMovie,
 
     /// A test option: the window in pixels at scale factor 1 (e.g. `1280x720`), windowed; the launcher's display
     /// settings neither read nor kept.
@@ -206,6 +211,7 @@ fn game_args(cli: Cli) -> Result<game_mode::GameArgs> {
         save: cli.save,
         lang: cli.lang,
         range_movies: cli.range_movies,
+        boot_movie: cli.boot_movie,
         window,
         script: cli.script.unwrap_or_default(),
         movie_cap: cli.movie_cap,

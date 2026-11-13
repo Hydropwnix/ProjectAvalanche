@@ -60,6 +60,7 @@ pub struct GameArgs {
     pub save: Option<PathBuf>,
     pub lang: String,
     pub range_movies: ssx_assets::port_options::RangeMovies,
+    pub boot_movie: ssx_assets::port_options::BootMovie,
     pub window: WindowSpec,
     pub script: String,
     pub movie_cap: Option<f64>,
@@ -351,6 +352,11 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
     };
     crate::render::fx_states::init(&a.big_root);
     let (mut game, scene) = boot_ui(&a.big_root, lang, a.classic_front_end, a.window.expected_display())?;
+    // TODO(guess): a port choice — a PC start has no launch data (the Xbox's `XamLoaderGetLaunchData`, which
+    // 0x82366560 reads and the UI table's start stores as `BOOT_SkipIntro` at 0x823820D4); the option stands in for the
+    // one byte the game's restart after a sign-out hands itself (1, written at 0x82366F64: no boot movie, the start
+    // screen with its intro); settle: none (the console reads its launch data at every start).
+    game.set_launch_data(a.boot_movie);
     let mut fe = ssx_ui::game::fe::FrontEnd::with_files(
         mount(&a.big_root, a.classic_front_end)?.as_ref(),
         &a.big_root,
@@ -368,6 +374,9 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
     let stat_names = std::sync::Arc::new(ssx_assets::career::save::modelled_stats(&schema));
     let (save, profile, note) = SaveSlot::load(a.save.clone().unwrap_or_else(default_save_path), schema)?;
     let mut notes = vec![note];
+    if a.boot_movie != ssx_assets::port_options::BootMovie::default() {
+        notes.push(format!("options: boot movie {} (port option; the game plays it at every start)", a.boot_movie));
+    }
     if a.range_movies != ssx_assets::port_options::RangeMovies::default() {
         notes.push(format!("options: range movies {} (port option; the game plays them every time)", a.range_movies));
     }
