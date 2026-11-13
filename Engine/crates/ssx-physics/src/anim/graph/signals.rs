@@ -197,11 +197,9 @@ impl RiderGraph {
         self.put_bool("BLN_ice_axe_deployed", ia.deployed);
         self.put_bool("BLN_ice_axe_chopped", ia.chopped);
         self.put("FLT_IceAxe_BlendWeight", ia.blend_weight);
-        // The carving op's IceAxeEffectsActive pin: the axe biting the ice (chopped, on ice and leaning), which the
-        // rider's graph reads, under both of its names, to hold the axe in the ice rather than swing it.
-        self.put_bool("BLN_IceAxeEffectsActive", ia.frame.active);
+        // The carving controller's bite (chopped, the blend ≥ 0.9, |lean| ≥ 0.2), written every carving update through
+        // the asset's pin +0x1D0 (`CarvingController_Update` 0x82CD36D4…0x82CD36F8).
         self.put_bool("BLN_carving_ice_axe_effects_enabled", ia.frame.active);
-        self.put("FLT_IceAxeBlendWeight", ia.blend_weight);
         self.put("FLT_ice_axe_layer_weight", ia.layer_weight);
         self.put("FLT_ice_axe_chop_weight_left", ia.chop_weight[0]);
         self.put("FLT_ice_axe_chop_weight_right", ia.chop_weight[1]);
