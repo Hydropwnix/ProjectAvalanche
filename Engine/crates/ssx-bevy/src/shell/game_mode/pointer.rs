@@ -91,8 +91,7 @@ pub(super) fn pointer_system(
         p.state.shown = true;
     }
     let scale = p.window.single().map_or(1.0, |w| w.scale_factor());
-    let pad_only = ui.fe.as_ref().is_some_and(|fe| ssx_ui::game::fe::screens::pad_only(fe.screen));
-    let active = shell.started && !riding && !pad_only;
+    let active = shell.started && !riding;
     for (x, y) in std::mem::take(&mut shell.host.window_moves) {
         match p.script_point(Vec2::new(x, y)) {
             Some((sx, sy)) => {

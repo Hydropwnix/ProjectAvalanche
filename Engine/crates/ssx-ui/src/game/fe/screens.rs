@@ -130,14 +130,6 @@ pub fn screen_of(event: &str) -> Option<u32> {
     SCREENS.iter().position(|s| s.0 == event && s.0.len() > 1).map(|i| i as u32)
 }
 
-/// The globe (range, peak and drop in each mode) and the equipment screens, which take a controller only: no mouse,
-/// no keyboard.
-// TODO(guess): a port choice — the pointer's hover-to-D-pad steps and the keyboard map don't fit these screens'
-// carousel and globe; settle: none (the console reads pads only).
-pub fn pad_only(screen: u32) -> bool {
-    matches!(screen, 0xC..=0x11 | 0x42..=0x44 | 0x30 | 0x31 | 0x33)
-}
-
 pub fn writes_breadcrumb(screen: u32) -> bool {
     let peak_or_drop = matches!(screen, 0xD | 0x43 | 0x10 | 0xE | 0x44 | 0x11);
     SCREENS.get(screen as usize).is_some_and(|s| s.1 == 2) && !peak_or_drop

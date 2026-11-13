@@ -24,6 +24,7 @@ pub(super) struct Cell {
     pub item: i32,
     pub clip: InstanceId,
     pub slot: RectF,
+    pub preview: bool,
 }
 
 pub(super) struct Reach {
@@ -153,6 +154,7 @@ fn menu_cells(cx: &mut Ctx, clip: InstanceId) -> Option<List> {
     let width = number(cx, &obj, "mCellWidth").filter(|w| *w > 0.0);
     let (custom, _) = cx.get_method(&obj, "GetCellHeight").ok().unwrap_or_default();
     let fixed = number(cx, &obj, "mCellHeight").filter(|h| *h > 0.0);
+    let band = selectable_band(cx, &obj, visible, selected_index);
     let mut cells = Vec::new();
     for i in 0..visible {
         let item = wrap(first.saturating_add(i));
@@ -178,9 +180,25 @@ fn menu_cells(cx: &mut Ctx, clip: InstanceId) -> Option<List> {
             }
             _ => cx.player.local_bounds(cx.lib, c).transform(&m),
         };
-        cells.push(Cell { item, clip: c, slot });
+        cells.push(Cell { item, clip: c, slot, preview: band.is_some_and(|(a, b)| i < a || i > b) });
     }
     Some(List { clip, selected, cells, selected_cell })
+}
+
+fn selectable_band(cx: &mut Ctx, obj: &Value, visible: i32, selected_index: i32) -> Option<(i32, i32)> {
+    let cells = |v: f64| v.clamp(0.0, f64::from(MAX_CELLS)) as i32;
+    if let (Some(left), Some(right)) = (number(cx, obj, "mUnselectableLeft"), number(cx, obj, "mUnselectableRight")) {
+        if flag(cx, obj, "mStaticIndex") {
+            return Some((selected_index, selected_index));
+        }
+        return Some((cells(left), visible - cells(right) - 1));
+    }
+    if number(cx, obj, "mNumUnselectableGridsTotal").is_some_and(|t| t > 0.0) {
+        let top = number(cx, obj, "mNumUnselectableGridsTop")?;
+        let bottom = number(cx, obj, "mNumUnselectableGridsBottom")?;
+        return Some((cells(top), visible - cells(bottom) - 1));
+    }
+    None
 }
 
 pub(super) fn read_popup(cx: &mut Ctx, clip: InstanceId) -> Option<List> {
@@ -198,7 +216,7 @@ pub(super) fn read_popup(cx: &mut Ctx, clip: InstanceId) -> Option<List> {
         let Some(c) = cx.display_of(&b) else { continue };
         let Some(m) = cx.player.get(c).map(|i| i.matrix) else { continue };
         let slot = crate::display::hit::drawn_bounds(cx.player, cx.lib, c).transform(&m);
-        cells.push(Cell { item: i, clip: c, slot });
+        cells.push(Cell { item: i, clip: c, slot, preview: false });
     }
     stack(cx, &mut cells);
     Some(List { clip, selected, cells, selected_cell: None })
@@ -215,7 +233,7 @@ pub(super) fn read_rows(cx: &mut Ctx, view: InstanceId) -> Option<List> {
         let Some(c) = cx.display_of(&row) else { continue };
         let Some(m) = cx.player.get(c).map(|i| i.matrix) else { continue };
         let slot = crate::display::hit::drawn_bounds(cx.player, cx.lib, c).transform(&m);
-        cells.push(Cell { item: i, clip: c, slot });
+        cells.push(Cell { item: i, clip: c, slot, preview: false });
     }
     stack(cx, &mut cells);
     Some(List { clip: view, selected, cells, selected_cell: None })
@@ -241,19 +259,22 @@ pub(super) fn read_panels(cx: &mut Ctx, view: InstanceId) -> Option<List> {
             let Some(id) = cx.display_of(&panel) else { continue };
             let Some(m) = cx.player.get(id).map(|i| i.matrix) else { continue };
             let slot = crate::display::hit::drawn_bounds(cx.player, cx.lib, id).transform(&m);
-            cells.push(Cell { item: c * rows_max + r, clip: id, slot });
+            cells.push(Cell { item: c * rows_max + r, clip: id, slot, preview: false });
         }
     }
     let (col, row) = (number(cx, &cursor, "col")? as i32, number(cx, &cursor, "row")? as i32);
     Some(List { clip: view, selected: col.saturating_mul(rows_max).saturating_add(row), cells, selected_cell: None })
 }
 
-pub(super) fn read_equipment(cx: &mut Ctx, view: InstanceId) -> Option<List> {
+pub(super) fn read_equipment(cx: &mut Ctx, view: InstanceId) -> Option<(List, Vec<InstanceId>)> {
     let obj = Value::Object(cx.object_for(view));
     let selected_start = cx.get_member(&obj, "mAdvanceSelected").ok().filter(|v| !v.is_nullish())?;
     let root = cx.get_member(&obj, "mcEquipmentRoot").ok()?;
     let slots = cx.get_member(&root, "mcSlots").ok()?;
     let menu = cx.get_member(&slots, "mcCategoryMenu").ok().and_then(|m| cx.display_of(&m))?;
+    if let Some(grids) = read_gear_grids(cx, &obj, view, menu) {
+        return Some(grids);
+    }
     let start = cx.get_member(&slots, "mcAdvance").ok().and_then(|a| cx.display_of(&a))?;
     let menu_obj = Value::Object(cx.object_for(menu));
     if !flag(cx, &menu_obj, "mIsActive") {
@@ -262,12 +283,48 @@ pub(super) fn read_equipment(cx: &mut Ctx, view: InstanceId) -> Option<List> {
     let mut list = menu_cells(cx, menu)?;
     let m = cx.player.get(start).map(|i| i.matrix)?;
     let slot = crate::display::hit::drawn_bounds(cx.player, cx.lib, start).transform(&m);
-    list.cells.insert(0, Cell { item: -1, clip: start, slot });
+    list.cells.insert(0, Cell { item: -1, clip: start, slot, preview: false });
     if cx.to_bool(&selected_start) {
         list.selected = -1;
     }
     list.clip = view;
-    Some(list)
+    Some((list, vec![menu]))
+}
+
+fn read_gear_grids(
+    cx: &mut Ctx,
+    obj: &Value,
+    view: InstanceId,
+    category: InstanceId,
+) -> Option<(List, Vec<InstanceId>)> {
+    let class = global_path(cx, "Equipment");
+    let gear_state = number(cx, &class, "SCREEN_STATE_GEAR_SELECT")?;
+    let fsm = cx.get_member(obj, "mScreenFSM").ok()?;
+    if number(cx, &fsm, "mCurrentStateId")? != gear_state {
+        return None;
+    }
+    let root = cx.get_member(obj, "mcEquipmentRoot").ok()?;
+    let container = cx.get_member(&root, "mcSelectionPanelContainer").ok()?;
+    let panel = cx.get_member(&container, "mcSelectionPanel").ok()?;
+    let menus = cx.get_member(&panel, "mcGearMenus").ok()?;
+    let gear = cx.get_member(&menus, "mcGearMenu").ok().and_then(|m| cx.display_of(&m))?;
+    let store = cx.get_member(&menus, "mcStoreMenu").ok().and_then(|m| cx.display_of(&m))?;
+    let current = cx.get_member(obj, "mcCurrentMenu").ok().and_then(|m| cx.display_of(&m))?;
+    let gear_list = menu_cells(cx, gear)?;
+    let store_list = menu_cells(cx, store)?;
+    let gear_obj = Value::Object(cx.object_for(gear));
+    let gear_total = count(cx, &gear_obj, "mNumTotalItems", i32::MAX)?;
+    let shifted = |i: i32| if i < 0 { i } else { gear_total.saturating_add(i) };
+    let (selected, selected_cell) = if current == gear {
+        (gear_list.selected, gear_list.selected_cell)
+    } else if current == store {
+        (shifted(store_list.selected), store_list.selected_cell)
+    } else {
+        return None;
+    };
+    let mut cells = gear_list.cells;
+    cells.extend(store_list.cells.into_iter().map(|c| Cell { item: shifted(c.item), ..c }));
+    Some((List { clip: view, selected, cells, selected_cell }, vec![gear, store, category]))
 }
 
 fn row_cells(cx: &mut Ctx, panel: &Value, prefix: &str, n: i32) -> Vec<Cell> {
@@ -277,7 +334,7 @@ fn row_cells(cx: &mut Ctx, panel: &Value, prefix: &str, n: i32) -> Vec<Cell> {
         let Some(c) = cx.display_of(&row) else { continue };
         let Some(m) = cx.player.get(c).map(|i| i.matrix) else { continue };
         let slot = crate::display::hit::drawn_bounds(cx.player, cx.lib, c).transform(&m);
-        cells.push(Cell { item: i, clip: c, slot });
+        cells.push(Cell { item: i, clip: c, slot, preview: false });
     }
     stack(cx, &mut cells);
     cells
@@ -388,9 +445,10 @@ pub(super) fn reach(cx: &mut Ctx, subscribers: &[String], order: &[InstanceId]) 
     lists.extend(listeners.iter().filter_map(|&(view, _)| read_rows(cx, view)));
     lists.extend(listeners.iter().filter_map(|&(view, _)| read_panels(cx, view)));
     lists.extend(listeners.iter().filter_map(|&(view, _)| read_music(cx, view)));
-    let equipment: Vec<List> = listeners.iter().filter_map(|&(view, _)| read_equipment(cx, view)).collect();
-    lists.retain(|l| !equipment.iter().any(|e| e.cells.iter().any(|c| holds(cx, l.clip, c.clip))));
-    lists.extend(equipment);
+    let equipment: Vec<(List, Vec<InstanceId>)> =
+        listeners.iter().filter_map(|&(view, _)| read_equipment(cx, view)).collect();
+    lists.retain(|l| !equipment.iter().any(|(_, folded)| folded.contains(&l.clip)));
+    lists.extend(equipment.into_iter().map(|(l, _)| l));
     let owned: Vec<(usize, List)> =
         lists.into_iter().filter_map(|l| owner(cx, &rank, l.clip).map(|o| (o, l))).collect();
     let first = owned.iter().map(|(o, _)| *o).min();
