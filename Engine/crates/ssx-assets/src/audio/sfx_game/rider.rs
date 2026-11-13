@@ -33,6 +33,7 @@ pub struct RiderSounds {
     pub snapshots: crate::sfx_bus::SnapshotDirector,
     eog: bool,
     flare_latch: bool,
+    signature_phase: u8,
 }
 
 pub(super) fn call(sfx: &mut SfxEngine, name: &str, params: &[i32]) -> Option<CsisHandle> {
@@ -433,6 +434,26 @@ impl RiderSounds {
         };
         sfx.set_global("Flip_Speed", flip);
         sfx.set_global("Spin_Speed", spin);
+        self.signature_sound(sfx, r.signature_phase);
+    }
+
+    /// The signature (Super Uber) trick's sound: the anim tags on the trick's enter, loop and exit sequences
+    /// (1_SEQ_trick_air_sig_<rider>_enter / _loop / _exit) post trigger_Sig_Trick_Start, _Loop and _Stop, which the
+    /// Ant_Tags mix map routes to the rider's signature bank's Signature_Trick_Start, _Loop and _End classes. The port
+    /// doesn't run the rider graph's audio tags, so the triggers fire here as the trick moves through its parts.
+    // TODO(guess): one trigger at the start of each part; settle: the sequences' AudioEventTag times.
+    fn signature_sound(&mut self, sfx: &mut SfxEngine, phase: u8) {
+        if phase == self.signature_phase {
+            return;
+        }
+        match phase {
+            1 => sfx.fire_event("trigger_Sig_Trick_Start", &[]),
+            2 => sfx.fire_event("trigger_Sig_Trick_Loop", &[]),
+            3 => sfx.fire_event("trigger_Sig_Trick_Stop", &[]),
+            _ if self.signature_phase != 3 => sfx.fire_event("Stop_Signature_Trick", &[]),
+            _ => {}
+        }
+        self.signature_phase = phase;
     }
 
     fn remix_events(&mut self, r: &RideAudio, f: u32) {

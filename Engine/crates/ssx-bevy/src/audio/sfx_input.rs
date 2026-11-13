@@ -213,7 +213,14 @@ pub fn ride_audio(s: &RiderState, max_boost: f32, rewinding: bool, ev: FrameEven
     }
     t.dead_by_death_plane = s.death.dead_by_death_plane;
     let sv = &s.survival;
+    let signature_phase = match (s.tricks.level, s.tricks.phase) {
+        (ssx_physics::tricks::TrickLevel::Signature, ssx_physics::tricks::TrickPhase::Enter) => 1,
+        (ssx_physics::tricks::TrickLevel::Signature, ssx_physics::tricks::TrickPhase::Loop) => 2,
+        (ssx_physics::tricks::TrickLevel::Signature, ssx_physics::tricks::TrickPhase::Exit) => 3,
+        _ => 0,
+    };
     RideAudio {
+        signature_phase,
         grounded: s.close.is_very_close && s.contact.is_some(),
         wingsuit: s.wingsuit.signal,
         dead_by_death_plane: dead_latch,

@@ -87,6 +87,8 @@ impl SurfaceSummary {
 #[derive(Clone, Debug, Default)]
 pub struct RideAudio {
     pub paused: bool,
+    /// The signature (Super Uber) trick's part: 0 none, 1 enter, 2 loop, 3 exit.
+    pub signature_phase: u8,
     pub grounded: bool,
     pub wingsuit: bool,
     pub awesome: bool,
