@@ -1,3 +1,5 @@
+use ssx_assets::port_options::MenuFocus;
+
 use crate::avm1::Ctx;
 use crate::avm1::value::Value;
 use crate::game::fe::{FeEnv, FrontEnd, screens};
@@ -22,8 +24,6 @@ pub struct MainMenu {
     pub index: i32,
     pub locked: bool,
     pub active: bool,
-    // TODO(guess): a port choice — the item last picked (its advance action) is focused again when the menu comes
-    // back, where the disc focuses the first open mode; settle: none (a port addition).
     pub last: Option<&'static str>,
 }
 
@@ -113,7 +113,7 @@ pub fn build_list(fe: &mut FrontEnd, env: &mut FeEnv) {
             back,
         },
     ];
-    let start = if campaign {
+    let first_open = if campaign {
         0
     } else if explore {
         1
@@ -122,9 +122,17 @@ pub fn build_list(fe: &mut FrontEnd, env: &mut FeEnv) {
     } else {
         0
     };
-    let last =
-        fe.menu.last.and_then(|a| fe.menu.items.iter().position(|it| it.advance == a && it.enabled && it.focusable));
-    fe.menu.index = last.map_or(start, |i| i as i32);
+    fe.menu.index = match fe.menu_focus {
+        MenuFocus::FirstItem => first_open,
+        // TODO(guess): a port choice — the option "Menus: the last item picked" focuses the item last picked while it is enabled and focusable (else the first open mode); settle: none (the game's build 0x825DC168 always focuses the first open mode).
+        MenuFocus::LastItem => last_picked(&fe.menu).unwrap_or(first_open),
+    };
+}
+
+fn last_picked(menu: &MainMenu) -> Option<i32> {
+    let last = menu.last?;
+    let at = menu.items.iter().position(|it| it.advance == last && it.enabled && it.focusable)?;
+    i32::try_from(at).ok()
 }
 
 pub fn update(fe: &mut FrontEnd, env: &mut FeEnv) {
@@ -248,4 +256,28 @@ pub fn no_sponsored_events(cx: &mut Ctx) -> Value {
     let _ = cx.set_member(&o, "arrEventsList", list);
     let _ = cx.set_member(&o, "bIsMenuItemList", Value::Bool(false));
     o
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(advance: &'static str, open: bool) -> MenuItem {
+        MenuItem { enabled: open, focusable: open, advance, ..MenuItem::default() }
+    }
+
+    #[test]
+    fn the_last_pick_is_found_only_while_it_can_be_picked() {
+        let mut m = MainMenu {
+            items: vec![item("A_MenuCampaign", true), item("A_MenuExplore", true), item("A_MenuRiderNet", true)],
+            ..MainMenu::default()
+        };
+        assert_eq!(last_picked(&m), None, "nothing picked yet");
+        m.last = Some("A_MenuExplore");
+        assert_eq!(last_picked(&m), Some(1));
+        m.items[1] = item("A_MenuExplore", false);
+        assert_eq!(last_picked(&m), None, "a locked item is not focused");
+        m.last = Some("A_MenuQuickSelect");
+        assert_eq!(last_picked(&m), None, "an item the list does not have");
+    }
 }

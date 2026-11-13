@@ -1,3 +1,5 @@
+use ssx_assets::port_options::MenuFocus;
+
 use crate::avm1::Ctx;
 use crate::avm1::value::Value;
 use crate::game::fe::{FeEnv, FrontEnd, screens};
@@ -124,12 +126,12 @@ pub fn pause_menu(fe: &mut FrontEnd, env: &mut FeEnv) {
         return;
     }
     fe.game_pause.set(reason::START, true);
+    fe.pause.last = None;
     fe.note("pause: 0xC3F77F89 {1} (pause reason 5), 0xC3CF3A7C {1} → view event Pause → hud provider");
     fe.go_to_screen(env, screens::id::PAUSE);
 }
 
 fn unpause(fe: &mut FrontEnd, env: &mut FeEnv) {
-    fe.pause.last = None;
     if fe.pause.active {
         fe.go_to_screen(env, screens::id::HUD);
     }
@@ -191,7 +193,6 @@ pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str) {
     match action {
         "Unpause" | "A_GameUnpause" => unpause(fe, env),
         "A_GameResume" => {
-            fe.pause.last = None;
             fe.pause.leaving = false;
             fe.pause.restart = false;
             fe.pause.resume_requested = true;
@@ -253,7 +254,6 @@ fn save_and_leave(fe: &mut FrontEnd, env: &mut FeEnv) {
     crate::game::fe::flow::store_camera_type(fe);
     fe.requests.push(GameRequest::Save);
     fe.pause.leaving = true;
-    fe.pause.last = None;
     fe.game_pause.set(reason::LEAVING, true);
     fe.note("pause menu: FE manager +0x80(1) (0x34A67757 {1}: reason 0x10), SplashScreenDisplayMessage (0x576B3006)");
     env.values.set_bool(PAUSE_IS_IN_PAUSE_MENU, false);
@@ -272,43 +272,51 @@ pub fn do_restart(fe: &mut FrontEnd, env: &mut FeEnv) {
     fe.game_pause.reset();
 }
 
-fn items(fe: &FrontEnd, loc: &mut crate::game::loc::Localization) -> Vec<(String, bool, &'static str)> {
+fn items(fe: &FrontEnd) -> Vec<(&'static str, bool, &'static str)> {
     let drop = fe.current_drop;
     let full = drop != FIRST_TUTORIAL;
     let objective = fe.career.event(drop).is_some_and(|e| !e.hud_title.is_empty());
-    let mut items: Vec<(String, bool, &'static str)> = vec![(loc.text("TXT_PAUSE_MENU_HEADING"), true, "Resume")];
+    let mut items = vec![("TXT_PAUSE_MENU_HEADING", true, "Resume")];
     if full {
         let key = if fe.pause.restart_enabled { "TXT_PAUSE_MENU_RESTART" } else { "TXT_PAUSE_MENU_RESTART_DISABLED" };
-        items.push((loc.text(key), fe.pause.restart_enabled, "RestartStage"));
+        items.push((key, fe.pause.restart_enabled, "RestartStage"));
     }
-    items.push((loc.text("TXT_PAUSE_MENU_SETTINGS"), true, "A_GameSettings"));
+    items.push(("TXT_PAUSE_MENU_SETTINGS", true, "A_GameSettings"));
     if objective {
-        items.push((loc.text("TXT_CAM_OBJECTIVE_TITLE"), true, "ShowObjective"));
+        items.push(("TXT_CAM_OBJECTIVE_TITLE", true, "ShowObjective"));
     }
     if full {
-        items.push((loc.text("TXT_PAUSE_MENU_QUIT"), true, "QuitStage"));
+        items.push(("TXT_PAUSE_MENU_QUIT", true, "QuitStage"));
     }
     items
 }
 
+fn menu_index(fe: &FrontEnd) -> usize {
+    match fe.menu_focus {
+        MenuFocus::FirstItem => 0,
+        // TODO(guess): a port choice — the option "Menus: the last item picked" focuses the item last picked since the pause began (Settings, the objective, a restart or quit that was not confirmed; a network session's Players and Leave) while it is enabled; settle: none (the game's pause menu always opens on Resume (+0x84 = 0 from 0x825D3070)).
+        MenuFocus::LastItem => fe.pause.last.and_then(|last| last_picked(fe, last)).unwrap_or(0),
+    }
+}
+
+fn last_picked(fe: &FrontEnd, last: &str) -> Option<usize> {
+    #[cfg(feature = "net")]
+    if fe.network_session {
+        return crate::game::fe::ava::session::pause::ITEMS.iter().position(|(_, advance)| *advance == last);
+    }
+    items(fe).iter().position(|&(_, enabled, advance)| advance == last && enabled)
+}
+
 pub fn build(fe: &FrontEnd, cx: &mut Ctx, loc: &mut crate::game::loc::Localization, dp: &str) -> Option<Value> {
     match dp {
-        #[cfg(feature = "net")]
-        "dp_pause_menu_index" if fe.network_session => Some(Value::Number(0.0)),
-        "dp_pause_menu_index" => {
-            let items = items(fe, loc);
-            let at =
-                fe.pause.last.and_then(|a| items.iter().position(|(_, enabled, advance)| *advance == a && *enabled));
-            Some(Value::Number(at.unwrap_or(0) as f64))
-        }
+        "dp_pause_menu_index" => Some(Value::Number(menu_index(fe) as f64)),
         #[cfg(feature = "net")]
         "dp_pause_menu_data" if fe.network_session => Some(crate::game::fe::ava::session::pause::build(cx, loc)),
         "dp_pause_menu_data" => {
-            let items = items(fe, loc);
             let mut out = Vec::new();
-            for (text, enabled, advance) in items {
+            for (key, enabled, advance) in items(fe) {
                 let o = Value::Object(cx.new_object());
-                let _ = cx.set_member(&o, "strItem", Value::str(&text));
+                let _ = cx.set_member(&o, "strItem", Value::str(&loc.text(key)));
                 let _ = cx.set_member(&o, "bEnabled", Value::Bool(enabled));
                 let _ = cx.set_member(&o, "bFocusable", Value::Bool(false));
                 let _ = cx.set_member(&o, "eventAdvance", Value::str(advance));
