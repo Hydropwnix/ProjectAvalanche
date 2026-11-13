@@ -190,7 +190,7 @@ impl Renderer {
         if !inst.visible && !inh.mask {
             return;
         }
-        if !inh.mask && (hidden_side_dimmer(lib, player, inst) || hidden_dock_tab(player, inst)) {
+        if !inh.mask && hidden_side_dimmer(lib, player, inst) {
             return;
         }
         // TODO(guess): an instance with normal (or layer) blending pushes nothing, so the innermost other mode of its ancestors applies; settle: which render-tree nodes push.
@@ -201,7 +201,7 @@ impl Renderer {
         } else {
             inst.blend
         };
-        let matrix = wide_leaderboard(lib, player, inst).or_else(|| narrow_popup(player, inst)).unwrap_or(inst.matrix);
+        let matrix = wide_leaderboard(lib, player, inst).unwrap_or(inst.matrix);
         let here =
             Inherited { xf: inh.xf.mul(&matrix), cx: inh.cx.concat(&inst.cxform), blend, mask: inh.mask, slice: None };
         match &inst.kind {
@@ -711,48 +711,4 @@ mod tests {
             .collect();
         assert_eq!(kinds, ["begin", "draw", "end", "draw", "pop", "draw", "popend", "draw"]);
     }
-}
-
-// Port mod: the front-end dock's three empty tab boxes (left of the menu options) are not drawn.
-fn hidden_dock_tab(player: &Player, inst: &Instance) -> bool {
-    matches!(inst.name.as_str(), "mcTabTop" | "mcTabMiddle" | "mcTabBottom")
-        && inst.parent.and_then(|p| player.get(p)).is_some_and(|p| p.name == "mcDockFE")
-}
-
-// Port mod: the standard popup's band (`mcPanel`, as wide as the screen) and its title glow
-// (`mcTitleVapor`) are drawn narrower, so prompts such as quitting sit in a centred box.
-// Popups showing a loaded picture keep the full band.
-const POPUP_BOX: f32 = 0.36;
-
-fn narrow_popup(player: &Player, inst: &Instance) -> Option<Mat2d> {
-    let parent = player.get(inst.parent?)?;
-    let (popup, about) = match inst.name.as_str() {
-        "mcPanel" if parent.name == "mcPanelContainer" => (inst.parent.and_then(|p| player.get(p)?.parent)?, 0.0),
-        "mcTitleVapor" if parent.name == "mcPopup" => (inst.parent?, 640.0 * 20.0),
-        _ => return None,
-    };
-    let popup_inst = player.get(popup)?;
-    if popup_inst.name != "mcPopup" || popup_shows_picture(player, popup) {
-        return None;
-    }
-    let k = POPUP_BOX;
-    let m = inst.matrix;
-    Some(Mat2d { a: m.a * k, c: m.c * k, tx: about + (m.tx - about) * k, ..m })
-}
-
-fn popup_shows_picture(player: &Player, popup: InstanceId) -> bool {
-    let Some(image) = player.child_by_name(popup, "mcPopupImage", true) else { return false };
-    let mut stack = vec![image];
-    while let Some(id) = stack.pop() {
-        let Some(i) = player.get(id) else { continue };
-        if !i.visible {
-            continue;
-        }
-        match &i.kind {
-            InstanceKind::Bitmap => return true,
-            InstanceKind::Sprite(s) => stack.extend(s.children.values().copied()),
-            _ => {}
-        }
-    }
-    false
 }

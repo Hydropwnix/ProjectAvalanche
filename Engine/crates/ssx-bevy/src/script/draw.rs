@@ -203,11 +203,6 @@ pub(super) fn overlay(
     let list = std::mem::take(&mut p.list);
     draws.extend(list.iter().filter_map(|(_, d)| overlay_draw(p, d)));
     p.list = list;
-    // The `skip-intros` mod's startup black, over everything (the menus, the globe and the mods' own drawing).
-    let black = ssx_ui::game::fe::boot::startup_black();
-    if black > 0.0 {
-        draws.push(OverlayDraw::Fill { color: [0.0, 0.0, 0.0, black.min(1.0)] });
-    }
     out.images = p.order.iter().filter_map(|id| p.images.get(id).cloned()).collect();
     out.draws = draws;
     if out.font.is_empty() {

@@ -107,12 +107,6 @@ fn save_icon(fe: &mut FrontEnd, env: &mut FeEnv, on: bool) {
 }
 
 pub fn lead_profile_load(fe: &mut FrontEnd, env: &mut FeEnv, device: i32) -> bool {
-    // Port mod (the `skip-intros` mod enabled): no "this title uses an autosave feature" notice;
-    // the sign-in goes straight on (a corrupt save still asks what to do).
-    if fe.boot.skip_intros && fe.saveload.load_error.is_none() {
-        fe.note("SaveLoad dialog 0xc: the autosave notice skipped");
-        return true;
-    }
     fe.saveload.signing_in = Some(device);
     let d = autosave_notice(env.loc);
     show(fe, env, d);
