@@ -1,6 +1,8 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use ssx_assets::port_options::RangeMovies;
+
 use crate::catalog;
 use crate::settings::{Mode, Music, Settings, Shading};
 
@@ -124,6 +126,9 @@ pub fn game(s: &Settings, big_root: &Path) -> Invocation {
             push(&[name]);
         }
     }
+    if s.range_movies != RangeMovies::EveryTime {
+        push(&[RangeMovies::FLAG, s.range_movies.arg()]);
+    }
     args.extend(s.display.args().into_iter().map(OsString::from));
     Invocation { program: game_exe(), args, env: env(s) }
 }
@@ -199,5 +204,17 @@ mod tests {
         assert_eq!(file_name(&tool), if cfg!(windows) { "asset-viewer.exe" } else { "asset-viewer" });
         assert_eq!(tool.env, game.env);
         assert!(!tool.args.iter().any(|a| a == "--game"));
+    }
+
+    #[test]
+    fn the_range_movies_choice_is_passed_when_not_the_games() {
+        let big = Path::new("data/big");
+        let args = |s: &Settings| -> Vec<String> {
+            game(s, big).args.iter().map(|a| a.to_string_lossy().into_owned()).collect()
+        };
+        let once = Settings { range_movies: RangeMovies::FirstTimeOnly, ..Settings::default() };
+        assert!(args(&once).windows(2).any(|w| w[0] == "--range-movies" && w[1] == "first-time-only"));
+        assert!(!args(&Settings::default()).iter().any(|a| a == "--range-movies"));
+        assert!(!viewer(&once, big).args.iter().any(|a| a == "--range-movies"));
     }
 }

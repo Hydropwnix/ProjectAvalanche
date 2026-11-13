@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use bevy::prelude::AppExit;
 use clap::Parser;
+use ssx_assets::port_options::RangeMovies;
 use ssx_bevy::{RenderArgs, game_mode, terrain_look};
 
 /// The game: the front end from the boot movie to a drop and back in one window, the profile loaded and saved. The
@@ -33,6 +34,12 @@ struct Cli {
     /// The text language (`eng_us`, `fre_fr`, `ger_de`, `ita_it`, `spa_es`, `jpn_jp`).
     #[arg(long, value_name = "LANG", default_value = "eng_us")]
     lang: String,
+
+    /// When the World Tour's range screen plays a range's movie: `every-time` (the game's) or `first-time-only` (at
+    /// the range's first selection in the profile; the record is kept beside the save). The launcher passes its
+    /// setting.
+    #[arg(long, value_name = "WHEN", default_value_t = RangeMovies::EveryTime)]
+    range_movies: RangeMovies,
 
     /// A test option: the window in pixels at scale factor 1 (e.g. `1280x720`), windowed; the launcher's display
     /// settings neither read nor kept.
@@ -198,6 +205,7 @@ fn game_args(cli: Cli) -> Result<game_mode::GameArgs> {
         big_root,
         save: cli.save,
         lang: cli.lang,
+        range_movies: cli.range_movies,
         window,
         script: cli.script.unwrap_or_default(),
         movie_cap: cli.movie_cap,

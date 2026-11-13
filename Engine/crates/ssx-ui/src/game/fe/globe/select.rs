@@ -27,7 +27,7 @@ pub(super) fn select_drop_screen(fe: &mut FrontEnd, env: &mut FeEnv) {
             let queue_playing = fe.progression.running() && !fe.movie_queued();
             if screen == 0x42 && wt && !fe.profile.new_game_active() && !queue_playing {
                 let movie = fe.career.range(range).map(|r| r.movie.clone()).unwrap_or_default();
-                if !movie.is_empty() {
+                if !movie.is_empty() && range_movie_plays(fe, &movie) {
                     fe.note(format!("FLOW_PlayMovie {movie} (range)"));
                     fe.queue_movie(MovieRequest::new(movie, "range"));
                 }
@@ -45,6 +45,24 @@ pub(super) fn select_drop_screen(fe: &mut FrontEnd, env: &mut FeEnv) {
         _ => {}
     }
     fe.note("FEGlobeNodeSelection (0x32B67D88)");
+}
+
+fn range_movie_plays(fe: &mut FrontEnd, movie: &str) -> bool {
+    use ssx_assets::career::profile::range_movies::RangeMovieOutcome;
+    let outcome = fe.profile.range_movie(fe.range_movies, movie);
+    match &outcome {
+        RangeMovieOutcome::EveryTime => {}
+        RangeMovieOutcome::FirstTime => {
+            fe.note(format!("range movie {movie}: first selection in this profile, recorded (first time only)"))
+        }
+        RangeMovieOutcome::PlayedBefore => {
+            fe.note(format!("range movie {movie}: played before in this profile, not posted (first time only)"))
+        }
+        RangeMovieOutcome::NotRecorded(why) => {
+            fe.note(format!("range movie {movie}: WARNING the record: {why}; posted (first time only)"))
+        }
+    }
+    outcome.plays()
 }
 
 pub(super) fn select_drop(fe: &mut FrontEnd, env: &mut FeEnv) {

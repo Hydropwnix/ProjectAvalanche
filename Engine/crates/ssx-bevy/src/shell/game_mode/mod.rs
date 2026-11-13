@@ -59,6 +59,7 @@ pub struct GameArgs {
     pub big_root: PathBuf,
     pub save: Option<PathBuf>,
     pub lang: String,
+    pub range_movies: ssx_assets::port_options::RangeMovies,
     pub window: WindowSpec,
     pub script: String,
     pub movie_cap: Option<f64>,
@@ -357,6 +358,7 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
     )?;
     fe.ava.options.file = Some(ssx_assets::setup::app_dir().join("settings.json"));
     ssx_ui::game::fe::ava::options::reload(&mut fe);
+    fe.range_movies = a.range_movies;
     #[cfg(feature = "net")]
     {
         fe.ava.browser.app_dir = Some(ssx_assets::setup::app_dir());
@@ -365,6 +367,10 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
     let schema = SaveSchema::load(&a.big_root, &fe.career)?;
     let stat_names = std::sync::Arc::new(ssx_assets::career::save::modelled_stats(&schema));
     let (save, profile, note) = SaveSlot::load(a.save.clone().unwrap_or_else(default_save_path), schema)?;
+    let mut notes = vec![note];
+    if a.range_movies != ssx_assets::port_options::RangeMovies::default() {
+        notes.push(format!("options: range movies {} (port option; the game plays them every time)", a.range_movies));
+    }
     fe.saveload.load_error = save.damaged.then_some(ssx_ui::game::fe::saveload::LoadError::Corrupt);
     game.fe = Some(fe);
     if let Some(name) = &a.play_movie {
@@ -522,7 +528,7 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
             hold: 0,
             pending_shots: Vec::new(),
             log_seen: (0, 0),
-            notes: vec![note],
+            notes,
             done_at: None,
             test_launch: a.launch.clone(),
             launch_start_at: 0.0,

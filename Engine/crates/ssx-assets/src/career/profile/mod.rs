@@ -1,5 +1,6 @@
 mod campaign;
 pub mod mod_state;
+pub mod range_movies;
 mod results;
 
 use std::collections::{BTreeMap, BTreeSet};
