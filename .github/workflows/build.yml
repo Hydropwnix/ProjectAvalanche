@@ -97,7 +97,9 @@ jobs:
         github.event.pull_request.draft == false &&
         needs.changes.outputs.code == 'true'))
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # Warm cache: ~24 min (2026-11-12: clippy 1.6 min, tests 19 min). A cold cache (a new toolchain: the cache key holds
+    # rustc's version) took 6.7 min for clippy and was still building the tests when 30 min ran out (2026-11-13).
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
       - name: System libraries for Bevy
@@ -106,9 +108,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev libudev-dev \
             libwayland-dev libxkbcommon-dev libgtk-3-dev nasm
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      - name: Rust toolchain
+        # The version Engine/rust-toolchain.toml names, with its components (the run steps' directory is Engine).
+        run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: Engine
@@ -152,7 +154,9 @@ jobs:
         run: |
           choco install nasm --no-progress -y
           "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust toolchain
+        # The version Engine/rust-toolchain.toml names, with its components (the run steps' directory is Engine).
+        run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: Engine
@@ -289,7 +293,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust toolchain
+        # The version Engine/rust-toolchain.toml names, with its components (the run steps' directory is Engine).
+        run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: Engine
@@ -418,7 +424,9 @@ jobs:
         run: |
           choco install nasm --no-progress -y
           "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust toolchain
+        # The version Engine/rust-toolchain.toml names, with its components (the run steps' directory is Engine).
+        run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: Engine
@@ -486,7 +494,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev libudev-dev \
             libwayland-dev libxkbcommon-dev libgtk-3-dev nasm
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust toolchain
+        # The version Engine/rust-toolchain.toml names, with its components (the run steps' directory is Engine).
+        run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: Engine
@@ -624,9 +634,12 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates curl gcc g++ libc6-dev git
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - uses: actions/checkout@v7
+      - name: Rust toolchain
+        # The version Engine/rust-toolchain.toml names, with its components (the run steps' directory is Engine).
+        run: rustup toolchain install
       - name: Build
         run: cargo build --release -p avalanche-server
       - name: No development master in the server
