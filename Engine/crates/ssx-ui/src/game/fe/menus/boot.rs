@@ -1,6 +1,7 @@
 use crate::avm1::Ctx;
 use crate::avm1::value::Value;
 use crate::game::fe::{FeEnv, FrontEnd, MovieRequest, screens};
+use crate::game::values::UiValues;
 
 pub const ATTRACT_SECONDS: f64 = 30.0;
 pub const BOOT_MOVIE: &str = "boot_movie_eng";
@@ -36,6 +37,10 @@ impl Default for BootFlow {
     fn default() -> Self {
         Self::new()
     }
+}
+
+pub fn set_launch_data(values: &mut UiValues, skip_intro: bool) {
+    values.set_bool(BOOT_SKIP_INTRO, skip_intro);
 }
 
 pub fn activate(fe: &mut FrontEnd, env: &mut FeEnv) {

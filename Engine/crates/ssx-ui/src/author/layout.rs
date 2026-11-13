@@ -61,6 +61,7 @@ pub struct SymbolDef {
 #[derive(Clone, Debug, PartialEq)]
 pub enum CellDef {
     Forward(String),
+    ForwardTitle(String),
     Own {
         texts: Vec<(String, String)>,
         images: Vec<(String, String)>,
@@ -237,6 +238,12 @@ impl Layout {
                         format!("symbol {:?}: its cell {inner:?} must place an imported component", s.name),
                     ));
                 }
+                Some(CellDef::ForwardTitle(inner))
+                    if import_of(inner).is_none_or(|i| i.symbol != "components.MainMenuCell") =>
+                {
+                    let (name, need) = (&s.name, "`components.MainMenuCell`");
+                    return Err(cx.err(s.pos, format!("symbol {name:?}: its title cell {inner:?} must place {need}")));
+                }
                 Some(CellDef::Own { texts, images, highlight, .. }) => {
                     for (text, _) in texts {
                         if !s.children.iter().any(|c| c.instance == *text && matches!(c.kind, ChildKind::Text(_))) {
@@ -267,7 +274,7 @@ impl Layout {
                         ));
                     }
                 }
-                Some(CellDef::Forward(_)) => {}
+                Some(CellDef::Forward(_) | CellDef::ForwardTitle(_)) => {}
             }
         }
         match self.symbol(&self.view_symbol) {
@@ -415,6 +422,17 @@ fn read_symbol(cx: &Cx, n: &Node) -> Result<SymbolDef, LayoutError> {
                         return Err(cx.err(c.pos, format!("cell: {name:?} places no symbol named {inner:?}")));
                     }
                     CellDef::Forward(inner)
+                }
+                super::json::Value::Object(members) if members.iter().any(|(k, _)| k.name == "forward") => {
+                    let mut co = cx.obj(c, "cell")?;
+                    let f = co.req(cx, "forward")?;
+                    let inner = cx.name(f, "cell forward", "", limits::NAME)?.to_string();
+                    if !children.iter().any(|ch| ch.instance == inner && matches!(ch.kind, ChildKind::Symbol(_))) {
+                        return Err(cx.err(f.pos, format!("cell: {name:?} places no symbol named {inner:?}")));
+                    }
+                    cx.choice(co.req(cx, "frames")?, "frames", &["title"])?;
+                    co.finish(cx)?;
+                    CellDef::ForwardTitle(inner)
                 }
                 _ => {
                     let mut co = cx.obj(c, "cell")?;

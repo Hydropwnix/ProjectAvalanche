@@ -414,6 +414,38 @@ fn the_hubs_members_read_and_are_checked() {
 }
 
 #[test]
+fn a_title_frames_cell_reads_and_is_checked() {
+    let hub = HUB
+        .replacen(
+            r#"{"name": "Cell", "url": "components/ListMenuCellSmall.swf", "symbol": "components.ListMenuCellSmall"}"#,
+            r#"{"name": "Cell", "url": "components/MainMenuCell.swf", "symbol": "components.MainMenuCell"},
+    {"name": "Small", "url": "components/ListMenuCellSmall.swf", "symbol": "components.ListMenuCellSmall"}"#,
+            1,
+        )
+        .replacen(r#""cell": "mcCell""#, r#""cell": {"forward": "mcCell", "frames": "title"}"#, 1);
+    let l = Layout::parse("h.json", &hub).unwrap();
+    let cell = l.symbols.iter().find(|s| s.name == "AvaHubTestCell").and_then(|s| s.cell.clone());
+    assert_eq!(cell, Some(CellDef::ForwardTitle("mcCell".into())));
+    let bad = |from: &str, to: &str, want: &str| {
+        assert!(hub.contains(from), "{from}");
+        match Layout::parse("h.json", &hub.replacen(from, to, 1)) {
+            Ok(_) => panic!("{to}: expected an error"),
+            Err(e) => assert!(e.message.contains(want), "{to}: {e}"),
+        }
+    };
+    let title = r#""frames": "title""#;
+    bad(title, r#""frames": "info""#, "is not one of title");
+    bad(title, r#""frames": "title", "text": "txtName""#, "unknown member `text`");
+    bad(r#"{"forward": "mcCell", "#, r#"{"forward": "mcNone", "#, "places no symbol named \"mcNone\"");
+    bad(
+        r#"{"instance": "mcCell", "symbol": "Cell"}"#,
+        r#"{"instance": "mcCell", "symbol": "Small"}"#,
+        "components.MainMenuCell",
+    );
+    bad(r#"{"forward": "mcCell", "frames": "title"}"#, r#"{"forward": "mcCell"}"#, "frames");
+}
+
+#[test]
 fn a_generated_movie_is_built_when_first_loaded() {
     let mut lib = library();
     let l = Layout::parse("t.json", GOOD).unwrap();

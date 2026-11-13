@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use ssx_assets::port_options::RangeMovies;
+use ssx_assets::port_options::{BootMovie, RangeMovies};
 
 use crate::catalog;
 use crate::settings::{Mode, Music, Settings, Shading};
@@ -129,6 +129,9 @@ pub fn game(s: &Settings, big_root: &Path) -> Invocation {
     if s.range_movies != RangeMovies::EveryTime {
         push(&[RangeMovies::FLAG, s.range_movies.arg()]);
     }
+    if s.boot_movie != BootMovie::EveryStart {
+        push(&[BootMovie::FLAG, s.boot_movie.arg()]);
+    }
     args.extend(s.display.args().into_iter().map(OsString::from));
     Invocation { program: game_exe(), args, env: env(s) }
 }
@@ -216,5 +219,17 @@ mod tests {
         assert!(args(&once).windows(2).any(|w| w[0] == "--range-movies" && w[1] == "first-time-only"));
         assert!(!args(&Settings::default()).iter().any(|a| a == "--range-movies"));
         assert!(!viewer(&once, big).args.iter().any(|a| a == "--range-movies"));
+    }
+
+    #[test]
+    fn the_boot_movie_choice_is_passed_when_not_the_games() {
+        let big = Path::new("data/big");
+        let args = |s: &Settings| -> Vec<String> {
+            game(s, big).args.iter().map(|a| a.to_string_lossy().into_owned()).collect()
+        };
+        let skip = Settings { boot_movie: BootMovie::Skip, ..Settings::default() };
+        assert!(args(&skip).windows(2).any(|w| w[0] == "--boot-movie" && w[1] == "skip"));
+        assert!(!args(&Settings::default()).iter().any(|a| a == "--boot-movie"));
+        assert!(!viewer(&skip, big).args.iter().any(|a| a == "--boot-movie"));
     }
 }
