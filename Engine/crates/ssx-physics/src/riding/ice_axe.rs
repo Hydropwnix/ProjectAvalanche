@@ -264,7 +264,7 @@ impl IceAxeState {
                 (l.chop, l.chopped_node, l.exiting) = (None, true, true);
             }
             (Some(t), _) => l.chop = Some(t + dt),
-            (None, true) if !trigger => l.chopped_node = false,
+            (None, true) if !trigger => l.chopped_node = false, // chopped → neutral (no tag)
             _ => {}
         }
         if let Some(w) = transition_weight {
@@ -366,6 +366,12 @@ mod tests {
         assert_eq!(weights[0], 1.0);
         assert_eq!(weights[12], 0.0, "clip tick 26");
         assert_eq!(weights[13], 1.0, "restored on leave");
+        // chopped → neutral: the transition {450af909} has no tag, the weight stays at 1.
+        assert!(s.layers[1].chopped_node);
+        s.start_chop = [false, false];
+        s.layers_update(false, 2.0);
+        assert!(!s.layers[1].chopped_node && s.chop_weight[1] == 1.0, "chopped → neutral");
+        s.start_chop = [false, true];
         assert!(s.read_inputs(&t, 1.0, 0.9, 0.5, 0.3, 0.25, 2.0).active, "chopped and leaning: the bite");
         assert!(!s.read_inputs(&t, 1.0, 0.1, 0.5, 0.3, 0.25, 2.0).active, "off ice");
         s.chop_update(&t, 0.1);
