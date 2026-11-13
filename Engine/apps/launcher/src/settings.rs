@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as Json};
+use ssx_assets::port_options::RangeMovies;
 use ssx_assets::settings_file::{self, UpdateError};
 
 const MERGE_LEVELS: u32 = 2;
@@ -62,6 +63,8 @@ pub struct Settings {
     pub game_post: bool,
     pub game_sky: bool,
     pub boost_meter: f32,
+    #[serde(deserialize_with = "range_movies_in", serialize_with = "range_movies_out")]
+    pub range_movies: RangeMovies,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub player_name: Option<String>,
     #[serde(rename = "masters", deserialize_with = "crate::masters::present", skip_serializing)]
@@ -85,6 +88,15 @@ fn display_leniently<'de, D: serde::Deserializer<'de>>(d: D) -> Result<ssx_asset
 
 fn display_out<S: serde::Serializer>(s: &ssx_assets::display::DisplaySettings, out: S) -> Result<S::Ok, S::Error> {
     s.to_json().serialize(out)
+}
+
+fn range_movies_in<'de, D: serde::Deserializer<'de>>(d: D) -> Result<RangeMovies, D::Error> {
+    let name = String::deserialize(d)?;
+    RangeMovies::from_name(&name).ok_or_else(|| serde::de::Error::custom("not a range movies choice"))
+}
+
+fn range_movies_out<S: serde::Serializer>(r: &RangeMovies, out: S) -> Result<S::Ok, S::Error> {
+    out.serialize_str(r.name())
 }
 
 fn host_is_default(h: &crate::host::HostSettings) -> bool {
@@ -122,6 +134,7 @@ impl Default for Settings {
             game_post: true,
             game_sky: true,
             boost_meter: 0.0,
+            range_movies: RangeMovies::EveryTime,
             player_name: None,
             old_masters: false,
             resources: None,
@@ -258,6 +271,21 @@ mod tests {
         assert!(back.contains(r#""player_name":"Elise""#), "{back}");
         let none = serde_json::to_string(&Settings::default()).unwrap();
         assert!(!none.contains("player_name"), "no member written when the game set none");
+    }
+
+    #[test]
+    fn the_range_movies_choice_is_kept_by_its_name() {
+        let s: Settings = serde_json::from_str(r#"{"range_movies": "FirstTimeOnly"}"#).unwrap();
+        assert_eq!(s.range_movies, RangeMovies::FirstTimeOnly);
+        assert!(serde_json::to_string(&s).unwrap().contains(r#""range_movies":"FirstTimeOnly""#));
+        assert_eq!(Settings::default().range_movies, RangeMovies::EveryTime, "the game's by default");
+        for bad in [r#""first-time-only""#, r#""Once""#, "true", "1", "null", r#"["FirstTimeOnly"]"#] {
+            let m: Map<String, Json> = serde_json::from_str(&format!(r#"{{"range_movies": {bad}, "vsync": false}}"#))
+                .unwrap_or_else(|e| panic!("{bad}: {e}"));
+            let s = Settings::from_object(&m);
+            assert_eq!((s.range_movies, s.vsync), (RangeMovies::EveryTime, false), "{bad}: the rest read");
+            assert!(s.notes.len() == 1 && s.notes[0].contains("range_movies"), "{bad}: {:?}", s.notes);
+        }
     }
 
     #[test]

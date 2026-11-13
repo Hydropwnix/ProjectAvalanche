@@ -1,4 +1,5 @@
 use eframe::egui::{self, RichText, Ui};
+use ssx_assets::port_options::RangeMovies;
 
 use crate::app::Launcher;
 use crate::settings::{Music, Shading};
@@ -20,6 +21,13 @@ fn music_label(m: Music) -> &'static str {
         Music::DeadlyDescent => "Deadly Descent",
         Music::Licensed => "Licensed tracks",
         Music::Off => "Off",
+    }
+}
+
+fn range_movies_label(r: RangeMovies) -> &'static str {
+    match r {
+        RangeMovies::EveryTime => "Every time (as the original game)",
+        RangeMovies::FirstTimeOnly => "First time only (once per profile)",
     }
 }
 
@@ -108,6 +116,32 @@ impl Launcher {
                 .on_hover_text("Sound effect loudness, 1.00 is full volume.");
             ui.end_row();
         });
+    }
+
+    pub fn movies_section(&mut self, ui: &mut Ui) {
+        let s = &mut self.settings;
+        widgets::heading(ui, "Range movies");
+        egui::Grid::new("range_movies").num_columns(2).spacing([16.0, 10.0]).show(ui, |ui| {
+            widgets::field(ui, "Play");
+            let combo = egui::ComboBox::from_id_salt("range_movies")
+                .selected_text(range_movies_label(s.range_movies))
+                .width(330.0);
+            widgets::combo(ui, combo, |ui| {
+                for v in RangeMovies::ALL {
+                    ui.selectable_value(&mut s.range_movies, v, range_movies_label(v));
+                }
+            })
+            .response
+            .on_hover_text("The video of a mountain range, when you choose the range in World Tour.");
+            ui.end_row();
+        });
+        ui.add_space(8.0);
+        widgets::note(
+            ui,
+            "The original game plays a range's video every time you choose the range in World Tour. First time only \
+             plays it the first time in a profile; a new profile plays them again. The game starts with this option, \
+             and its Options (Movie Settings) change it too.",
+        );
     }
 
     pub fn controls_section(&self, ui: &mut Ui) {

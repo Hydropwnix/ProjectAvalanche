@@ -30,26 +30,27 @@ pub enum Category {
     PlayerName,
 }
 
-const BASE_CATEGORIES: [(Category, &str); 6] = [
+const BASE_CATEGORIES: [(Category, &str); 7] = [
     (Category::Game(1), "TXT_GAMEPLAY_SETTINGS"),
     (Category::Game(2), "TXT_AUDIO_SETTINGS"),
     (Category::Game(3), "TXT_VIDEO_CALIBRATION"),
     (Category::Port(Page::Display), "TXT_AVA_OPTIONS_DISPLAY"),
     (Category::Port(Page::Effects), "TXT_AVA_OPTIONS_EFFECTS"),
     (Category::Port(Page::Sound), "TXT_AVA_OPTIONS_SOUND"),
+    (Category::Port(Page::Movies), "TXT_AVA_OPTIONS_MOVIES"),
 ];
 
 #[cfg(not(feature = "net"))]
 pub const CATEGORIES: &[(Category, &str)] = &BASE_CATEGORIES;
 #[cfg(feature = "net")]
 pub const CATEGORIES: &[(Category, &str)] = &{
-    let mut all = [(Category::PlayerName, "TXT_AVA_OPTIONS_PLAYER_NAME"); 8];
+    let mut all = [(Category::PlayerName, "TXT_AVA_OPTIONS_PLAYER_NAME"); BASE_CATEGORIES.len() + 2];
     let mut k = 0;
     while k < BASE_CATEGORIES.len() {
         all[k] = BASE_CATEGORIES[k];
         k += 1;
     }
-    all[7] = (Category::Port(Page::Multiplayer), "TXT_AVA_OPTIONS_MULTIPLAYER");
+    all[BASE_CATEGORIES.len() + 1] = (Category::Port(Page::Multiplayer), "TXT_AVA_OPTIONS_MULTIPLAYER");
     all
 };
 
@@ -233,6 +234,10 @@ pub fn nav_action(fe: &mut FrontEnd, env: &mut FeEnv, name: &str) -> bool {
 }
 
 pub(super) fn save(fe: &mut FrontEnd, env: &mut FeEnv, broken_popup: &str) {
+    if fe.ava.options.settings.range_movies != fe.ava.options.kept.range_movies {
+        fe.range_movies = fe.ava.options.settings.range_movies;
+        fe.note(format!("options: range movies {} from now on", fe.range_movies));
+    }
     let o = &mut fe.ava.options;
     if o.settings.window != o.kept.window
         && let Some(w) = o.settings.window.clone()
@@ -325,6 +330,7 @@ pub fn build(fe: &FrontEnd, cx: &mut Ctx, loc: &mut Localization, dp: &str) -> O
             let _ = cx.set_member(&v, "showDescription", Value::Bool(true));
             let note = match o.page {
                 Some(Page::Display) => "TXT_AVA_OPTIONS_DISPLAY_NOTE",
+                Some(Page::Movies) => "TXT_AVA_OPTIONS_MOVIES_NOTE",
                 #[cfg(feature = "net")]
                 Some(Page::Multiplayer) => "TXT_AVA_OPTIONS_NEXT_JOIN",
                 _ => "TXT_AVA_OPTIONS_NEXT_START",

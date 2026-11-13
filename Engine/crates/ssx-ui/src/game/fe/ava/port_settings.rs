@@ -3,6 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde_json::{Map, Value as Json};
 use ssx_assets::display::{DisplaySettings, WindowMode};
+use ssx_assets::port_options::RangeMovies;
 
 use crate::game::loc::Localization;
 
@@ -36,6 +37,10 @@ const SHADINGS: [(Shading, &str, &str); 4] = [
     (Shading::Height, "Height", "TXT_AVA_OPT_SHADING_HEIGHT"),
     (Shading::Material, "Material", "TXT_AVA_OPT_SHADING_MATERIAL"),
 ];
+const RANGE_MOVIES: [(RangeMovies, &str); 2] = [
+    (RangeMovies::EveryTime, "TXT_AVA_OPT_RANGE_MOVIES_EVERY_TIME"),
+    (RangeMovies::FirstTimeOnly, "TXT_AVA_OPT_RANGE_MOVIES_FIRST_TIME_ONLY"),
+];
 const MUSICS: [(Music, &str, &str); 4] = [
     (Music::Auto, "Auto", "TXT_AVA_OPT_MUSIC_AUTO"),
     (Music::DeadlyDescent, "DeadlyDescent", "TXT_AVA_OPT_MUSIC_DEADLY_DESCENT"),
@@ -59,6 +64,7 @@ pub struct PortSettings {
     pub music_volume: f32,
     pub sfx: bool,
     pub sfx_volume: f32,
+    pub range_movies: RangeMovies,
     #[cfg(feature = "net")]
     pub player_name: Option<String>,
     #[cfg(feature = "net")]
@@ -89,6 +95,7 @@ impl Default for PortSettings {
             music_volume: 1.0,
             sfx: true,
             sfx_volume: 1.0,
+            range_movies: RangeMovies::EveryTime,
             #[cfg(feature = "net")]
             player_name: None,
             #[cfg(feature = "net")]
@@ -124,6 +131,12 @@ impl PortSettings {
             match MUSICS.iter().find(|(_, n, _)| x.as_str() == Some(n)) {
                 Some(&(v, _, _)) => s.music = v,
                 None => bad("music"),
+            }
+        }
+        if let Some(x) = m.get(RangeMovies::MEMBER) {
+            match x.as_str().and_then(RangeMovies::from_name) {
+                Some(v) => s.range_movies = v,
+                None => bad(RangeMovies::MEMBER),
             }
         }
         for (k, field) in [
@@ -172,6 +185,7 @@ impl PortSettings {
         m.insert("subdivide".into(), Json::from(self.subdivide));
         m.insert("shading".into(), Json::String(shading.into()));
         m.insert("music".into(), Json::String(music.into()));
+        m.insert(RangeMovies::MEMBER.into(), Json::String(self.range_movies.name().into()));
         for (k, b) in [
             ("vsync", self.vsync),
             ("objects", self.objects),
@@ -263,6 +277,7 @@ pub enum Item {
     MusicVolume,
     Sfx,
     SfxVolume,
+    RangeMovies,
     #[cfg(feature = "net")]
     DownloadLimit,
     #[cfg(feature = "net")]
@@ -276,6 +291,7 @@ pub enum Page {
     Display,
     Effects,
     Sound,
+    Movies,
     #[cfg(feature = "net")]
     Multiplayer,
 }
@@ -294,6 +310,7 @@ impl Page {
             ],
             Page::Effects => &[Item::Particles, Item::SnowTracks, Item::LocalLights, Item::Post, Item::Sky],
             Page::Sound => &[Item::Music, Item::MusicVolume, Item::Sfx, Item::SfxVolume],
+            Page::Movies => &[Item::RangeMovies],
             #[cfg(feature = "net")]
             Page::Multiplayer => &[Item::DownloadLimit, Item::ResourceCache, Item::ServerScripts],
         }
@@ -305,7 +322,7 @@ const NET_ITEMS: [Item; 3] = [Item::DownloadLimit, Item::ResourceCache, Item::Se
 #[cfg(not(feature = "net"))]
 const NET_ITEMS: [Item; 0] = [];
 
-const ALL: [Item; 16] = [
+const ALL: [Item; 17] = [
     Item::WindowMode,
     Item::RenderResolution,
     Item::Subdivide,
@@ -322,6 +339,7 @@ const ALL: [Item; 16] = [
     Item::MusicVolume,
     Item::Sfx,
     Item::SfxVolume,
+    Item::RangeMovies,
 ];
 
 const RENDER_HEIGHTS: [Option<u32>; 7] = [None, Some(2160), Some(1440), Some(1080), Some(900), Some(720), Some(540)];
@@ -348,6 +366,7 @@ impl Item {
             Item::MusicVolume => "ava_opt_music_volume",
             Item::Sfx => "ava_opt_sfx",
             Item::SfxVolume => "ava_opt_sfx_volume",
+            Item::RangeMovies => "ava_opt_range_movies",
             #[cfg(feature = "net")]
             Item::DownloadLimit => "ava_opt_download_limit",
             #[cfg(feature = "net")]
@@ -375,6 +394,7 @@ impl Item {
             Item::MusicVolume => "TXT_AVA_OPT_MUSIC_VOLUME",
             Item::Sfx => "TXT_AVA_OPT_SFX",
             Item::SfxVolume => "TXT_AVA_OPT_SFX_VOLUME",
+            Item::RangeMovies => "TXT_AVA_OPT_RANGE_MOVIES",
             #[cfg(feature = "net")]
             Item::DownloadLimit => "TXT_AVA_OPT_DOWNLOAD_LIMIT",
             #[cfg(feature = "net")]
@@ -422,6 +442,7 @@ impl Item {
             Item::Music => s.music = defaults.music,
             Item::MusicVolume => s.music_volume = defaults.music_volume,
             Item::SfxVolume => s.sfx_volume = defaults.sfx_volume,
+            Item::RangeMovies => s.range_movies = defaults.range_movies,
             #[cfg(feature = "net")]
             Item::DownloadLimit => s.resources.download_limit_mib = defaults.resources.download_limit_mib,
             #[cfg(feature = "net")]
@@ -463,6 +484,7 @@ impl Item {
             Item::Music => loc.text(MUSICS.iter().find(|x| x.0 == s.music).map_or("", |x| x.2)),
             Item::MusicVolume => volume_step(s.music_volume).to_string(),
             Item::SfxVolume => volume_step(s.sfx_volume).to_string(),
+            Item::RangeMovies => loc.text(RANGE_MOVIES.iter().find(|x| x.0 == s.range_movies).map_or("", |x| x.1)),
             #[cfg(feature = "net")]
             Item::DownloadLimit => super::resource_settings::size_label(s.resources.download_limit_mib, loc),
             #[cfg(feature = "net")]
@@ -511,6 +533,10 @@ impl Item {
             }
             Item::MusicVolume => step_volume(&mut s.music_volume, next),
             Item::SfxVolume => step_volume(&mut s.sfx_volume, next),
+            Item::RangeMovies => {
+                s.range_movies = wrap(&RangeMovies::ALL, s.range_movies, next);
+                true
+            }
             #[cfg(feature = "net")]
             Item::DownloadLimit => super::resource_settings::step(
                 &mut s.resources.download_limit_mib,
@@ -555,11 +581,12 @@ mod tests {
     fn the_launchers_file_is_read_member_by_member_and_written_back_whole() {
         let (s, problems) = PortSettings::from_json(&serde_json::json!({
             "iso": "/x.iso", "subdivide": 1, "shading": "Height", "vsync": false, "music": "Off",
-            "music_volume": 0.37, "sfx": "yes", "sfx_volume": 2.5, "particles": false, "unknown": [1]
+            "music_volume": 0.37, "sfx": "yes", "sfx_volume": 2.5, "particles": false, "unknown": [1],
+            "range_movies": "FirstTimeOnly"
         }));
         assert_eq!(
-            (s.subdivide, s.shading, s.vsync, s.music, s.particles),
-            (1, Shading::Height, false, Music::Off, false)
+            (s.subdivide, s.shading, s.vsync, s.music, s.particles, s.range_movies),
+            (1, Shading::Height, false, Music::Off, false, RangeMovies::FirstTimeOnly)
         );
         assert!(s.sfx && problems.len() == 1 && problems[0].contains("`sfx`"));
         assert_eq!((volume_step(s.music_volume), volume_step(s.sfx_volume)), (4, 10));
@@ -571,6 +598,8 @@ mod tests {
             serde_json::json!({"subdivide": 1e300}),
             serde_json::json!({"shading": "textured"}),
             serde_json::json!({"music_volume": "1"}),
+            serde_json::json!({"range_movies": "first-time-only"}),
+            serde_json::json!({"range_movies": true}),
         ] {
             let (s, p) = PortSettings::from_json(&bad);
             assert!(s == PortSettings::default() && p.len() == 1, "{bad}");
@@ -588,12 +617,18 @@ mod tests {
         s.sfx_volume = 0.37;
         assert!(Item::SfxVolume.step(&mut s, false) && s.sfx_volume == 0.3);
         assert!(Item::Vsync.step(&mut s, true) && !s.vsync);
-        for p in [Page::Display, Page::Effects, Page::Sound] {
+        for p in [Page::Display, Page::Effects, Page::Sound, Page::Movies] {
             for i in p.items() {
                 assert_eq!(Item::of_dp(&format!("dp_{}", i.name())), Some(*i));
             }
         }
-        assert_eq!(ALL.len(), Page::Display.items().len() + Page::Effects.items().len() + Page::Sound.items().len());
+        let pages = [Page::Display, Page::Effects, Page::Sound, Page::Movies];
+        assert_eq!(ALL.len(), pages.iter().map(|p| p.items().len()).sum::<usize>());
+        assert!(Item::RangeMovies.step(&mut s, true) && s.range_movies == RangeMovies::FirstTimeOnly);
+        assert!(Item::RangeMovies.step(&mut s, true) && s.range_movies == RangeMovies::EveryTime);
+        assert!(Item::RangeMovies.step(&mut s, false) && s.range_movies == RangeMovies::FirstTimeOnly);
+        Item::RangeMovies.reset(&mut s, &PortSettings::default());
+        assert_eq!(s.range_movies, RangeMovies::EveryTime);
         #[cfg(feature = "net")]
         {
             assert_eq!(&NET_ITEMS[..], Page::Multiplayer.items());

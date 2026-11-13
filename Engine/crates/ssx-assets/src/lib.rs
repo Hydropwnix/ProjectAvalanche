@@ -14,6 +14,7 @@ pub mod display;
 mod effects;
 #[cfg(feature = "pipeline")]
 mod landscape;
+pub mod port_options;
 pub mod settings_file;
 #[cfg(feature = "pipeline")]
 mod soundtrack;

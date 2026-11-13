@@ -95,6 +95,11 @@
 					{ "viewname": "prev", "actionname": "A_TogglePreviousItem" },
 					{ "viewname": "next", "actionname": "A_ToggleNextItem" }
 				] },
+			{ "viewname": "ava_opt_range_movies", "type": "object", "dpname": "dp_ava_opt_range_movies", "actions":
+				[
+					{ "viewname": "prev", "actionname": "A_TogglePreviousItem" },
+					{ "viewname": "next", "actionname": "A_ToggleNextItem" }
+				] },
 			{ "viewname": "ava_opt_download_limit", "type": "object", "dpname": "dp_ava_opt_download_limit", "actions":
 				[
 					{ "viewname": "prev", "actionname": "A_TogglePreviousItem" },
