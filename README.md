@@ -59,6 +59,41 @@ It needs a GPU with a Vulkan driver, ALSA for sound (PipeWire and PulseAudio pro
 XDG desktop portal for the ISO file picker. The build is made on Ubuntu 24.04 (x86-64) and runs on distributions
 with that glibc or newer.
 
+## DLC, title update and level 15
+
+The port plays the DLC, the title update and the level-15 update from **your own** copies of them. Nothing is
+downloaded and no game content is shared. All three are in the launcher under **Settings, Game Data** (scroll down
+past the disc image and the language). Set the game data up first: the DLC and title-update buttons stay grey until
+then. Changes apply the next time the game starts, and nothing needs to be extracted again.
+
+**DLC** (section *Downloadable content*): the Japan range, Mount Eddie, the Presell Pack, and the Eddie and Mac packs.
+
+1. Dump the DLC from your Xbox 360: the content packages (`LIVE`, `CON` or `PIRS` files), as their folder (for
+   example `DLC- 4541096D`) or a `.zip` of it.
+2. Click **Install folder…** or **Install .zip…** and pick it. One folder or zip can hold several packages; a title
+   update inside it is installed as a title update.
+3. Each package is checked (its STFS hash tree) and copied to the `DLC` folder in the launcher's data folder
+   (`%LOCALAPPDATA%\Project Avalanche\DLC` on Windows, `~/.local/share/project-avalanche/DLC` on Linux). Your
+   originals are never changed. A damaged package is not installed, and a package whose data does not decode is
+   listed but not loaded.
+
+Each installed package has a switch to turn it off and a **Remove** button (it goes to the system trash). The DLC's
+tracks, riders, outfits, boards and texts then show up in the game as on the console. The DLC's Global Events needed
+EA's servers and cannot be played.
+
+**Title update** (section *Title update*): versions **3.02** (July 2012) and **1.02** (February 2012). Install it with
+**Install package…** (a single file), **Install folder…** or **Install .zip…**. You can install both, but only one
+applies: the newest one that is switched on, because each is a complete rebuild, not an add-on. 3.02 brings the
+patched menus, scripts and texts, the drop screen's **Freeride** (the run loops through the helicopter pickup), the
+3-2-1 GO! heat and a New Zealand track fix. 1.02 changes only code. They go to `DLC/Title Updates` in the same folder.
+
+**Level 15** (section *Level 15 data (tuner pack and profile)*): the level-15 update was not a title update but a
+tuner pack that a level-15 profile carries in its save. Click **Install a level-15 save or tuner pack…** and pick the
+save (`ssxvprofile`) or the pack. You get 15 rider levels instead of 10, the store's level tables and the changed
+drops. The pack is kept as `Tuner/tuner.bin`; a save is also copied over your profile (`Saves/ssxvprofile`) after the
+launcher asks you, so back up your own profile first if you want to keep it. **Remove…** deletes only the tuner
+file, not the profile.
+
 ## Updates
 
 The launcher checks the project's [latest release](https://github.com/MnkyArts/ProjectAvalanche/releases/latest) when
