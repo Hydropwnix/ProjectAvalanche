@@ -324,7 +324,7 @@ impl FrameView<'_> {
             }
         }
         if let Some(feed) = feed {
-            for g in &feed.ghosts {
+            for g in feed.ghosts.iter().flatten() {
                 let key = GHOST_KEYS | (g.id & 0xFFFF_FFFF);
                 if !f.riders.iter().any(|r| r.key == key) {
                     f.riders.push(RiderView { key, name: g.name.clone(), position: g.position, local: None });

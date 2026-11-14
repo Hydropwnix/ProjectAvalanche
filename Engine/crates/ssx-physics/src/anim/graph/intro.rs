@@ -12,6 +12,7 @@ pub struct LevelStartGraph {
     pub(super) blend: ssx_assets::anim_graph::Blend,
     pub(super) running: bool,
     pub(super) elapsed: Option<f32>,
+    pub(super) entry: Option<f32>,
     pub(super) intro: Option<IntroGraph>,
 }
 
@@ -21,6 +22,7 @@ pub struct IntroGraph {
     pub(super) jump: Vec<Animator>,
     shown: Vec<(SideKey, f32)>,
     blends: Vec<(ssx_assets::anim_graph::Blend, f32)>,
+    pub(super) entry_blend: ssx_assets::anim_graph::Blend,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,7 +42,17 @@ impl IntroGraph {
     ) -> Result<Self> {
         let dir = big_root.join(ssx_assets::rig_anim::ANIM_DIR);
         let db = ssx_assets::anim_db::AssetDb::load(&dir, &nis.bundles.iter().map(String::as_str).collect::<Vec<_>>())?;
-        let new = |root: &str| Animator::new(&db, root, rig, bind.clone(), floats);
+        Self::from_db(&db, nis, rig, bind, floats)
+    }
+
+    pub fn from_db(
+        db: &ssx_assets::anim_db::AssetDb,
+        nis: &ssx_assets::nis::IntroNis,
+        rig: &SceneGraph,
+        bind: Vec<Srt>,
+        floats: &[String],
+    ) -> Result<Self> {
+        let new = |root: &str| Animator::new(db, root, rig, bind.clone(), floats);
         let cabin = nis.cabin.iter().map(|c| new(&c.scene.sequence)).collect::<Result<Vec<_>>>()?;
         let rider = |sc: &ssx_assets::nis::NisScene| sc.actor(ssx_assets::nis::ROLE_CHARACTER1).cloned();
         let ready = match rider(&nis.ready).filter(|a| a.choices.len() > 1 && a.sequences.len() == a.choices.len()) {
@@ -51,7 +63,7 @@ impl IntroGraph {
             Some(a) => a.choices.iter().map(|(clip, _)| new(&clip.name)).collect::<Result<Vec<_>>>()?,
             None => vec![new(&nis.jump.sequence)?],
         };
-        Ok(Self { cabin, ready, jump, shown: Vec::new(), blends: Vec::new() })
+        Ok(Self { cabin, ready, jump, shown: Vec::new(), blends: Vec::new(), entry_blend: nis.entry_blend.clone() })
     }
 
     fn key(&self, s: &crate::nis::Side) -> SideKey {
@@ -195,6 +207,6 @@ impl LevelStartGraph {
             samples: Vec::new(),
             dof_curves: None,
         };
-        Ok(Self { animator, blend, running: false, elapsed: None, intro: None })
+        Ok(Self { animator, blend, running: false, elapsed: None, entry: None, intro: None })
     }
 }

@@ -60,9 +60,10 @@ impl RacerDraw<'_, '_> {
         records: &[JointRecord],
         facts: FrameFacts,
         lamp_on: bool,
+        shown: bool,
     ) -> (Option<JointRecord>, Option<JointRecord>) {
         if let Ok(mut vis) = self.visibility.get_mut(v.root) {
-            *vis = Visibility::Inherited;
+            *vis = if shown { Visibility::Inherited } else { Visibility::Hidden };
         }
         // TODO(guess): the bounds are the LOD-0 bind-pose box placed by the drawn `AITrajectory`. The game's (the
         // render object's update 0x829CA1B8, `VisManager_SetBounds` 0x82D46048 type 1) are the min/max union of (a) the

@@ -8,6 +8,7 @@ use ssx_formats::ealayer3_decode::SectionDecoder;
 use ssx_formats::mpf::{MpfFile, MusFile};
 
 use crate::pathfinder::{PITCH_ONE, Pathfinder, SAMPLE_RATE, SegmentLengths, TICK_MS};
+use crate::sfx_stream::{BlockKind, Next, Ring, Slot, StreamFile};
 
 pub const SSXDD_EVENTS: [(&str, u32); 43] = [
     ("DD_ID_01", 0x02CD_5E1F),
@@ -88,33 +89,11 @@ pub fn find_files(big_root: &Path, rel: &str, ext: &str) -> Vec<PathBuf> {
     crate::data_roots::files_in(big_root, rel, ext)
 }
 
-pub enum Bytes {
-    Map(memmap2::Mmap),
-    Vec(Vec<u8>),
-}
-
-impl std::ops::Deref for Bytes {
-    type Target = [u8];
-    fn deref(&self) -> &[u8] {
-        match self {
-            Bytes::Map(m) => m,
-            Bytes::Vec(v) => v,
-        }
-    }
-}
-
-impl Bytes {
-    pub fn open(path: &Path) -> Result<Self> {
-        let f = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
-        match unsafe { memmap2::Mmap::map(&f) } {
-            Ok(m) => Ok(Bytes::Map(m)),
-            Err(_) => Ok(Bytes::Vec(std::fs::read(path)?)),
-        }
-    }
-}
+const MAX_MUS_HEAD: u64 = 16 << 20;
 
 pub struct TrackAudio {
-    pub data: Arc<Bytes>,
+    pub data: Arc<Vec<u8>>,
+    pub file: Option<Arc<StreamFile>>,
     pub index: MusFile,
     pub ram: bool,
     pub first_sample: usize,
@@ -123,7 +102,8 @@ pub struct TrackAudio {
 impl TrackAudio {
     fn sound(&self, e: usize) -> Result<(SoundHeader, usize)> {
         let entry = self.index.entries.get(e).with_context(|| format!("no .mus entry {e}"))?;
-        let h = SoundHeader::parse(&self.data[entry.snr_offset as usize..])?;
+        let head = self.data.get(entry.snr_offset as usize..).context("a .mus header past the index")?;
+        let h = SoundHeader::parse(head)?;
         let body = if self.ram { entry.snr_offset as usize + h.size } else { entry.sns_offset as usize };
         Ok((h, body))
     }
@@ -131,60 +111,123 @@ impl TrackAudio {
 
 struct SoundCursor {
     track: usize,
-    blocks: Vec<(usize, usize, u32)>,
-    next: usize,
+    src: CursorSrc,
     channels: usize,
     dec: Option<(usize, SectionDecoder)>,
 }
 
+enum CursorSrc {
+    Ram { blocks: Vec<(usize, usize, u32)>, next: usize },
+    Stream { tag: u64, done: bool },
+}
+
+enum Decoded {
+    More,
+    Pending,
+    End,
+}
+
 impl SoundCursor {
-    fn open(audio: &TrackAudio, track: usize, entry: usize) -> Result<Self> {
+    fn open(audio: &TrackAudio, track: usize, entry: usize, tag: Option<u64>) -> Result<Self> {
         let (h, body) = audio.sound(entry)?;
-        let blocks = read_v0_blocks(&h, &audio.data, body)?;
-        let list = blocks
-            .sections
-            .iter()
-            .enumerate()
-            .flat_map(|(s, sec)| sec.iter().map(move |b| (b.offset, s, b.samples)))
-            .collect();
-        Ok(Self { track, blocks: list, next: 0, channels: h.channels as usize, dec: None })
+        let src = match tag {
+            Some(tag) => CursorSrc::Stream { tag, done: false },
+            None => {
+                let blocks = read_v0_blocks(&h, &audio.data, body)?;
+                let list = blocks
+                    .sections
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(s, sec)| sec.iter().map(move |b| (b.offset, s, b.samples)))
+                    .collect();
+                CursorSrc::Ram { blocks: list, next: 0 }
+            }
+        };
+        Ok(Self { track, src, channels: h.channels as usize, dec: None })
     }
 
-    fn decode_block(&mut self, audio: &TrackAudio, out: &mut Vec<f32>, tmp: &mut Vec<f32>) -> Result<bool> {
-        let Some(&(offset, section, samples)) = self.blocks.get(self.next) else { return Ok(false) };
-        self.next += 1;
-        if self.dec.as_ref().is_none_or(|(s, _)| *s != section) {
-            self.dec = Some((section, SectionDecoder::new(self.channels as u8)?));
-        }
-        let block = Block::read(&audio.data, offset)?;
+    fn decode_block(
+        &mut self,
+        audio: &TrackAudio,
+        slot: Option<&mut Slot>,
+        out: &mut Vec<f32>,
+        tmp: &mut Vec<f32>,
+    ) -> Result<Decoded> {
         tmp.clear();
-        let n = self.dec.as_mut().unwrap().1.decode_payload(block.payload, tmp)?;
-        let n = n.min(samples as usize);
-        for f in 0..n {
+        let samples = match &mut self.src {
+            CursorSrc::Ram { blocks, next } => {
+                let Some(&(offset, section, samples)) = blocks.get(*next) else { return Ok(Decoded::End) };
+                *next += 1;
+                let block = Block::read(&audio.data, offset)?;
+                let dec = section_decoder(&mut self.dec, section, self.channels)?;
+                dec.decode_payload(block.payload, tmp)?.min(samples as usize)
+            }
+            CursorSrc::Stream { tag, done } => {
+                if *done {
+                    return Ok(Decoded::End);
+                }
+                let slot = slot.context("a streamed sound without its slot")?;
+                while slot.front().is_some_and(|f| f < *tag) {
+                    slot.skip_front();
+                }
+                let block = match slot.next_block() {
+                    Next::Block(b) => b,
+                    Next::Pending => return Ok(Decoded::Pending),
+                    Next::Idle => return Ok(Decoded::End),
+                    Next::Failed { error, .. } => bail!("{error}"),
+                };
+                if block.tag != *tag {
+                    bail!("the stream's request {} where {tag} was due", block.tag);
+                }
+                *done = block.last;
+                let dec = section_decoder(&mut self.dec, 0, self.channels)?;
+                dec.decode_payload(block.payload, tmp)?.min(block.samples as usize)
+            }
+        };
+        for f in 0..samples {
             if self.channels == 1 {
                 out.extend_from_slice(&[tmp[f], tmp[f]]);
             } else {
                 out.extend_from_slice(&tmp[f * self.channels..f * self.channels + 2]);
             }
         }
-        Ok(true)
+        Ok(Decoded::More)
     }
+}
+
+fn section_decoder(
+    dec: &mut Option<(usize, SectionDecoder)>,
+    section: usize,
+    channels: usize,
+) -> Result<&mut SectionDecoder> {
+    if dec.as_ref().is_none_or(|(s, _)| *s != section) {
+        *dec = Some((section, SectionDecoder::new(u8::try_from(channels)?)?));
+    }
+    dec.as_mut().map(|(_, d)| d).context("no decoder")
 }
 
 #[derive(Default)]
 struct Voice {
     item: Option<u64>,
-    sounds: VecDeque<(usize, usize)>,
+    sounds: VecDeque<(usize, usize, Option<u64>)>,
     cur: Option<SoundCursor>,
     buf: Vec<f32>,
     base: usize,
     pos: f64,
     reported: f64,
     gain: f32,
+    slot: Option<Slot>,
+    requested: VecDeque<(u64, u64)>,
+}
+
+enum Frame {
+    Some([f32; 2]),
+    End,
+    Starved,
 }
 
 impl Voice {
-    fn open(&mut self, id: u64, sounds: VecDeque<(usize, usize)>, carry: f64) {
+    fn open(&mut self, id: u64, sounds: VecDeque<(usize, usize, Option<u64>)>, carry: f64) {
         self.item = Some(id);
         self.sounds = sounds;
         self.cur = None;
@@ -194,17 +237,19 @@ impl Voice {
         self.reported = 0.0;
     }
 
-    fn frame(&mut self, f: usize, tracks: &[Option<TrackAudio>], tmp: &mut Vec<f32>) -> [f32; 2] {
+    fn frame(&mut self, f: usize, tracks: &[Option<TrackAudio>], tmp: &mut Vec<f32>) -> Frame {
         while self.base + self.buf.len() / 2 <= f {
-            if !self.decode_more(tracks, tmp) {
-                return [0.0; 2];
+            match self.decode_more(tracks, tmp) {
+                Decoded::More => {}
+                Decoded::Pending => return Frame::Starved,
+                Decoded::End => return Frame::End,
             }
         }
         let k = (f.max(self.base) - self.base) * 2;
-        [self.buf[k], self.buf[k + 1]]
+        Frame::Some([self.buf[k], self.buf[k + 1]])
     }
 
-    fn decode_more(&mut self, tracks: &[Option<TrackAudio>], tmp: &mut Vec<f32>) -> bool {
+    fn decode_more(&mut self, tracks: &[Option<TrackAudio>], tmp: &mut Vec<f32>) -> Decoded {
         let keep_from = (self.pos.floor() as usize).saturating_sub(1).max(self.base);
         if keep_from > self.base + 4096 {
             let drop = (keep_from - self.base).min(self.buf.len() / 2);
@@ -213,9 +258,9 @@ impl Voice {
         }
         loop {
             if self.cur.is_none() {
-                let Some((t, e)) = self.sounds.pop_front() else { return false };
-                let Some(audio) = tracks.get(t).and_then(Option::as_ref) else { return false };
-                match SoundCursor::open(audio, t, e) {
+                let Some((t, e, tag)) = self.sounds.pop_front() else { return Decoded::End };
+                let Some(audio) = tracks.get(t).and_then(Option::as_ref) else { return Decoded::End };
+                match SoundCursor::open(audio, t, e, tag) {
                     Ok(c) => self.cur = Some(c),
                     Err(err) => {
                         ssx_core::eprintln!("music: track {t} entry {e}: {err:#}");
@@ -223,11 +268,11 @@ impl Voice {
                     }
                 }
             }
-            let cur = self.cur.as_mut().unwrap();
-            let audio = tracks[cur.track].as_ref().unwrap();
-            match cur.decode_block(audio, &mut self.buf, tmp) {
-                Ok(true) => return true,
-                Ok(false) => self.cur = None,
+            let Some(cur) = self.cur.as_mut() else { return Decoded::End };
+            let Some(audio) = tracks.get(cur.track).and_then(Option::as_ref) else { return Decoded::End };
+            match cur.decode_block(audio, self.slot.as_mut(), &mut self.buf, tmp) {
+                Ok(Decoded::End) => self.cur = None,
+                Ok(d) => return d,
                 Err(err) => {
                     ssx_core::eprintln!("music: decoding track {}: {err:#}", cur.track);
                     self.cur = None;
@@ -258,9 +303,11 @@ impl PathfinderMusic {
         let mpf = Arc::new(MpfFile::parse(&std::fs::read(&mpf_path)?).context("parsing the .mpf")?);
         let mut by_word = Vec::new();
         for p in find_files(big_root, &dir, "mus") {
-            let data = Arc::new(Bytes::open(&p)?);
-            if data.len() >= 4 {
-                by_word.push((u32::from_be_bytes(data[..4].try_into().unwrap()), data));
+            let file = StreamFile::open(&p)?;
+            let mut word = [0u8; 4];
+            if file.len() >= 4 {
+                file.read_exact_at(&mut word, 0)?;
+                by_word.push((u32::from_be_bytes(word), file));
             }
         }
         let mut tracks = Vec::new();
@@ -269,13 +316,24 @@ impl PathfinderMusic {
             let ram = tr.num_subbanks > 0;
             let word = if ram { tr.subbanks[0][0] } else { tr.checksum };
             let audio = by_word.iter().find(|(w, _)| *w == word).map(|(_, d)| d.clone());
-            let Some(data) = audio else {
+            let Some(file) = audio else {
                 tracks.push(None);
                 lengths.entries.push(Vec::new());
                 continue;
             };
+            let (data, file) = if ram {
+                (file.read_whole(MAX_MUS_HEAD)?, None)
+            } else {
+                let size = u64::from(tr.mus_header_size).min(file.len());
+                if size > MAX_MUS_HEAD {
+                    bail!("{}: a .mus header of {size} bytes", file.name());
+                }
+                let mut head = vec![0u8; usize::try_from(size)?];
+                file.read_exact_at(&mut head, 0)?;
+                (head, Some(file))
+            };
             let index = MusFile::parse(&data)?;
-            let audio = TrackAudio { data, index, ram, first_sample: tr.first_sample as usize };
+            let audio = TrackAudio { data: Arc::new(data), file, index, ram, first_sample: tr.first_sample as usize };
             let mut frames = Vec::with_capacity(audio.index.entries.len());
             for e in 0..audio.index.entries.len() {
                 frames.push(audio.sound(e).map_or(0, |(h, _)| h.num_samples));
@@ -331,7 +389,13 @@ impl PathfinderMusic {
     pub fn decode_track_sound(&self, track: usize, k: usize) -> Result<Vec<f32>> {
         let audio = self.tracks.get(track).and_then(Option::as_ref).context("no such track with audio")?;
         let (h, body) = audio.sound(k)?;
-        let blocks = read_v0_blocks(&h, &audio.data, body)?;
+        let blocks = match &audio.file {
+            Some(file) => {
+                let bytes = file.read_v0_sound(&h, body as u64, 64 << 20)?;
+                return Ok(ssx_formats::ealayer3_decode::decode_sound(&h, &read_v0_blocks(&h, &bytes, 0)?)?.samples);
+            }
+            None => read_v0_blocks(&h, &audio.data, body)?,
+        };
         Ok(ssx_formats::ealayer3_decode::decode_sound(&h, &blocks)?.samples)
     }
 
@@ -386,6 +450,9 @@ impl PathfinderMusic {
                 }
                 self.tick_left = TICK_FRAMES;
             }
+            for i in 0..self.voices.len() {
+                self.sync_requests(i);
+            }
             let chunk = (n - done).min(self.tick_left);
             if let Some(score) = self.score.as_mut() {
                 score.render(&mut out[done * 2..(done + chunk) * 2]);
@@ -404,19 +471,62 @@ impl PathfinderMusic {
 }
 
 impl PathfinderMusic {
-    fn item_sounds(&self, node: u16, record: usize, piece: u8) -> VecDeque<(usize, usize)> {
-        let n = &self.rt.mpf.nodes[node as usize];
+    fn item_sounds(&self, node: u16, record: usize, piece: u8) -> VecDeque<(usize, usize, Option<u64>)> {
+        let Some(n) = self.rt.mpf.nodes.get(usize::from(node)) else { return VecDeque::new() };
         let t = n.track as usize;
         let Some(audio) = self.tracks.get(t).and_then(Option::as_ref) else { return VecDeque::new() };
         if !audio.ram {
-            return VecDeque::from([(t, record - audio.first_sample)]);
+            return record.checked_sub(audio.first_sample).map(|e| (t, e, None)).into_iter().collect();
         }
-        let first = (self.rt.mpf.samples[record].location & 0xFFFF) as usize;
+        let Some(rec) = self.rt.mpf.samples.get(record) else { return VecDeque::new() };
+        let first = (rec.location & 0xFFFF) as usize;
         if piece > 0 {
-            return VecDeque::from([(t, first + usize::from(piece) - 1)]);
+            return VecDeque::from([(t, first + usize::from(piece) - 1, None)]);
         }
         let k = (usize::from(n.beats_per_bar) * usize::from(n.bars)).max(1);
-        (first..first + k).map(|e| (t, e)).collect()
+        (first..first + k).map(|e| (t, e, None)).collect()
+    }
+
+    fn sync_requests(&mut self, i: usize) {
+        let Some(p) = self.rt.players.get(i).and_then(Option::as_ref) else {
+            if let Some(v) = self.voices.get_mut(i)
+                && let Some(slot) = v.slot.as_mut()
+                && !v.requested.is_empty()
+            {
+                slot.flush();
+                v.requested.clear();
+            }
+            return;
+        };
+        let t = usize::from(p.track);
+        let Some(audio) = self.tracks.get(t).and_then(Option::as_ref) else { return };
+        let Some(file) = audio.file.clone() else { return };
+        let v = &mut self.voices[i];
+        if v.slot.is_none() {
+            match Slot::new(Ring::MUSIC) {
+                Ok(slot) => v.slot = Some(slot),
+                Err(e) => {
+                    ssx_core::eprintln!("music: p{i}: {e:#}");
+                    return;
+                }
+            }
+        }
+        let items: Vec<(u64, usize)> = p.stream.items.iter().map(|q| (q.id, q.record)).collect();
+        if let Some(k) = items.first().and_then(|(id, _)| v.requested.iter().position(|r| r.0 == *id)) {
+            v.requested.drain(..k);
+        }
+        let in_order = v.requested.len() <= items.len() && v.requested.iter().zip(&items).all(|(r, it)| r.0 == it.0);
+        let Some(slot) = v.slot.as_mut() else { return };
+        if !in_order {
+            slot.flush();
+            v.requested.clear();
+        }
+        for &(id, record) in &items[v.requested.len()..] {
+            let entry = record.checked_sub(audio.first_sample).and_then(|e| audio.index.entries.get(e));
+            let Some(entry) = entry else { continue };
+            let tag = slot.queue(file.clone(), u64::from(entry.sns_offset), BlockKind::V0);
+            v.requested.push_back((id, tag));
+        }
     }
 
     fn render_voice(&mut self, i: usize, out: &mut [f32]) {
@@ -445,7 +555,12 @@ impl PathfinderMusic {
             let (id, total) = (front.id, f64::from(front.frames));
             if self.voices[i].item != Some(id) {
                 let carry = if self.voices[i].item.is_none() { self.voices[i].pos } else { 0.0 };
-                let sounds = self.item_sounds(front.node, front.record, front.piece);
+                let mut sounds = self.item_sounds(front.node, front.record, front.piece);
+                if sounds.len() == 1
+                    && let Some(s) = sounds.front_mut()
+                {
+                    s.2 = self.voices[i].requested.iter().find(|r| r.0 == id).map(|r| r.1);
+                }
                 let at = self.rt.frame + f as u64;
                 let what = if front.piece > 0 { format!(" beat {}", front.piece) } else { String::new() };
                 let text = format!("p{i} play n{}{what} at frame {at}", front.node);
@@ -469,9 +584,23 @@ impl PathfinderMusic {
             } else {
                 let k = v.pos.floor();
                 let frac = (v.pos - k) as f32;
-                let a = v.frame(k as usize, &self.tracks, &mut self.tmp);
+                // TODO(guess): a segment whose next block is not read yet holds the voice's position, silent for the
+                // rest of this render (the runtime is told nothing played) — decoded: SndPlayer1 (0x82A39778) with an
+                // empty ring returns 0 and keeps its position, the voice's block loop 0x82A2BD40 zero-fills the rest
+                // of the 256-frame block and asks again the next; guessed: this 10 ms render stands for those blocks,
+                // and the zeros the loop runs through the chain for the voice's tail (0x82A177D0, voice +0x30 / +0x28)
+                // are not run; settle: the music voices on the 48 kHz block graph and their +0x28.
+                let a = match v.frame(k as usize, &self.tracks, &mut self.tmp) {
+                    Frame::Some(x) => x,
+                    Frame::End => [0.0; 2],
+                    Frame::Starved => break,
+                };
                 let b = if frac > 0.0 && k + 1.0 < total {
-                    v.frame(k as usize + 1, &self.tracks, &mut self.tmp)
+                    match v.frame(k as usize + 1, &self.tracks, &mut self.tmp) {
+                        Frame::Some(x) => x,
+                        Frame::End => [0.0; 2],
+                        Frame::Starved => break,
+                    }
                 } else {
                     a
                 };

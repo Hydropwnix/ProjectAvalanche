@@ -15,6 +15,8 @@ pub(super) struct PlayerWorld<'a, 'b, 'c> {
 
 const AO_WINDOW: usize = 45;
 
+const GOGGLES_BATTERY: u16 = 0xC4;
+
 fn ao_blend(start: f32, target: f32, elapsed: f32, blend: f32) -> f32 {
     let r = elapsed / blend;
     let t = if r.is_nan() { 1.0 } else { r.clamp(0.0, 1.0) };
@@ -95,7 +97,7 @@ impl ControllerWorld for PlayerWorld<'_, '_, '_> {
             (Track::PostFxModulated { .. } | Track::PostFx { .. }, Phase::End) => {
                 fx.postfx.remove(&c.inst);
             }
-            // TODO(guess): a `PostFxTrack`'s start / stop blends (`PostFxLayers_Start` 0x82FCCC30, `_Stop` 0x82FCCFD8) are not ramped, the run carries its weight; settle: port the ramps when a reader of these presets' fields exists.
+            // TODO(guess): a `PostFxTrack`'s start / stop blends (`PostFxLayers_Start` 0x82FCCC30, `_Stop` 0x82FCCFD8) are not ramped, the run carries its weight, and a track's preset on `postfx_layers/goggles` (priority 5) blends after the goggles' state instead of replacing it in the one layer object the game keeps per `postfx_layers` entry (no disc script starts one: the Lua tracks start motion_blur, awesome_*, tunnel_*, the damage presets); settle: drive these presets through `postfx_state::Layer` (the ramps, ported for the goggles' layer), one per `postfx_layers` entry, against the overlay's captures.
             (Track::PostFx { preset, blend_in, weight, .. }, Phase::Begin) => {
                 crate::guess_hit!();
                 let run = PostFxRun {
@@ -111,13 +113,58 @@ impl ControllerWorld for PlayerWorld<'_, '_, '_> {
             (Track::RenderAttribute { .. }, _) => self.render_attribute(c, phase),
             (Track::Ao { .. } | Track::AoGroundContact { .. }, _) => self.ao(c, phase),
             (Track::Ripple, Phase::Begin) => (fx.ripples, fx.ripple) = (fx.ripples + 1, Some(s.traj)),
-            (Track::PulseGogglesGear { .. }, Phase::Begin | Phase::End) => fx.pulse_goggles = phase == Phase::Begin,
+            (Track::PulseGogglesGear { .. }, _) => self.pulse_goggles(c, phase),
             _ => {}
         }
     }
 }
 
 impl PlayerWorld<'_, '_, '_> {
+    fn pulse_goggles(&mut self, c: TrackCall<'_>, phase: Phase) {
+        use ssx_assets::postfx_topogrid::{GogglesDef, GogglesTrack, Modification};
+        let Track::PulseGogglesGear { blend_in, blend_out, outer_range, static_threshold, modifications, .. } = c.kind
+        else {
+            return;
+        };
+        match phase {
+            Phase::Begin => {
+                let Some(preset) = self.ctx.sw.w.survival.goggles_preset.clone() else {
+                    self.fx.goggles = Some(GogglesTrack::default());
+                    return;
+                };
+                let mods: Vec<Modification> = modifications
+                    .iter()
+                    .map(|m| Modification {
+                        field: m.field.clone(),
+                        stat: self.gear_stat(m.stat).unwrap_or(0),
+                        x: m.x,
+                        y: m.y,
+                    })
+                    .collect();
+                let copy = ssx_formats::attrib::fnv1(format!("modified_{:08x}", self.fx.goggles_copies).as_bytes());
+                self.fx.goggles_copies = self.fx.goggles_copies.wrapping_add(1);
+                let whiteout = self.ctx.sw.w.survival.whiteout_lighting;
+                let g = GogglesTrack::begin(preset, &mods, copy, whiteout);
+                self.fx.goggles_layer.start(g.key, g.holder.clone(), *blend_in, 1.0);
+                self.fx.goggles = Some(g);
+            }
+            Phase::Update(dt) => {
+                let battery = as_float(self.ctx.sw.game_state(&player_name(), GOGGLES_BATTERY));
+                let Some(g) = self.fx.goggles.as_mut() else { return };
+                let def = GogglesDef { outer: *outer_range, threshold: *static_threshold };
+                self.fx.goggles_pulse = g.update(dt, battery, def);
+                if g.key != 0 {
+                    self.fx.goggles_layer.reload(g.key, g.holder.clone());
+                }
+            }
+            Phase::End => {
+                if let Some(g) = self.fx.goggles.take().filter(|g| g.key != 0) {
+                    self.fx.goggles_layer.stop(g.key, *blend_out);
+                }
+            }
+        }
+    }
+
     fn render_attribute(&mut self, c: TrackCall<'_>, phase: Phase) {
         let Track::RenderAttribute { name, blend, value, reset_on_end } = c.kind else { return };
         let key = name.text.to_string();

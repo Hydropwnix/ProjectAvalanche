@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
@@ -7,8 +8,8 @@ use ssx_assets::music_script::{
     DdMusic, GameMusicState, ObjectiveScript, ScriptRunner, dd_script_name, track_drop_scripts,
 };
 use ssx_assets::musicbox::{LicensedMusic, MusicBox, Playlist, RaceType, SongSwitches};
-use ssx_assets::sfx::output::Output;
-pub use ssx_assets::sfx::output::{GameTurn, stats};
+use ssx_assets::sfx::output::{MixQueue, Output, Scheduling, mix_queue};
+pub use ssx_assets::sfx::output::{discard, stats};
 use ssx_assets::sfx::{MusicSource, OutputMix};
 
 use crate::ride::Ride;
@@ -29,6 +30,9 @@ struct Shared {
     volume: f32,
     #[cfg(feature = "scripts")]
     level: Option<Engine>,
+    script: Option<ObjectiveScript>,
+    restart_in: Option<f32>,
+    log_from: usize,
 }
 
 struct MusicBus {
@@ -77,32 +81,50 @@ impl MusicSource for MusicBus {
 
 #[derive(Resource, Clone)]
 pub struct GameAudio {
-    pub out: Arc<Mutex<OutputMix>>,
+    queue: MixQueue,
+    back: Back,
 }
 
 impl GameAudio {
-    pub fn lock(&self) -> Option<GameMix<'_>> {
-        let turn = GameTurn::take();
-        let guard = self.out.lock().ok()?;
-        Some(GameMix { guard, _turn: turn })
+    pub fn post<F: FnOnce(&mut OutputMix, &Back) + Send + 'static>(&self, f: F) -> bool {
+        self.post_as(std::any::type_name::<F>(), f)
+    }
+
+    pub fn post_as(&self, kind: &'static str, f: impl FnOnce(&mut OutputMix, &Back) + Send + 'static) -> bool {
+        let back = self.back.clone();
+        self.queue.post_as(kind, move |m| f(m, &back))
     }
 }
 
-pub struct GameMix<'a> {
-    guard: std::sync::MutexGuard<'a, OutputMix>,
-    _turn: GameTurn,
-}
+pub type Reply = Box<dyn FnOnce(&mut World) + Send>;
 
-impl std::ops::Deref for GameMix<'_> {
-    type Target = OutputMix;
-    fn deref(&self) -> &OutputMix {
-        &self.guard
+#[derive(Clone)]
+pub struct Back(Sender<Reply>);
+
+impl Back {
+    pub fn reply(&self, f: impl FnOnce(&mut World) + Send + 'static) {
+        let _ = self.0.send(Box::new(f));
     }
 }
 
-impl std::ops::DerefMut for GameMix<'_> {
-    fn deref_mut(&mut self) -> &mut OutputMix {
-        &mut self.guard
+macro_rules! back_log {
+    ($back:expr, $level:ident, $($arg:tt)*) => {{
+        let line = format!($($arg)*);
+        $back.reply(move |_| bevy::log::$level!("{line}"));
+    }};
+}
+pub(crate) use back_log;
+
+#[derive(Resource)]
+struct AudioReplies(Mutex<Receiver<Reply>>);
+
+fn apply_replies(world: &mut World) {
+    let replies: Vec<Reply> = world
+        .get_resource::<AudioReplies>()
+        .and_then(|r| r.0.lock().ok().map(|rx| rx.try_iter().collect()))
+        .unwrap_or_default();
+    for r in replies {
+        r(world);
     }
 }
 
@@ -110,9 +132,11 @@ pub fn output(app: &mut App) -> GameAudio {
     if let Some(g) = app.world().get_resource::<GameAudio>() {
         return g.clone();
     }
-    let g = GameAudio { out: Arc::new(Mutex::new(OutputMix::new(None, RATE, None))) };
-    app.insert_resource(g.clone());
-    match Output::start(g.out.clone(), None) {
+    let (queue, inbox) = mix_queue();
+    let (tx, rx) = channel();
+    let g = GameAudio { queue, back: Back(tx) };
+    app.insert_resource(g.clone()).insert_resource(AudioReplies(Mutex::new(rx))).add_systems(First, apply_replies);
+    match Output::start(OutputMix::new(None, RATE, None), inbox, None, Scheduling::Audio) {
         Ok(output) => {
             app.add_systems(Startup, move |mut commands: Commands| {
                 commands.insert_resource(device::AudioDevice::start(output.clone()));
@@ -127,11 +151,9 @@ pub fn output(app: &mut App) -> GameAudio {
 #[derive(Resource)]
 pub struct Music {
     shared: Arc<Mutex<Shared>>,
+    game: GameAudio,
     dd: bool,
-    script: Option<ObjectiveScript>,
     last_steps: u64,
-    restart_in: Option<f32>,
-    log_from: usize,
     verbose: bool,
     scope: AudioScope,
     race: Option<RaceType>,
@@ -143,22 +165,27 @@ impl Music {
         if self.dd {
             return Err("a Deadly Descent's music is its Pathfinder score");
         }
-        let _turn = GameTurn::take();
-        let mut shared = self.shared.lock().map_err(|_| "the music's lock is poisoned")?;
-        let old = std::mem::replace(&mut shared.engine, Engine::Licensed(Box::new(song)));
-        if shared.level.is_none() {
-            shared.level = Some(old);
-        }
-        Ok(())
+        let shared = self.shared.clone();
+        let posted = self.game.post(move |_, _| {
+            let Ok(mut shared) = shared.lock() else { return };
+            let old = std::mem::replace(&mut shared.engine, Engine::Licensed(Box::new(song)));
+            match shared.level {
+                None => shared.level = Some(old),
+                Some(_) => discard(old),
+            }
+        });
+        if posted { Ok(()) } else { Err("the game's audio does not run") }
     }
 
     pub(crate) fn end_script_song(&self) {
-        let _turn = GameTurn::take();
-        if let Ok(mut shared) = self.shared.lock()
-            && let Some(level) = shared.level.take()
-        {
-            shared.engine = level;
-        }
+        let shared = self.shared.clone();
+        self.game.post(move |_, _| {
+            if let Ok(mut shared) = shared.lock()
+                && let Some(level) = shared.level.take()
+            {
+                discard(std::mem::replace(&mut shared.engine, level));
+            }
+        });
     }
 
     pub(crate) fn scope(&self) -> &AudioScope {
@@ -168,6 +195,9 @@ impl Music {
 
 #[derive(Resource, Clone, Copy)]
 pub struct AudioDrop(pub Option<u32>);
+
+#[derive(Resource, Clone, Copy)]
+pub struct RemixEventType(pub i32);
 
 pub struct MusicLevel {
     engine: Engine,
@@ -229,6 +259,7 @@ pub fn load_level_event(
 pub fn start_level(world: &mut World, level: Option<MusicLevel>, drop_key: Option<u32>) {
     world.insert_resource(AudioDrop(drop_key));
     let Some(l) = level else { return };
+    let Some(game) = world.get_resource::<GameAudio>().cloned() else { return };
     ssx_core::eprintln!("music: {}", l.label);
     let dd = matches!(l.engine, Engine::Dd(_));
     let shared = Arc::new(Mutex::new(Shared {
@@ -236,44 +267,41 @@ pub fn start_level(world: &mut World, level: Option<MusicLevel>, drop_key: Optio
         volume: l.volume,
         #[cfg(feature = "scripts")]
         level: None,
-    }));
-    if let Some(g) = world.get_resource::<GameAudio>()
-        && let Ok(mut m) = g.out.lock()
-    {
-        m.music = Some(Box::new(MusicBus { shared: shared.clone(), script_song: false }));
-        (m.remix_event_type, m.swapped) = (l.remix_type, true);
-    }
-    world.insert_resource(Music {
-        dd,
-        shared,
         script: l.script,
-        last_steps: 0,
         restart_in: None,
         log_from: 0,
-        verbose: l.verbose,
-        scope: l.scope,
-        race: l.race,
+    }));
+    let (bus, remix_type) = (MusicBus { shared: shared.clone(), script_song: false }, l.remix_type);
+    game.post(move |m, _| {
+        discard(m.music.replace(Box::new(bus)));
+        (m.remix_event_type, m.swapped) = (remix_type, true);
     });
+    world.insert_resource(RemixEventType(remix_type));
+    world.insert_resource(Music { dd, shared, game, last_steps: 0, verbose: l.verbose, scope: l.scope, race: l.race });
 }
 
 pub fn end_level(world: &mut World) {
     if let Some(music) = world.get_resource::<Music>() {
-        let _turn = GameTurn::take();
-        if let Ok(mut shared) = music.shared.lock()
-            && let Engine::Licensed(lm) = &mut shared.engine
-        {
-            lm.level_end();
-        }
+        let shared = music.shared.clone();
+        music.game.post(move |_, _| {
+            if let Ok(mut shared) = shared.lock()
+                && let Engine::Licensed(lm) = &mut shared.engine
+            {
+                lm.level_end();
+            }
+        });
     }
     if !world.contains_resource::<frontend::FrontEndAudio>()
         && let Some(g) = world.get_resource::<GameAudio>()
-        && let Ok(mut m) = g.out.lock()
     {
-        m.music = None;
-        m.remix_event_type = 1;
+        g.post(|m, _| {
+            discard(m.music.take());
+            m.remix_event_type = 1;
+        });
     }
     world.remove_resource::<Music>();
     world.remove_resource::<AudioDrop>();
+    world.remove_resource::<RemixEventType>();
 }
 
 pub fn insert(app: &mut App, big_root: Option<&Path>, track: &str, drop_key: Option<u32>, screenshot: bool) {
@@ -324,9 +352,12 @@ fn load(
         }
         return Ok((Engine::Dd(Box::new(dd)), Some(script), label, 3, scope, None));
     }
-    let want = std::env::var("SSX_RIDE_EVENT").unwrap_or_else(|_| "race".into());
-    let def =
-        launched.or_else(|| events.as_ref().and_then(|e| ssx_physics::event::choose_event(e.iter(), &want).cloned()));
+    let def = ssx_physics::event::level_event(
+        events.as_deref().unwrap_or_default(),
+        event_key,
+        crate::ride::viewer_event_choice,
+    )
+    .cloned();
     let event = def.as_ref().map_or_else(|| "no event".to_string(), |d| d.name.clone());
     let race = def.as_ref().and_then(|d| {
         RaceType::from_event(d.key, d.event_type.map_or(6, |t| ssx_assets::sfx_game::event_kind(t as u32)))
@@ -388,27 +419,35 @@ impl Music {
     }
 
     pub fn apply_reload(&self, r: MusicReload) {
-        let _turn = GameTurn::take();
-        let Ok(mut shared) = self.shared.lock() else { return };
-        match &mut shared.engine {
-            Engine::Dd(dd) => {
-                dd.music.clear_packages();
-                match r.score {
-                    Some(Ok(s)) => dd.music.set_score(s, "the package's score (reloaded)"),
-                    Some(Err(e)) => warn!("mod-dev: the score not used: {e:#}; the project's own plays"),
-                    None => {}
-                }
-                for (track, o) in r.tracks {
-                    match o {
-                        Ok(o) if dd.music.rt.score.is_none() => dd.music.set_track_override(track, o),
-                        Ok(_) => {}
-                        Err(e) => warn!("mod-dev: track {track} not replaced: {e:#}; the project's own plays"),
+        let (shared, race, summary) = (self.shared.clone(), self.race, r.plan.summary(&self.scope));
+        self.game.post(move |_, back| {
+            let Ok(mut shared) = shared.lock() else { return };
+            match &mut shared.engine {
+                Engine::Dd(dd) => {
+                    dd.music.clear_packages();
+                    match r.score {
+                        Some(Ok(s)) => dd.music.set_score(s, "the package's score (reloaded)"),
+                        Some(Err(e)) => {
+                            back_log!(back, warn, "mod-dev: the score not used: {e:#}; the project's own plays")
+                        }
+                        None => {}
+                    }
+                    for (track, o) in r.tracks {
+                        match o {
+                            Ok(o) if dd.music.rt.score.is_none() => dd.music.set_track_override(track, o),
+                            Ok(_) => {}
+                            Err(e) => back_log!(
+                                back,
+                                warn,
+                                "mod-dev: track {track} not replaced: {e:#}; the project's own plays"
+                            ),
+                        }
                     }
                 }
+                Engine::Licensed(lm) => lm.replace_packages(&r.plan.music, race),
             }
-            Engine::Licensed(lm) => lm.replace_packages(&r.plan.music, self.race),
-        }
-        info!("mod-dev: the level's music re-applied ({})", r.plan.summary(&self.scope));
+            back_log!(back, info, "mod-dev: the level's music re-applied ({summary})");
+        });
     }
 }
 
@@ -440,53 +479,64 @@ fn drive_music(
     let setup = steps > 0 && music.last_steps == 0;
     music.last_steps = steps;
     acc.0 += time.delta_secs();
-    let music = &mut *music;
+    let shared = music.shared.clone();
     if !music.dd {
         if setup {
-            let _turn = GameTurn::take();
-            if let Ok(mut shared) = music.shared.lock()
-                && let Engine::Licensed(lm) = &mut shared.engine
-            {
-                lm.event_setup();
-            }
+            music.game.post(move |_, _| {
+                if let Ok(mut shared) = shared.lock()
+                    && let Engine::Licensed(lm) = &mut shared.engine
+                {
+                    lm.event_setup();
+                }
+            });
         }
         return;
     }
-    let _turn = GameTurn::take();
-    let Ok(mut shared) = music.shared.lock() else { return };
-    let Engine::Dd(dd) = &mut shared.engine else { return };
-    if respawned {
-        // TODO(guess): a respawn = an event restart: the module's stop (vtable +0x20) and the objectives rerun; settle: the restart menu's code (the callers of +0x1C / +0x20).
-        dd.module.stop(&mut dd.music.rt);
-        music.restart_in = Some(dd.module.stop_frames.max(1) as f32 * ssx_assets::sfx::UPDATE_PERIOD);
-    }
+    let mut frames = 0u32;
     while acc.0 >= LOGIC_DT {
         acc.0 -= LOGIC_DT;
-        match music.restart_in.as_mut() {
-            Some(t) => {
-                for _ in 0..ssx_assets::music_script::MODULE_FRAMES_PER_STEP {
-                    dd.module.frame(&mut dd.music.rt);
-                }
-                *t -= LOGIC_DT;
-                if *t <= 0.0 {
-                    music.restart_in = None;
-                    if let Some(script) = &music.script {
-                        dd.runner = ScriptRunner::new(script.clone());
+        frames += 1;
+    }
+    if frames == 0 && !respawned {
+        return;
+    }
+    let verbose = music.verbose;
+    music.game.post(move |_, back| {
+        let Ok(mut shared) = shared.lock() else { return };
+        let Shared { engine, script, restart_in, log_from, .. } = &mut *shared;
+        let Engine::Dd(dd) = engine else { return };
+        if respawned {
+            // TODO(guess): a respawn = an event restart: the module's stop (vtable +0x20) and the objectives rerun; settle: the restart menu's code (the callers of +0x1C / +0x20).
+            dd.module.stop(&mut dd.music.rt);
+            *restart_in = Some(dd.module.stop_frames.max(1) as f32 * ssx_assets::sfx::UPDATE_PERIOD);
+        }
+        for _ in 0..frames {
+            match restart_in.as_mut() {
+                Some(t) => {
+                    for _ in 0..ssx_assets::music_script::MODULE_FRAMES_PER_STEP {
+                        dd.module.frame(&mut dd.music.rt);
+                    }
+                    *t -= LOGIC_DT;
+                    if *t <= 0.0 {
+                        *restart_in = None;
+                        if let Some(script) = script {
+                            dd.runner = ScriptRunner::new(script.clone());
+                        }
                     }
                 }
+                None => dd.update(LOGIC_DT, &gs),
             }
-            None => dd.update(LOGIC_DT, &gs),
         }
-    }
-    let log = &dd.music.rt.log;
-    for l in &log[music.log_from.min(log.len())..] {
-        let segment = l.text.contains(" queue n") || l.text.contains(" play n");
-        if music.verbose || !segment {
-            info!("music {:>8.3} s  {}", l.ms as f32 / 1000.0, l.text);
+        let log = &dd.music.rt.log;
+        for l in &log[(*log_from).min(log.len())..] {
+            let segment = l.text.contains(" queue n") || l.text.contains(" play n");
+            if verbose || !segment {
+                back_log!(back, info, "music {:>8.3} s  {}", l.ms as f32 / 1000.0, l.text);
+            }
         }
-    }
-    if log.len() > 4096 {
-        dd.music.rt.log.drain(..2048);
-    }
-    music.log_from = dd.music.rt.log.len();
+        if log.len() > 4096 {
+            dd.music.rt.log.drain(..2048);
+        }
+        *log_from = dd.music.rt.log.len();
+    });
 }

@@ -1,3 +1,4 @@
+use bevy::input::gamepad::{AxisSettings, GamepadSettings};
 use bevy::prelude::*;
 use ssx_physics::rewind::RewindPad;
 use ssx_physics::rider::{Input, TrickInput};
@@ -251,6 +252,26 @@ impl TakeoverPad {
             || stick_matches(self.left_stick, &LEFT_STICK_TAKEOVER)
             || stick_matches(self.right_stick, &RIGHT_STICK_TAKEOVER)
             || self.other_rewind
+    }
+}
+
+// PORT(choice): Bevy's axis settings get the dead zone [0, 0] and the change threshold 0 (its defaults, ±0.05 and 0.01,
+// keep the stored value at rest until it leaves ±0.05 and drop changes under 0.01; `Gamepad::get` is the raw value
+// otherwise). The console's pad read (0x8317ACD8: `XamInputGetState`, each axis `(s + 0.5) / 32767.5` at
+// 0x8317AE08…0x8317AEC8; 0x83178860 zeroes |v| < [+0x2C] and clamps to ±1, and +0x2C is 0.02 from the constructor
+// 0x8317C514 but set to 0 by the input init 0x82BD7B58) reaches `AnalogStickState_SetFromPad` 0x82D94540 every frame
+// (copies 0x82BD6CF0 → 0x8354CA40 → `ClassicGamepad_UpdateFromPad` 0x82D94C88). gilrs (`bevy_gilrs` builds it
+// without its filters) scales the device integer as `(v − min + 1) / ((max − min + 1) / 2) − 1` (Linux) or takes
+// WGI's double (Windows): within one step of the pad's 16 bits of the console's scale, not undone (Bevy hands over no
+// integer).
+pub(super) fn pad_axes_as_read(add: On<Add<GamepadSettings>>, mut pads: Query<&mut GamepadSettings>) {
+    let Ok(mut settings) = pads.get_mut(add.entity) else { return };
+    match AxisSettings::new(-1.0, 0.0, 0.0, 1.0, 0.0) {
+        Ok(axes) => {
+            settings.default_axis_settings = axes;
+            settings.axis_settings.clear();
+        }
+        Err(e) => error!("the pads' axis settings: {e:?}"),
     }
 }
 
@@ -524,6 +545,50 @@ mod tests {
                 live_input(&keys, &pads, false, classic)
             })
             .expect("the live input system")
+    }
+
+    fn stick_sequence(as_read: bool, xs: &[f32]) -> Vec<f32> {
+        use bevy::ecs::system::RunSystemOnce;
+        use bevy::input::gamepad::{
+            GamepadConnection, GamepadConnectionEvent, RawGamepadAxisChangedEvent, RawGamepadEvent,
+        };
+        let mut app = App::new();
+        app.add_plugins(bevy::input::InputPlugin);
+        if as_read {
+            app.add_observer(pad_axes_as_read);
+        }
+        let id = app.world_mut().spawn_empty().id();
+        app.world_mut().write_message(GamepadConnectionEvent::new(
+            id,
+            GamepadConnection::Connected { name: "test pad".into(), vendor_id: None, product_id: None },
+        ));
+        app.update();
+        xs.iter()
+            .map(|&x| {
+                let event = RawGamepadAxisChangedEvent::new(id, GamepadAxis::LeftStickX, x);
+                app.world_mut().write_message(RawGamepadEvent::Axis(event));
+                app.update();
+                app.world_mut()
+                    .run_system_once(|keys: Res<ButtonInput<KeyCode>>, pads: Query<&Gamepad>| {
+                        live_input(&keys, &pads, false, false)
+                    })
+                    .expect("the live input system")
+                    .steer
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_pad_reaches_the_matchers_as_read() {
+        let xs = [0.04, 0.10, 0.30, 0.305, 0.60, 1.0, 0.0];
+        let read = stick_sequence(true, &xs);
+        assert_eq!(read, xs, "the device's values");
+        let matched: Vec<f32> = read.iter().map(|&x| ssx_physics::graph::stick_axes(Vec2::new(x, 0.0)).x).collect();
+        for (m, expected) in matched.iter().zip([0.0, 0.0, 0.05 / 0.75, 0.055 / 0.75, 0.35 / 0.75, 1.0, 0.0]) {
+            assert!((m - expected).abs() < 1e-6, "{matched:?}");
+        }
+        let defaults = stick_sequence(false, &xs);
+        assert_eq!((defaults[0], defaults[3]), (0.0, 0.30), "Bevy's defaults: the rest's ±0.05, the 0.01 threshold");
     }
 
     #[test]

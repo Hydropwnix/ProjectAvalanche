@@ -130,6 +130,25 @@ impl Ride {
             if let Some(pb) = self.pose_blocks.as_mut() {
                 pb.respawned();
             }
+            if let Some(data) = self.session.heli_jump.as_ref().map(|h| h.data.clone())
+                && let Some(mut s) = super::start::ride_from_ghost(
+                    &self.world,
+                    self.event_def.as_ref(),
+                    &self.big_root,
+                    &data,
+                    &mut self.session,
+                    self.heli.as_mut(),
+                    None,
+                )
+            {
+                s.score.boost = self.state.score.boost;
+                s.tricks.classic = self.classic;
+                s.carry_controller_state(&self.state);
+                self.state = s;
+                self.intro = None;
+                self.curr = pose_of(&self.state);
+                (self.prev, self.render) = (self.curr, self.curr);
+            }
         }
     }
 
@@ -198,7 +217,8 @@ impl Ride {
         self.state.grind.pad_l2 = grind_held;
         self.state.grind.pad_l2_hold = self.l2_hold;
         self.state.wingsuit.pad_r1 = wingsuit_held;
-        let pad = RewindPad { flip_accel: input.flip_acceleration(self.classic), rewind_held, ..self.rewind_pad };
+        let pad =
+            RewindPad { flip_accel: input.matched().flip_acceleration(self.classic), rewind_held, ..self.rewind_pad };
         let gate = if at_start { self.start_gate } else { super::live::StartGate::Free };
         let released =
             || (ssx_physics::rider::Input::default(), ssx_physics::rider::TrickInput::default(), RewindPad::default());
@@ -286,6 +306,35 @@ impl Ride {
         let r2 = if held { 0.0 } else { self.r2 };
         let e = self.session.execute_with(&mut self.state, &self.world, &input, &tricks, r2, &pad, graph, &mut actors);
         self.log_messages();
+        // PORT(choice): a test start only (unset in play): at a survive loop's race start the rider is replaced by one
+        // placed on a rival's recording S s before its helicopter contact; the console starts every loop at the top.
+        if e.race_start
+            && self.session.event.loops > 0
+            && let Some(before) = super::start::loop_ghost_start(self.session.event.loops)
+            && let Some(data) = self.session.heli_jump.as_ref().map(|h| h.data.clone())
+            && let Some(mut s) = super::start::ride_from_ghost(
+                &self.world,
+                self.event_def.as_ref(),
+                &self.big_root,
+                &data,
+                &mut self.session,
+                self.heli.as_mut(),
+                Some(before),
+            )
+        {
+            s.carry_game_state(&self.state);
+            s.score.boost = self.state.score.boost;
+            s.tricks.classic = self.classic;
+            s.carry_controller_state(&self.state);
+            self.state = s;
+            self.curr = pose_of(&self.state);
+            (self.prev, self.render) = (self.curr, self.curr);
+            info!(
+                "Ride step {}: SSX_RIDE_FROM_GHOST_LOOPS: loop {} on the recording",
+                self.steps + 1,
+                self.session.event.loops
+            );
+        }
         if let Some(m) = self.map.as_mut() {
             let g = m.gates.update(&mut self.session, self.state.traj);
             if let Some(k) = g.passed {
@@ -447,7 +496,7 @@ impl Ride {
                     {
                         self.cabin_seen = (!assets.nis.cabin.is_empty()).then_some(0);
                         if let Some(a) = anim.as_deref_mut()
-                            && let Err(e) = a.graph_mut().set_intro(&self.big_root, Some(&assets.nis))
+                            && let Err(e) = a.graph_mut().set_intro_assets(&self.big_root, Some(&assets))
                         {
                             warn!("heli jump: the rider's NIS graph failed ({e:#})");
                         }
@@ -539,15 +588,27 @@ impl Ride {
         if matches!(self.clock, Clock::PerFrame { .. }) {
             log_event(self, &e);
         }
-        if matches!(self.clock, Clock::PerFrame { .. }) {
-            if e.rider_dead.is_some() && e.was_alive && !r.active {
-                info!("Ride step {}: MsgRiderDead (death volume) at {:.1}", self.steps + 1, self.state.traj);
-            }
-            match e.timer {
-                DeathTimerEvent::RewoundOutOfDeath => info!("Ride step {}: rewound out of death", self.steps + 1),
-                DeathTimerEvent::EventEnds => info!("Ride step {}: the death timer ended the event", self.steps + 1),
-                DeathTimerEvent::None => {}
-            }
+        if e.event.crossed {
+            info!(
+                "Ride step {}: crossed the finish line at {:.1}, clock {:.3} s (event state {:?})",
+                self.steps + 1,
+                self.state.traj,
+                self.session.event.clock.seconds,
+                self.session.event.state
+            );
+        }
+        if let Some(d) = e.rider_dead.filter(|_| e.was_alive && !r.active) {
+            info!(
+                "Ride step {}: MsgRiderDead {d:?} at {:.1} (event state {:?})",
+                self.steps + 1,
+                self.state.traj,
+                self.session.event.state
+            );
+        }
+        match e.timer {
+            DeathTimerEvent::RewoundOutOfDeath => info!("Ride step {}: rewound out of death", self.steps + 1),
+            DeathTimerEvent::EventEnds => info!("Ride step {}: the death timer ended the event", self.steps + 1),
+            DeathTimerEvent::None => {}
         }
         self.rewind_backwards = r.active && r.speed <= 1.525_878_9e-5;
         if was_air && self.state.state == RideState::Riding && matches!(self.clock, Clock::PerFrame { .. }) {
@@ -620,9 +681,6 @@ fn log_event(ride: &Ride, e: &Execution) {
     }
     if let Some((k, ms)) = e.event.split {
         info!("Ride step {step}: split {k} at {:.2} s", ms as f32 / 1000.0);
-    }
-    if e.event.crossed {
-        info!("Ride step {step}: crossed the finish line at {:.1}, clock {:.3} s", s.traj, ev.clock.seconds);
     }
     if e.event.results
         && let Some(r) = &ev.result

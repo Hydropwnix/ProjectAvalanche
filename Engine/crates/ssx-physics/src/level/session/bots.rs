@@ -77,6 +77,42 @@ pub struct BotRequest {
     pub collision: bool,
     pub tint: u32,
     pub score: u32,
+    pub name: RacerName,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RacerName {
+    Character,
+    Text(&'static str),
+}
+
+pub fn racer_label_colour(tint: u32, alpha: f32) -> u32 {
+    let [_, b1, b2, b3] = tint.to_be_bytes();
+    let a = (alpha.clamp(0.0, 1.0) * 255.0) as u32;
+    a << 24 | u32::from(b3) << 16 | u32::from(b2) << 8 | u32::from(b1)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RacerAlphaInputs {
+    pub world_render_disabled: bool,
+    pub outro_active: bool,
+    pub explore: bool,
+}
+
+pub const RACER_ALPHA_DRAWN_ABOVE: f32 = f32::from_bits(0x3400_0000);
+
+pub fn racer_alpha(
+    racer_type: u32,
+    fade: f32,
+    ready_gate: bool,
+    inputs: RacerAlphaInputs,
+    in_nis: bool,
+    clock_ms: u32,
+) -> f32 {
+    let gated = racer_type == EXPLORE_RACER_TYPE && !ready_gate;
+    let player = inputs.world_render_disabled || (inputs.outro_active && !in_nis);
+    let waiting = inputs.explore && clock_ms == 0;
+    if gated || player || waiting { 0.0 } else { fade }
 }
 
 pub fn bot_requests(
@@ -108,6 +144,7 @@ pub fn bot_requests(
                 collision: true,
                 tint: if generic { GENERIC_TINT } else { BOT_TINT },
                 score: r.score,
+                name: RacerName::Character,
             }
         })
         .collect()
@@ -118,7 +155,8 @@ pub const EXPLORE_RACER_TYPE: u32 = 2;
 pub fn explore_requests(def: &crate::event::EventDef) -> Vec<BotRequest> {
     def.ghost_board()
         .into_iter()
-        .map(|g| {
+        .zip(ssx_assets::ghosts::MEDAL_LABELS)
+        .map(|(g, medal)| {
             let row = g.row.and_then(|i| def.rivals.get(i));
             BotRequest {
                 ghost_id: row.map_or(-1, |r| r.ghost_id),
@@ -129,6 +167,7 @@ pub fn explore_requests(def: &crate::event::EventDef) -> Vec<BotRequest> {
                 collision: false,
                 tint: BOT_TINT,
                 score: row.map_or(0, |r| r.score),
+                name: RacerName::Text(medal),
             }
         })
         .collect()
@@ -278,12 +317,37 @@ pub struct Bot {
 
 pub const GHOST_GRINDING_DISTANCE: f32 = 20.0;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GhostLatches {
+    pub hud_list: bool,
+    pub ready_latch: bool,
+}
+
+impl GhostLatches {
+    pub fn update(&mut self, race_start: bool, ready_loop: bool) -> Option<bool> {
+        if race_start {
+            self.hud_list = true;
+        }
+        if self.hud_list {
+            return None;
+        }
+        self.ready_latch |= ready_loop;
+        Some(self.ready_latch)
+    }
+
+    pub fn on_results(&mut self) {
+        *self = Self::default();
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct BotRace {
     pub bots: Vec<Bot>,
     pub wipeout: Option<std::sync::Arc<wipeout::WipeoutFlow>>,
     pub course: Option<crate::event::Course>,
     pub running: bool,
+    pub ready_gate: bool,
+    pub explore_mode: bool,
     pub forced_wipeout: Option<usize>,
     pub scores: Vec<u32>,
     pub live: Vec<live::LiveRacer>,
@@ -438,7 +502,7 @@ impl BotRace {
     }
 
     pub fn reset(&mut self) {
-        self.running = false;
+        (self.running, self.ready_gate) = (false, false);
         for b in &mut self.bots {
             b.clock = BotClock::default();
             b.position = Vec3::from_array(b.replay.position(0.0));

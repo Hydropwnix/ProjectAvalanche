@@ -39,7 +39,7 @@ mod stage;
 mod window;
 mod world;
 
-pub use check::{UiPipelinesReady, WorldCheck, report_pipelines, screenshot, ui_cover};
+pub use check::{UiPipelinesReady, WorldCheck, report_pipelines, ride_shot_path, screenshot, ui_cover};
 pub use display::{DisplayCli, DisplayState, WindowSpec, alt_held, print_displays};
 use frame::{shell_input, shell_step};
 pub use live::shown_text;

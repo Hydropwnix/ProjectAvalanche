@@ -9,13 +9,13 @@ use bevy::render::render_resource::{
     SpecializedMeshPipelineError, TextureFormat,
 };
 use bevy::render::storage::ShaderBuffer;
-use bevy::shader::ShaderRef;
+use bevy::shader::{ShaderRef, load_shader_library};
 
 use crate::render::lighting::game::GameLightUniform;
 use crate::render::shadows::{ShadowPassKey, specialize_shadow_pass};
 
 const SHADER_PATH: &str = "embedded://ssx_bevy/render/objects/object.wesl";
-pub const SHADOW_ALPHA_PATH: &str = "embedded://ssx_bevy/render/objects/shadow_alpha.wesl";
+const GBUFFER_PATH: &str = "embedded://ssx_bevy/render/objects/object_gbuffer.wesl";
 
 pub const PLACEMENT_BUFFER: Handle<ShaderBuffer> = uuid_handle!("4b5d0a52-8a3e-4f63-9a51-1d9e1f2c6b70");
 
@@ -59,7 +59,9 @@ pub struct ObjectMaterialPlugin;
 impl Plugin for ObjectMaterialPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "object.wesl");
-        embedded_asset!(app, "shadow_alpha.wesl");
+        load_shader_library!(app, "shadow_alpha.wesl");
+        load_shader_library!(app, "object_normal.wesl");
+        embedded_asset!(app, "object_gbuffer.wesl");
         embedded_asset!(app, "object_prepass.wesl");
         app.add_plugins(MaterialPlugin::<ObjectMaterial>::default()).add_systems(Update, follow_hooks);
         if let Some(mut buffers) = app.world_mut().get_resource_mut::<Assets<ShaderBuffer>>() {
@@ -136,6 +138,8 @@ pub const LDR_FRAME_FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
 
 pub const LDR_PIPELINE_LABEL: &str = "ssx_translucent_low_lod_ldr";
 
+pub const LDR_POST_PARTICLES_LABEL: &str = "ssx_translucent_post_particles_ldr";
+
 pub const LDR_TONEMAP_BUFFER: Handle<ShaderBuffer> = uuid_handle!("9f3e2a61-5b7c-4d1e-8a20-6c4b3d2e1f90");
 pub const LDR_TONEMAP_BYTES: u64 = 48;
 pub const LDR_TONEMAP_EXPOSURE_OFFSET: u64 = 36;
@@ -150,7 +154,7 @@ impl MaterialExtension for ObjectExtension {
     }
 
     fn prepass_fragment_shader() -> ShaderRef {
-        SHADOW_ALPHA_PATH.into()
+        GBUFFER_PATH.into()
     }
 
     fn specialize(
@@ -160,6 +164,7 @@ impl MaterialExtension for ObjectExtension {
         key: MaterialExtensionKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
         specialize_shadow_pass(descriptor, key.mesh_key, key.bind_group_data.shadow);
+        crate::render::gbuffer::specialize_main_pass(descriptor);
         crate::render::lighting::game::specialize_game_vertex(descriptor, 100);
         let blend = key.mesh_key.intersection(MeshPipelineKey::BLEND_RESERVED_BITS) == MeshPipelineKey::BLEND_ALPHA;
         if blend && let Some(depth) = descriptor.depth_stencil.as_mut() {
@@ -183,6 +188,7 @@ impl MaterialExtension for ObjectExtension {
 fn specialize_hook(descriptor: &mut RenderPipelineDescriptor, hash: u64) {
     use crate::render::hooks::runtime::{admit, hook_defs, variant_shader};
     const PREPASS: &str = "render/objects/object_prepass.wesl";
+    const GBUFFER: &str = "render/objects/object_gbuffer.wesl";
     const FRAGMENT: &str = "render/objects/object.wesl";
     const VERTEX: &str = "render/lighting/game_vertex.wesl";
     let Some(flags) = hook_defs(hash) else { return };
@@ -202,6 +208,16 @@ fn specialize_hook(descriptor: &mut RenderPipelineDescriptor, hash: u64) {
             if admit(hash, PREPASS, &defs) {
                 descriptor.vertex.shader = shader;
                 descriptor.vertex.shader_defs = defs;
+            }
+        }
+        if crate::render::gbuffer::is_normal_prepass(descriptor)
+            && let Some((shader, true, _)) = variant_shader(hash, GBUFFER)
+            && let Some(f) = descriptor.fragment.as_mut()
+        {
+            let defs = with_flags(&f.shader_defs);
+            if admit(hash, GBUFFER, &defs) {
+                f.shader = shader;
+                f.shader_defs = defs;
             }
         }
         return;

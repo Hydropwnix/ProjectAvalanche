@@ -242,6 +242,16 @@ pub fn pick_event<'a>(events: &'a [EventDef], drop_key: u32, want: &str) -> Opti
     choose_event(events.iter().filter(|e| e.drop_key == drop_key), want)
 }
 
+pub fn level_event(events: &[EventDef], launched: Option<u32>, want: impl FnOnce() -> String) -> Option<&EventDef> {
+    match launched {
+        Some(key) => events.iter().find(|e| e.key == key),
+        None => match want().as_str() {
+            "none" => None,
+            want => choose_event(events.iter(), want),
+        },
+    }
+}
+
 pub fn choose_event<'a>(events: impl Iterator<Item = &'a EventDef>, want: &str) -> Option<&'a EventDef> {
     // PORT(choice): which of a drop's events plays without a front end (by type, one with `ghostdb.csv` rows of
     // starting index 0 first: the Explore events'), the port hosts' choice; the game's front end has the player pick a

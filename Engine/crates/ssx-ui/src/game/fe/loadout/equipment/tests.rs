@@ -323,3 +323,43 @@ fn a_purchase_keeps_the_store_order_and_the_front_special() {
     assert_eq!(inv.store.shown_special, None);
     assert_eq!(keys(&inv.owned_list)[..2], [equip_special, equip_id]);
 }
+
+#[test]
+fn a_bought_item_is_owned_once_after_the_rider_is_chosen_again() {
+    use ssx_assets::career::store::{Store, StoreData};
+    let db = CareerDb::default();
+    let mut profile = Profile::default();
+    profile.add_credits(1_000_000, true);
+    for slot in [1, 3] {
+        profile.add_gear_type(slot);
+    }
+    let mut loc = Localization::empty(Language::English);
+    let mut group = gear_template(100, -1);
+    group.members = vec![1, 3];
+    let mut data = StoreData {
+        templates: [(1, gear_template(1, 1)), (3, gear_template(3, 3)), (100, group)].into(),
+        ..Default::default()
+    };
+    data.tables.groups = vec![0, 0, 100, 0, 0];
+    data.tables.durations = vec![10, 30, 90];
+    let mut inv = Inventory::new(&db);
+    (inv.data, inv.store) = (data.clone(), Store::new(11));
+    inv.select_rider(&db, &profile, 0, 9);
+    let ctx = inv.store_context(&db, &profile, None);
+    inv.build_lists(&db, &profile, &mut loc, None, &ctx, 2);
+    let bought = inv.store_list.iter().map(|u| u.key).min().expect("offers");
+    assert!(inv.store.stock[2].iter().any(|o| o.id > bought), "an offer after the bought one gets renumbered");
+    let equip_id = profile
+        .buy_offer(&mut inv.store, &data, &ctx, OfferPurchase { kind: 2, id: bought, clock_s: 1, now_ms: 0 })
+        .unwrap();
+    inv.put_bought_first(&db, &profile, &mut loc, None, 2, (bought, 1));
+    inv.refresh_lists(&db, &profile, &mut loc, None, &ctx, 2);
+    assert_eq!(keys(&inv.owned_list), [equip_id]);
+
+    inv.select_rider(&db, &profile, 0, 9);
+    let ctx = inv.store_context(&db, &profile, None);
+    inv.build_lists(&db, &profile, &mut loc, None, &ctx, 2);
+    assert_eq!(keys(&inv.owned_list), [equip_id], "owned once, not twice");
+    let reused = inv.store_list.iter().find(|u| u.key == bought).expect("the offer with the bought id is on sale");
+    assert!(!reused.has(flag::AVAILABLE), "an offer, not owned");
+}

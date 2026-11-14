@@ -26,6 +26,7 @@ pub struct IntroChoice {
     pub origin: SceneOrigin,
     pub locator_alternate: Option<String>,
     pub variant: IntroVariant,
+    pub binds_ghost: bool,
 }
 
 pub fn intro_of_probe(p: &crate::objectives::Probe) -> Option<IntroChoice> {
@@ -48,6 +49,7 @@ pub fn intro_of_probe(p: &crate::objectives::Probe) -> Option<IntroChoice> {
         origin,
         locator_alternate: r.locator_alternate.as_ref().map(|n| n.text.to_string()),
         variant: if snow { IntroVariant::Snow } else { IntroVariant::Heli },
+        binds_ghost: crate::objectives::binds_role(r, ssx_assets::nis::ROLE_GHOST1),
     })
 }
 
@@ -90,6 +92,7 @@ pub struct IntroAssets {
     pub jump_clips: Vec<usize>,
     pub event: String,
     pub heli: Result<ssx_assets::helicopter::HeliChoice, String>,
+    pub loaded: Option<Arc<ssx_assets::anim_db::AssetDb>>,
 }
 
 impl IntroAssets {
@@ -161,7 +164,7 @@ pub fn prepare_choice(
     }
     let first = clips.iter().position(|c| c.name == rider.clip.name).unwrap_or(0);
     let jump_clip = jump_clips[first];
-    Ok(Arc::new(IntroAssets { choice, nis, jump_clip, jump_clips, event: event.to_string(), heli }))
+    Ok(Arc::new(IntroAssets { choice, nis, jump_clip, jump_clips, event: event.to_string(), heli, loaded: None }))
 }
 
 pub fn profile_path(
@@ -263,6 +266,7 @@ pub struct IntroState {
     rider_random: u32,
     fades: Vec<SceneFade>,
     ghost_root: Option<(Rt, SceneRef, f32)>,
+    ghost_bound: bool,
     hold: RoundHold,
     fresh: bool,
 }
@@ -317,6 +321,7 @@ impl IntroState {
         if let Some(a) = assets.nis.ready.actor(ROLE_CHARACTER1).filter(|a| a.choices.len() > 1 && seed.is_some()) {
             rider_pick = random_pick(&mut rider_random, &a.choices.iter().map(|c| c.1).collect::<Vec<_>>());
         }
+        let ghost_bound = assets.choice.binds_ghost;
         Some(Self {
             scene: if direct { Scene::Jump { ticks: 0.0 } } else { Scene::Ready { ticks: 0.0 } },
             assets,
@@ -336,6 +341,7 @@ impl IntroState {
             rider_random,
             fades: Vec::new(),
             ghost_root: None,
+            ghost_bound,
             hold: RoundHold::Off,
             fresh: true,
         })
@@ -355,7 +361,9 @@ impl IntroState {
     }
 
     pub fn in_ready_loop(&self) -> bool {
-        self.cabin.is_none() && matches!(self.scene, Scene::Ready { .. })
+        self.cabin.is_none()
+            && matches!(self.scene, Scene::Ready { .. })
+            && self.signals().iter().any(|s| s == "BLN_IsNisReadyLoop")
     }
 
     pub fn waits_for_go(&self) -> bool {
@@ -692,6 +700,12 @@ EndObjective()"#;
         assert_eq!(i.origin, SceneOrigin::LevelStart);
         assert_eq!(i.locator_alternate.as_deref(), Some("nis_intro_locator"));
         assert_eq!(i.variant, IntroVariant::Heli);
+        assert!(!i.binds_ghost);
+        let lhotse = race.replace(
+            r#"{ {role = "Character",  entity = "Player1"} }"#,
+            r#"{ {role = "Character",  entity = "Player1"}, {role = "Ghost", entitySet = "ghost", index = 0} }"#,
+        );
+        assert!(intro_of_script("eventtype_dd_lhotse.lua", &lhotse).expect("intro").binds_ghost);
         let snow = format!(
             "BeginObjective(\"x\")\n\tDO_SetGameStateValue(\"Player1\", \tBLN_NisSnowStart, true)\n{}",
             &race[race.find("\tDO_PlayNis").unwrap_or(0)..]

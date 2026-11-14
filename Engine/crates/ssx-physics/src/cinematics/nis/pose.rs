@@ -144,15 +144,23 @@ impl IntroState {
     }
 
     pub fn ghost(&self) -> Option<(&str, f32, Rt)> {
+        if !self.ghost_bound {
+            return None;
+        }
         let s = self.side();
         let a = self.scene_of(s.scene).actor(ROLE_GHOST1)?;
         let (root, _, _) = self.ghost_root?;
         Some((self.side_clip(&s, a).name.as_str(), self.side_time(&s), root))
     }
 
+    pub fn bind_ghost(&mut self, bound: bool) {
+        self.ghost_bound = bound;
+        self.update_ghost();
+    }
+
     pub(super) fn update_ghost(&mut self) {
         let s = self.side();
-        let Some(a) = self.scene_of(s.scene).actor(ROLE_GHOST1) else {
+        let Some(a) = self.scene_of(s.scene).actor(ROLE_GHOST1).filter(|_| self.ghost_bound) else {
             self.ghost_root = None;
             return;
         };

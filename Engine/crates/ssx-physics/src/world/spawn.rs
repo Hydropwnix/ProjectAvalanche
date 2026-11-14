@@ -373,6 +373,11 @@ pub fn apply_lighting(
     crate::guess_hit!();
     d.night = preset.and_then(|p| p.float("isNightCondition")).is_some_and(|v| v > 0.0);
     d.head_lamp_scale = preset.and_then(|p| p.float("headLampScaleFactor")).unwrap_or(0.0);
+    d.whiteout_lighting = preset.is_some_and(|p| {
+        let hex = p.name.strip_prefix("0x").and_then(|h| u32::from_str_radix(h, 16).ok());
+        let key = hex.unwrap_or_else(|| ssx_formats::attrib::fnv1(p.name.as_bytes()));
+        ssx_assets::postfx_topogrid::WHITEOUT_CONDITIONS.iter().any(|w| ssx_formats::attrib::fnv1(w.as_bytes()) == key)
+    });
 }
 
 #[cfg(test)]

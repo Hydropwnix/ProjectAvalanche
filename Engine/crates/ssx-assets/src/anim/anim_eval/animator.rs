@@ -51,6 +51,18 @@ impl Animator {
         }
     }
 
+    pub fn exit(&mut self) {
+        let env = Env {
+            g: &self.graph,
+            clips: &self.clips,
+            clip_index: &self.clip_index,
+            bind: &self.bind,
+            rig: &self.rig,
+            physics: self.physics.as_ref(),
+        };
+        self.root.exit(&env, &self.gs);
+    }
+
     pub fn set_physics(&mut self, physics: Option<StepPhysics>) {
         self.physics = physics;
     }

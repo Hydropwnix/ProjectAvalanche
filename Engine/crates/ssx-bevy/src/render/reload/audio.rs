@@ -9,6 +9,7 @@ use ssx_assets::content::audio::SoundDecision;
 use ssx_content::Kind;
 
 use super::{ContentReload, ReloadState};
+use crate::audio::music::back_log;
 use crate::audio::music::frontend::{FrontEndAudio, FrontEndReload};
 use crate::audio::music::{GameAudio, Music, MusicReload};
 use crate::audio::sfx_input::SpeechLanguage;
@@ -51,15 +52,14 @@ pub(super) fn follow(
         *pending = None;
         let started = std::time::Instant::now();
         if let Some(g) = &game {
-            let _turn = crate::audio::music::GameTurn::take();
-            if let Ok(mut m) = g.out.lock()
-                && let Some(e) = m.sfx.as_mut()
-            {
-                let d = if level.is_some() { &got.level } else { &got.front_end };
-                for id in e.set_overrides(&d.sounds) {
-                    info!("mod-dev: {id}: no interface of the engine defines it");
+            let sounds = if level.is_some() { got.level.sounds.clone() } else { got.front_end.sounds.clone() };
+            g.post(move |m, back| {
+                if let Some(e) = m.sfx.as_mut() {
+                    for id in e.set_overrides(&sounds) {
+                        back_log!(back, info, "mod-dev: {id}: no interface of the engine defines it");
+                    }
                 }
-            }
+            });
         }
         if let Some(fe) = &fe {
             fe.set_unplugged_sounds(&got.front_end.sounds);

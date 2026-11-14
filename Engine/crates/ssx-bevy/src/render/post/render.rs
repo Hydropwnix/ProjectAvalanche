@@ -1,4 +1,5 @@
 use bevy::core_pipeline::core_3d::{Transparent3d, main_transparent_pass_3d};
+use bevy::core_pipeline::prepass::ViewPrepassTextures;
 use bevy::core_pipeline::tonemapping::tonemapping;
 use bevy::core_pipeline::{Core3d, Core3dSystems, FullscreenShader};
 use bevy::image::ImageSamplerDescriptor;
@@ -9,7 +10,8 @@ use bevy::render::extract_resource::ExtractResourcePlugin;
 use bevy::render::render_asset::RenderAssets;
 use bevy::render::render_phase::{SortedRenderPhase, ViewSortedRenderPhases};
 use bevy::render::render_resource::binding_types::{
-    sampler, storage_buffer_read_only_sized, storage_buffer_sized, texture_2d, texture_3d, uniform_buffer,
+    sampler, storage_buffer_read_only_sized, storage_buffer_sized, texture_2d, texture_3d, texture_depth_2d,
+    uniform_buffer,
 };
 use bevy::render::render_resource::*;
 use bevy::render::renderer::{RenderContext, RenderDevice, RenderQueue, ViewQuery};
@@ -21,8 +23,11 @@ use bevy::shader::Shader;
 
 use super::adapt::{AdaptMode, HdrAdaptation};
 use super::overlay::{OverlayUniform, PostOverlay};
+use super::topogrid::{PostTopogrid, TopogridUniform};
 use super::{GamePostCamera, PostSettings, PostUniform};
-use crate::render::objects::material::{LDR_PIPELINE_LABEL, LDR_TONEMAP_BUFFER, LDR_TONEMAP_EXPOSURE_OFFSET};
+use crate::render::objects::material::{
+    LDR_PIPELINE_LABEL, LDR_POST_PARTICLES_LABEL, LDR_TONEMAP_BUFFER, LDR_TONEMAP_EXPOSURE_OFFSET,
+};
 
 const SHADER_DIR: &str = "embedded://ssx_bevy/render/post/";
 const QUARTER_FORMAT: TextureFormat = TextureFormat::Rgba16Float;
@@ -57,9 +62,11 @@ pub(super) fn build(app: &mut App) {
 
 #[derive(Resource)]
 struct PostPipelines {
-    _common: Handle<Shader>,
     sampler: Sampler,
     overlay_sampler: Sampler,
+    topogrid_sampler: Sampler,
+    blank_depth: TextureView,
+    blank_normal: TextureView,
     fxaa_sampler: Sampler,
     downsample_layout: BindGroupLayoutDescriptor,
     fxaa_layout: BindGroupLayoutDescriptor,
@@ -130,6 +137,11 @@ fn init_pipelines(
                 texture_2d(float),
                 texture_2d(float),
                 sampler(SamplerBindingType::Filtering),
+                uniform_buffer::<TopogridUniform>(false),
+                texture_2d(float),
+                sampler(SamplerBindingType::Filtering),
+                texture_depth_2d(),
+                texture_2d(float),
             ),
         ),
     );
@@ -165,9 +177,11 @@ fn init_pipelines(
         })
     };
     let pipelines = PostPipelines {
-        _common: shader("post_common"),
         sampler: device.create_sampler(&post_sampler()),
         overlay_sampler: device.create_sampler(&overlay_sampler()),
+        topogrid_sampler: device.create_sampler(&topogrid_sampler()),
+        blank_depth: blank_view(&device, "ssx_post_blank_depth", TextureFormat::Depth32Float),
+        blank_normal: blank_view(&device, "ssx_post_blank_normal", TextureFormat::Rgb10a2Unorm),
         fxaa_sampler: device.create_sampler(&fxaa_sampler()),
         downsample: render("ssx_post_downsample", &downsample_layout, "post_downsample", "downsample", QUARTER_FORMAT),
         threshold: render("ssx_post_threshold", &bloom_layout, "post_bloom", "threshold", BLOOM_FORMAT),
@@ -198,6 +212,7 @@ struct ViewTargets {
     exposure: Buffer,
     uniform: UniformBuffer<PostUniform>,
     overlay: UniformBuffer<OverlayUniform>,
+    topogrid: UniformBuffer<TopogridUniform>,
     fresh: bool,
     complete: bool,
 }
@@ -245,6 +260,7 @@ fn create_targets(device: &RenderDevice, size: UVec2) -> ViewTargets {
         exposure: buffer("ssx_post_exposure", EXPOSURE_BYTES),
         uniform: UniformBuffer::default(),
         overlay: UniformBuffer::default(),
+        topogrid: UniformBuffer::default(),
         fresh: true,
         complete: false,
     }
@@ -252,9 +268,10 @@ fn create_targets(device: &RenderDevice, size: UVec2) -> ViewTargets {
 
 #[allow(clippy::too_many_arguments)]
 fn prepare_targets(
-    views: Query<(Entity, &ViewTarget), With<GamePostCamera>>,
+    views: Query<(Entity, &ViewTarget, &ExtractedView), With<GamePostCamera>>,
     settings: Option<Res<PostSettings>>,
     overlay: Option<Res<PostOverlay>>,
+    topogrid: Option<Res<PostTopogrid>>,
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
     cache: Res<PipelineCache>,
@@ -274,7 +291,7 @@ fn prepare_targets(
     }
     let loading = cache.waiting_pipelines().next().is_some() || !settings.scene_ready;
     targets.0.retain(|e, _| views.contains(*e));
-    for (entity, view) in &views {
+    for (entity, view, extracted) in &views {
         let s = view.main_texture().size();
         let size = UVec2::new(s.width, s.height);
         if targets.0.get(&entity).is_none_or(|t| t.size != size) {
@@ -302,7 +319,27 @@ fn prepare_targets(
         t.uniform.write_buffer(&device, &queue);
         t.overlay.set(overlay.as_ref().map_or_else(OverlayUniform::default, |o| o.uniform));
         t.overlay.write_buffer(&device, &queue);
+        let mut topo = topogrid.as_ref().map_or_else(TopogridUniform::default, |g| g.uniform);
+        topo.world_from_clip = extracted.world_from_view.to_matrix() * extracted.clip_from_view.inverse();
+        topo.back = extracted.world_from_view.back().as_vec3().extend(0.0);
+        t.topogrid.set(topo);
+        t.topogrid.write_buffer(&device, &queue);
     }
+}
+
+fn blank_view(device: &RenderDevice, label: &'static str, format: TextureFormat) -> TextureView {
+    device
+        .create_texture(&TextureDescriptor {
+            label: Some(label),
+            size: Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format,
+            usage: TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+        .create_view(&TextureViewDescriptor::default())
 }
 
 fn fullscreen_pass(
@@ -333,11 +370,12 @@ fn fullscreen_pass(
 #[allow(clippy::too_many_arguments)]
 fn post_chain(
     world: &World,
-    view: ViewQuery<(&ViewTarget, &ViewDepthStencilTexture), With<GamePostCamera>>,
+    view: ViewQuery<(&ViewTarget, &ViewDepthStencilTexture, Option<&ViewPrepassTextures>), With<GamePostCamera>>,
     pipelines: Option<Res<PostPipelines>>,
     targets: Res<PostTargets>,
     settings: Option<Res<PostSettings>>,
     overlay: Option<Res<PostOverlay>>,
+    topogrid: Option<Res<PostTopogrid>>,
     images: Res<RenderAssets<GpuImage>>,
     shader_buffers: Res<RenderAssets<GpuShaderBuffer>>,
     ldr: Res<LdrTranslucents>,
@@ -352,7 +390,7 @@ fn post_chain(
     let Some(t) = targets.0.get(&view_entity) else {
         return;
     };
-    let (target, depth) = view.into_inner();
+    let (target, depth, prepass) = view.into_inner();
     if target.main_texture_format() != HDR_FORMAT {
         return;
     }
@@ -375,6 +413,11 @@ fn post_chain(
     let Some(maps) = overlay.and_then(|o| Some([images.get(&o.maps[0])?, images.get(&o.maps[1])?])) else {
         return;
     };
+    let Some(grid) = topogrid.and_then(|g| images.get(&g.grid)) else {
+        return;
+    };
+    let gbuffer_depth = prepass.and_then(ViewPrepassTextures::depth_only_view).unwrap_or(&p.blank_depth);
+    let gbuffer_normal = prepass.and_then(ViewPrepassTextures::normal_view).unwrap_or(&p.blank_normal);
     let device = ctx.render_device().clone();
     let layout = |l: &BindGroupLayoutDescriptor| cache.get_bind_group_layout(l);
     let post = target.post_process_write();
@@ -455,17 +498,27 @@ fn post_chain(
                 &maps[0].texture_view,
                 &maps[1].texture_view,
                 &p.overlay_sampler,
+                &t.topogrid,
+                &grid.texture_view,
+                &p.topogrid_sampler,
+                gbuffer_depth,
+                gbuffer_normal,
             )),
         )
     };
     fullscreen_pass(&mut ctx, "ssx_post_tonemap", &t.frame, tonemap, &final_bg("ssx_post_tonemap", post.source));
-    if let Some(tonemap_buffer) = shader_buffers.get(&LDR_TONEMAP_BUFFER) {
-        draw_ldr_translucents(world, &mut ctx, &ldr, view_entity, depth, &t.frame, &t.exposure, &tonemap_buffer.buffer);
+    if let Some(tonemap_buffer) = shader_buffers.get(&LDR_TONEMAP_BUFFER)
+        && !ldr.pre.items.is_empty()
+    {
+        let tonemap = &tonemap_buffer.buffer;
+        ctx.command_encoder().copy_buffer_to_buffer(&t.exposure, 8, tonemap, LDR_TONEMAP_EXPOSURE_OFFSET, 4);
+        draw_ldr_translucents(world, &mut ctx, &ldr.pre, LDR_PIPELINE_LABEL, view_entity, depth, &t.frame);
     }
     if let Some(post_uniform) = t.uniform.binding() {
         let bloom = (settings.uniform.bloom.z != 0.0).then_some(&t.bloom_a);
         crate::particles::render::draw(world, &mut ctx, depth, &t.frame, bloom, post_uniform, &t.exposure);
     }
+    draw_ldr_translucents(world, &mut ctx, &ldr.post, LDR_POST_PARTICLES_LABEL, view_entity, depth, &t.frame);
     let fxaa_bg = device.create_bind_group(
         "ssx_post_fxaa",
         &layout(&p.fxaa_layout),
@@ -508,6 +561,25 @@ fn overlay_sampler() -> SamplerDescriptor<'static> {
     }
 }
 
+fn topogrid_sampler() -> SamplerDescriptor<'static> {
+    let technique = "BASE_BLOOM_COLOURLOOKUP_TOPOGRID";
+    match crate::render::fx_states::sampler("postfx", technique, "topogrid_sampler").and_then(|s| s.descriptor()) {
+        Ok(d) => SamplerDescriptor { label: Some("ssx_post_topogrid"), ..d.as_wgpu() },
+        Err(e) => {
+            warn!("postfx.fxo topogrid sampler states unavailable ({e:#}); wrap + linear");
+            SamplerDescriptor {
+                label: Some("ssx_post_topogrid"),
+                address_mode_u: AddressMode::Repeat,
+                address_mode_v: AddressMode::Repeat,
+                mag_filter: FilterMode::Linear,
+                min_filter: FilterMode::Linear,
+                mipmap_filter: MipmapFilterMode::Linear,
+                ..default()
+            }
+        }
+    }
+}
+
 fn post_sampler() -> SamplerDescriptor<'static> {
     let technique = "BASE_BLOOM_COLOURLOOKUP";
     let states = ["bloom_glowmap_sampler", "colourLookupSampler1"]
@@ -533,14 +605,25 @@ fn post_sampler() -> SamplerDescriptor<'static> {
 #[derive(Resource, Default)]
 struct LdrTranslucents {
     view: Option<RetainedViewEntity>,
-    phase: SortedRenderPhase<Transparent3d>,
+    pre: SortedRenderPhase<Transparent3d>,
+    post: SortedRenderPhase<Transparent3d>,
 }
 
-fn is_ldr_pipeline(cache: &PipelineCache, id: CachedRenderPipelineId) -> bool {
+fn ldr_pass(cache: &PipelineCache, id: CachedRenderPipelineId) -> Option<LdrPass> {
     if matches!(cache.get_render_pipeline_state(id), CachedPipelineState::Queued) {
-        return false;
+        return None;
     }
-    cache.get_render_pipeline_descriptor(id).label.as_deref() == Some(LDR_PIPELINE_LABEL)
+    match cache.get_render_pipeline_descriptor(id).label.as_deref() {
+        Some(LDR_PIPELINE_LABEL) => Some(LdrPass::PreParticles),
+        Some(LDR_POST_PARTICLES_LABEL) => Some(LdrPass::PostParticles),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LdrPass {
+    PreParticles,
+    PostParticles,
 }
 
 fn take_ldr_translucents(
@@ -552,10 +635,14 @@ fn take_ldr_translucents(
     let retained = view.into_inner().retained_view_entity;
     let Some(phase) = phases.get_mut(&retained) else { return };
     let keys: Vec<_> =
-        phase.items.iter().filter(|(_, item)| is_ldr_pipeline(&cache, item.pipeline)).map(|(k, _)| *k).collect();
-    for key in keys {
+        phase.items.iter().filter_map(|(k, item)| ldr_pass(&cache, item.pipeline).map(|pass| (*k, pass))).collect();
+    for (key, pass) in keys {
         if let Some(item) = phase.items.shift_remove(&key) {
-            ldr.phase.items.insert(key, item);
+            let target = match pass {
+                LdrPass::PreParticles => &mut ldr.pre,
+                LdrPass::PostParticles => &mut ldr.post,
+            };
+            target.items.insert(key, item);
         }
     }
     ldr.view = Some(retained);
@@ -566,29 +653,28 @@ fn restore_ldr_translucents(
     mut ldr: ResMut<LdrTranslucents>,
 ) {
     let Some(retained) = ldr.view.take() else { return };
-    let items = std::mem::take(&mut ldr.phase.items);
+    let pre = std::mem::take(&mut ldr.pre.items);
+    let post = std::mem::take(&mut ldr.post.items);
     if let Some(phase) = phases.get_mut(&retained) {
-        phase.items.extend(items);
+        phase.items.extend(pre);
+        phase.items.extend(post);
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn draw_ldr_translucents(
     world: &World,
     ctx: &mut RenderContext,
-    ldr: &LdrTranslucents,
+    phase: &SortedRenderPhase<Transparent3d>,
+    label: &'static str,
     view_entity: Entity,
     depth: &ViewDepthStencilTexture,
     frame: &TextureView,
-    exposure: &Buffer,
-    tonemap: &Buffer,
 ) {
-    if ldr.phase.items.is_empty() {
+    if phase.items.is_empty() {
         return;
     }
-    ctx.command_encoder().copy_buffer_to_buffer(exposure, 8, tonemap, LDR_TONEMAP_EXPOSURE_OFFSET, 4);
     let mut pass = ctx.begin_tracked_render_pass(RenderPassDescriptor {
-        label: Some("ssx_translucent_low_lod_ldr"),
+        label: Some(label),
         color_attachments: &[Some(RenderPassColorAttachment {
             view: frame,
             depth_slice: None,
@@ -600,7 +686,7 @@ fn draw_ldr_translucents(
         occlusion_query_set: None,
         multiview_mask: None,
     });
-    if let Err(e) = ldr.phase.render(&mut pass, world, view_entity) {
-        error!("translucent_low_lod LDR pass: {e:?}");
+    if let Err(e) = phase.render(&mut pass, world, view_entity) {
+        error!("{label} pass: {e:?}");
     }
 }

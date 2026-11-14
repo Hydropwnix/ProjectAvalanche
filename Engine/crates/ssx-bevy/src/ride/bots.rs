@@ -13,6 +13,7 @@ use ssx_assets::content::characters::budget::RiderLooks;
 use ssx_assets::content::characters::dress::LookChoice;
 use ssx_assets::ghosts::{GhostAnimation, GhostRig, load_bot_model};
 use ssx_content::{ContentId, Kind};
+use ssx_physics::session::bots::{RACER_ALPHA_DRAWN_ABOVE, RacerAlphaInputs, racer_alpha};
 
 use crate::render::lighting::GameLighting;
 use crate::render::lighting::game::GameLightAssets;
@@ -81,12 +82,14 @@ pub(super) struct BotVisual {
     materials: Vec<Handle<CharacterMaterial>>,
     racer_type: u32,
     fade: HoloFade,
+    alpha: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 struct HoloFade {
     frames: u32,
     fade: f32,
+    alpha: f32,
 }
 
 impl HoloFade {
@@ -99,6 +102,7 @@ impl HoloFade {
         if racers > RACER_POOL && d2 > 9025.0 {
             fade = fade.min(1.0 - ((d2 - 9025.0) / 975.0).clamp(0.0, 1.0));
         }
+        self.alpha = fade;
         // TODO(guess): beyond 4 racers the off-screen fade (0x829E97E8) is not applied and a removed racer is hidden at once (0x82501F98); settle: `GhostManager_FeedPlayback` 0x824B5E50's removal against the record's flags.
         let t = ((d2 - 4.0) / 12.0).clamp(0.0, 1.0);
         let x = 1.0 - (3.0 - 2.0 * t) * t * t;
@@ -114,7 +118,7 @@ pub struct Bots {
     list: Vec<BotVisual>,
     pub boards: Vec<Option<JointRecord>>,
     pub trajectories: Vec<Option<JointRecord>>,
-    nis_db: Option<(String, AssetDb)>,
+    nis_db: Option<(String, std::sync::Arc<AssetDb>)>,
     floats: Vec<String>,
     rng: ssx_assets::career::random::GlobalRandom,
     board_mesh: Option<(Handle<Mesh>, Handle<CharacterMaterial>)>,
@@ -583,6 +587,7 @@ impl RacerSpawner<'_, '_> {
             materials,
             racer_type: b.racer_type,
             fade: HoloFade::default(),
+            alpha: 0.0,
         }
     }
 }
@@ -634,20 +639,36 @@ fn update(
     if let Some((i, _)) = ghost
         && nis_db.as_ref().is_none_or(|(b, _)| *b != i.assets.nis.binding)
     {
-        let dir = ride.big_root.join(ssx_assets::rig_anim::ANIM_DIR);
-        let bundles: Vec<&str> = i.assets.nis.bundles.iter().map(String::as_str).collect();
-        match AssetDb::load(&dir, &bundles) {
+        let read = match &i.assets.loaded {
+            Some(db) => Ok(db.clone()),
+            None => {
+                let dir = ride.big_root.join(ssx_assets::rig_anim::ANIM_DIR);
+                let bundles: Vec<&str> = i.assets.nis.bundles.iter().map(String::as_str).collect();
+                AssetDb::load(&dir, &bundles).map(std::sync::Arc::new)
+            }
+        };
+        match read {
             Ok(db) => *nis_db = Some((i.assets.nis.binding.clone(), db)),
             Err(e) => warn!("bots: the NIS {} for its Ghost1: {e:#}", i.assets.nis.binding),
         }
     }
     let racers = race.bots.len() + live.drawn();
+    let inputs = RacerAlphaInputs {
+        world_render_disabled: ride.world_hidden,
+        outro_active: intro.is_some_and(|i| i.outro_active()),
+        explore: race.explore_mode,
+    };
     for (k, v) in list.iter_mut().enumerate() {
         let Some(b) = race.bots.get(k) else { continue };
         if matches!(v.racer_type, 0 | 2) && !b.removed {
             let d2 = b.position.distance_squared(ride.state.traj);
             draw.holo(v, dt_ticks / 60.0, d2, racers, rng);
         }
+        let fade = if matches!(v.racer_type, 0 | 2) { v.fade.alpha } else { 1.0 };
+        let in_nis = k == 0 && ghost.is_some();
+        let clock_ms = ride.session.event.racers.get(k).map_or(0, |r| r.clock_ms);
+        v.alpha = racer_alpha(v.racer_type, fade, race.ready_gate, inputs, in_nis, clock_ms);
+        let shown = v.alpha > RACER_ALPHA_DRAWN_ABOVE;
         if v.idle_at.is_none()
             && let Some((p, q)) = v.slot
         {
@@ -702,9 +723,30 @@ fn update(
             records
         };
         let lamp_on = night && v.gear_flags & 1 != 0 && race.running;
-        (boards[k], trajectories[k]) = draw.place(&format!("bot {k}"), v, &records, facts, lamp_on);
+        (boards[k], trajectories[k]) = draw.place(&format!("bot {k}"), v, &records, facts, lamp_on, shown);
     }
-    live.update(race, &ride, live::LiveFrame { facts, dt_ticks, racers }, rng, &mut draw);
+    live.update(race, &ride, live::LiveFrame { facts, dt_ticks, racers, inputs }, rng, &mut draw);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RacerLabel {
+    pub bot: usize,
+    pub position: Vec3,
+    pub alpha: f32,
+}
+
+impl Bots {
+    pub fn labels(&self, race: &ssx_physics::session::bots::BotRace) -> Vec<RacerLabel> {
+        let mut out = Vec::new();
+        for (k, (v, b)) in self.list.iter().zip(&race.bots).enumerate() {
+            let Some(Some(at)) = self.trajectories.get(k) else { continue };
+            if b.removed {
+                continue;
+            }
+            out.push(RacerLabel { bot: k, position: at.p, alpha: v.alpha });
+        }
+        out
+    }
 }
 
 pub fn hud_line(ride: &crate::ride::Ride) -> String {
@@ -743,5 +785,7 @@ pub fn hud_line(ride: &crate::ride::Ride) -> String {
         .collect();
     let when = if race.running { "racing" } else { "waiting for the start" };
     let split = split.map_or(String::new(), |(k, _)| format!(", gaps at split #{}, + = behind", k + 1));
-    format!("\nBOTS ({when}{split}):\n  {}\n", items.join("\n  "))
+    let on = |b: bool| if b { "on" } else { "off" };
+    let latches = format!(", list {}, gate {}", on(ride.session.ghost_manager.hud_list), on(race.ready_gate));
+    format!("\nBOTS ({when}{latches}{split}):\n  {}\n", items.join("\n  "))
 }

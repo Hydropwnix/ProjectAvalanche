@@ -90,13 +90,14 @@ pub enum Kind {
     MainVertex,
     MainFragment,
     ShadowPrepass,
+    CameraPrepass,
     Own,
 }
 
-pub fn kind_of(module: &str) -> Option<Kind> {
+pub fn kinds_of(module: &str) -> Option<&'static [Kind]> {
     let rel = module.strip_prefix(&format!("{CRATE}/")).expect("a crate module");
     Some(match rel {
-        "render/lighting/game_vertex.wesl" => Kind::MainVertex,
+        "render/lighting/game_vertex.wesl" => &[Kind::MainVertex],
         "render/terrain/terrain.wesl"
         | "render/objects/object.wesl"
         | "render/objects/foreground.wesl"
@@ -104,17 +105,19 @@ pub fn kind_of(module: &str) -> Option<Kind> {
         | "rider/character.wesl"
         | "rider/ghost.wesl"
         | "render/geotag.wesl"
-        | "particles/shadow_query.wesl" => Kind::MainFragment,
+        | "particles/shadow_query.wesl" => &[Kind::MainFragment],
         "render/terrain/terrain_prepass.wesl"
-        | "render/objects/shadow_alpha.wesl"
-        | "render/objects/object_prepass.wesl" => Kind::ShadowPrepass,
+        | "render/terrain/terrain_normal.wesl"
+        | "render/objects/object_gbuffer.wesl"
+        | "render/objects/object_prepass.wesl"
+        | "rider/character_gbuffer.wesl" => &[Kind::ShadowPrepass, Kind::CameraPrepass],
         _ if rel.starts_with("render/post/")
             || rel.starts_with("render/sky/")
             || rel.starts_with("particles/render/")
             || rel.starts_with("ui/")
             || rel.ends_with(".wgsl") =>
         {
-            Kind::Own
+            &[Kind::Own]
         }
         _ => return None,
     })
@@ -153,6 +156,15 @@ pub fn base_defs(kind: Kind, binding_arrays: bool) -> Vec<ShaderDefVal> {
             uint("MATERIAL_BIND_GROUP", 3),
             uint("SSX_LIGHT_BINDING", 100),
         ],
+        Kind::CameraPrepass => vec![
+            flag("PREPASS_PIPELINE"),
+            flag("VERTEX_OUTPUT_INSTANCE_INDEX"),
+            flag("DEPTH_PREPASS"),
+            flag("NORMAL_PREPASS"),
+            flag("VIEW_PROJECTION_NONSTANDARD"),
+            uint("MATERIAL_BIND_GROUP", 3),
+            uint("SSX_LIGHT_BINDING", 100),
+        ],
         Kind::Own => vec![],
     };
     if kind == Kind::MainVertex {
@@ -163,7 +175,7 @@ pub fn base_defs(kind: Kind, binding_arrays: bool) -> Vec<ShaderDefVal> {
             Kind::MainVertex | Kind::MainFragment => {
                 defs.extend([flag("MULTIPLE_LIGHT_PROBES_IN_ARRAY"), flag("MULTIPLE_LIGHTMAPS_IN_ARRAY")])
             }
-            Kind::ShadowPrepass => defs.push(flag("MULTIPLE_LIGHTMAPS_IN_ARRAY")),
+            Kind::ShadowPrepass | Kind::CameraPrepass => defs.push(flag("MULTIPLE_LIGHTMAPS_IN_ARRAY")),
             Kind::Own => {}
         }
     }
@@ -198,6 +210,7 @@ pub const MAIN_VARIATIONS: &[Variation] = &[
     var(&["MULTISAMPLED"], &[]),
     var(&["DEPTH_PREPASS"], &[]),
     var(&["NORMAL_PREPASS", "LOAD_PREPASS_NORMALS"], &[]),
+    var(&["DEPTH_PREPASS", "NORMAL_PREPASS"], &[]),
     var(&["MOTION_VECTOR_PREPASS"], &[]),
     var(&["MOTION_VECTOR_PREPASS", "HAS_PREVIOUS_SKIN", "HAS_PREVIOUS_MORPH", "SKINNED", "MORPH_TARGETS"], &[]),
     var(&["DEFERRED_PREPASS"], &[]),
@@ -263,6 +276,12 @@ pub const PREPASS_VARIATIONS: &[Variation] = &[
     var(&["VIEW_PROJECTION_NONSTANDARD"], &["VIEW_PROJECTION_ORTHOGRAPHIC"]),
 ];
 
+pub const CAMERA_PREPASS_VARIATIONS: &[Variation] = &[
+    var(&["MAY_DISCARD"], &[]),
+    var(&["LIGHTMAP", "LIGHTMAP_BICUBIC_SAMPLING"], &[]),
+    var(&["VIEW_PROJECTION_PERSPECTIVE"], &["VIEW_PROJECTION_NONSTANDARD"]),
+];
+
 pub struct Unproducible {
     pub why: &'static str,
     pub add: Vec<&'static str>,
@@ -280,9 +299,9 @@ pub struct Module {
 
 pub fn mesh_contract(path: &str) -> &'static [&'static str] {
     match path {
-        "ssx_bevy/render/terrain/terrain.wesl" | "ssx_bevy/render/terrain/terrain_prepass.wesl" => {
-            &["VERTEX_COLORS", "VERTEX_UVS_A", "VERTEX_UVS_B"]
-        }
+        "ssx_bevy/render/terrain/terrain.wesl"
+        | "ssx_bevy/render/terrain/terrain_prepass.wesl"
+        | "ssx_bevy/render/terrain/terrain_normal.wesl" => &["VERTEX_COLORS", "VERTEX_UVS_A", "VERTEX_UVS_B"],
         _ => &[],
     }
 }
@@ -291,7 +310,7 @@ pub fn counterpart(kind: Kind) -> Option<&'static str> {
     match kind {
         Kind::MainVertex => Some("bevy_pbr/render/mesh.wesl"),
         Kind::MainFragment => Some("bevy_pbr/render/pbr.wesl"),
-        Kind::ShadowPrepass => Some("bevy_pbr/prepass/prepass.wesl"),
+        Kind::ShadowPrepass | Kind::CameraPrepass => Some("bevy_pbr/prepass/prepass.wesl"),
         Kind::Own => None,
     }
 }
@@ -345,6 +364,18 @@ pub fn module_model(path: &str, kind: Kind, mut flags: BTreeSet<String>) -> Modu
         }
         flags.extend(["NORMAL_PREPASS", "MOTION_VECTOR_PREPASS", "UNCLIPPED_DEPTH_ORTHO_EMULATION"].map(String::from));
     }
+    if kind == Kind::CameraPrepass {
+        for derived in [
+            "NORMAL_PREPASS_OR_DEFERRED_PREPASS",
+            "MOTION_VECTOR_PREPASS_OR_DEFERRED_PREPASS",
+            "PREPASS_FRAGMENT",
+            "NORMAL_PREPASS",
+            "MOTION_VECTOR_PREPASS",
+            "UNCLIPPED_DEPTH_ORTHO_EMULATION",
+        ] {
+            flags.remove(derived);
+        }
+    }
     let contract: Vec<String> = mesh_contract(path).iter().map(|c| c.to_string()).collect();
     for c in &contract {
         flags.remove(c);
@@ -361,6 +392,10 @@ pub fn combination(module: &Module, binding_arrays: bool, bits: u64, compressed:
         if bits >> k & 1 == 1 {
             on.extend(dim.iter().map(String::as_str));
         }
+    }
+    if module.kind == Kind::CameraPrepass {
+        on.insert("NORMAL_PREPASS_OR_DEFERRED_PREPASS");
+        on.insert("PREPASS_FRAGMENT");
     }
     if module.kind == Kind::ShadowPrepass {
         let normal = on.contains("NORMAL_PREPASS");
@@ -403,6 +438,7 @@ pub fn variations(kind: Kind) -> &'static [Variation] {
     match kind {
         Kind::MainVertex | Kind::MainFragment => MAIN_VARIATIONS,
         Kind::ShadowPrepass => PREPASS_VARIATIONS,
+        Kind::CameraPrepass => CAMERA_PREPASS_VARIATIONS,
         Kind::Own => &[],
     }
 }

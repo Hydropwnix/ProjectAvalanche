@@ -12,7 +12,6 @@ use ssx_formats::abk::{AbkFile, RefKind, SampleEntry};
 use ssx_formats::aems::{INSTANCE_HEADER, Node, Op};
 use ssx_formats::csi::{CsiFile, Kind};
 
-use crate::music::Bytes;
 use crate::sfx_override::{Choice, OverrideSound};
 
 pub use instances::*;
@@ -51,7 +50,7 @@ pub struct Bank {
     pub name: String,
     pub abk: AbkFile,
     pub data: Arc<Vec<u8>>,
-    pub ast: Option<Arc<Bytes>>,
+    pub ast: Option<Arc<crate::sfx_stream::StreamFile>>,
     links: Vec<ModuleLinks>,
 }
 
@@ -75,7 +74,7 @@ impl Bank {
         let ast = if abk.ast_word != 0 {
             let rel = format!("data/xenon/audio/sfx/{name}.ast");
             let p = crate::music::find_file(big_root, &rel).with_context(|| rel.clone())?;
-            Some(Arc::new(Bytes::open(&p)?))
+            Some(crate::sfx_stream::StreamFile::open(&p)?)
         } else {
             None
         };

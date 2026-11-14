@@ -21,16 +21,3 @@ fn shadow_alpha_test(in: prepass_io::VertexOutput) {
     }
 }
 }
-
-@if(PREPASS_FRAGMENT)
-@fragment
-fn fragment(in: prepass_io::VertexOutput) -> prepass_io::FragmentOutput {
-    shadow_alpha_test(in);
-    var out: prepass_io::FragmentOutput;
-    return out;
-}
-@else
-@fragment
-fn fragment(in: prepass_io::VertexOutput) {
-    shadow_alpha_test(in);
-}

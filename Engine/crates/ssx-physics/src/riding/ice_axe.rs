@@ -447,6 +447,25 @@ mod tests {
     }
 
     #[test]
+    fn a_centred_stick_steers_the_axe_at_a_right_angle() {
+        use std::f32::consts::FRAC_PI_2;
+        let t = tuning();
+        let target = |a: f32| {
+            let lo = t.steering_transform.eval(a);
+            lo + (t.steering_transform_full.eval(a) - lo) * t.steering_transform_blend.eval(0.0)
+        };
+        let e = (-(t.steering_filter_gain * 2.0)).exp();
+        for (stick, sign) in [((0.0, 0.0), 1.0), ((-0.0, 0.0), -1.0), ((0.0, -0.0), 1.0), ((-0.0, -0.0), -1.0)] {
+            let (angle, mag) = crate::steering::stick_angle_and_magnitude(glam::Vec2::new(stick.0, stick.1));
+            assert!((angle - sign * FRAC_PI_2).abs() < 1e-6 && mag == 0.0, "{stick:?}: {angle} {mag}");
+            let mut s = IceAxeState::default();
+            let f = s.read_inputs(&t, 1.0, 0.0, 0.0, angle, 0.25, 2.0);
+            assert!((f.steering_value - (1.0 - e) * target(FRAC_PI_2)).abs() < 1e-6, "{stick:?}: {}", f.steering_value);
+        }
+        assert!(target(FRAC_PI_2) != target(0.0), "the test curve tells the two apart");
+    }
+
+    #[test]
     fn spline_interpolates_uniform_samples() {
         assert_eq!(tag_spline(&DEPLOY_SPLINE, 0.0), 0.0);
         assert_eq!(tag_spline(&DEPLOY_SPLINE, 0.5), 0.5);

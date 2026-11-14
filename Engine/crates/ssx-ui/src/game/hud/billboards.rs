@@ -34,6 +34,24 @@ pub struct Ghost {
     pub position: [f32; 3],
 }
 
+pub const RACER_IDS: u64 = 1 << 32;
+
+pub fn racer_ghost(
+    index: usize,
+    request: &ssx_physics::session::bots::BotRequest,
+    alpha: f32,
+    position: [f32; 3],
+    titles: &std::collections::BTreeMap<u32, String>,
+    loc: &mut crate::game::loc::Localization,
+) -> Ghost {
+    use ssx_physics::session::bots::{RacerName, racer_label_colour};
+    let name = match request.name {
+        RacerName::Character => loc.text(titles.get(&request.character).map_or("", String::as_str)),
+        RacerName::Text(key) => loc.text(key),
+    };
+    Ghost { id: RACER_IDS + index as u64, name, colour: racer_label_colour(request.tint, alpha), position }
+}
+
 pub fn ghost_list(camera: &Camera, ghosts: &[Ghost]) -> Vec<Marker> {
     let mut out = Vec::new();
     for g in ghosts {
@@ -393,5 +411,53 @@ impl Component for Tombstones {
         }
         b.pool.end(cx);
         b.drawn = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::loc::{Language, Localization};
+    use ssx_physics::session::bots::{BOT_TINT, BotRequest, RacerName};
+
+    fn request(character: u32, name: RacerName) -> BotRequest {
+        BotRequest {
+            ghost_id: 7,
+            start_slot: 0,
+            character,
+            catchup: 0,
+            racer_type: 2,
+            collision: false,
+            tint: BOT_TINT,
+            score: 0,
+            name,
+        }
+    }
+
+    #[test]
+    fn a_racer_is_labelled_with_its_request_name_in_its_tint() {
+        let mut loc = Localization::empty(Language::English);
+        let titles = std::collections::BTreeMap::from([(5, "TXT_RIDER_ELISE_NAME".to_string())]);
+        let medal = racer_ghost(
+            1,
+            &request(5, RacerName::Text("TXT_EXPLORE_GHOST_MEDAL_SILVER")),
+            0.5,
+            [1.0, 2.0, 3.0],
+            &titles,
+            &mut loc,
+        );
+        assert_eq!(
+            medal,
+            Ghost {
+                id: RACER_IDS + 1,
+                name: "TXT_EXPLORE_GHOST_MEDAL_SILVER".into(),
+                colour: 0x7FF3_B805,
+                position: [1.0, 2.0, 3.0]
+            }
+        );
+        let bot = racer_ghost(0, &request(5, RacerName::Character), 1.0, [0.0; 3], &titles, &mut loc);
+        assert_eq!((bot.id, bot.name.as_str(), bot.colour), (RACER_IDS, "TXT_RIDER_ELISE_NAME", 0xFFF3_B805));
+        let [_, r, g, b] = bot.colour.to_be_bytes();
+        assert_eq!(format!("#{r:02X}{g:02X}{b:02X}"), "#F3B805");
     }
 }

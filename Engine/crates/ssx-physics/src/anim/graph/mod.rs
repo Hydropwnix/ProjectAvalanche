@@ -89,12 +89,14 @@ pub fn uber_tilt(q: Quat, n: Vec3, max: f32) -> Quat {
     (q * Quat::from_axis_angle(axis, angle)).normalize()
 }
 
+pub const STICK_MIN_MAGNITUDE: f32 = 0.25;
+
 pub fn stick_axes(s: Vec2) -> Vec2 {
     let len = s.length();
     if len <= 0.0 {
         return Vec2::ZERO;
     }
-    s / len * ((len.min(1.0) - 0.25).max(0.0) / 0.75)
+    s / len * ((len.min(1.0) - STICK_MIN_MAGNITUDE).max(0.0) / (1.0 - STICK_MIN_MAGNITUDE))
 }
 
 fn wrap_pi(x: f32) -> f32 {
@@ -267,6 +269,7 @@ pub struct RiderGraph {
     pose: RigPose,
     traj_rotation: Quat,
     updates: u64,
+    gameplay: bool,
     signature: Option<SignatureTiming>,
     start: Option<LevelStartGraph>,
     rewind: RewindGraph,
@@ -324,6 +327,7 @@ impl RiderGraph {
             pose,
             traj_rotation: Quat::from_rotation_y(-FRAC_PI_2),
             updates: 0,
+            gameplay: false,
             signature,
             start: None,
             rewind: RewindGraph { channels, ..RewindGraph::default() },
@@ -338,11 +342,26 @@ impl RiderGraph {
             Some(n) => Some(IntroGraph::load(big_root, n, &self.rig, self.animator.bind.nodes.clone(), &self.floats)?),
             None => None,
         };
+        self.put_intro(intro);
+        Ok(())
+    }
+
+    pub fn set_intro_assets(&mut self, big_root: &Path, assets: Option<&crate::nis::IntroAssets>) -> Result<()> {
+        match assets.and_then(|a| Some((&a.nis, a.loaded.as_deref()?))) {
+            Some((nis, db)) => {
+                let bind = self.animator.bind.nodes.clone();
+                self.put_intro(Some(IntroGraph::from_db(db, nis, &self.rig, bind, &self.floats)?));
+                Ok(())
+            }
+            None => self.set_intro(big_root, assets.map(|a| &a.nis)),
+        }
+    }
+
+    fn put_intro(&mut self, intro: Option<IntroGraph>) {
         if let Some(st) = &mut self.start {
             st.intro = intro;
-            (st.running, st.elapsed) = (false, None);
+            (st.running, st.elapsed, st.entry) = (false, None, None);
         }
-        Ok(())
     }
 
     pub fn set_rewind(&mut self, assets: RewindAssets) {
@@ -400,8 +419,9 @@ impl RiderGraph {
             if let Some(i) = &mut st.intro {
                 i.reset(&st.animator.gs.random);
             }
-            (st.running, st.elapsed) = (false, None);
+            (st.running, st.elapsed, st.entry) = (false, None, None);
         }
+        self.gameplay = false;
         self.producers = Producers::default();
         self.forward = false;
         self.scripts_mut().reset();

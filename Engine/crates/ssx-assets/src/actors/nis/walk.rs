@@ -81,7 +81,7 @@ impl<'a> Walk<'a> {
     fn proxy_subject(&self, a: &Asset, role: i64) -> Result<Guid> {
         let ptr = a.guid("BankPointerAsset").and_then(|p| self.db.get(p)).map(|p| p.name().to_string());
         let mut next = match ptr.as_deref() {
-            Some("PTR_proxybank_nis_per_actor") => self.per_actor.get(&role).copied(),
+            Some(PER_ACTOR_BANK) => self.per_actor.get(&role).copied(),
             Some(p) => self.banks.get(p).copied(),
             None => None,
         };

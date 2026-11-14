@@ -125,7 +125,8 @@ pub fn map_start_after(
             std::cmp::Ordering::Equal => Input { jump: true, ..Input::default() },
             std::cmp::Ordering::Greater => controls(i - idle, &rider),
         };
-        let pad = RewindPad { flip_accel: input.flip_acceleration(rider.tricks.classic), ..RewindPad::default() };
+        let pad =
+            RewindPad { flip_accel: input.matched().flip_acceleration(rider.tricks.classic), ..RewindPad::default() };
         session.execute(&mut rider, w, &input, &TrickInput::default(), 0.0, &pad, graph.as_deref_mut());
         gates.update(&mut session, rider.traj);
         if !rider.traj.is_finite() {

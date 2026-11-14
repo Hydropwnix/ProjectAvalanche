@@ -7,9 +7,9 @@ use bevy::render::renderer::RenderDevice;
 use bevy::shader::{Shader, ShaderCache, ShaderCacheError, ShaderCacheSource, ShaderDefVal, ValidateShader};
 use bevy::tasks::block_on;
 use ssx_bevy::hooks::compose::{error_key, view_bindings_fit};
-use ssx_bevy::hooks::headless::{loaded_shaders, shader_files_on_disk, shader_files_registered};
+use ssx_bevy::hooks::headless::{Registration, loaded_shaders, shader_files_on_disk, shader_files_registered};
 use ssx_bevy::hooks::sets::{
-    CRATE, Kind, Module, combination, condition_flags, counterpart, describe, has_entry_point, kind_of, module_model,
+    CRATE, Kind, Module, combination, condition_flags, counterpart, describe, has_entry_point, kinds_of, module_model,
     package_imports, variations, with,
 };
 
@@ -136,11 +136,13 @@ fn modules() -> Vec<Module> {
         if !has_entry_point(src) {
             continue;
         }
-        let kind = kind_of(path).unwrap_or_else(|| panic!("{path}: an entry point but no kind in kind_of()"));
+        let kinds = kinds_of(path).unwrap_or_else(|| panic!("{path}: an entry point but no kind in kinds_of()"));
         let modules = closure(path);
         let flags: BTreeSet<String> = modules.iter().flat_map(|m| condition_flags(&sources[m])).collect();
         imported.extend(modules.into_iter().filter(|m| m != path));
-        out.push(module_model(path, kind, flags));
+        for kind in kinds {
+            out.push(module_model(path, *kind, flags.clone()));
+        }
     }
     for (path, src) in &sources {
         if !has_entry_point(src) {
@@ -148,6 +150,21 @@ fn modules() -> Vec<Module> {
         }
     }
     out
+}
+
+#[test]
+fn every_imported_module_is_loaded_at_build() {
+    let disk = shader_files_on_disk();
+    let registrations = shader_files_registered();
+    let wesl: BTreeSet<String> = disk.keys().filter(|p| p.ends_with(".wesl")).cloned().collect();
+    let mut imported = BTreeSet::new();
+    for path in &wesl {
+        imported.extend(package_imports(&std::fs::read_to_string(&disk[path]).expect("a shader file"), &wesl));
+    }
+    assert!(!imported.is_empty(), "no crate module imports another");
+    let late: Vec<&String> =
+        imported.iter().filter(|m| registrations.get(*m) != Some(&Registration::Library)).collect();
+    assert!(late.is_empty(), "imported, but not loaded with `load_shader_library!`: {late:?}");
 }
 
 fn all_but_hooks(module: &Module) -> u64 {
@@ -196,7 +213,7 @@ fn every_wesl_module_composes_and_validates_for_every_def_set() {
     let shaders = loaded_shaders();
     let devices = device_classes();
     let paths: BTreeSet<&str> = shaders.iter().map(|(p, _, _)| p.as_str()).collect();
-    for kind in [Kind::MainVertex, Kind::MainFragment, Kind::ShadowPrepass] {
+    for kind in [Kind::MainVertex, Kind::MainFragment, Kind::ShadowPrepass, Kind::CameraPrepass] {
         let c = counterpart(kind).expect("a counterpart");
         assert!(paths.contains(c), "{c} is not among Bevy's shaders");
     }

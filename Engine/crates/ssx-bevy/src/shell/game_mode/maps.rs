@@ -5,7 +5,7 @@ use ssx_ui::game::GameUi;
 use ssx_ui::game::fe::ava::maps::{self, MapInfo, MapRequest, MapRow, ModeInfo};
 use ssx_ui::game::fe::{Launch, MapLaunch};
 
-use super::{LoadedLevel, Shell};
+use super::{LoadedLevel, Shell, ride_shot_path};
 use crate::shell::game_level;
 use crate::shell::level::{self, LevelData, LevelSpec};
 
@@ -121,17 +121,14 @@ impl Shell {
                 map_mode: Some(map.mode.clone()),
                 intro_visits: Some(visits),
                 live,
+                game_mode: Some(l.game_mode),
                 ..default()
             }),
             character: l.rider.clone(),
             screenshot: false,
             map: Some(id.clone()),
         };
-        let shots = self
-            .ride_shots
-            .iter()
-            .map(|&t| (t, self.shot_dir.join(format!("game2_ride{n}_{}.png", t as u32))))
-            .collect();
+        let shots = self.ride_shots.iter().map(|&t| (t, ride_shot_path(&self.shot_dir, n, t))).collect();
         let opts = game_level::LevelOptions {
             launch: l.clone(),
             stat_names: self.stat_names.clone(),

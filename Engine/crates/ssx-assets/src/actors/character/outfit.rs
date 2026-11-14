@@ -272,3 +272,48 @@ pub(crate) fn equipment_refs(big_root: &Path, name: &str, loadout: &Loadout) -> 
     }
     Ok((out, lamp_accessory))
 }
+
+const FIELD_EQ_POST_FX: u32 = fnv1("post_fx_key");
+
+pub fn gear_postfx_key(big_root: &Path, name: &str, loadout: &Loadout, item: GearItem) -> Result<Option<u32>> {
+    let given = loadout.descriptions.iter().find(|(i, _)| *i == item).map(|&(_, k)| k);
+    let wanted = loadout.items.iter().find(|(i, _)| *i == item).map(|&(_, id)| id);
+    if given.is_none() && wanted.is_none() {
+        return Ok(None);
+    }
+    let mut out = None;
+    crate::vault_db::with_all_db(big_root, |db| {
+        for (key, _) in db.collections_of_all(CLASS_EQUIPMENT) {
+            let fields = db.fields(CLASS_EQUIPMENT, key)?;
+            let value = |k: u32| fields.iter().find(|f| f.key == k).and_then(|f| single(&f.data));
+            let chosen = match (given, wanted) {
+                (Some(d), _) => d == key,
+                (None, Some(id)) => {
+                    let ty = match value(FIELD_EQ_TYPE) {
+                        Some(Value::Raw { bytes, .. }) => {
+                            <[u8; 4]>::try_from(bytes.as_slice()).ok().map(u32::from_be_bytes)
+                        }
+                        _ => None,
+                    };
+                    let character = match value(FIELD_EQ_CHARACTER) {
+                        Some(Value::Ref(r)) => Some(r.collection),
+                        _ => None,
+                    };
+                    character == Some(fnv1(name))
+                        && ty == Some(item as u32)
+                        && value(FIELD_EQ_ID) == Some(&Value::UInt32(id))
+                }
+                (None, None) => false,
+            };
+            if chosen {
+                out = match value(FIELD_EQ_POST_FX) {
+                    Some(Value::Ref(r)) if r.collection != 0 => Some(r.collection),
+                    _ => None,
+                };
+                break;
+            }
+        }
+        Ok(())
+    })?;
+    Ok(out)
+}

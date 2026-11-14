@@ -1,5 +1,5 @@
 import bevy_pbr::render::forward_io::VertexOutput;
-import bevy_pbr::render::mesh_view_bindings::{globals, view};
+import bevy_pbr::render::mesh_view_bindings::view;
 
 struct GeotagParams {
     base_colour: vec4<f32>,
@@ -14,10 +14,11 @@ struct GeotagParams {
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> params: GeotagParams;
 @group(constants::MATERIAL_BIND_GROUP) @binding(1) var diffuse: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(2) var diffuse_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(3) var<storage, read> effect_time: f32;
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
-    let time = globals.time;
+    let time = effect_time;
     let n = normalize(in.world_normal);
     let v = normalize(view.world_position.xyz - in.world_position.xyz);
     let l = normalize(params.light.xyz);

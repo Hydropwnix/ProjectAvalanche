@@ -6,7 +6,7 @@ use bevy::prelude::{Assets, Camera, Commands, Image, Query, Sprite, Vec2, Visibi
 use ssx_ui::game::GameUi;
 
 use super::world::speech_block;
-use super::{LoadedLevel, Shell, Stage, WorldOp, screenshot};
+use super::{LoadedLevel, Shell, Stage, WorldOp, ride_shot_path, screenshot};
 use crate::audio::music::frontend::FrontEndAudio;
 use crate::ride::Ride;
 use crate::shell::game_level;
@@ -343,17 +343,14 @@ impl Shell {
                 own_tombstone: ssx_ui::game::ride::own_tombstone_for(ui, l.drop),
                 live,
                 event_name: Some(l.event.clone()),
+                game_mode: Some(l.game_mode),
                 ..default()
             }),
             character: l.rider.clone(),
             screenshot: false,
             map: None,
         };
-        let shots = self
-            .ride_shots
-            .iter()
-            .map(|&t| (t, self.shot_dir.join(format!("game2_ride{n}_{}.png", t as u32))))
-            .collect();
+        let shots = self.ride_shots.iter().map(|&t| (t, ride_shot_path(&self.shot_dir, n, t))).collect();
         let opts = game_level::LevelOptions {
             launch: l.clone(),
             stat_names: self.stat_names.clone(),

@@ -56,9 +56,13 @@ impl MapPlayer {
         let t0 = if intro.is_some() { self.ready_t0 } else { Some(self.loop_t0) };
         let push = waiting && t0.is_some_and(|t0| (PUSH_S..PUSH_S + 1.0).contains(&(time - t0)));
         let tuck = if push && i % 2 == 1 { 0.0 } else { 1.0 };
-        let input = Input { steer: if push { 0.0 } else { steer }, brake: 0.0, tuck, jump: false, ..Input::default() };
-        let pad =
-            RewindPad { rewind_held: false, takeover: false, flip_accel: input.flip_acceleration(s.tricks.classic) };
+        let intent = Input { steer: if push { 0.0 } else { steer }, brake: 0.0, tuck, jump: false, ..Input::default() };
+        let input = crate::harness::pad_for_intent(intent);
+        let pad = RewindPad {
+            rewind_held: false,
+            takeover: false,
+            flip_accel: input.matched().flip_acceleration(s.tricks.classic),
+        };
         (input, pad, turned)
     }
 

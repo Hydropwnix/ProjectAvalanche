@@ -30,6 +30,7 @@ pub fn load_outro(big_root: &Path, character: &str, reaction: i64) -> Result<Int
     let blend = walk.transition_blend(&t, Some(&ready))?;
     let branch_out = ready.actor(ROLE_CHARACTER1).and_then(|a| a.tags.branch_out);
     let controller = sf.name().to_string();
+    let entry_blend = bind.entry_blend()?;
     let Binding { bundles, rigs: [rider, heli, camera], .. } = bind;
     Ok(IntroNis {
         binding: binding.to_string(),
@@ -37,6 +38,7 @@ pub fn load_outro(big_root: &Path, character: &str, reaction: i64) -> Result<Int
         ready,
         jump,
         transition_blend: blend,
+        entry_blend,
         branch_out,
         bundles,
         rider,
@@ -63,6 +65,7 @@ pub fn load_heli_pickup_outro(big_root: &Path, character: &str) -> Result<IntroN
     anyhow::ensure!(sf.guids("StateFlowTransitionAssets").is_empty(), "{binding}: the flow has transitions");
     let ready = walk.scene(&start)?;
     let controller = sf.name().to_string();
+    let entry_blend = bind.entry_blend()?;
     let Binding { bundles, rigs: [rider, heli, camera], .. } = bind;
     Ok(IntroNis {
         binding: binding.to_string(),
@@ -70,6 +73,7 @@ pub fn load_heli_pickup_outro(big_root: &Path, character: &str) -> Result<IntroN
         jump: ready.clone(),
         ready,
         transition_blend: Blend::cut(),
+        entry_blend,
         branch_out: None,
         bundles,
         rider,
@@ -86,71 +90,89 @@ pub fn load_heli_pickup_outro(big_root: &Path, character: &str) -> Result<IntroN
 pub const HELI_GRAB_OUTRO_BINDING: &str = "nis_end_heli_grab";
 
 pub fn load_heli_grab_outro(big_root: &Path, character: &str, reaction: i64) -> Result<IntroNis> {
-    let binding = HELI_GRAB_OUTRO_BINDING;
-    let bind = Binding::load_with(big_root, binding, character, &["nis_binding_outro.cba"])?;
-    let db = &bind.db;
-    let walk = bind.walk(HashMap::from([("INT_TrackEndReaction".to_string(), reaction)]))?;
-    let b = db.by_name(binding).context("binding")?;
-    let sf = db.get(b.guid("ControllerAsset").context("binding without controller")?).context("state flow")?;
-    let start = db.get(sf.guid("StartNode").context("no start node")?).context("start node")?;
-    let exit = |from: &Asset, window: &str| -> Result<(Asset, Blend)> {
-        let t = sf
-            .guids("StateFlowTransitionAssets")
-            .into_iter()
-            .filter_map(|g| db.get(g))
-            .find(|t| {
-                same(t.guid("From"), from.guid) && walk.name(t, "BranchWindowTypeAsset").as_deref() == Some(window)
-            })
-            .with_context(|| format!("{binding}: no {window} transition from {}", from.name()))?;
-        let left = walk.scene(from)?;
-        let blend = walk.transition_blend(&t, Some(&left))?;
-        Ok((db.get(t.guid("To").context("transition without target")?).context("target node")?, blend))
-    };
-    let window_of = |sc: &NisScene, early: bool| {
-        sc.actors.iter().filter_map(|a| if early { a.tags.early_out } else { a.tags.branch_out }).reduce(f32::min)
-    };
-    let scene1 = walk.scene(&start)?;
-    let (ready, jump, blend, branch_out, cabin) = if reaction == OUTRO_REACTION_WIN {
-        let (cut, blend) = exit(&start, "NIS_Out")?;
-        let out = window_of(&scene1, false).with_context(|| format!("{binding}: scene 1 has no NIS_Out window"))?;
-        (scene1, walk.scene(&cut)?, blend, Some(out), Vec::new())
-    } else {
-        let (lose, early_blend) = exit(&start, "NIS_EarlyOut")?;
-        let early =
-            window_of(&scene1, true).with_context(|| format!("{binding}: scene 1 has no NIS_EarlyOut window"))?;
-        let lose_scene = walk.scene(&lose)?;
-        let (cut, blend) = exit(&lose, "NIS_Out")?;
-        let out = window_of(&lose_scene, false).with_context(|| format!("{binding}: the lose scene has no NIS_Out"))?;
-        let first = CabinScene {
-            scene: scene1,
-            start: 0.0,
-            end: early,
-            window: "NIS_EarlyOut".into(),
-            blend: early_blend,
-            tuning_offset: None,
-            skip: None,
+    HeliGrabBinding::load(big_root, character)?.outro(reaction)
+}
+
+pub struct HeliGrabBinding(Binding);
+
+impl HeliGrabBinding {
+    pub fn load(big_root: &Path, character: &str) -> Result<Self> {
+        Ok(Self(Binding::load_with(big_root, HELI_GRAB_OUTRO_BINDING, character, &["nis_binding_outro.cba"])?))
+    }
+
+    pub fn into_db(self) -> AssetDb {
+        self.0.db
+    }
+
+    pub fn outro(&self, reaction: i64) -> Result<IntroNis> {
+        let binding = HELI_GRAB_OUTRO_BINDING;
+        let bind = &self.0;
+        let db = &bind.db;
+        let walk = bind.walk(HashMap::from([("INT_TrackEndReaction".to_string(), reaction)]))?;
+        let b = db.by_name(binding).context("binding")?;
+        let sf = db.get(b.guid("ControllerAsset").context("binding without controller")?).context("state flow")?;
+        let start = db.get(sf.guid("StartNode").context("no start node")?).context("start node")?;
+        let exit = |from: &Asset, window: &str| -> Result<(Asset, Blend)> {
+            let t = sf
+                .guids("StateFlowTransitionAssets")
+                .into_iter()
+                .filter_map(|g| db.get(g))
+                .find(|t| {
+                    same(t.guid("From"), from.guid) && walk.name(t, "BranchWindowTypeAsset").as_deref() == Some(window)
+                })
+                .with_context(|| format!("{binding}: no {window} transition from {}", from.name()))?;
+            let left = walk.scene(from)?;
+            let blend = walk.transition_blend(&t, Some(&left))?;
+            Ok((db.get(t.guid("To").context("transition without target")?).context("target node")?, blend))
         };
-        (lose_scene, walk.scene(&cut)?, blend, Some(out), vec![first])
-    };
-    let controller = sf.name().to_string();
-    let Binding { bundles, rigs: [rider, heli, camera], .. } = bind;
-    Ok(IntroNis {
-        binding: binding.to_string(),
-        controller,
-        ready,
-        jump,
-        transition_blend: blend,
-        branch_out,
-        bundles,
-        rider,
-        heli,
-        camera,
-        cabin,
-        requires_wingsuit: false,
-        character_of_interest: false,
-        ready_loop: true,
-        jump_start: 0.0,
-    })
+        let window_of = |sc: &NisScene, early: bool| {
+            sc.actors.iter().filter_map(|a| if early { a.tags.early_out } else { a.tags.branch_out }).reduce(f32::min)
+        };
+        let scene1 = walk.scene(&start)?;
+        let (ready, jump, blend, branch_out, cabin) = if reaction == OUTRO_REACTION_WIN {
+            let (cut, blend) = exit(&start, "NIS_Out")?;
+            let out = window_of(&scene1, false).with_context(|| format!("{binding}: scene 1 has no NIS_Out window"))?;
+            (scene1, walk.scene(&cut)?, blend, Some(out), Vec::new())
+        } else {
+            let (lose, early_blend) = exit(&start, "NIS_EarlyOut")?;
+            let early =
+                window_of(&scene1, true).with_context(|| format!("{binding}: scene 1 has no NIS_EarlyOut window"))?;
+            let lose_scene = walk.scene(&lose)?;
+            let (cut, blend) = exit(&lose, "NIS_Out")?;
+            let out =
+                window_of(&lose_scene, false).with_context(|| format!("{binding}: the lose scene has no NIS_Out"))?;
+            let first = CabinScene {
+                scene: scene1,
+                start: 0.0,
+                end: early,
+                window: "NIS_EarlyOut".into(),
+                blend: early_blend,
+                tuning_offset: None,
+                skip: None,
+            };
+            (lose_scene, walk.scene(&cut)?, blend, Some(out), vec![first])
+        };
+        let controller = sf.name().to_string();
+        let [rider, heli, camera] = bind.rigs.clone();
+        Ok(IntroNis {
+            binding: binding.to_string(),
+            controller,
+            ready,
+            jump,
+            transition_blend: blend,
+            entry_blend: bind.entry_blend()?,
+            branch_out,
+            bundles: bind.bundles.clone(),
+            rider,
+            heli,
+            camera,
+            cabin,
+            requires_wingsuit: false,
+            character_of_interest: false,
+            ready_loop: true,
+            jump_start: 0.0,
+        })
+    }
 }
 
 pub fn binding_item_start(big_root: &Path, binding: &str, role: i64) -> Result<Option<([f32; 3], [f32; 4])>> {

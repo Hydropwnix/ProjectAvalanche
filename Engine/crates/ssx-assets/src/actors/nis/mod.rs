@@ -27,6 +27,9 @@ pub const ROLE_CAMERA1: i64 = 10;
 pub const ROLE_HELICOPTER1: i64 = 20;
 pub const ROLE_GHOST1: i64 = 30;
 
+pub const GAMEPLAY_TO_NIS: &str = "Transition state_gameloop_gameplay to state_gameloop_playnis";
+pub const PER_ACTOR_BANK: &str = "PTR_proxybank_nis_per_actor";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Channel {
     Quat(usize),
@@ -278,6 +281,7 @@ pub struct IntroNis {
     pub ready: NisScene,
     pub jump: NisScene,
     pub transition_blend: Blend,
+    pub entry_blend: Blend,
     pub branch_out: Option<f32>,
     pub bundles: Vec<String>,
     pub rider: Rig,

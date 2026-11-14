@@ -14,6 +14,7 @@ use crate::track_objects::asset_file;
 use crate::vault_db::{Db, Material, fnv1, refs, single, single_text, with_track_db};
 
 pub use gear::{SlotParts, equipped_parts, mesh_part};
+pub use outfit::gear_postfx_key;
 pub(crate) use outfit::*;
 
 pub const DEFAULT_CHARACTER: &str = "alex";

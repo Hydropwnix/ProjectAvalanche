@@ -53,8 +53,9 @@ impl HeliFlightData {
         _scripts: &[String],
         _outro_locator: Option<(Vec3, Quat)>,
     ) -> Result<Self> {
-        let track_dir = big_root.join("data0/data/xenon/gameexplorer").join(track);
-        Self::with_grid(big_root, HeightGrid::load(&track_dir, track).ok())
+        let track_dir = ssx_assets::data_roots::track_dir(big_root, track)
+            .with_context(|| format!("{track}: no track folder (the disc's data0 or a mounted package)"))?;
+        Self::with_grid(big_root, HeightGrid::find(&track_dir, track)?)
     }
 
     pub fn with_grid(big_root: &Path, grid: Option<HeightGrid>) -> Result<Self> {
@@ -290,6 +291,64 @@ mod tests {
         let hit = g.ray(Vec3::new(5.0, 10.0, 5.0), Vec3::new(18.0, 10.0, 28.0));
         assert_eq!(hit.map(|h| (h.x, h.y, h.z)), Some((15.0, 50.0, 25.0)));
         assert!(g.ray(Vec3::new(5.0, 60.0, 5.0), Vec3::new(18.0, 60.0, 28.0)).is_none());
+    }
+
+    #[test]
+    fn height_grid_find() {
+        let dir = std::env::temp_dir().join(format!("ssx-heli-grid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        assert!(HeightGrid::find(&dir, "t").expect("no file is no error").is_none());
+        let mut bytes = b"SDATHEIGhelicopt".to_vec();
+        bytes.extend(1u32.to_le_bytes());
+        for v in [0.0f32, -100.0, 0.0, 20.0, 1000.0, 10.0] {
+            bytes.extend(v.to_le_bytes());
+        }
+        bytes.extend(2u16.to_le_bytes());
+        bytes.extend(1u16.to_le_bytes());
+        let path = dir.join("t_track_helicopter.spdt");
+        std::fs::write(&path, &bytes[..bytes.len() - 1]).expect("write");
+        assert!(HeightGrid::find(&dir, "t").is_err());
+        for v in [5.0f32, 7.0] {
+            bytes.extend(v.to_le_bytes());
+        }
+        std::fs::write(&path, &bytes).expect("write");
+        let g = HeightGrid::find(&dir, "t").expect("reads").expect("a grid");
+        assert_eq!((g.width, g.height, g.cells.clone()), (2, 1, vec![7.0, 7.0]));
+        assert_eq!((g.inv_cell, g.max), ([2.0 * (1.0 / 20.0), 1.0 / 10.0], Vec3::new(19.99, 999.99, 9.99)));
+        std::fs::remove_dir_all(&dir).expect("clean up");
+    }
+
+    #[test]
+    fn height_grid_new_conditions_like_the_loader() {
+        let (lo, hi) = (Vec3::new(0.0, -100.0, 0.0), Vec3::new(40.0, 900.0, 40.0));
+        let mut cells = vec![0.0; 16];
+        cells[7] = 50.0;
+        let g = HeightGrid::new(lo, hi, 4, 4, cells).expect("a grid");
+        assert_eq!((g.min, g.max), (lo, hi - Vec3::splat(0.01)));
+        assert_eq!(g.inv_cell, [4.0 * (1.0 / 40.0); 2]);
+        let raised: Vec<usize> = (0..16).filter(|&i| g.cells[i] == 50.0).collect();
+        assert_eq!(raised, [2, 3, 4, 6, 7, 8, 10, 11, 12]);
+        assert!(g.cells.iter().all(|&c| c == 0.0 || c == 50.0));
+
+        let mut cells = vec![0.0; 64 * 40];
+        (cells[100], cells[2400]) = (50.0, 50.0);
+        let g = HeightGrid::new(lo, hi, 64, 40, cells).expect("a grid");
+        let raised: Vec<usize> = (0..64 * 40).filter(|&i| g.cells[i] == 50.0).collect();
+        let around = |c: usize| [c - 65, c - 64, c - 63, c - 1, c, c + 1, c + 63, c + 64, c + 65];
+        assert_eq!(raised, [around(100), around(2400)].concat());
+
+        let mut cells = vec![-100.0; 64];
+        (cells[0], cells[63]) = (10.0, 30.0);
+        let g = HeightGrid::new(lo, hi, 8, 8, cells).expect("fills");
+        assert!(g.cells.iter().all(|&c| (10.0..=30.0).contains(&c)));
+        assert_eq!((g.cells[18], g.cells[45]), (10.0, 30.0));
+        assert!((g.cells[28] - 100.0 / 6.0).abs() < 1e-5 && (g.cells[35] - 140.0 / 6.0).abs() < 1e-5);
+
+        assert!(HeightGrid::new(lo, hi, 4, 4, vec![-100.0; 16]).is_err());
+        assert!(HeightGrid::new(lo, hi, 4, 3, vec![0.0; 16]).is_err());
+        assert!(HeightGrid::new(lo, hi, 0, 0, Vec::new()).is_err());
+        let cap = ssx_content::map::heli::MAX_HELI_GRID_CELLS;
+        assert!(HeightGrid::new(lo, hi, cap + 1, 1, vec![0.0; cap + 1]).is_err());
     }
 
     #[test]

@@ -403,6 +403,7 @@ impl RideDriver {
         if s.state != RideState::Riding && s.air.air_time < 0.5 * 60.0 {
             tricks.right_stick = self.opts.grab.unwrap_or(Vec2::ZERO);
         }
+        let input = ssx_physics::harness::pad_for_intent(input);
         let e = self.session.execute(
             &mut self.rider,
             &self.world,
@@ -442,7 +443,8 @@ impl RideDriver {
             &mut ui.loc,
         );
         let explore = ssx_physics::event::shows_explore_ghosts(self.session.event.setup.event_type);
-        self.feed.ghosts = if explore { ghosts } else { Vec::new() };
+        let listed = self.session.ghost_manager.hud_list;
+        self.feed.ghosts = listed.then(|| if explore { ghosts } else { Vec::new() });
         self.feed.ghost_racers = if explore { racers } else { Vec::new() };
         self.feed.feed(ui, &self.rider, &self.session, &self.world, Some(&e));
         let events = self.session.tutorial.as_mut().map_or_else(Vec::new, |t| t.take_events());

@@ -374,29 +374,101 @@ pub struct SpeechInputs<'a> {
     pub t: f32,
 }
 
-pub fn drive_speech(sfx: &mut ssx_assets::sfx::SfxEngine, f: SpeechInputs, track: &mut SpeechTrack) {
-    use ssx_assets::sfx::speech::{game::DeathCauses, game::SpeechFrame, vars::id};
-    let SpeechInputs { s, world, session, step, input, r, t } = f;
+#[derive(Clone, Debug)]
+pub struct SpeechIn {
+    drop_vars: [bool; 3],
+    bots: i32,
+    step: SpeechStep,
+    scenario: ssx_assets::sfx::speech::game::DeathCauses,
+    crashing: bool,
+    finished: bool,
+    run_end: Option<ssx_physics::event::RunEnd>,
+    frame: ssx_assets::sfx::speech::game::SpeechFrame,
+}
+
+impl SpeechIn {
+    pub fn read(f: SpeechInputs) -> Self {
+        let SpeechInputs { s, world, session, step, input, r, t } = f;
+        let d = &world.survival;
+        let bots = session.bots.as_ref().map_or(0, |b| b.bots.len() as i32);
+        let mut scenario = ssx_assets::sfx::speech::game::DeathCauses::default();
+        input.death_scenario(&mut scenario);
+        let finished = session.event_ended;
+        let run_end = finished
+            .then(|| {
+                let scores = session.bots.as_ref().map_or(&[][..], |b| &b.scores[..]);
+                session.event.result.as_ref().and_then(|res| res.run_end(&session.event.setup, scores))
+            })
+            .flatten();
+        let sv = &s.survival;
+        let course = session.event.setup.course;
+        let (distance, length) = course.map_or((0.0, 0.0), |c| (s.score.descent, c.start_y - c.end_y));
+        let m = &r.avalanche;
+        let frame = ssx_assets::sfx::speech::game::SpeechFrame {
+            time: t,
+            speed: s.player_speed,
+            distance,
+            track_length: length,
+            boost: s.score.boost,
+            boost_enabled: r.boosting,
+            awesome: r.awesome,
+            dead: r.dead_by_death_plane || !s.death.alive,
+            tunnel: r.tunnel_small || r.tunnel_large,
+            rewinding: r.rewinding,
+            vignette_temperature: sv.vignette_temperature,
+            health: sv.health,
+            vignette_oxygen: sv.vignette_oxygen,
+            internal_temperature: sv.temperature,
+            in_shade: false,
+            airborne: !s.on_ground,
+            avalanche: (m.mass > 0.0).then_some((m.distance, m.mass, m.speed, m.probe_mass)),
+            race_ms: session.event.clock.running.then_some((session.event.clock.seconds * 1000.0) as i32),
+            points: s.score.score,
+            flight_distance: s.score.flight_distance,
+            bots,
+            paused: r.paused,
+        };
+        Self {
+            drop_vars: [d.cold, d.low_oxygen, d.avalanche.avalanche_drop],
+            bots,
+            step: *step,
+            scenario,
+            crashing: r.crashing,
+            finished,
+            run_end,
+            frame,
+        }
+    }
+}
+
+pub fn drive_speech(
+    sfx: &mut ssx_assets::sfx::SfxEngine,
+    f: &SpeechIn,
+    track: &mut SpeechTrack,
+    log: &mut Vec<String>,
+) {
+    use ssx_assets::sfx::speech::{game::DeathCauses, vars::id};
     let Some(sp) = sfx.speech.as_mut() else { return };
+    let t = f.frame.time;
     if !track.set_up {
         track.set_up = true;
-        let d = &world.survival;
-        if d.cold {
+        let [cold, low_oxygen, avalanche_drop] = f.drop_vars;
+        if cold {
             sp.set_game_var(id::IS_COLD_DROP, 1);
         }
-        if d.low_oxygen {
+        if low_oxygen {
             sp.set_game_var(id::IS_LOW_OXYGEN_DROP, 1);
         }
-        if d.avalanche.avalanche_drop {
+        if avalanche_drop {
             sp.set_game_var(id::IS_AVALANCHE_DROP, 1);
         }
         let a = ssx_physics::avalanche::AvalancheSwitches::default();
         let probability = if matches!(a.tuning_set, 1 | 2) { a.carving_sensitivity } else { 0.0 };
         sp.event_setup(t, probability);
     }
-    let bots = session.bots.as_ref().map_or(0, |b| b.bots.len() as i32);
+    let step = &f.step;
     if step.race_start {
-        sp.race_start(t, bots);
+        sp.race_start(t, f.bots);
     }
     if let Some(m) = step.rider_dead {
         track.causes = m;
@@ -404,65 +476,32 @@ pub fn drive_speech(sfx: &mut ssx_assets::sfx::SfxEngine, f: SpeechInputs, track
     if step.death_timer_end && !track.death_sent {
         track.death_sent = true;
         let m = track.causes;
-        let mut c = DeathCauses {
+        let c = DeathCauses {
             health: m.by_health,
             freezing: m.by_freezing,
             asphyxia: m.by_asphyxia,
             death_volume: m.by_death_volume,
-            ..DeathCauses::default()
+            ..f.scenario
         };
-        input.death_scenario(&mut c);
         sp.death(&c);
         track.last_death = Some(c);
     }
-    if r.crashing != track.crashing {
-        track.crashing = r.crashing;
-        sp.crash(r.crashing);
+    if f.crashing != track.crashing {
+        track.crashing = f.crashing;
+        sp.crash(f.crashing);
     }
-    let airborne = !s.on_ground;
     for m in step.flushed.iter().flatten() {
         sp.trick_message(t, &trick_msg(m));
     }
     // TODO(guess): the results request completes in the frame it is sent; settle: the results flow's job queue's runner (`FUN_8241BAE8`) and the job's latency (`FUN_8251DA90` → `FUN_824B23C0`).
-    let finished = session.event_ended;
-    if finished && !track.finished {
-        let scores = session.bots.as_ref().map_or(&[][..], |b| &b.scores[..]);
-        let end = session.event.result.as_ref().and_then(|r| r.run_end(&session.event.setup, scores));
-        bevy::log::info!("speech: RUN_END {end:?}");
-        if let Some(end) = end {
-            sp.run_end(&end, bots);
+    if f.finished && !track.finished {
+        log.push(format!("speech: RUN_END {:?}", f.run_end));
+        if let Some(end) = &f.run_end {
+            sp.run_end(end, f.bots);
         }
     }
-    track.finished = finished;
-    let sv = &s.survival;
-    let course = session.event.setup.course;
-    let (distance, length) = course.map_or((0.0, 0.0), |c| (s.score.descent, c.start_y - c.end_y));
-    let m = &r.avalanche;
-    let f = SpeechFrame {
-        time: t,
-        speed: s.player_speed,
-        distance,
-        track_length: length,
-        boost: s.score.boost,
-        boost_enabled: r.boosting,
-        awesome: r.awesome,
-        dead: r.dead_by_death_plane || !s.death.alive,
-        tunnel: r.tunnel_small || r.tunnel_large,
-        rewinding: r.rewinding,
-        vignette_temperature: sv.vignette_temperature,
-        health: sv.health,
-        vignette_oxygen: sv.vignette_oxygen,
-        internal_temperature: sv.temperature,
-        in_shade: false,
-        airborne,
-        avalanche: (m.mass > 0.0).then_some((m.distance, m.mass, m.speed, m.probe_mass)),
-        race_ms: session.event.clock.running.then_some((session.event.clock.seconds * 1000.0) as i32),
-        points: s.score.score,
-        flight_distance: s.score.flight_distance,
-        bots,
-        paused: r.paused,
-    };
-    sfx.speech_frame(&f);
+    track.finished = f.finished;
+    sfx.speech_frame(&f.frame);
 }
 
 pub fn speech_enabled() -> bool {
@@ -599,15 +638,27 @@ struct NisScenes {
 impl NisScenes {
     fn load(big_root: &std::path::Path, i: &std::sync::Arc<ssx_physics::nis::IntroAssets>) -> anyhow::Result<Self> {
         let mut out = Self { assets: i.clone(), tags: Default::default(), inside: [false; 2], ready: [false; 2] };
+        let read;
+        let db = match i.loaded.as_deref() {
+            Some(db) => db,
+            None => {
+                let dir = big_root.join(ssx_assets::rig_anim::ANIM_DIR);
+                read = ssx_assets::anim_db::AssetDb::load(
+                    &dir,
+                    &i.nis.bundles.iter().map(String::as_str).collect::<Vec<_>>(),
+                )?;
+                &read
+            }
+        };
         for (k, scene) in [&i.nis.ready, &i.nis.jump].into_iter().enumerate() {
-            let all = ssx_assets::sfx::nis::nis_audio_tags(big_root, &i.nis.bundles, &scene.sequence)?;
+            let all = ssx_assets::sfx::nis::nis_audio_tags_in(db, &scene.sequence)?;
             out.tags[k] = all
                 .into_iter()
                 .filter(|t| {
                     t.role == ssx_assets::nis::ROLE_CHARACTER1 && t.system == ssx_assets::sfx::nis::ANT_TAGS_SYSTEM
                 })
                 .collect();
-            let signals = ssx_assets::sfx::nis::nis_node_signals(big_root, &i.nis.bundles, &scene.node)?;
+            let signals = ssx_assets::sfx::nis::nis_node_signals_in(db, &scene.node)?;
             out.inside[k] = i.heli.is_ok() && signals.iter().any(|n| n == "BLN_InsideHeli");
             out.ready[k] = signals.iter().any(|n| n == "BLN_IsNisReadyLoop");
         }

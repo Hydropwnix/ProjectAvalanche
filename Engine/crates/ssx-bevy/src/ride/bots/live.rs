@@ -8,15 +8,16 @@ use bevy::prelude::{Commands, Res, ResMut, info, warn};
 use ssx_assets::content::characters::budget::RiderLooks;
 use ssx_assets::content::characters::dress::LookChoice;
 use ssx_content::{ContentId, Kind};
+use ssx_physics::session::bots::{RACER_ALPHA_DRAWN_ABOVE, RacerAlphaInputs, racer_alpha, racer_label_colour};
 
 use super::{BotVisual, Bots, FrameFacts, LoadedBot, RacerDraw, RacerSources, RacerSpawner, load_racer_as};
 use crate::rider::anim::{JointRecord, world_records};
 
 const PLAYER_IDS: u64 = 0x4000_0001;
 
-// PORT(choice): the explore racers' request colour 0xFF05B8F3 (`[0x837E6FA8]`, `GameMode_BuildExploreGhostRequests`
-// 0x82480840), as the game gave its replayed online racers a request colour; a port feature: the original has no
-// real-time racers, so no colour of a live player's name to decode.
+// PORT(choice): a live racer's request colour is the explore racers' 0xFF05B8F3 (`[0x837E6FA8]`,
+// `GameMode_BuildExploreGhostRequests` 0x82480840), its name drawn through the racers' tint path as theirs; the original
+// has no real-time racers (its racers are replays with a request each), so no live player's colour to decode.
 const NAME_COLOUR: u32 = 0xFF05_B8F3;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,6 +55,7 @@ pub(super) struct LiveFrame {
     pub facts: FrameFacts,
     pub dt_ticks: f32,
     pub racers: usize,
+    pub inputs: RacerAlphaInputs,
 }
 
 #[derive(Default)]
@@ -102,7 +104,7 @@ impl LiveVisuals {
                 Some(ssx_ui::game::hud::billboards::Ghost {
                     id: PLAYER_IDS + u64::from(r.id),
                     name: r.look.name.clone(),
-                    colour: NAME_COLOUR,
+                    colour: racer_label_colour(NAME_COLOUR, r.visual.alpha),
                     position: t.p.to_array(),
                 })
             })
@@ -117,7 +119,12 @@ impl LiveVisuals {
         rng: &mut dyn ssx_assets::career::random::GameRandom,
         draw: &mut RacerDraw,
     ) {
-        let LiveFrame { facts, dt_ticks, racers } = frame;
+        let LiveFrame { facts, dt_ticks, racers, inputs } = frame;
+        // PORT(choice): a live racer's `IRaceInterface` +0x28 (`Racers_UpdateFade`'s Explore test, 0x825021E4…
+        // 0x82502210) is the race clock in ms, the value the score manager writes into each unfinished racer it holds
+        // (0x824CC520…0x824CC534), whichever score slot the port gives the live racer (re-chosen each second, or none);
+        // the original has no live racers, its racers' +0x28 is written per racer of its rival list.
+        let clock_ms = ride.session.event.clock.ms();
         for r in &mut self.drawn {
             let view = race.live.iter().find(|l| l.id == r.id).and_then(|l| l.pose.view(self.now));
             let Some(view) = view else {
@@ -129,6 +136,9 @@ impl LiveVisuals {
             if v.racer_type == 2 {
                 draw.holo(v, dt_ticks / 60.0, view.root.distance_squared(ride.state.traj), racers, rng);
             }
+            let fade = if v.racer_type == 2 { v.fade.alpha } else { 1.0 };
+            v.alpha = racer_alpha(v.racer_type, fade, race.ready_gate, inputs, false, clock_ms);
+            let shown = v.alpha > RACER_ALPHA_DRAWN_ABOVE;
             let in_air = view.pose.flags & ssx_formats::ghost::FLAG_IN_AIR != 0;
             v.anim.set_signal("BLN_InAir", if in_air { 1.0 } else { 0.0 });
             let posed = ssx_assets::ghosts::GhostPose { trajectory_rotation: view.rotation, ..view.pose };
@@ -139,7 +149,7 @@ impl LiveVisuals {
                 crate::rider::skin::prop_in_hands(&v.rig.rig, &mut records, op, axe);
             }
             let lamp_on = facts.night && r.look.gear & 1 != 0;
-            let (board, trajectory) = draw.place(&format!("live rider {}", r.id), v, &records, facts, lamp_on);
+            let (board, trajectory) = draw.place(&format!("live rider {}", r.id), v, &records, facts, lamp_on, shown);
             r.trajectory = trajectory;
             r.spray = board.map(|b| (b, view.pose));
         }

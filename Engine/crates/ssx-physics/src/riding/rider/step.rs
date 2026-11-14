@@ -124,9 +124,10 @@ pub fn step_with_trigger(
     s.impacts = 0;
     let in_air = s.in_air();
     let raw_stick = input.stick();
+    let matched = crate::graph::stick_axes(raw_stick);
     s.pad_stick = match s.reverse_camera {
-        Some(camera) => reverse_camera_stick(raw_stick, camera, s.alignment, s.kin.fwd, s.traj_velocity),
-        None => raw_stick,
+        Some(camera) => reverse_camera_stick(matched, camera, s.alignment, s.kin.fwd, s.traj_velocity),
+        None => matched,
     };
     let input = &input.with_stick(s.pad_stick);
     let stick = s.pad_stick;

@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use ssx_physics::DT_TICKS;
-use ssx_physics::event::{Course, EventManager, EventSetup, choose_event};
+use ssx_physics::event::{Course, EventManager, EventSetup, level_event};
 use ssx_physics::rewind::RewindPad;
 use ssx_physics::rider::{RiderState, TrickInput, World as PhysicsWorld};
 use ssx_physics::session::Session;
@@ -12,12 +12,15 @@ use super::{Clock, Ride, RideSetup};
 
 impl Ride {
     pub(super) fn new(mut setup: RideSetup) -> Option<Self> {
-        let want = std::env::var("SSX_RIDE_EVENT").unwrap_or_else(|_| "race".into());
         let def = match setup.event_key {
             _ if setup.map.is_some() => None,
-            Some(key) => setup.world.events.iter().find(|e| e.key == key).cloned(),
-            None if want == "none" => None,
-            None => choose_event(setup.world.events.iter(), &want).cloned(),
+            key => {
+                let def = level_event(&setup.world.events, key, super::viewer_event_choice);
+                if let (Some(key), None) = (key, def) {
+                    warn!("ride: the launched event {key:#010x} is not on the drop: the ride has no event");
+                }
+                def.cloned()
+            }
         };
         setup.world.survival.apply_event(def.as_ref());
         let test_gear = std::env::var("SSX_RIDE_LOADOUT").is_ok() || std::env::var("SSX_RIDE_GEAR").is_ok();
@@ -73,6 +76,7 @@ impl Ride {
             }
             None => ssx_assets::character::Loadout::from_slots(&setup.world.survival.slots, 0),
         };
+        setup.world.survival.goggles_preset = goggles_preset(&setup.big_root, &setup.character, &loadout);
         let d = &setup.world.survival;
         info!(
             "survival: cold {}, low oxygen {}, rock damage {}, permanent death {}, required gear {:?}",
@@ -204,6 +208,9 @@ impl Ride {
                 Err(e) => warn!("bots unavailable: {e:#}"),
             }
         }
+        if let Some(b) = session.bots.as_mut() {
+            b.explore_mode = explore_game_mode(setup.game_mode, def.as_ref());
+        }
         let own = setup.own_tombstone.as_ref();
         if let Some(t) = def.as_ref().and_then(|d| ssx_physics::session::tombstones::Tombstones::for_event_with(d, own))
         {
@@ -283,7 +290,7 @@ impl Ride {
         let map_heli = setup.map.as_ref().and_then(|m| m.heli.as_ref());
         let heli_flight = match (&intro, setup.drop_key) {
             (Some(_), None) if map_heli.is_some() => {
-                let grid = map_heli.and_then(|h| h.grid.clone());
+                let grid = map_heli.and_then(|h| h.grid.as_ref().ok().cloned());
                 match ssx_physics::helicopter::HeliFlightData::with_grid(&setup.big_root, grid) {
                     Ok(f) => Some(std::sync::Arc::new(f)),
                     Err(e) => {
@@ -297,7 +304,16 @@ impl Ride {
                     ssx_physics::spawn::drop_objective_scripts(&setup.big_root, &setup.track, key).unwrap_or_default();
                 let locator = ssx_physics::outro::outro_locator(&setup.world);
                 match ssx_physics::helicopter::HeliFlightData::load(&setup.big_root, &setup.track, &scripts, locator) {
-                    Ok(f) => Some(std::sync::Arc::new(f)),
+                    Ok(f) => {
+                        info!(
+                            "helicopter flight: height grid {}",
+                            f.grid.as_ref().map_or("none (no elevation, no avoidance)".to_string(), |g| format!(
+                                "{} × {} cells over {:.0} … {:.0}",
+                                g.width, g.height, g.min, g.max
+                            ))
+                        );
+                        Some(std::sync::Arc::new(f))
+                    }
                     Err(e) => {
                         warn!("helicopter flight unavailable: {e:#}");
                         None
@@ -361,47 +377,11 @@ impl Ride {
                 name,
                 &setup.character,
             ));
-            if let Some((k, before)) = std::env::var("SSX_RIDE_FROM_GHOST").ok().and_then(|v| {
-                let (k, b) = v.split_once(',')?;
-                Some((k.trim().parse::<usize>().ok()?, b.trim().parse::<f32>().ok()?))
-            }) && let Some(row) = def.as_ref().and_then(|d| d.rivals.get(k))
-                && let Ok(replay) = ssx_assets::ghosts::GhostReplay::load(&setup.big_root, row.ghost_id as u32)
+            if let Some(s) =
+                ride_from_ghost(&setup.world, def.as_ref(), &setup.big_root, &data, &mut session, heli.as_mut(), None)
             {
-                let rail = data.rail_at_start();
-                let contact = replay
-                    .times
-                    .iter()
-                    .zip(&replay.positions)
-                    .find(|(_, p)| {
-                        Vec3::from_array(**p).distance(rail) < ssx_physics::session::heli_jump::CONTACT_DISTANCE
-                    })
-                    .map_or(replay.duration(), |(t, _)| *t);
-                let from = contact - before;
-                let i0 = replay.times.iter().position(|&t| t >= from).unwrap_or(replay.times.len() - 1);
-                let p0 = Vec3::from_array(replay.positions[i0]);
-                let v0 = Vec3::from_array(replay.pose(from).velocity);
-                let heading = Vec3::new(v0.x, 0.0, v0.z).normalize_or(Vec3::Z);
-                if let Some(mut s) = RiderState::spawn(&setup.world, p0 + Vec3::Y, heading) {
-                    (s.velocity, s.traj_velocity, s.filtered_velocity) = (v0, v0, v0);
-                    state = s;
-                    intro = None;
-                    session.event.on_trigger_race_start(&mut session.timer);
-                    session.flow.race_proper_started = true;
-                    if let Some(h) = heli.as_mut() {
-                        h.traj = (data.heli_start.1, data.heli_start.0);
-                        h.move_to = Some(data.heli_start);
-                    }
-                    session.update_objectives(&mut state, &setup.world, false, 0.0);
-                    if let Some(o) = session.objectives.as_mut() {
-                        (o.heli.move_to, o.heli.generation) = (Some(data.heli_start), o.heli.generation + 1);
-                    }
-                    info!(
-                        "SSX_RIDE_FROM_GHOST: ghost {} at {from:.2} s ({before} s before its contact at {contact:.2} s): {p0}, \
-                         {:.1} km/h",
-                        row.ghost_id,
-                        v0.length() * ssx_physics::KMH_PER_M_PER_TICK
-                    );
-                }
+                state = s;
+                intro = None;
             }
         }
         let course = match std::env::var("SSX_COURSE").ok().filter(|_| setup.autoplay || env_flag("SSX_RIDE_AUTOPLAY"))
@@ -530,6 +510,78 @@ impl Ride {
     }
 }
 
+pub(super) fn ride_from_ghost(
+    world: &PhysicsWorld,
+    def: Option<&ssx_physics::event::EventDef>,
+    big_root: &std::path::Path,
+    data: &ssx_physics::session::heli_jump::HeliJumpData,
+    session: &mut Session,
+    heli: Option<&mut ssx_physics::helicopter::Helicopter>,
+    before: Option<f32>,
+) -> Option<RiderState> {
+    if let Some((k, before, rivals_of)) = std::env::var("SSX_RIDE_FROM_GHOST").ok().and_then(|v| {
+        let mut f = v.split(',').map(str::trim);
+        let (k, b) = (f.next()?.parse::<usize>().ok()?, f.next()?.parse::<f32>().ok()?);
+        Some((k, before.unwrap_or(b), f.next().map(str::to_string)))
+    }) && let Some(row) = match rivals_of {
+        Some(n) => world.events.iter().find(|d| d.name == n),
+        None => def,
+    }
+    .and_then(|d| d.rivals.get(k))
+        && let Ok(replay) = ssx_assets::ghosts::GhostReplay::load(big_root, row.ghost_id as u32)
+    {
+        let rail = data.rail_at_start();
+        let contact = replay
+            .times
+            .iter()
+            .zip(&replay.positions)
+            .find(|(_, p)| Vec3::from_array(**p).distance(rail) < ssx_physics::session::heli_jump::CONTACT_DISTANCE)
+            .map_or(replay.duration(), |(t, _)| *t);
+        let from = contact - before;
+        let i0 = replay.times.iter().position(|&t| t >= from).unwrap_or(replay.times.len().checked_sub(1)?);
+        let p0 = Vec3::from_array(*replay.positions.get(i0)?);
+        let v0 = Vec3::from_array(replay.pose(from).velocity);
+        let heading = Vec3::new(v0.x, 0.0, v0.z).normalize_or(Vec3::Z);
+        if let Some(mut s) = RiderState::spawn(world, p0 + Vec3::Y, heading) {
+            (s.velocity, s.traj_velocity, s.filtered_velocity) = (v0, v0, v0);
+            session.event.on_trigger_race_start(&mut session.timer);
+            session.flow.race_proper_started = true;
+            if let Some(h) = heli {
+                h.traj = (data.heli_start.1, data.heli_start.0);
+                h.move_to = Some(data.heli_start);
+            }
+            session.update_objectives(&mut s, world, false, 0.0);
+            if let Some(o) = session.objectives.as_mut() {
+                (o.heli.move_to, o.heli.generation) = (Some(data.heli_start), o.heli.generation + 1);
+            }
+            info!(
+                "SSX_RIDE_FROM_GHOST: ghost {} at {from:.2} s ({before} s before its contact at {contact:.2} s): {p0}, \
+                 {:.1} km/h",
+                row.ghost_id,
+                v0.length() * ssx_physics::KMH_PER_M_PER_TICK
+            );
+            return Some(s);
+        }
+    }
+    None
+}
+
+pub(super) fn loop_ghost_start(loops: u32) -> Option<f32> {
+    let v = std::env::var("SSX_RIDE_FROM_GHOST_LOOPS").ok()?;
+    let list: Vec<&str> = v.split(',').map(str::trim).collect();
+    let k = usize::try_from(loops).ok()?.checked_sub(1)?;
+    list.get(k).or(list.last())?.parse().ok()
+}
+
+fn explore_game_mode(game_mode: Option<i64>, def: Option<&ssx_physics::event::EventDef>) -> bool {
+    match game_mode {
+        Some(m) => m == 0,
+        // PORT(choice): without a front end (the viewer's ride) the game mode comes from the event's name (`exp_`
+        // Explore), as `ssx_ui::game::ride`'s results take it; in the game the front end's flow manager holds it.
+        None => def.is_some_and(|d| d.name.starts_with("exp_")),
+    }
+}
+
 fn live_rivals(
     big_root: &std::path::Path,
     def: Option<&ssx_physics::event::EventDef>,
@@ -578,4 +630,33 @@ pub(super) fn level_start(
         Some(i) => ssx_physics::nis::level_start_or_below(world, at, q, i.clone()),
         None => RiderState::level_start(world, at, q),
     }
+}
+
+fn goggles_preset(
+    big_root: &std::path::Path,
+    character: &str,
+    loadout: &ssx_assets::character::Loadout,
+) -> Option<(u32, ssx_assets::postfx_state::PostFxState)> {
+    use ssx_assets::character::{GearItem, gear_postfx_key};
+    use ssx_assets::postfx_state::PostFxState;
+    let key = match gear_postfx_key(big_root, character, loadout, GearItem::PulseGoggles) {
+        Ok(key) => key?,
+        Err(e) => {
+            warn!("goggles: the item's post-FX preset: {e:#}");
+            return None;
+        }
+    };
+    let preset = match ssx_assets::postfx::load_preset_routed(big_root, key) {
+        Ok(p) => p,
+        Err(e) => {
+            warn!("goggles: post-FX preset {key:#010x}: {e:#}");
+            return None;
+        }
+    };
+    let refused = PostFxState::refused(&preset);
+    if !refused.is_empty() {
+        warn!("goggles: preset {} ({:?}): not in the state: {}", preset.name, preset.chain, refused.join(", "));
+    }
+    info!("goggles: post-FX preset {} ({:?})", preset.name, preset.chain);
+    Some((key, PostFxState::of(&preset)))
 }

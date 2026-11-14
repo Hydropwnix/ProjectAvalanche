@@ -115,6 +115,10 @@ impl Input {
     pub fn with_stick(&self, stick: Vec2) -> Self {
         Input { steer: stick.x, tuck: stick.y.max(0.0), brake: (-stick.y).max(0.0), ..*self }
     }
+
+    pub fn matched(&self) -> Self {
+        self.with_stick(crate::graph::stick_axes(self.stick()))
+    }
 }
 
 pub fn reverse_camera_stick(stick: Vec2, camera: Quat, alignment: Quat, forward_sign: f32, velocity: Vec3) -> Vec2 {

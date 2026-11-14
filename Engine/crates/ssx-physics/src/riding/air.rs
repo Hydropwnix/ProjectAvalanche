@@ -351,7 +351,7 @@ impl AirRotation {
         if self.first_tick {
             self.first_tick = false;
         } else {
-            self.select_landing_target(t, inp, board);
+            self.select_landing_target(t, inp);
         }
         self.drift_reference_frame(t, dt);
         self.read_stick_inputs(t, inp.stick);
@@ -367,27 +367,27 @@ impl AirRotation {
         self.orientation()
     }
 
-    fn select_landing_target(&mut self, t: &AerialTuning, inp: &AirInputs, board: Quat) {
+    fn select_landing_target(&mut self, t: &AerialTuning, inp: &AirInputs) {
         let (v, grind_steering, tutorial_mode) = (inp.velocity, inp.grind_steering, inp.tutorial_mode);
         (self.land_flip_period, self.land_flip_offset, self.land_spin_period, self.land_spin_offset) =
             (TAU, 0.0, PI, 0.0);
         self.land_weight = 0.0;
         if let Some(left) = inp.heli_interact {
-            self.q_land = frame_heading_normal(v, Vec3::Y, board);
+            self.q_land = frame_heading_normal(v, Vec3::Y, self.q_land);
             (self.land_spin_period, self.land_spin_offset) = (TAU, if left { 0.0 } else { PI });
             self.ticks_to_land = 0.0;
             self.land_weight = 1.0;
             self.target_valid = true;
         } else if let Some(ttl) = grind_steering {
-            self.q_land = frame_heading_normal(v, Vec3::Y, board);
+            self.q_land = frame_heading_normal(v, Vec3::Y, self.q_land);
             self.ticks_to_land = (ttl - 6.0).max(0.0);
             self.land_weight = 1.0;
             self.target_valid = true;
         } else {
-            self.select_ballistic_target(v, board);
+            self.select_ballistic_target(v);
         }
         if self.flip_input.abs() <= EPS && self.spin_input.abs() <= EPS && self.ticks_to_land > t.auto_upright_time {
-            self.q_land = frame_heading_normal(v, Vec3::Y, board);
+            self.q_land = frame_heading_normal(v, Vec3::Y, self.q_land);
             self.ticks_to_land = t.auto_upright_time;
             self.land_weight = 1.0;
             self.target_valid = false;
@@ -397,15 +397,15 @@ impl AirRotation {
         }
     }
 
-    fn select_ballistic_target(&mut self, v: Vec3, board: Quat) {
+    fn select_ballistic_target(&mut self, v: Vec3) {
         match self.prediction {
             Some(p) => {
-                self.q_land = frame_heading_normal(v, p.normal, board);
+                self.q_land = frame_heading_normal(v, p.normal, self.q_land);
                 self.ticks_to_land = p.ticks;
                 self.target_valid = true;
             }
             None => {
-                self.q_land = frame_heading_normal(v, Vec3::Y, board);
+                self.q_land = frame_heading_normal(v, Vec3::Y, self.q_land);
                 self.ticks_to_land = NO_LANDING;
                 self.target_valid = false;
             }

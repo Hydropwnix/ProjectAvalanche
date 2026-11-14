@@ -15,6 +15,9 @@ pub fn entries(family: HookFamily) -> &'static [(&'static str, Kind)] {
             ("render/objects/object.wesl", Kind::MainFragment),
             ("render/lighting/game_vertex.wesl", Kind::MainVertex),
             ("render/objects/object_prepass.wesl", Kind::ShadowPrepass),
+            ("render/objects/object_prepass.wesl", Kind::CameraPrepass),
+            ("render/objects/object_gbuffer.wesl", Kind::ShadowPrepass),
+            ("render/objects/object_gbuffer.wesl", Kind::CameraPrepass),
         ],
         HookFamily::Sky => &[("render/sky/sky_dome.wesl", Kind::Own)],
     }
@@ -22,7 +25,7 @@ pub fn entries(family: HookFamily) -> &'static [(&'static str, Kind)] {
 
 fn entry_hooks(entry: &str) -> &'static [&'static str] {
     match entry {
-        "render/objects/object.wesl" => &["surface"],
+        "render/objects/object.wesl" | "render/objects/object_gbuffer.wesl" => &["surface"],
         "render/lighting/game_vertex.wesl" | "render/objects/object_prepass.wesl" => &["vertex_offset"],
         _ => &["surface", "vertex_offset"],
     }
@@ -94,7 +97,10 @@ pub fn variant_modules(
     let hook = composed_source(types_module(family), text);
     let mut dirs = BTreeSet::new();
     for (entry, _) in entries(family) {
-        out.push((variant_path(hash, entry), source_of(entry)?));
+        let path = variant_path(hash, entry);
+        if !out.iter().any(|(p, _)| *p == path) {
+            out.push((path, source_of(entry)?));
+        }
         dirs.insert(entry.rsplit_once('/').map_or("", |(d, _)| d));
     }
     for d in dirs {
@@ -156,7 +162,7 @@ pub fn parse_validated(wgsl: &str, caps: &DeviceCaps) -> Result<(naga::Module, M
 const PREPASS_VIEW_BINDINGS: [u32; 4] = [0, 1, 2, 14];
 
 pub fn view_bindings_fit(kind: Kind, wgsl: &str) -> Result<(), String> {
-    if kind != Kind::ShadowPrepass {
+    if !matches!(kind, Kind::ShadowPrepass | Kind::CameraPrepass) {
         return Ok(());
     }
     let module = naga::front::wgsl::parse_str(wgsl).map_err(|e| e.emit_to_string(wgsl))?;
@@ -164,7 +170,7 @@ pub fn view_bindings_fit(kind: Kind, wgsl: &str) -> Result<(), String> {
 }
 
 pub fn module_bindings_fit(kind: Kind, module: &naga::Module) -> Result<(), String> {
-    if kind != Kind::ShadowPrepass {
+    if !matches!(kind, Kind::ShadowPrepass | Kind::CameraPrepass) {
         return Ok(());
     }
     for (_, g) in module.global_variables.iter() {
@@ -269,10 +275,13 @@ pub fn check_variant(
     let hook_defs = hook_flags(accepted);
     let item = hook_item(family, hash);
     let limits = Limits::default();
-    for (entry, kind) in entries(family) {
+    for (index, (entry, kind)) in entries(family).iter().enumerate() {
         if let Scope::Exact(wanted) = scope
             && !wanted.iter().any(|(e, _)| e == entry)
         {
+            continue;
+        }
+        if matches!(scope, Scope::Exact(_)) && entries(family).iter().position(|(e, _)| e == entry) != Some(index) {
             continue;
         }
         let own = format!("{}/{entry}", sets::CRATE);

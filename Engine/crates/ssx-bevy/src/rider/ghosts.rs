@@ -148,11 +148,14 @@ pub struct LoadedGhosts {
 #[derive(Resource)]
 struct PendingGhosts(Option<LoadedGhosts>);
 
-fn load(root: &Path, track: &str, drop_key: u32, riding: bool) -> Result<Option<LoadedGhosts>> {
+fn load(root: &Path, track: &str, drop_key: u32, ride: Option<&crate::ride::Ride>) -> Result<Option<LoadedGhosts>> {
     let (events, end) = ssx_physics::spawn::load_drop_events(root, track, drop_key)?;
-    let want = std::env::var("SSX_RIDE_EVENT").unwrap_or_else(|_| "race".into());
-    let def = if want == "none" { None } else { ssx_physics::event::choose_event(events.iter(), &want) };
+    let def = match ride {
+        Some(r) => r.event_def(),
+        None => ssx_physics::event::level_event(&events, None, crate::ride::viewer_event_choice),
+    };
     let Some(def) = def else { return Ok(None) };
+    let riding = ride.is_some();
     let board = def.ghost_board();
     let rows: Vec<(usize, &ssx_physics::event::Rival)> =
         board.iter().enumerate().filter_map(|(k, g)| Some((k, def.rivals.get(g.row?)?))).collect();
@@ -242,7 +245,13 @@ pub fn insert(world: &mut World, loaded: Loaded) {
     world.insert_resource(PendingGhosts(Some(loaded)));
 }
 
-pub fn load_level(big_root: Option<&Path>, track: &str, drop_key: Option<u32>, riding: bool) -> Option<Loaded> {
+pub fn load_level(
+    big_root: Option<&Path>,
+    track: &str,
+    drop_key: Option<u32>,
+    ride: Option<&crate::ride::Ride>,
+) -> Option<Loaded> {
+    let riding = ride.is_some();
     if crate::render::post::env_is("SSX_GHOSTS", "off") {
         info!("ghosts: off (SSX_GHOSTS=off)");
         return None;
@@ -251,10 +260,10 @@ pub fn load_level(big_root: Option<&Path>, track: &str, drop_key: Option<u32>, r
         return None;
     }
     let (Some(root), Some(drop_key)) = (big_root, drop_key) else { return None };
-    let loaded = match load(root, track, drop_key, riding) {
+    let loaded = match load(root, track, drop_key, ride) {
         Ok(Some(l)) => l,
         Ok(None) => {
-            info!("ghosts: the drop's event has no ranked rivals");
+            info!("ghosts: the event has no ranked rivals");
             return None;
         }
         Err(e) => {

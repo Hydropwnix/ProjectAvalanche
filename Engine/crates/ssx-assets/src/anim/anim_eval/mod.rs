@@ -170,9 +170,13 @@ pub fn blend_delta(env: &Env, blend: &Blend, elapsed: f32, old: Delta, new: Delt
 }
 
 pub fn apply_blend(env: &Env, blend: &Blend, elapsed: f32, old: &mut AnimPose, new: &AnimPose) {
+    blend_on_rig(env.rig, blend, elapsed, old, new);
+}
+
+pub fn blend_on_rig(rig: &crate::anim_pose::PoseRig, blend: &Blend, elapsed: f32, old: &mut AnimPose, new: &AnimPose) {
     let w = blend_new_weight(blend, elapsed);
     match &blend.dof_curves {
-        Some(c) => crate::anim_pose::blend_masked(old, new, 1.0, Some(&env.rig.dof_weights(c, w))),
+        Some(c) => crate::anim_pose::blend_masked(old, new, 1.0, Some(&rig.dof_weights(c, w))),
         None => old.blend(new, w),
     }
 }

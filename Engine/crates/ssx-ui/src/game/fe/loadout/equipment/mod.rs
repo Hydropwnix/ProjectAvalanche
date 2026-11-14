@@ -120,9 +120,16 @@ fn set_category(fe: &mut FrontEnd, env: &mut FeEnv, category: i32) {
     inv.build_selected_gear(&fe.career, &fe.profile, env.loc, drop.as_ref());
     env.values.set_int(0x6C, inv.survival);
     env.values.set_int(0x64, inv.inventory_size);
-    let note = store_note(&inv, "built");
+    let notes = [store_note(&inv, "built"), owned_note(&inv, "built")];
     fe.equipment.inv = Some(inv);
-    fe.note(note);
+    for note in notes {
+        fe.note(note);
+    }
+}
+
+fn owned_note(inv: &Inventory, what: &str) -> String {
+    let list: Vec<String> = inv.owned_list.iter().map(|u| format!("{:#x}/{}", u.key, u.src)).collect();
+    format!("equipment: owned list {what} [{}]", list.join(", "))
 }
 
 fn store_note(inv: &Inventory, what: &str) -> String {
@@ -377,6 +384,24 @@ fn save_state_reset(env: &mut FeEnv) {
     env.values.set_bool(0x6A, false);
 }
 
+fn back_out(fe: &mut FrontEnd, env: &mut FeEnv) {
+    save_state_reset(env);
+    refund_reserved_fee(fe, env);
+    fe.note("equipment: back out, save (FE manager +0xC4)");
+    fe.requests.push(crate::game::fe::pause::GameRequest::Save);
+    crate::game::fe::globe::back_from_equipment(fe, env);
+}
+
+fn refund_reserved_fee(fe: &mut FrontEnd, env: &mut FeEnv) {
+    let fee = env.values.int(0x231);
+    if fee >= 0 {
+        fe.profile.add_credits(i64::from(fee), false);
+        let bank = env.values.int(0x93);
+        env.values.set_int(0x93, bank.wrapping_add(fee));
+    }
+    env.values.set_int(0x231, 0);
+}
+
 fn preview(fe: &mut FrontEnd, env: &mut FeEnv, item: Option<(u32, u8)>) {
     let mut inv = inv(fe);
     let drop = drop_info(fe);
@@ -481,14 +506,16 @@ fn after_purchase(fe: &mut FrontEnd, env: &mut FeEnv, kind: i64, bought: (u32, u
         inv.put_bought_first(&fe.career, &fe.profile, env.loc, drop.as_ref(), kind, bought);
     }
     inv.refresh_lists(&fe.career, &fe.profile, env.loc, drop.as_ref(), &ctx, kind);
-    let after = store_note(&inv, "refreshed");
+    let after = [store_note(&inv, "refreshed"), owned_note(&inv, "refreshed")];
     inv.build_selected_gear(&fe.career, &fe.profile, env.loc, drop.as_ref());
     env.values.set_int(0x6C, inv.survival);
     env.values.set_int(0x64, inv.inventory_size);
     let price = inv.record(&fe.career, &fe.profile, env.loc, bought.0, bought.1).map(|r| r.cost);
     fe.equipment.inv = Some(inv);
     fe.note(before);
-    fe.note(after);
+    for note in after {
+        fe.note(note);
+    }
     let stat = match kind {
         1 => Some("LifetimeSpentOnBoards"),
         2 => Some("LifetimeSpentOnGear"),

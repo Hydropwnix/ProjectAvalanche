@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -278,6 +278,7 @@ pub struct LevelObjectives {
     pub effects: Vec<(String, Effect)>,
     pub heli: HeliOrders,
     pub nis_starts: BTreeMap<(String, String), Option<(glam::Vec3, glam::Quat)>>,
+    pub nis_built: BTreeSet<String>,
     pub unapplied: std::collections::BTreeSet<String>,
     pub postfx: BTreeMap<String, (f32, f32)>,
 }
@@ -300,6 +301,10 @@ impl LevelObjectives {
         game_report.scripts.append(&mut report.scripts);
         report.scripts = game_report.scripts;
         report.problems.append(&mut game_report.problems);
+        let mut nis_built = BTreeSet::new();
+        for o in runner.sets.iter().flatten() {
+            o.nodes.iter().for_each(|n| nis_plays(n, &mut nis_built));
+        }
         let mut nis_starts = BTreeMap::new();
         if let Some(root) = root {
             let mut wanted = Vec::new();
@@ -320,6 +325,7 @@ impl LevelObjectives {
             effects: lw.effects,
             heli: HeliOrders::default(),
             nis_starts,
+            nis_built,
             unapplied: Default::default(),
             postfx: BTreeMap::new(),
         }
@@ -341,15 +347,35 @@ fn nis_moves(n: &ssx_lua::game::objectives::Node, out: &mut Vec<(String, String)
     }
 }
 
-// TODO(guess): the role enumeration's names are taken as the roles' without the digit (`Character` → `NIS_Role_Character1` 0, `Camera1` 10, `Helicopter1` 20; `FUN_82C745A0` compares exactly via 0x82FF0138, loader 0x82D5F5E0, 0x831AE2F0; the image holds no `NIS_Role` string); settle: the name the ANT loader hands 0x82D5F5E0.
+fn nis_plays(n: &ssx_lua::game::objectives::Node, out: &mut BTreeSet<String>) {
+    use ssx_lua::game::objectives::{Do, Node};
+    match n {
+        Node::Do(Do::Effect(Effect::PlayNis(r))) if !r.for_debug => {
+            out.insert(r.name.clone());
+        }
+        Node::And { a, b, .. } | Node::Or { a, b, .. } => {
+            nis_plays(a, out);
+            b.iter().for_each(|b| nis_plays(b, out));
+        }
+        Node::Not(Some(c)) => nis_plays(c, out),
+        _ => {}
+    }
+}
+
+// TODO(guess): the role enumeration's names are taken as the roles' without the digit (`Character` → `NIS_Role_Character1` 0, `Camera1` 10, `Helicopter1` 20, `Ghost1` 30; `FUN_82C745A0` compares exactly via 0x82FF0138, loader 0x82D5F5E0, 0x831AE2F0; the image holds no `NIS_Role` string); settle: the name the ANT loader hands 0x82D5F5E0.
 fn nis_role_id(role: &str) -> Option<i64> {
-    use ssx_assets::nis::{ROLE_CAMERA1, ROLE_CHARACTER1, ROLE_HELICOPTER1};
+    use ssx_assets::nis::{ROLE_CAMERA1, ROLE_CHARACTER1, ROLE_GHOST1, ROLE_HELICOPTER1};
     match role {
         "Character" => Some(ROLE_CHARACTER1),
         "Camera" => Some(ROLE_CAMERA1),
         "Helicopter" => Some(ROLE_HELICOPTER1),
+        "Ghost" => Some(ROLE_GHOST1),
         _ => None,
     }
+}
+
+pub fn binds_role(r: &ssx_lua::game::objectives::NisRequest, role: i64) -> bool {
+    r.actors.iter().any(|a| nis_role_id(&a.role.text) == Some(role))
 }
 
 pub struct SessionWorld<'a> {
@@ -416,6 +442,7 @@ fn player_value(x: &SessionWorld, name: &str) -> Option<GsValue> {
         "BLN_WingsuitEnabled" => Bool(s.wingsuit.enabled),
         "BLN_EnableAirborneAutoUprighting" => Bool(s.airborne_auto_upright),
         "FLT_HeadLampBatteryLevel" => Float(s.survival.head_lamp_battery),
+        "FLT_PulseGogglesBatteryLevel" => Float(s.survival.pulse_goggles_battery),
         "FLT_VignetteHealth" => Float(s.survival.vignette_health),
         "FLT_VignetteTemperature" => Float(s.survival.vignette_temperature),
         "BLN_IsBoosting" => Bool(s.boost.is_boosting),

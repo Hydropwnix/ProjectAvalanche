@@ -12,6 +12,7 @@ use crate::sfx_aems::{Bank, MIXER_RATE, VoiceHost};
 use crate::sfx_bus::{self, Graph, SourceHost};
 use crate::sfx_dsp::{self, BLOCK, Resampler};
 use crate::sfx_override::{Choice, Looping, Route};
+use crate::sfx_stream;
 
 pub use direct::*;
 pub use sources::*;
@@ -45,7 +46,7 @@ pub fn voice_patch_table(big_root: &std::path::Path) -> Result<HashMap<i32, (Str
 struct BankAudio {
     name: String,
     data: Arc<Vec<u8>>,
-    ast: Option<Arc<crate::music::Bytes>>,
+    ast: Option<Arc<sfx_stream::StreamFile>>,
     sounds: Vec<Option<(u32, SoundHeader)>>,
 }
 
@@ -91,6 +92,9 @@ pub struct Mixer {
     released: Vec<u32>,
     pub events: Vec<String>,
     pub verbose: bool,
+    // PORT(choice): one pool per engine — the port has a front end's and a level's engine (one plays at a time, the
+    // other parked); the console has one engine and one `SfxLarge` pool for the game.
+    streams: sfx_stream::Pool,
 }
 
 impl Mixer {
@@ -108,6 +112,7 @@ impl Mixer {
             released: Vec::new(),
             events: Vec::new(),
             verbose: false,
+            streams: sfx_stream::Pool::new(sfx_stream::Ring::SFX_LARGE, sfx_stream::SFX_LARGE_SLOTS),
         }
     }
 
@@ -261,7 +266,20 @@ impl Mixer {
             Storage::Ram => Frames::Ram(self.ram_sound(b, idx)?),
             Storage::Stream => {
                 let ast = self.banks[b].ast.clone().context("streamed sound without .ast")?;
-                let cursor = Cursor::new(Data::Ast(ast), header.clone(), entry.stream_offset as usize)?;
+                let offset = u64::from(entry.stream_offset);
+                let cursor = StreamCursor::open(
+                    ast,
+                    header.clone(),
+                    offset,
+                    sfx_stream::BlockKind::V0,
+                    SlotFrom::Pool(&self.streams, sfx_stream::UNSTEALABLE),
+                )?;
+                if cursor.refused() {
+                    ssx_core::eprintln!(
+                        "sfx: {label}: no SfxLarge slot free ({} held), the voice stays silent until stopped",
+                        self.streams.held()
+                    );
+                }
                 Frames::Stream { cursor: Box::new(cursor), buf: Vec::new(), base: 0, ended: false }
             }
             Storage::Gigasample => bail!("gigasample sound"),

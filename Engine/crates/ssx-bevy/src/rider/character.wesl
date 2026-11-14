@@ -1,63 +1,22 @@
 import bevy_pbr::render::{
     pbr_fragment::pbr_input_from_standard_material,
     forward_io::{VertexOutput, FragmentOutput},
-    pbr_functions::{alpha_discard, main_pass_post_lighting_processing},
+    pbr_functions::main_pass_post_lighting_processing,
     mesh_types::MESH_FLAGS_SHADOW_RECEIVER_BIT,
     mesh_view_bindings::view,
 };
 import package::render::lighting::game_lighting as gl;
-
-struct CharacterParams {
-    shading: vec4<f32>,
-    glow: vec4<f32>,
-    lod_bias: vec4<f32>,
-    board: vec4<f32>,
-    holo: vec4<f32>,
-    holo_bloom: vec4<f32>,
-}
-
-struct CharacterLight {
-    rim_color: vec4<f32>,
-    rim: vec4<f32>,
-    rim_dir: vec4<f32>,
-    fill_color: vec4<f32>,
-    fill_dir: vec4<f32>,
-    dynamic: vec4<f32>,
-    shadow_point: vec4<f32>,
-    frame: vec4<f32>,
-}
-
-struct RiderFrame {
-    dynamic: vec4<f32>,
-    shadow_point: vec4<f32>,
-}
+import package::rider::character_normal::{
+    params, rider, normal_map, character_sampler, rider_dynamic, rider_shadow_point,
+    HAIR, EYE, APPAREL, BOARD, SECONDARY, ps5_alpha, ps5_normal, holo_on, holo_nz, holo_kill,
+};
 
 @if(SSX_LOCAL_LIGHTS)
 var<private> light: gl::GameLight;
 @else
 @group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> light: gl::GameLight;
-@group(constants::MATERIAL_BIND_GROUP) @binding(101) var<uniform> rider: CharacterLight;
-@group(constants::MATERIAL_BIND_GROUP) @binding(102) var<uniform> params: CharacterParams;
-@group(constants::MATERIAL_BIND_GROUP) @binding(103) var normal_map: texture_2d<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(104) var character_sampler: sampler;
 @group(constants::MATERIAL_BIND_GROUP) @binding(105) var specular_map: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(106) var ambient_map: texture_2d<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(121) var<storage, read> rider_frame: RiderFrame;
-
-fn rider_dynamic() -> vec4<f32> {
-    return select(rider.dynamic, rider_frame.dynamic, rider.frame.x > 0.5);
-}
-
-fn rider_shadow_point() -> vec4<f32> {
-    return select(rider.shadow_point, rider_frame.shadow_point, rider.frame.x > 0.5);
-}
-
-const HAIR: u32 = 1u;
-const EYE: u32 = 2u;
-const APPAREL: u32 = 3u;
-const BOARD: u32 = 4u;
-const WINGSUIT: u32 = 5u;
-const SECONDARY: u32 = 6u;
 
 fn pow_safe(x: f32, y: f32) -> f32 {
     return exp2(y * log2(max(x, 1e-7)));
@@ -100,31 +59,23 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     }
 }
 
-    if effect == WINGSUIT {
-        if 0.0 > max(pbr_input.material.base_color.a, rider_dynamic().z) - 0.25 {
-            discard;
-        }
-    } else {
-        pbr_input.material.base_color =
-            alpha_discard(pbr_input.material.flags, pbr_input.material.alpha_cutoff, pbr_input.material.base_color);
-    }
+    pbr_input.material.base_color =
+        ps5_alpha(effect, pbr_input.material.base_color, pbr_input.material.flags, pbr_input.material.alpha_cutoff);
     let d = pbr_input.material.base_color;
 
-    var n = normalize(in.world_normal);
+    var tangent = vec4(0.0);
+    var mapped = false;
 @if(VERTEX_TANGENTS && VERTEX_UVS_A) {
-    if params.shading.w > 0.0 {
-        let nt = normalize(vec3(tex_n * 2.0 - 1.0, 1.0));
-        n = gl::game_tbn(in.world_normal, in.world_tangent, nt);
-    }
+    tangent = in.world_tangent;
+    mapped = params.shading.w > 0.0;
 }
+    let n = ps5_normal(in.world_normal, tangent, mapped, tex_n);
 
     var holo_add = vec3(0.0);
     var holo_glow = 0.0;
-    if (effect == SECONDARY || effect == BOARD) && params.holo.x + params.holo.y > 0.0 {
-        let nz = (view.view_from_world * vec4(n, 0.0)).z;
-        if params.holo.y > 0.0 && 0.4 + nz - 1.4 * params.holo.y < 0.0 {
-            discard;
-        }
+    if holo_on(effect) {
+        let nz = holo_nz(n);
+        holo_kill(nz);
         let ndc_x = (in.position.x - view.viewport.x) / view.viewport.z * 2.0 - 1.0;
         let scan = 2.0 * abs(fract(60.0 * ndc_x) - 0.5);
         if params.holo.y > 0.0 && 1.4 * params.holo.y > 0.3 + nz {

@@ -171,4 +171,78 @@ fn explore_rows_become_racers_of_type_two_in_leaderboard_order() {
     def.event_type = Some(crate::event::EventType::TrickGhosts);
     let reqs = explore_requests(&def);
     assert_eq!(reqs.iter().map(|r| r.ghost_id).collect::<Vec<_>>(), [1, 3, 2]);
+    let names: Vec<RacerName> = reqs.iter().map(|r| r.name).collect();
+    assert_eq!(
+        names,
+        ["TXT_EXPLORE_GHOST_MEDAL_GOLD", "TXT_EXPLORE_GHOST_MEDAL_SILVER", "TXT_EXPLORE_GHOST_MEDAL_BRONZE"]
+            .map(RacerName::Text)
+    );
+}
+
+#[test]
+fn bots_are_named_after_their_characters() {
+    let row = |ghost_id, character| Rival {
+        starting_idx: 1,
+        ghost_id,
+        character,
+        catchup: CATCHUP_NONE,
+        score: 1000,
+        tuned_score: u32::MAX,
+        lap: 0,
+        end_bits: [0; 3],
+    };
+    let elise = fnv1(b"elise");
+    let reqs = bot_requests(&[elise], &[row(1, 77), row(2, elise)], |c| c == elise, |_| 0);
+    assert_eq!(
+        reqs.iter().map(|r| (r.character, r.name)).collect::<Vec<_>>(),
+        [(GENERIC_CHARACTER, RacerName::Character), (elise, RacerName::Character)]
+    );
+    assert_eq!(reqs.iter().map(|r| r.tint).collect::<Vec<_>>(), [GENERIC_TINT, BOT_TINT]);
+}
+
+#[test]
+fn a_racer_label_takes_its_tint_swizzled_under_the_fade() {
+    assert_eq!(racer_label_colour(BOT_TINT, 1.0), 0xFFF3_B805);
+    assert_eq!(racer_label_colour(BOT_TINT, 0.5), 0x7FF3_B805);
+    assert_eq!(racer_label_colour(BOT_TINT, 0.0), 0x00F3_B805);
+    assert_eq!(racer_label_colour(BOT_TINT, 1.7), 0xFFF3_B805);
+    assert_eq!(racer_label_colour(BOT_TINT, -0.2), 0x00F3_B805);
+    assert_eq!(racer_label_colour(GENERIC_TINT, 1.0), 0xFF0C_4E50);
+}
+
+#[test]
+fn a_racers_alpha_is_its_fade_unless_the_game_hides_it() {
+    let explore = RacerAlphaInputs { explore: true, ..Default::default() };
+    let tour = RacerAlphaInputs::default();
+    assert_eq!(racer_alpha(EXPLORE_RACER_TYPE, 0.4, true, explore, false, 33), 0.4);
+    assert_eq!(racer_alpha(EXPLORE_RACER_TYPE, 0.4, false, explore, false, 33), 0.0, "+0xB8 clear");
+    assert_eq!(racer_alpha(EXPLORE_RACER_TYPE, 0.4, true, explore, false, 0), 0.0, "Explore, no race clock yet");
+    assert_eq!(racer_alpha(1, 1.0, false, tour, false, 0), 1.0, "World Tour: no clock term, no gate");
+    assert_eq!(racer_alpha(1, 1.0, false, explore, false, 0), 0.0);
+    assert_eq!(racer_alpha(1, 1.0, false, explore, false, 1), 1.0);
+    let world_off = RacerAlphaInputs { world_render_disabled: true, ..tour };
+    assert_eq!(racer_alpha(1, 1.0, true, world_off, true, 5), 0.0, "even a racer in the NIS");
+    let outro = RacerAlphaInputs { outro_active: true, ..tour };
+    assert_eq!(racer_alpha(1, 1.0, true, outro, false, 5), 0.0, "the outro without the racer");
+    assert_eq!(racer_alpha(1, 1.0, true, outro, true, 5), 1.0, "the racer in the outro's NIS");
+    assert_eq!(RACER_ALPHA_DRAWN_ABOVE, 1.192_092_9e-7);
+    assert_eq!(racer_label_colour(BOT_TINT, racer_alpha(1, 1.0, true, outro, false, 5)), 0x00F3_B805);
+}
+
+#[test]
+fn the_ghost_managers_latches_follow_the_ready_loop_race_start_and_results() {
+    let mut g = GhostLatches::default();
+    assert_eq!(g.update(false, false), Some(false), "the intro before the ready loop");
+    assert_eq!(g.update(false, true), Some(true), "the ready loop latches");
+    assert_eq!(g.update(false, false), Some(true), "and holds after it");
+    assert_eq!(g.update(true, false), None);
+    assert!(g.hud_list && g.ready_latch);
+    assert_eq!(g.update(false, true), None);
+    g.on_results();
+    assert_eq!(g, GhostLatches::default());
+    assert_eq!(g.update(false, false), Some(false), "after the results the explore racers' gate is closed");
+    assert_eq!(g.update(false, true), Some(true));
+    let mut r = BotRace { ready_gate: true, running: true, ..BotRace::default() };
+    r.reset();
+    assert!(!r.ready_gate && !r.running);
 }

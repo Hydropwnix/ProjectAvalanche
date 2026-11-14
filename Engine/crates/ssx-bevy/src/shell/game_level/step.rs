@@ -100,24 +100,48 @@ pub(super) fn feed_step(
     }
     let clock = &ride.session.event.clock;
     let (ghosts, racers) = l.ghosts.step(clock.seconds, clock.ms(), &ride.world().triggers, &mut ui.loc);
-    let mut ghosts = ghosts;
-    if let Some(g) = ghost_models.as_mut() {
-        let t = g.drawn_time(&ride);
-        let drawn = g.drawn(t);
-        ghosts.retain_mut(|b| match drawn.iter().find(|(id, _)| *id == b.id) {
-            Some((_, p)) => {
-                b.position = p.to_array();
-                true
-            }
-            None => false,
-        });
-    }
     let explore = ssx_physics::event::shows_explore_ghosts(ride.session.event.setup.event_type);
-    l.feed.ghosts = if explore { ghosts } else { Vec::new() };
     l.feed.ghost_racers = if explore { racers } else { Vec::new() };
-    if let Some(b) = bots.as_deref() {
-        l.feed.ghosts.extend(b.live.billboards());
-    }
+    let ui_loc = &mut ui.loc;
+    let listed = ride.session.ghost_manager.hud_list;
+    l.feed.ghosts = match (bots.as_deref(), ride.session.bots.as_ref()) {
+        (Some(b), Some(race)) => listed.then(|| {
+            let titles = &l.feed.rider_titles;
+            let mut list: Vec<_> = b
+                .labels(race)
+                .into_iter()
+                .map(|r| {
+                    let req = &race.bots[r.bot].request;
+                    ssx_ui::game::hud::billboards::racer_ghost(
+                        r.bot,
+                        req,
+                        r.alpha,
+                        r.position.to_array(),
+                        titles,
+                        ui_loc,
+                    )
+                })
+                .collect();
+            list.extend(b.live.billboards());
+            list
+        }),
+        _ => listed.then(|| match ghost_models.as_mut().filter(|_| explore) {
+            Some(g) => {
+                let t = g.drawn_time(&ride);
+                let drawn = g.drawn(t);
+                let mut ghosts = ghosts;
+                ghosts.retain_mut(|b| match drawn.iter().find(|(id, _)| *id == b.id) {
+                    Some((_, p)) => {
+                        b.position = p.to_array();
+                        true
+                    }
+                    None => false,
+                });
+                ghosts
+            }
+            None => Vec::new(),
+        }),
+    };
     l.feed.camera = cams.iter().next().map(|(c, t)| hud_camera(c, t));
     match l.sim_hold.as_mut() {
         Some(hold) => {

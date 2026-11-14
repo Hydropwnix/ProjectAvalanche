@@ -86,12 +86,14 @@ pub struct AvalancheScene {
 }
 
 fn event_avalanche_scripts(ride: &Ride) -> Vec<String> {
-    let want = std::env::var("SSX_RIDE_EVENT").unwrap_or_else(|_| "race".into());
-    if want == "none" {
-        return Vec::new();
-    }
-    ssx_physics::event::choose_event(ride.world().events.iter(), &want)
-        .map_or_else(Vec::new, |d| d.avalanche_scripts.clone())
+    let def = match &ride.map {
+        None => ride.event_def(),
+        // PORT(choice): a map's ride launches no `ui_drop` and has no event of the disc; its drawn avalanche takes the
+        // asset viewer's choice among its world's events — on a layout its drop's `race` event by default, on a new
+        // track none. The console has no maps.
+        Some(_) => ssx_physics::event::level_event(&ride.world().events, None, crate::ride::viewer_event_choice),
+    };
+    def.map_or_else(Vec::new, |d| d.avalanche_scripts.clone())
 }
 
 impl AvalancheScene {

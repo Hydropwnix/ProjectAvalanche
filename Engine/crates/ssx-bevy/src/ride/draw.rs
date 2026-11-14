@@ -1,5 +1,6 @@
 use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
+use ssx_assets::postfx_topogrid::TopogridValues;
 use ssx_physics::SIM_HZ;
 
 use super::Ride;
@@ -176,11 +177,14 @@ pub(super) fn terrain_ripple(time: Res<Time>, ride: Res<Ride>, mut ripple: ResMu
 
 pub(super) fn screen_effects(
     ride: Res<Ride>,
+    layers: Option<ResMut<crate::render::post::layers::PostFxLayers>>,
     effects: Option<Res<crate::render::post::overlay::ScreenEffects>>,
     overlay: Option<ResMut<crate::render::post::overlay::PostOverlay>>,
+    topogrid: Option<Res<crate::render::post::topogrid::TopogridLevel>>,
+    post_topogrid: Option<ResMut<crate::render::post::topogrid::PostTopogrid>>,
     mut hud: ResMut<GearHud>,
 ) {
-    let (Some(effects), Some(mut overlay)) = (effects, overlay) else { return };
+    let Some(mut layers) = layers else { return };
     let forced = std::env::var("SSX_SCREEN_EFFECTS").ok().and_then(|s| {
         let v: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
         <[f32; 3]>::try_from(v).ok()
@@ -207,12 +211,28 @@ pub(super) fn screen_effects(
             running.push((p.preset.text.to_string(), weight));
         }
     }
-    let state = effects.overlay.state_of(&running);
-    overlay.uniform.set(state.shader_params());
-    let [i1, i2] = state.intensity.map(|i| i.unwrap_or(0.0));
-    hud.screen = format!(
-        "\nscreen fx ({:?}): overlay_1_intensity {i1:.2}, overlay_2_intensity {i2:.2}{}",
-        effects.overlay.drop,
-        if i1 > 0.0 || i2 > 0.0 { " OVERLAY" } else { "" }
-    );
+    let (goggles, pulse) = match ride.session.controllers.as_ref() {
+        Some(c) => (c.fx.goggles_layer.blends(), c.fx.goggles_pulse),
+        None => (Vec::new(), 0.0),
+    };
+    let values = layers.scene.frame(&running, &goggles);
+    let mut screen = String::new();
+    if let (Some(effects), Some(mut overlay)) = (effects, overlay) {
+        let state = ssx_assets::postfx_overlay::OverlayState::of(values);
+        overlay.uniform.set(state.shader_params());
+        let [i1, i2] = state.intensity;
+        screen = format!(
+            " ({:?}): overlay_1_intensity {i1:.2}, overlay_2_intensity {i2:.2}{}",
+            effects.overlay.drop,
+            if i1 > 0.0 || i2 > 0.0 { " OVERLAY" } else { "" }
+        );
+    }
+    if let (Some(_), Some(mut post)) = (topogrid, post_topogrid) {
+        let params = TopogridValues::of(values).shader_params(pulse, ride.render.traj.to_array());
+        if params.is_some() {
+            screen.push_str(" TOPOGRID");
+        }
+        post.uniform.set(params);
+    }
+    hud.screen = format!("\nscreen fx{screen}");
 }

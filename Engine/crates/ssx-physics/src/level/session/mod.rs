@@ -36,6 +36,7 @@ pub struct Session {
     pub avalanche: crate::avalanche::AvalancheSim,
     pub survive: Option<survive::SurviveLoop>,
     pub bots: Option<bots::BotRace>,
+    pub ghost_manager: bots::GhostLatches,
     pub heli_jump: Option<heli_jump::HeliJump>,
     pub tutorial: Option<tutorial::Tutorial>,
     pub nis_events: crate::nis_events::NisEvents,
@@ -100,6 +101,7 @@ impl Session {
             avalanche: crate::avalanche::AvalancheSim::default(),
             survive: None,
             bots: None,
+            ghost_manager: bots::GhostLatches::default(),
             heli_jump: None,
             tutorial: None,
             nis_events: crate::nis_events::NisEvents::default(),
@@ -169,17 +171,24 @@ impl Session {
         if let Some(c) = self.controllers.as_mut() {
             c.reset_bodies();
         }
+        if let Some(enabled) = self.event.saved_rewind_enabled.take() {
+            self.manager.count.enabled = enabled;
+        }
         self.event.reset();
         self.flow.track_finished = false;
         self.avalanche.warp();
         if let Some(b) = self.bots.as_mut() {
             b.reset();
         }
+        self.ghost_manager = bots::GhostLatches::default();
         if let Some(t) = self.tombstones.as_mut() {
             t.reset();
         }
         (self.head_pending, self.racer_end) = (true, [false; crate::event::MAX_RACERS]);
         self.downwash = None;
+        if let Some(h) = self.heli_jump.as_mut() {
+            h.restart();
+        }
     }
 
     pub fn pause_begin(&mut self) {

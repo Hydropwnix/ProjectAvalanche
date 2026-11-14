@@ -8909,7 +8909,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "glam",
- "memmap2",
+ "libc",
  "png",
  "serde",
  "serde_json",
@@ -8921,6 +8921,7 @@ dependencies = [
  "ssx-movie",
  "ssx-rules",
  "toml",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

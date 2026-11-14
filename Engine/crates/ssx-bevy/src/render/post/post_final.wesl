@@ -19,6 +19,21 @@ struct OverlayUniform {
 @group(0) @binding(8) var overlay_map1: texture_2d<f32>;
 @group(0) @binding(9) var overlay_sampler: sampler;
 
+struct TopogridUniform {
+    world_from_clip: mat4x4<f32>,
+    back: vec4<f32>,
+    colour: vec4<f32>,
+    gridcolour: vec4<f32>,
+    invrange: vec4<f32>,
+    origin: vec4<f32>,
+    scale: vec4<f32>,
+}
+@group(0) @binding(10) var<uniform> topogrid: TopogridUniform;
+@group(0) @binding(11) var grid_texture: texture_2d<f32>;
+@group(0) @binding(12) var grid_sampler: sampler;
+@group(0) @binding(13) var gbuffer_depth: texture_depth_2d;
+@group(0) @binding(14) var gbuffer_normal: texture_2d<f32>;
+
 fn apply_overlay(c: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
     // TODO(guess): beyond 16:9 the circle's 16:9 size across (k = 0.9 · 16:9 / a): at k = 0.9 a 21:9 frame's sides
     // reach |q| = 1.06, outside what any 16:9 frame (corners 0.918) or 4:3 frame (0.833) showed, and the survival and
@@ -45,6 +60,24 @@ fn apply_overlay(c: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
     return mix(x * k, m0.rgb * overlay.tint0.rgb, a0);
 }
 
+fn apply_topogrid(c: vec3<f32>, p: vec2<i32>, uv: vec2<f32>) -> vec3<f32> {
+    let depth = textureLoad(gbuffer_depth, p, 0);
+    let clip = vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
+    let h = topogrid.world_from_clip * clip;
+    let w = h.xyz / h.w;
+    let g = textureSample(grid_texture, grid_sampler, w.xy * topogrid.scale.x).x;
+    let to = w - topogrid.origin.xyz;
+    let d2 = dot(to, to);
+    let ab = saturate(d2 * topogrid.invrange.yx + topogrid.invrange.wz);
+    let n = normalize(textureLoad(gbuffer_normal, p, 0).xyz * 2.0 - 1.0);
+    let up = saturate(dot(n, topogrid.back.xyz));
+    let fade = ab.x * topogrid.origin.w;
+    let kill = fade * ab.y;
+    let ring = ab.y * ab.x;
+    let tint = topogrid.colour.rgb * up * (1.0 - g) + g * topogrid.gridcolour.rgb;
+    return select(c * (1.0 - kill) + ring * tint, c, h.w == 0.0);
+}
+
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     return select(pow((c + 0.055) / 1.055, vec3<f32>(2.4)), c / 12.92, c <= vec3<f32>(0.04045));
 }
@@ -68,8 +101,16 @@ fn composite_pass(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let g = sqrt(lin);
     let l = textureSampleLevel(lut, samp, g * (31.0 / 32.0) + 1.0 / 64.0, 0.0).rgb;
     var v = clamp(l, vec3<f32>(0.0), vec3<f32>(1.0));
-    if overlay.fadeoffbounds.w > 0.0 {
-        v = clamp(sqrt(max(apply_overlay(l * l, in.uv), vec3<f32>(0.0))), vec3<f32>(0.0), vec3<f32>(1.0));
+    let topo = topogrid.colour.w > 0.0;
+    if overlay.fadeoffbounds.w > 0.0 || topo {
+        var sq = l * l;
+        if overlay.fadeoffbounds.w > 0.0 {
+            sq = apply_overlay(sq, in.uv);
+        }
+        if topo {
+            sq = apply_topogrid(sq, vec2<i32>(floor(in.position.xy)), in.uv);
+        }
+        v = clamp(sqrt(max(sq, vec3<f32>(0.0))), vec3<f32>(0.0), vec3<f32>(1.0));
     }
     return vec4<f32>(srgb_to_linear(v), 1.0);
 }

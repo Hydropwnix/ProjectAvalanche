@@ -38,7 +38,23 @@ impl RiderGraph {
                     if let Some(i) = &mut st.intro {
                         i.reset(&st.animator.gs.random);
                     }
-                    (st.running, st.elapsed) = (true, None);
+                    (st.running, st.elapsed, st.entry) = (true, None, None);
+                    if std::mem::take(&mut self.gameplay)
+                        && st.intro.as_ref().is_some_and(|i| i.entry_blend.blend_time > 0.0)
+                    {
+                        self.animator.exit();
+                        st.entry = Some(0.0);
+                    }
+                }
+                if let (Some(e), Some(i)) = (st.entry, &st.intro) {
+                    if i.entry_blend.blend_time - e <= dt {
+                        st.entry = None;
+                    } else {
+                        self.animator.set("deltaTicks", dt);
+                        self.animator.set_physics(None);
+                        self.animator.update(dt);
+                        st.entry = Some(e + dt);
+                    }
                 }
                 if let (Some(i), Some(state)) = (&mut st.intro, &ls.intro) {
                     for a in i.animators_mut() {
@@ -73,6 +89,7 @@ impl RiderGraph {
         self.write_signals(s, input, tricks, start, dt);
         self.animator.set_physics(physics);
         self.animator.update(dt);
+        self.gameplay = true;
         let path = self.animator.path();
         let in_loop = path.iter().any(|n| n.starts_with("state_trick_air") && n.ends_with("_loop"));
         if in_loop && !self.producers.in_loop {
@@ -125,7 +142,20 @@ impl RiderGraph {
     pub fn finish(&mut self, s: &RiderState) -> GraphFeedback {
         let path = self.animator().path_times();
         let mut pose = match &self.start {
-            Some(st) if st.running => st.anim_pose().pose,
+            Some(st) if st.running => match (st.entry, &st.intro) {
+                (Some(e), Some(i)) => {
+                    let mut old = self.animator.anim_pose();
+                    ssx_assets::anim_eval::blend_on_rig(
+                        &self.animator.rig,
+                        &i.entry_blend,
+                        e,
+                        &mut old,
+                        &st.anim_pose(),
+                    );
+                    old.pose
+                }
+                _ => st.anim_pose().pose,
+            },
             Some(st) if st.elapsed.is_some() => {
                 let mut old = st.anim_pose();
                 let w = ssx_assets::anim_eval::blend_new_weight(&st.blend, st.elapsed.unwrap_or(0.0));

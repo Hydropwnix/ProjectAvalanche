@@ -53,7 +53,7 @@ impl Graph {
         }
         if let Some((n, m)) = self.meter.as_mut() {
             *n += 1;
-            if *n % 188 == 0 {
+            if *n % self.meter_blocks == 0 {
                 let line: Vec<String> = m
                     .iter()
                     .filter(|e| e.1.0 > 0.0)

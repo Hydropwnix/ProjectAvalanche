@@ -4,6 +4,7 @@ pub(super) struct Builder<'a> {
     pub(super) db: &'a AssetDb,
     pub(super) g: Graph,
     pub(super) overrides: HashMap<String, Guid>,
+    pub(super) banks: HashMap<String, Guid>,
 }
 
 fn f(a: &Asset, name: &str) -> f32 {
@@ -107,12 +108,12 @@ impl Builder<'_> {
                 }
                 break;
             }
-            let bank = self.name_of(p.guid("BankPointerAsset"));
-            let paired = bank
-                .as_ref()
-                .and_then(|b| self.proxy_subject(b, p.guid))
-                .or_else(|| p.guid("DefaultProxyBankAsset").and_then(|bank| self.bank_subject(Some(bank), p.guid)));
-            cur = paired.or_else(|| p.guid("DefaultBlendAsset"));
+            let default = p.guid("DefaultBlendAsset");
+            let bank = self.pointer_bank(p.guid("BankPointerAsset")).or_else(|| p.guid("DefaultProxyBankAsset"));
+            let paired = default
+                .and_then(|d| self.bank_subject(bank, d))
+                .filter(|&s| self.db.get(s).is_some_and(|s| s.class() == "ProxyBlendAsset" || s.is("IBlendAsset")));
+            cur = paired.or(default);
         }
         let id = self.g.blends.len();
         self.g.blends.push(Blend {
@@ -386,6 +387,15 @@ impl<'a> Builder<'a> {
             entries.push((ctrl, cells));
         }
         Ctrl::ContextDb { fields, entries }
+    }
+
+    fn pointer_bank(&self, pointer: Option<Guid>) -> Option<Guid> {
+        let p = self.db.get(pointer?)?;
+        if let Some(&bank) = self.banks.get(p.name()) {
+            return Some(bank);
+        }
+        let value = self.overrides.get(p.name()).and_then(|&o| self.db.get(o)).and_then(|o| o.guid("SubjectBankAsset"));
+        value.or_else(|| p.guid("SubjectBankAsset"))
     }
 
     fn proxy_subject(&self, bank: &str, proxy: Guid) -> Option<Guid> {

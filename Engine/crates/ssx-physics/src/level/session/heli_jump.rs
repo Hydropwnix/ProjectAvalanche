@@ -80,6 +80,42 @@ pub struct HeliJumpUpdate {
     pub outro: bool,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct GrabOutros(Arc<std::sync::Mutex<GrabRead>>);
+
+#[derive(Debug, Default)]
+enum GrabRead {
+    #[default]
+    NotStarted,
+    Reading(std::thread::JoinHandle<Result<crate::outro::HeliGrabOutros>>),
+    Read(Result<Arc<crate::outro::HeliGrabOutros>, String>),
+}
+
+impl GrabOutros {
+    fn start(&self, big_root: PathBuf, event: String, character: String) -> Result<()> {
+        let mut g = self.0.lock().map_err(|_| anyhow::anyhow!("the heli grab's outros: a reader panicked"))?;
+        if matches!(*g, GrabRead::NotStarted) {
+            let read = move || crate::outro::prepare_heli_grab(&big_root, &event, &character);
+            *g = GrabRead::Reading(std::thread::Builder::new().name("heli-grab-outros".into()).spawn(read)?);
+        }
+        Ok(())
+    }
+
+    fn take(&self, big_root: &Path, event: &str, character: &str) -> Result<Arc<crate::outro::HeliGrabOutros>> {
+        let mut g = self.0.lock().map_err(|_| anyhow::anyhow!("the heli grab's outros: a reader panicked"))?;
+        let read = match std::mem::take(&mut *g) {
+            GrabRead::NotStarted => crate::outro::prepare_heli_grab(big_root, event, character).map(Arc::new),
+            GrabRead::Reading(t) => match t.join() {
+                Ok(r) => r.map(Arc::new),
+                Err(_) => Err(anyhow::anyhow!("the heli grab's outros: their reader panicked")),
+            },
+            GrabRead::Read(r) => r.map_err(|e| anyhow::anyhow!(e)),
+        };
+        *g = GrabRead::Read(read.as_ref().map(Arc::clone).map_err(|e| format!("{e:#}")));
+        read
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct HeliJump {
     pub data: Arc<HeliJumpData>,
@@ -90,6 +126,7 @@ pub struct HeliJump {
     pub intercept: Intercept,
     pub contact: bool,
     pub outro: Option<Arc<IntroAssets>>,
+    pub grab: GrabOutros,
     launch: Option<(Vec3, Vec3)>,
 }
 
@@ -104,8 +141,13 @@ impl HeliJump {
             intercept: Intercept::default(),
             contact: false,
             outro: None,
+            grab: GrabOutros::default(),
             launch: None,
         }
+    }
+
+    pub fn read_outro_ahead(&mut self) -> Result<()> {
+        self.grab.start(self.big_root.clone(), self.event.clone(), self.character.clone())
     }
 
     pub fn restart(&mut self) {
@@ -173,14 +215,22 @@ impl HeliJump {
             intercept_changed: intercept_before != self.intercept,
             outro: false,
         };
-        let grab = effects
-            .iter()
-            .any(|(_, e)| matches!(e, Effect::PlayNis(r) if r.name == ssx_assets::nis::HELI_GRAB_OUTRO_BINDING));
-        if grab && self.outro.is_none() {
+        let grab = effects.iter().find_map(|(_, e)| match e {
+            Effect::PlayNis(r) if r.name == ssx_assets::nis::HELI_GRAB_OUTRO_BINDING => Some(r),
+            _ => None,
+        });
+        if let Some(request) = grab
+            && self.outro.is_none()
+        {
             use crate::outro::{game_mode, track_end_reaction};
-            let reaction = ev.result.as_ref().and_then(|r| track_end_reaction(game_mode(&self.event), r));
-            let assets = crate::outro::prepare_heli_grab(&self.big_root, &self.event, &self.character, reaction)?;
+            let reaction = ev.built.as_ref().and_then(|r| track_end_reaction(game_mode(&self.event), r));
+            let outros = self.grab.take(&self.big_root, &self.event, &self.character)?;
+            let assets =
+                outros.get(reaction).with_context(|| format!("no heli grab outro for reaction {reaction:?}"))?;
             let mut r = crate::outro::start_at(w, assets.clone(), END_LOCATION, s.level_start)?;
+            if let Some(i) = r.start.as_mut().and_then(|l| l.intro.as_mut()) {
+                i.bind_ghost(crate::objectives::binds_role(request, ssx_assets::nis::ROLE_GHOST1));
+            }
             crate::outro::carry_bound_rider(&mut r, s);
             *s = r;
             self.outro = Some(assets);

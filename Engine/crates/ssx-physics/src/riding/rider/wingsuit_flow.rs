@@ -1,7 +1,6 @@
 use glam::{Quat, Vec3};
 
 use super::{Input, RideState, RiderState, World, air};
-use crate::graph::stick_axes;
 use crate::rootmotion::nlerp;
 use crate::wingsuit::{
     BLEND_DEFAULT, BLEND_ENTER_TO_FLY, BLEND_EXIT_TO_AIRBORNE, BLEND_FLY_TO_EXIT, BLEND_JUMP_TO_ENTER,
@@ -52,7 +51,7 @@ fn wingsuit_part(s: &mut RiderState, w: &World, input: &Input, c: &mut WingsuitC
         velocity: s.traj_velocity,
         angular_velocity: s.filtered_angular_velocity,
         wind: s.grind.wind,
-        stick: stick_axes(input.stick()),
+        stick: input.stick(),
         effectiveness: s.wingsuit.effectiveness,
         time_scalar: s.wingsuit.time_scalar,
     };

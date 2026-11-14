@@ -385,11 +385,20 @@ pub struct Graph {
     dac: usize,
     pub log: Vec<String>,
     meter: Option<(usize, Meter)>,
+    meter_blocks: usize,
     profile: Option<std::collections::HashMap<String, (u64, u64)>>,
     rest: bool,
 }
 
 type Meter = std::collections::BTreeMap<String, (f64, usize)>;
+
+fn meter_blocks() -> usize {
+    std::env::var("SSX_SFX_METER_BLOCKS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| (1..=11_280).contains(n))
+        .unwrap_or(188)
+}
 
 const DAC: &str = "Master_DAC";
 
@@ -414,6 +423,7 @@ impl Graph {
             dac: 0,
             log: Vec::new(),
             meter: std::env::var_os("SSX_SFX_METER").map(|_| (0, Default::default())),
+            meter_blocks: meter_blocks(),
             profile: std::env::var("SSX_SFX_PROFILE").is_ok_and(|v| v == "1").then(Default::default),
             rest: !std::env::var("SSX_SFX_REST").is_ok_and(|v| matches!(v.as_str(), "off" | "0")),
         };

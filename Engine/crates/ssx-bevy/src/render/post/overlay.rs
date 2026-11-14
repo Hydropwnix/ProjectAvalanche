@@ -74,37 +74,25 @@ fn overlay_image(big_root: &Path, name: &str) -> Result<(Image, Recipe)> {
 }
 
 pub struct OverlayLoad {
-    drop: OverlayDrop,
     overlay: SurvivalOverlay,
     maps: [(Image, Recipe); 2],
-    failed: Vec<String>,
 }
 
-pub fn load(big_root: &Path, drop: OverlayDrop, presets: &[String]) -> Result<OverlayLoad> {
-    let (overlay, failed) = SurvivalOverlay::load(big_root, drop, presets)?;
+pub fn load(big_root: &Path, drop: OverlayDrop) -> Result<OverlayLoad> {
+    let overlay = SurvivalOverlay::of(drop);
     let maps = [overlay_image(big_root, overlay.maps[0])?, overlay_image(big_root, overlay.maps[1])?];
-    Ok(OverlayLoad { drop, overlay, maps, failed })
+    Ok(OverlayLoad { overlay, maps })
 }
 
 pub fn insert(world: &mut World, load: OverlayLoad) -> Result<String> {
-    let OverlayLoad { drop, overlay, maps: [a, b], failed } = load;
+    let OverlayLoad { overlay, maps: [a, b] } = load;
     let maps = {
         let mut images = world.get_resource_mut::<Assets<Image>>().context("no image assets")?;
         [a, b].map(|(image, recipe)| crate::render::reload::add(&mut images, image, Some(recipe)))
     };
     let mut post = world.get_resource_mut::<PostOverlay>().context("the post chain is off")?;
     post.maps = maps;
-    let presets: Vec<String> = overlay
-        .presets
-        .iter()
-        .filter(|(_, (_, st))| st.intensity.iter().any(Option::is_some))
-        .map(|(n, (p, _))| format!("{n} (layer priority {p:?})"))
-        .collect();
-    let line = format!(
-        "screen effects: {drop:?}, maps {:?}, overlay presets {}; not loaded (their colour cubes): {failed:?}",
-        overlay.maps,
-        presets.join(", ")
-    );
+    let line = format!("screen effects: {:?}, maps {:?}", overlay.drop, overlay.maps);
     world.insert_resource(ScreenEffects { overlay });
     Ok(line)
 }

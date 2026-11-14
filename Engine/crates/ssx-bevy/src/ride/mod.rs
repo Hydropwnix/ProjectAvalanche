@@ -73,6 +73,7 @@ pub struct RideSetup {
     pub intro_visits: Option<u32>,
     pub own_tombstone: Option<ssx_physics::session::tombstones::OwnRecord>,
     pub live: Option<live::LiveRules>,
+    pub game_mode: Option<i64>,
     pub sim_content_id: Option<String>,
     pub map: Option<MapRide>,
 }
@@ -286,6 +287,10 @@ impl Ride {
         &self.world
     }
 
+    pub fn event_def(&self) -> Option<&ssx_physics::event::EventDef> {
+        self.event_def.as_ref()
+    }
+
     pub fn set_classic(&mut self, classic: bool) {
         self.classic = classic;
         self.state.tricks.classic = classic;
@@ -341,7 +346,9 @@ pub struct RideLoad {
     fly: bool,
     load_secs: f32,
     spawn: (Vec3, Vec3),
+    layers: Option<anyhow::Result<crate::render::post::layers::LayersLoad>>,
     overlay: Option<anyhow::Result<crate::render::post::overlay::OverlayLoad>>,
+    topogrid: Option<anyhow::Result<crate::render::post::topogrid::TopogridLoad>>,
     avalanche: Option<crate::render::avalanche::AvalancheScene>,
     noise: Option<crate::camera::chase::CameraNoise>,
     ripple: Option<ssx_physics::controllers::ripple::RippleTuning>,
@@ -364,6 +371,14 @@ impl RideLoad {
     pub fn heli_intro(&self) -> Option<std::sync::Arc<ssx_physics::nis::IntroAssets>> {
         self.ride.intro.clone().or_else(|| self.ride.heli.as_ref().map(|h| h.assets.clone()))
     }
+}
+
+// PORT(choice): only the asset viewer rides without a launched `ui_drop` (its `--ride`, its fly camera's ghosts); it
+// takes the drop's event `SSX_RIDE_EVENT` names, default `race`. The console always launches one (the FE meta
+// manager's +0xFB8, which 0x8239A550 hands `GameMode_StartDrop` 0x82483248), as the game shell does
+// (`RideSetup::event_key`).
+pub fn viewer_event_choice() -> String {
+    std::env::var("SSX_RIDE_EVENT").unwrap_or_else(|_| "race".into())
 }
 
 pub fn prepare(
@@ -401,7 +416,17 @@ pub fn prepare(
         }
         None => Vec::new(),
     };
-    let overlay = Some(crate::render::post::overlay::load(big_root, drop, &presets));
+    let goggles = ride.world.survival.goggles_preset.as_ref().map(|(_, state)| state);
+    let (layers, topogrid) = match ssx_assets::postfx::LevelPresets::load(big_root, &presets) {
+        Ok(p) => {
+            let layers = crate::render::post::layers::load(&p);
+            let topogrid = crate::render::post::topogrid::load(big_root, layers.scene(), goggles);
+            (Ok(layers), topogrid)
+        }
+        Err(e) => (Err(anyhow::anyhow!("{e:#}")), Err(e)),
+    };
+    let overlay = crate::render::post::overlay::load(big_root, drop);
+    let (layers, overlay, topogrid) = (Some(layers), Some(overlay), Some(topogrid));
     let avalanche = lighting.and_then(|l| crate::render::avalanche::load(big_root, l.disc_track()?, &ride));
     let noise = crate::camera::chase::load_noise(big_root);
     let ripple = ssx_physics::controllers::ripple::RippleTuning::load(big_root)
@@ -416,16 +441,49 @@ pub fn prepare(
         None => "body: placeholder capsule (character unavailable)",
     };
     let label = format!("{visual} | {body_label}");
-    Ok(RideLoad { ride, board, body, fly, load_secs, spawn, overlay, avalanche, noise, ripple, label })
+    Ok(RideLoad {
+        ride,
+        board,
+        body,
+        fly,
+        load_secs,
+        spawn,
+        layers,
+        overlay,
+        topogrid,
+        avalanche,
+        noise,
+        ripple,
+        label,
+    })
 }
 
 pub fn insert(world: &mut World, r: RideLoad) -> anyhow::Result<()> {
+    match r.layers {
+        Some(Ok(l)) => {
+            let (line, warning) = crate::render::post::layers::insert(world, l);
+            info!("{line}");
+            if let Some(w) = warning {
+                warn!("{w}");
+            }
+        }
+        Some(Err(e)) => warn!("post-FX layers unavailable: {e:#}"),
+        None => {}
+    }
     match r.overlay {
         Some(Ok(o)) => match crate::render::post::overlay::insert(world, o) {
             Ok(line) => info!("{line}"),
             Err(e) => warn!("screen effects unavailable: {e:#}"),
         },
         Some(Err(e)) => warn!("screen effects unavailable: {e:#}"),
+        None => {}
+    }
+    match r.topogrid {
+        Some(Ok(t)) => match crate::render::post::topogrid::insert(world, t) {
+            Ok(line) => info!("{line}"),
+            Err(e) => warn!("TOPOGRID unavailable: {e:#}"),
+        },
+        Some(Err(e)) => warn!("TOPOGRID unavailable: {e:#}"),
         None => {}
     }
     if let Some(scene) = r.avalanche {
@@ -452,6 +510,7 @@ pub fn insert(world: &mut World, r: RideLoad) -> anyhow::Result<()> {
 pub fn register(app: &mut App, hud: bool) {
     let riding = resource_exists::<Ride>;
     crate::shell::level::scoped::<key_player::TestPad>(app);
+    app.add_observer(controls::pad_axes_as_read);
     app.init_resource::<PausedFrames>()
         .add_systems(FixedUpdate, fixed_step.in_set(RideStepSet).run_if(riding))
         .add_systems(

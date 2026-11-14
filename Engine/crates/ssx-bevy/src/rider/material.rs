@@ -12,6 +12,7 @@ use crate::render::lighting::GameLighting;
 use crate::render::lighting::game::GameLightUniform;
 
 const SHADER_PATH: &str = "embedded://ssx_bevy/rider/character.wesl";
+const GBUFFER_PATH: &str = "embedded://ssx_bevy/rider/character_gbuffer.wesl";
 
 pub const CHARACTER_STATUS: &str = "\
 rider (listing port): player_body/hair/eye/apparel gbuffer + material passes (normal z:=1, d^2, rim + fill, \
@@ -56,6 +57,8 @@ pub struct CharacterMaterialPlugin;
 impl Plugin for CharacterMaterialPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "character.wesl");
+        bevy::shader::load_shader_library!(app, "character_normal.wesl");
+        embedded_asset!(app, "character_gbuffer.wesl");
         app.add_plugins(MaterialPlugin::<CharacterMaterial>::default());
         let frame = RiderFrame::default();
         let _ = app
@@ -158,7 +161,7 @@ impl MaterialExtension for CharacterExtension {
     }
 
     fn prepass_fragment_shader() -> ShaderRef {
-        crate::render::objects::material::SHADOW_ALPHA_PATH.into()
+        GBUFFER_PATH.into()
     }
 
     fn specialize(
@@ -168,6 +171,7 @@ impl MaterialExtension for CharacterExtension {
         key: MaterialExtensionKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
         specialize_shadow_pass(descriptor, key.mesh_key, key.bind_group_data);
+        crate::render::gbuffer::specialize_main_pass(descriptor);
         crate::render::lighting::game::specialize_game_vertex(descriptor, 100);
         Ok(())
     }

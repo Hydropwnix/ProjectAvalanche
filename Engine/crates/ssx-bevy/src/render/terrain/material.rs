@@ -18,6 +18,7 @@ use crate::rider::material::CharacterMaterialPlugin;
 
 const SHADER_PATH: &str = "embedded://ssx_bevy/render/terrain/terrain.wesl";
 const PREPASS_SHADER_PATH: &str = "embedded://ssx_bevy/render/terrain/terrain_prepass.wesl";
+const PREPASS_FRAGMENT_PATH: &str = "embedded://ssx_bevy/render/terrain/terrain_normal.wesl";
 
 pub const SHADER_STATUS: &str = "\
 terrain (microcode port): tri-planar max(|n|*7-1.4,0), UDN base normals, <=4 top-down snow types + scatter, \
@@ -36,6 +37,8 @@ impl Plugin for TerrainMaterialPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "terrain.wesl");
         embedded_asset!(app, "terrain_prepass.wesl");
+        embedded_asset!(app, "terrain_normal.wesl");
+        bevy::shader::load_shader_library!(app, "terrain_gbuffer.wesl");
         bevy::shader::load_shader_library!(app, "terrain_ripple.wesl");
         app.add_plugins((
             GameLightingPlugin,
@@ -174,6 +177,10 @@ impl MaterialExtension for TerrainExtension {
         PREPASS_SHADER_PATH.into()
     }
 
+    fn prepass_fragment_shader() -> ShaderRef {
+        PREPASS_FRAGMENT_PATH.into()
+    }
+
     fn specialize(
         _pipeline: &MaterialExtensionPipeline,
         descriptor: &mut RenderPipelineDescriptor,
@@ -181,6 +188,7 @@ impl MaterialExtension for TerrainExtension {
         key: MaterialExtensionKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
         specialize_shadow_pass(descriptor, key.mesh_key, key.bind_group_data);
+        crate::render::gbuffer::specialize_main_pass(descriptor);
         crate::render::lighting::game::specialize_game_vertex(descriptor, 106);
         descriptor.vertex.shader_defs.push("SSX_RAW_NORMAL".into());
         descriptor.vertex.shader_defs.push("SSX_TERRAIN_RIPPLE".into());

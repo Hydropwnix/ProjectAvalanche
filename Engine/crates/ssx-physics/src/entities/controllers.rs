@@ -75,7 +75,10 @@ pub struct PlayerFx {
     pub world_ao: f32,
     pub ripples: u32,
     pub ripple: Option<Vec3>,
-    pub pulse_goggles: bool,
+    pub goggles_layer: ssx_assets::postfx_state::Layer<ssx_assets::postfx_state::PostFxState>,
+    pub goggles: Option<ssx_assets::postfx_topogrid::GogglesTrack>,
+    pub goggles_pulse: f32,
+    pub goggles_copies: u32,
 }
 
 impl PlayerFx {
@@ -293,6 +296,7 @@ impl Controllers {
             }
             c.update(dt, &mut w);
         }
+        self.fx.goggles_layer.update(dt);
         let mut host = entity::SessionHost { ctx };
         self.update_entities(dt, &mut host, first);
     }

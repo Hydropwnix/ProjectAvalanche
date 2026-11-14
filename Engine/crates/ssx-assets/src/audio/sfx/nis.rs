@@ -22,7 +22,10 @@ fn num(a: &Asset, field: &str) -> f32 {
 
 pub fn nis_audio_tags(big_root: &Path, bundles: &[String], sequence: &str) -> Result<Vec<NisAudioTag>> {
     let dir = big_root.join(crate::rig_anim::ANIM_DIR);
-    let db = AssetDb::load(&dir, &bundles.iter().map(String::as_str).collect::<Vec<_>>())?;
+    nis_audio_tags_in(&AssetDb::load(&dir, &bundles.iter().map(String::as_str).collect::<Vec<_>>())?, sequence)
+}
+
+pub fn nis_audio_tags_in(db: &AssetDb, sequence: &str) -> Result<Vec<NisAudioTag>> {
     let seq = db.by_name(sequence).with_context(|| format!("no sequence {sequence}"))?;
     let mut out = Vec::new();
     for actor in seq.guids("ActorAssets").into_iter().filter_map(|g| db.get(g)) {
@@ -50,7 +53,10 @@ pub fn nis_audio_tags(big_root: &Path, bundles: &[String], sequence: &str) -> Re
 
 pub fn nis_node_signals(big_root: &Path, bundles: &[String], node: &str) -> Result<Vec<String>> {
     let dir = big_root.join(crate::rig_anim::ANIM_DIR);
-    let db = AssetDb::load(&dir, &bundles.iter().map(String::as_str).collect::<Vec<_>>())?;
+    nis_node_signals_in(&AssetDb::load(&dir, &bundles.iter().map(String::as_str).collect::<Vec<_>>())?, node)
+}
+
+pub fn nis_node_signals_in(db: &AssetDb, node: &str) -> Result<Vec<String>> {
     let n = db.by_name(node).with_context(|| format!("no node {node}"))?;
     Ok(n.guids("ActiveSignals").into_iter().filter_map(|g| db.get(g)).map(|a| a.name().to_string()).collect())
 }

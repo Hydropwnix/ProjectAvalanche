@@ -31,13 +31,13 @@ impl MusicStream {
         let (tx, rx) = sync_channel(AHEAD);
         let name = file.rel.clone();
         let label = name.clone();
-        let spawned = std::thread::Builder::new().name("ssx_music_stream".into()).spawn(move || {
+        let started = crate::sfx_stream::spawn("ssx_music_stream", move || {
             let end = run(&file, region, &tx);
             let _ = tx.send(Block::End(end));
         });
         let mut s = Self { name, rx, buf: Vec::new(), pos: 0, ended: None, starved: Arc::new(AtomicU64::new(0)) };
-        if let Err(e) = spawned {
-            s.ended = Some(Err(format!("{label}: no worker thread ({e})")));
+        if !started {
+            s.ended = Some(Err(format!("{label}: no stream file thread to start the worker")));
         }
         s
     }

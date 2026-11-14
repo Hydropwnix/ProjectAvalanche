@@ -1,5 +1,6 @@
 pub mod avalanche;
 pub mod fx_states;
+pub mod gbuffer;
 pub mod geotags;
 pub mod hooks;
 pub mod lighting;

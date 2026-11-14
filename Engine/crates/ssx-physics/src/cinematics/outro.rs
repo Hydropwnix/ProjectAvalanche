@@ -170,6 +170,7 @@ pub fn prepare(big_root: &Path, event: &str, character: &str, reaction: i64) -> 
         origin: SceneOrigin::LevelEnd,
         locator_alternate: None,
         variant: IntroVariant::Outro,
+        binds_ghost: false,
     };
     Ok(Arc::new(IntroAssets {
         choice,
@@ -178,6 +179,7 @@ pub fn prepare(big_root: &Path, event: &str, character: &str, reaction: i64) -> 
         jump_clips: Vec::new(),
         event: event.to_string(),
         heli: Err("the standard outro binds no helicopter".into()),
+        loaded: None,
     }))
 }
 
@@ -204,6 +206,7 @@ pub fn prepare_heli_pickup_with(
         origin: SceneOrigin::LevelEnd,
         locator_alternate: None,
         variant: IntroVariant::Outro,
+        binds_ghost: false,
     };
     Ok(Arc::new(IntroAssets {
         choice,
@@ -212,6 +215,7 @@ pub fn prepare_heli_pickup_with(
         jump_clips: Vec::new(),
         event: event.to_string(),
         heli,
+        loaded: None,
     }))
 }
 
@@ -271,29 +275,54 @@ impl ScreenFade {
     }
 }
 
-pub fn prepare_heli_grab(
-    big_root: &Path,
-    event: &str,
-    character: &str,
-    reaction: Option<i64>,
-) -> Result<Arc<IntroAssets>> {
-    let nis = ssx_assets::nis::load_heli_grab_outro(big_root, character, reaction.unwrap_or(-1))?;
-    let choice = IntroChoice {
-        script: "outro_heli_jump.lua".into(),
-        binding: nis.binding.clone(),
-        origin: SceneOrigin::Locator,
-        locator_alternate: None,
-        variant: IntroVariant::Outro,
-    };
+const GRAB_REACTIONS: [i64; 4] = [
+    -1,
+    ssx_assets::nis::OUTRO_REACTION_WIN,
+    ssx_assets::nis::OUTRO_REACTION_NEUT,
+    ssx_assets::nis::OUTRO_REACTION_LOSE,
+];
+
+#[derive(Debug)]
+pub struct HeliGrabOutros {
+    by_reaction: Vec<(i64, Arc<IntroAssets>)>,
+}
+
+impl HeliGrabOutros {
+    pub fn get(&self, reaction: Option<i64>) -> Option<Arc<IntroAssets>> {
+        let r = reaction.unwrap_or(-1);
+        self.by_reaction.iter().find(|(k, _)| *k == r).map(|(_, a)| a.clone())
+    }
+}
+
+pub fn prepare_heli_grab(big_root: &Path, event: &str, character: &str) -> Result<HeliGrabOutros> {
+    let bind = ssx_assets::nis::HeliGrabBinding::load(big_root, character)?;
     let heli = ssx_assets::helicopter::drop_helicopter(big_root, event).map_err(|e| format!("{e:#}"));
-    Ok(Arc::new(IntroAssets {
-        choice,
-        nis,
-        jump_clip: usize::MAX,
-        jump_clips: Vec::new(),
-        event: event.to_string(),
-        heli,
-    }))
+    let outros = GRAB_REACTIONS.iter().map(|&r| Ok((r, bind.outro(r)?))).collect::<Result<Vec<_>>>()?;
+    let loaded = Arc::new(bind.into_db());
+    let by_reaction = outros
+        .into_iter()
+        .map(|(r, nis)| {
+            let choice = IntroChoice {
+                script: "outro_heli_jump.lua".into(),
+                binding: nis.binding.clone(),
+                origin: SceneOrigin::Locator,
+                locator_alternate: None,
+                variant: IntroVariant::Outro,
+                binds_ghost: false,
+            };
+            let assets = IntroAssets {
+                choice,
+                nis,
+                jump_clip: usize::MAX,
+                jump_clips: Vec::new(),
+                event: event.to_string(),
+                heli: heli.clone(),
+                loaded: Some(loaded.clone()),
+            };
+            (r, Arc::new(assets))
+        })
+        .collect();
+    Ok(HeliGrabOutros { by_reaction })
 }
 
 pub fn prepare_sequence(
@@ -310,6 +339,7 @@ pub fn prepare_sequence(
         origin: SceneOrigin::LevelStart,
         locator_alternate: None,
         variant: IntroVariant::Outro,
+        binds_ghost: false,
     };
     Ok(Arc::new(IntroAssets {
         choice,
@@ -318,6 +348,7 @@ pub fn prepare_sequence(
         jump_clips: Vec::new(),
         event: event.to_string(),
         heli: Err(format!("{binding} binds no helicopter")),
+        loaded: None,
     }))
 }
 

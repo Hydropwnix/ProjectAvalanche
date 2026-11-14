@@ -1,6 +1,8 @@
 pub mod adapt;
+pub mod layers;
 pub mod overlay;
 mod render;
+pub mod topogrid;
 
 use std::f32::consts::PI;
 
@@ -14,6 +16,7 @@ use bevy::render::RenderApp;
 use bevy::render::extract_component::ExtractComponent;
 use bevy::render::extract_resource::ExtractResource;
 use bevy::render::render_resource::{Extent3d, ShaderType, TextureDimension, TextureFormat};
+use bevy::shader::load_shader_library;
 use ssx_assets::postfx;
 
 use crate::render::lighting::GameLighting;
@@ -52,7 +55,14 @@ pub struct PostSettings {
 
 impl Plugin for PostPlugin {
     fn build(&self, app: &mut App) {
-        embedded_asset!(app, "post_common.wesl");
+        // PORT(choice): `post_common.wesl`, the WESL module the chain's shaders and the particles' (`particles.wesl`,
+        // `particles_pass.wesl`) import, is loaded here at the plugin's build and kept for the app's life
+        // (`load_shader_library!`, as Bevy 0.20 loads its own imported modules): Bevy's `ShaderLoader` loads no
+        // `package::` import, so a module first asked for by the chain's `init_pipelines` in `RenderStartup` raced the
+        // particles' `init_pipelines` there, and an importer that reached the `ShaderCache` first logged "module not
+        // found" and was re-queued (it compiled the next frame). The console compiles its effects offline (the `.fxo`
+        // files).
+        load_shader_library!(app, "post_common.wesl");
         embedded_asset!(app, "post_downsample.wesl");
         embedded_asset!(app, "post_adapt.wesl");
         embedded_asset!(app, "post_bloom.wesl");
@@ -61,7 +71,9 @@ impl Plugin for PostPlugin {
         app.add_systems(Update, (tick.run_if(resource_exists::<PostSettings>), msaa_off));
         use crate::render::lighting::fade::{LightingFadeSet, faded};
         app.add_systems(Update, follow_lighting.after(LightingFadeSet).run_if(faded));
+        layers::build(app);
         overlay::build(app);
+        topogrid::build(app);
         render::build(app);
         crate::shell::level::scoped::<PostSettings>(app);
         crate::shell::level::scoped::<overlay::ScreenEffects>(app);
@@ -75,6 +87,7 @@ impl Plugin for PostPlugin {
 
 pub fn reset_level(world: &mut World) {
     overlay::reset(world);
+    topogrid::reset(world);
 }
 
 pub fn env_is(key: &str, value: &str) -> bool {

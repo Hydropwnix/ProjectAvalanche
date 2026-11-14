@@ -178,11 +178,13 @@ fn decode_entry(bank: &crate::sfx_aems::Bank, e: &ssx_formats::abk::SampleEntry)
     let s =
         bank.abk.s10a.sounds.get(usize::from(e.sound_index)).and_then(Option::as_ref).context("an empty S10A slot")?;
     let h = &s.header;
+    let ast_bytes;
     let blocks = match h.storage {
         Storage::Ram => read_v0_blocks(h, &bank.data, s.offset as usize + h.size)?,
         Storage::Stream => {
             let ast = bank.ast.as_ref().context("a streamed sound without its .ast")?;
-            read_v0_blocks(h, ast, e.stream_offset as usize)?
+            ast_bytes = ast.read_v0_sound(h, u64::from(e.stream_offset), 256 << 20)?;
+            read_v0_blocks(h, &ast_bytes, 0)?
         }
         Storage::Gigasample => bail!("a gigasample sound"),
     };

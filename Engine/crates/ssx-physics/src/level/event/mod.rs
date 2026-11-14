@@ -114,6 +114,7 @@ pub struct EventInputs {
     pub geotag_credits: i64,
     pub geotag_count: u32,
     pub last_safe_ground: [f32; 3],
+    pub rewind_enabled: bool,
 }
 
 pub const MAX_RACERS: usize = 6;
@@ -133,11 +134,12 @@ pub struct RacerProgress {
     pub progress: f32,
     pub finish_ms: Option<u32>,
     pub points: f32,
+    pub clock_ms: u32,
 }
 
 impl Default for RacerProgress {
     fn default() -> Self {
-        Self { split: -1, progress: 0.0, finish_ms: None, points: 0.0 }
+        Self { split: -1, progress: 0.0, finish_ms: None, points: 0.0, clock_ms: 0 }
     }
 }
 
@@ -149,6 +151,7 @@ pub struct EventUpdate {
     pub finished: bool,
     pub results: bool,
     pub looped: bool,
+    pub rewind_enabled: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -206,13 +209,14 @@ pub struct EventManager {
     pub finish_message: Option<FinishMessage>,
     pub track_finished: bool,
     pub allow_outro: bool,
-    pub rewind_disabled: bool,
+    pub saved_rewind_enabled: Option<bool>,
     pub rewinds: u32,
     pub loops: u32,
     pub racers: Vec<RacerProgress>,
     pub request_loop_to_top: bool,
     pub nis_short: bool,
     pub result: Option<EventResult>,
+    pub built: Option<EventResult>,
     pub end_position: [f32; 3],
     pub time_up: bool,
     pub round_over: Option<bool>,
@@ -265,6 +269,19 @@ impl EventManager {
 
     pub fn on_entered_gameplay(&mut self) {
         self.waiting = false;
+    }
+
+    pub fn on_rider_dead(
+        &self,
+        timer: &mut crate::death::DeathTimer,
+        msg: &crate::death::RiderDead,
+        rewind_enabled: bool,
+        rewinds_left: i32,
+        hint_allowed: bool,
+    ) {
+        if matches!(self.state, EventState::Running | EventState::DelayedFinish) {
+            timer.on_rider_dead(msg, rewind_enabled, rewinds_left, hint_allowed);
+        }
     }
 }
 

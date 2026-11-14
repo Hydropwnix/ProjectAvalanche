@@ -163,9 +163,8 @@ impl RiderGraph {
         self.put("INT_TrickGestureLength", t.gesture_len as f32);
         self.put_bool("BLN_IsAwesome", s.score.is_awesome);
         self.put_bool("BLN_IsSuperAwesome", s.score.is_super_awesome);
-        let stick = stick_axes(s.pad_stick);
-        self.put("FLT_Pad_LStickXAxis", stick.x);
-        self.put("FLT_Pad_LStickYAxis", stick.y);
+        self.put("FLT_Pad_LStickXAxis", s.pad_stick.x);
+        self.put("FLT_Pad_LStickYAxis", s.pad_stick.y);
         self.put_bool("BLN_Pad_A_Hold", input.jump);
         self.put("FLT_Pad_A_Hold_Filtered", s.jump.a_hold_filtered);
         let k = (-0.11 * dt).exp();

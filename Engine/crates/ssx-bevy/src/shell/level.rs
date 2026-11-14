@@ -75,6 +75,7 @@ pub struct RideOptions {
     pub intro_visits: Option<u32>,
     pub own_tombstone: Option<ssx_physics::session::tombstones::OwnRecord>,
     pub live: Option<ride::live::LiveRules>,
+    pub game_mode: Option<i64>,
     pub event_name: Option<String>,
     pub map_mode: Option<String>,
 }
@@ -207,13 +208,10 @@ impl LevelData {
         let riding = ride.is_some();
         let root = big_root.as_deref();
         let heli = helicopter::load_level(root, Some(&name), ride.as_ref().and_then(ride::RideLoad::heli_intro));
-        let ghosts = if ride.as_ref().is_some_and(|r| {
-            let session = &r.ride().session;
-            session.event.setup.free_ride || !ssx_physics::event::shows_explore_ghosts(session.event.setup.event_type)
-        }) {
-            None
+        let ghosts = if loads_ghost_holograms(ride.as_ref().map(|r| &r.ride().session)) {
+            ghosts::load_level(root, &name, drop_key, ride.as_ref().map(ride::RideLoad::ride))
         } else {
-            ghosts::load_level(root, &name, drop_key, riding)
+            None
         };
         let geotags = geotags::load_level(root, &name, riding);
         let bots = ride.as_ref().and_then(|r| bots::load_level(root, &name, drop_key, r.ride(), riders.as_ref()));
@@ -467,6 +465,7 @@ pub(super) fn ride_setup(
         intro_visits: cli.intro_visits,
         own_tombstone: cli.own_tombstone.clone(),
         live: cli.live,
+        game_mode: cli.game_mode,
         sim_content_id: w.sim_content_id,
         map: w.map,
     };
@@ -682,4 +681,45 @@ fn resident() -> String {
         .ok()
         .and_then(|s| s.split_whitespace().nth(1).and_then(|p| p.parse::<u64>().ok()));
     pages.map_or_else(|| "-".into(), |p| format!("{:.0} MiB", (p * 4096) as f64 / (1024.0 * 1024.0)))
+}
+
+// PORT(choice): a ride on an `exp_` ghost event whose racers did not load (`BotData::load` failed: the rig bundle or
+// the vaults missing) draws its rivals as the viewer's holograms, with their medal labels; the console's disc always
+// holds the racers' data, so its explore rivals are always racers.
+fn loads_ghost_holograms(ride: Option<&ssx_physics::session::Session>) -> bool {
+    ride.is_none_or(|s| {
+        s.bots.is_none()
+            && !s.event.setup.free_ride
+            && ssx_physics::event::shows_explore_ghosts(s.event.setup.event_type)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::loads_ghost_holograms;
+    use ssx_physics::event::EventType;
+    use ssx_physics::session::Session;
+    use ssx_physics::session::bots::BotRace;
+
+    #[test]
+    fn a_ride_beside_racers_loads_no_holograms() {
+        assert!(loads_ghost_holograms(None));
+        let ride = |t: Option<EventType>, racers: Option<BotRace>, free_ride: bool| {
+            let mut s = Session::default();
+            s.event.setup.event_type = t;
+            s.event.setup.free_ride = free_ride;
+            s.bots = racers;
+            loads_ghost_holograms(Some(&s))
+        };
+        for t in [EventType::RaceGhosts, EventType::TrickGhosts] {
+            assert!(!ride(Some(t), Some(BotRace::default()), false), "{t:?} with racers");
+            assert!(!ride(Some(t), Some(BotRace { running: true, ..BotRace::default() }), false), "{t:?} live");
+            assert!(!ride(Some(t), None, true), "{t:?} free ride");
+            assert!(ride(Some(t), None, false), "{t:?} without racers");
+        }
+        for t in [EventType::RaceBots, EventType::TrickBots, EventType::SurviveToDeath, EventType::SurviveToBottom] {
+            assert!(!ride(Some(t), None, false), "{t:?}");
+        }
+        assert!(!ride(None, None, false));
+    }
 }

@@ -17,6 +17,7 @@ impl EventManager {
     ) -> EventUpdate {
         use crate::death::DeathTimerEvent;
         let mut out = EventUpdate::default();
+        self.feed_racer_points(i);
         if let Some(result) = self.round_over
             && self.result.is_none()
             && self.on_at_round_end()
@@ -59,6 +60,15 @@ impl EventManager {
         out
     }
 
+    fn feed_racer_points(&mut self, i: &EventInputs) {
+        for (k, r) in i.racers.iter().map_while(Option::as_ref).enumerate() {
+            if self.racers.len() <= k {
+                self.racers.push(RacerProgress::default());
+            }
+            self.racers[k].points = r.points;
+        }
+    }
+
     pub(super) fn progress_and_finish(&mut self, i: &EventInputs, out: &mut EventUpdate) {
         if let Some(c) = self.setup.course {
             let k = c.split_index(i.player_y);
@@ -71,17 +81,13 @@ impl EventManager {
             }
         }
         let ms = self.clock.ms();
-        for (k, r) in i.racers.iter().enumerate() {
-            let Some(r) = r else { break };
-            if self.racers.len() <= k {
-                self.racers.push(RacerProgress::default());
-            }
-            let p = &mut self.racers[k];
-            p.points = r.points;
+        let course = self.setup.course;
+        for (r, p) in i.racers.iter().map_while(Option::as_ref).zip(&mut self.racers) {
             if p.finish_ms.is_some() {
                 continue;
             }
-            if let Some(c) = self.setup.course {
+            p.clock_ms = ms;
+            if let Some(c) = course {
                 p.progress = c.progress(r.y);
                 p.split = p.split.max(c.split_index(r.y));
             }
@@ -96,8 +102,9 @@ impl EventManager {
             out.crossed = true;
             if self.setup.delayed_finish {
                 self.state = EventState::DelayedFinish;
-                self.rewind_disabled = true;
-                self.result = Some(self.build_result(i, false));
+                self.saved_rewind_enabled = Some(i.rewind_enabled);
+                out.rewind_enabled = Some(false);
+                self.built = Some(self.build_result(i, false));
             } else {
                 self.finish_track();
                 out.finished = true;
@@ -119,7 +126,7 @@ impl EventManager {
         if self.state == EventState::DelayedFinish {
             self.finish_track();
             out.finished = true;
-            self.rewind_disabled = false;
+            out.rewind_enabled = self.saved_rewind_enabled.take();
             return;
         }
         if self.finish_message.is_some() {

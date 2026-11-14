@@ -95,21 +95,84 @@ pub struct HeightGrid {
     pub cells: Vec<f32>,
 }
 
+const LOAD_RING: usize = 2048;
+
 impl HeightGrid {
+    pub fn find(track_dir: &Path, track: &str) -> Result<Option<Self>> {
+        let path = track_dir.join(format!("{track}_track_helicopter.spdt"));
+        if !path.is_file() {
+            return Ok(None);
+        }
+        Self::load(track_dir, track).map(Some)
+    }
+
     pub fn load(track_dir: &Path, track: &str) -> Result<Self> {
         let path = track_dir.join(format!("{track}_track_helicopter.spdt"));
         let data = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
         let f = ssx_formats::spdt::SpdtFile::parse(&data)?;
-        let [cx, cz] = f.cell_size();
         let ssx_formats::spdt::SpdtCells::Height(cells) = f.cells else {
             anyhow::bail!("{} is no height grid", path.display());
         };
+        let (min, max) = (Vec3::from_array(f.bbox_min), Vec3::from_array(f.bbox_max));
+        Self::new(min, max, usize::from(f.width), usize::from(f.height), cells)
+            .with_context(|| format!("{}", path.display()))
+    }
+
+    pub fn new(min: Vec3, max: Vec3, width: usize, height: usize, mut cells: Vec<f32>) -> Result<Self> {
+        let n = width * height;
+        anyhow::ensure!(
+            width > 0 && height > 0 && cells.len() == n,
+            "a {width} × {height} height grid with {} cells",
+            cells.len()
+        );
+        // PORT(choice): a height grid above 2^18 cells is refused (the cap of a map's generated grid; the disc's largest
+        // is newzeal0901's 381 × 385 = 146 685), so a package's grid cannot keep the loader's passes busy for minutes;
+        // the console loads any size.
+        let cap = ssx_content::map::heli::MAX_HELI_GRID_CELLS;
+        anyhow::ensure!(n <= cap, "a height grid of {n} cells (at most {cap})");
+        let fill = min.y;
+        let neighbours = |i: usize| {
+            (-1i64..=1).flat_map(move |dz| {
+                (-1i64..=1).map(move |dx| (i as i64 + dz * width as i64 + dx).clamp(0, n as i64 - 1) as usize)
+            })
+        };
+        ring_pass(
+            &mut cells,
+            |c, i| neighbours(i).fold(fill, |m, k| if c[k] - m >= 0.0 { c[k] } else { m }),
+            |ring, cell| if ring - cell >= 0.0 { ring } else { cell },
+        );
+        let mut open = cells.iter().filter(|&&c| c == fill).count();
+        while open > 0 {
+            ring_pass(
+                &mut cells,
+                |c, i| {
+                    if c[i] != fill {
+                        return c[i];
+                    }
+                    let (mut sum, mut count) = (0.0f32, 0.0f32);
+                    for k in neighbours(i) {
+                        if c[k] != fill {
+                            (count, sum) = (count + 1.0, c[k] + sum);
+                        }
+                    }
+                    if count.abs() > EPS_FLT { sum / count } else { fill }
+                },
+                |ring, _| ring,
+            );
+            let left = cells.iter().filter(|&&c| c == fill).count();
+            anyhow::ensure!(
+                left < open,
+                "the height grid's {left} cells at the fill value {fill} do not fill (the game's loader would not finish)"
+            );
+            open = left;
+        }
+        let span = max - min;
         Ok(Self {
-            min: Vec3::from_array(f.bbox_min),
-            max: Vec3::from_array(f.bbox_max),
-            inv_cell: [1.0 / cx, 1.0 / cz],
-            width: usize::from(f.width),
-            height: usize::from(f.height),
+            min,
+            max: max - Vec3::splat(0.01),
+            inv_cell: [width as f32 * (1.0 / span.x), height as f32 * (1.0 / span.z)],
+            width,
+            height,
             cells,
         })
     }
@@ -131,15 +194,17 @@ impl HeightGrid {
         let ix1 = (ix + 1).min(self.width as i64 - 1);
         let iz1 = (iz + 1).min(self.height as i64 - 1);
         let (tx, tz) = (gx - fx, gz - fz);
-        let a = self.cell(ix, iz) + (self.cell(ix1, iz) - self.cell(ix, iz)) * tx;
-        let b = self.cell(ix, iz1) + (self.cell(ix1, iz1) - self.cell(ix, iz1)) * tx;
-        a + tz * (b - a)
+        let (c00, c10) = (self.cell(ix, iz), self.cell(ix1, iz));
+        let (c01, c11) = (self.cell(ix, iz1), self.cell(ix1, iz1));
+        let a = (c10 - c00).mul_add(tx, c00);
+        let b = (c11 - c01).mul_add(tx, c01);
+        tz.mul_add(b - a, a)
     }
 
     pub fn ray(&self, from: Vec3, to: Vec3) -> Option<Vec3> {
         let (sx, sz) = self.grid(from);
         let (ex, ez) = self.grid(to);
-        let cell = [1.0 / self.inv_cell[0], 1.0 / self.inv_cell[1]];
+        let cell = [recip(self.inv_cell[0]), recip(self.inv_cell[1])];
         let (mut ix, mut iz) = (sx.floor() as i64, sz.floor() as i64);
         let (ixe, ize) = (ex.floor() as i64, ez.floor() as i64);
         let (sgx, mut nx) = if ixe >= ix { (1, ixe - ix) } else { (-1, ix - ixe) };
@@ -147,13 +212,14 @@ impl HeightGrid {
         let mut rx = if sgx > 0 { (1.0 - (sx - ix as f32)) * cell[0] } else { (sx - ix as f32) * cell[0] };
         let mut rz = if sgz > 0 { (1.0 - (sz - iz as f32)) * cell[1] } else { (sz - iz as f32) * cell[1] };
         let d = to - from;
-        let (slope, bias) = if d.x.abs() <= 1.192_092_9e-7 { (1.0, cell[1] + 1.0) } else { ((d.z / d.x).abs(), 0.0) };
-        let len = ((ex - sx).powi(2) + (ez - sz).powi(2)).sqrt();
-        let len = if len > 1.192_092_9e-7 { len } else { 1.0 };
+        let (slope, bias) = if d.x.abs() <= EPS23 { (1.0, cell[1] + 1.0) } else { ((d.z / d.x).abs(), 0.0) };
+        let len = rsqrt_len((ez - sz) * (ez - sz), ex - sx, false);
+        let len = if len.abs() > EPS23 { len } else { 1.0 };
         let mut hit = None;
         while nx >= 0 && nz >= 0 {
-            let dc = ((ix as f32 - sx).powi(2) + (iz as f32 - sz).powi(2)).sqrt();
-            let h = from.y + d.y * (dc / len).min(1.0);
+            let dc = rsqrt_len((ix as f32 - sx) * (ix as f32 - sx), iz as f32 - sz, true);
+            let t = dc / len;
+            let h = from.y + d.y * if t <= 1.0 { t } else { 1.0 };
             let g = self.cell(ix, iz);
             if g > h {
                 hit = Some((ix, iz, g));
@@ -172,9 +238,40 @@ impl HeightGrid {
                 nx -= 1;
             }
         }
-        hit.map(|(ix, iz, g)| {
-            Vec3::new(self.min.x + (ix as f32 + 0.5) * cell[0], g, self.min.z + (iz as f32 + 0.5) * cell[1])
+        hit.filter(|&(_, _, g)| (g - f32::MIN).abs() > EPS16).map(|(ix, iz, g)| {
+            Vec3::new(self.min.x + cell[0] * (ix as f32 + 0.5), g, self.min.z + cell[1] * (iz as f32 + 0.5))
         })
+    }
+}
+
+fn recip(x: f32) -> f32 {
+    let mut e = 1.0 / x;
+    for _ in 0..2 {
+        e = e.mul_add((-e).mul_add(x, 1.0), e);
+    }
+    e
+}
+
+fn rsqrt_len(sq: f32, b: f32, cell: bool) -> f32 {
+    let x = b.mul_add(b, sq);
+    let y = (1.0 / f64::from(x).sqrt()) as f32;
+    let r = if cell { (-(y * y)).mul_add(x, 1.0) } else { (-(x * y)).mul_add(y, 1.0) };
+    let y = r.mul_add(0.5, 1.0) * y;
+    let v = y * x;
+    if v >= 0.0 { v } else { 0.0 }
+}
+
+fn ring_pass(cells: &mut [f32], value: impl Fn(&[f32], usize) -> f32, write: impl Fn(f32, f32) -> f32) {
+    let n = cells.len();
+    let mut ring = [0.0f32; LOAD_RING];
+    for i in 0..n {
+        if let Some(j) = i.checked_sub(LOAD_RING) {
+            cells[j] = write(ring[j % LOAD_RING], cells[j]);
+        }
+        ring[i % LOAD_RING] = value(cells, i);
+    }
+    for j in n.saturating_sub(LOAD_RING)..n {
+        cells[j] = ring[j % LOAD_RING];
     }
 }
 

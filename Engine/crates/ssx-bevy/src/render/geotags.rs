@@ -2,25 +2,29 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use bevy::asset::{RenderAssetUsages, embedded_asset};
+use bevy::asset::{RenderAssetUsages, embedded_asset, uuid_handle};
 use bevy::light::NotShadowCaster;
 use bevy::mesh::{Indices, MeshVertexBufferLayoutRef, PrimitiveTopology};
 use bevy::pbr::{Material, MaterialPipeline, MaterialPipelineKey, MaterialPlugin};
 use bevy::prelude::{
     AlphaMode, App, Asset, Assets, Camera, Camera3d, Commands, Entity, GlobalTransform, Handle, Image,
     IntoScheduleConfigs, Mesh, Mesh3d, MeshMaterial3d, Name, PostUpdate, Quat, Query, Reflect, Res, ResMut, Resource,
-    Time, Transform, Vec3, Vec4, Visibility, With, World, debug, default, info, resource_exists, warn,
+    Time, Transform, Vec3, Vec4, Visibility, With, World, debug, default, error, info, resource_exists, warn,
 };
+use bevy::render::render_asset::RenderAssets;
 use bevy::render::render_resource::{
     AsBindGroup, BlendComponent, BlendFactor, BlendOperation, BlendState, RenderPipelineDescriptor, ShaderType,
     SpecializedMeshPipelineError,
 };
+use bevy::render::renderer::RenderQueue;
+use bevy::render::storage::{GpuShaderBuffer, ShaderBuffer};
+use bevy::render::{Render, RenderApp, RenderSystems};
 use bevy::shader::ShaderRef;
 use ssx_assets::particles::ParticleNode;
 use ssx_assets::track_objects::geotags::{DistanceScale, GeotagAssets, distance_scale, load};
 use ssx_physics::session::geotags::{GeotagData, GeotagRun};
 
-use crate::render::objects::material::{LDR_FRAME_FORMAT, LDR_PIPELINE_LABEL};
+use crate::render::objects::material::{LDR_FRAME_FORMAT, LDR_POST_PARTICLES_LABEL};
 use crate::render::terrain::textures::{Texels, load_chain, texture_2d};
 
 const SHADER_PATH: &str = "embedded://ssx_bevy/render/geotag.wesl";
@@ -36,7 +40,8 @@ pub struct GeotagParams {
     pub light: Vec4,
 }
 
-// TODO(guess): the effect's `Time` is Bevy's `globals.time`; settle: the effect-parameter registrations of `Time` (`FUN_82A90978` callers) and their per-frame write.
+pub const TIME_BUFFER: Handle<ShaderBuffer> = uuid_handle!("6d2c8e14-3f7a-4b95-a0c1-58e2d9b7f364");
+
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 #[bind_group_data(GeotagPipelineKey)]
 pub struct GeotagMaterial {
@@ -45,6 +50,8 @@ pub struct GeotagMaterial {
     #[texture(1)]
     #[sampler(2)]
     pub diffuse: Handle<Image>,
+    #[storage(3, read_only)]
+    pub time: Handle<ShaderBuffer>,
     pub ldr: bool,
 }
 
@@ -76,7 +83,6 @@ impl Material for GeotagMaterial {
         false
     }
 
-    // TODO(guess): drawn in the `TRAN` pass into the tone-mapped 8-bit frame like the translucent instances; settle: the render entity's draw list (vtable 0x8210CEF4) against main.scrape's passes.
     fn specialize(
         _pipeline: &MaterialPipeline,
         descriptor: &mut RenderPipelineDescriptor,
@@ -97,7 +103,7 @@ impl Material for GeotagMaterial {
         target.blend = Some(BlendState { color: add, alpha: add });
         if key.bind_group_data.ldr {
             target.format = LDR_FRAME_FORMAT;
-            descriptor.label = Some(LDR_PIPELINE_LABEL.into());
+            descriptor.label = Some(LDR_POST_PARTICLES_LABEL.into());
         }
         Ok(())
     }
@@ -196,12 +202,33 @@ fn load_all(root: &Path, track: &str, riding: bool) -> Result<Option<Loaded>> {
 
 pub fn register(app: &mut App) {
     embedded_asset!(app, "geotag.wesl");
+    match app.world_mut().get_resource_mut::<Assets<ShaderBuffer>>() {
+        Some(mut buffers) => {
+            let time = ShaderBuffer::new(vec![0; 4], RenderAssetUsages::default());
+            if let Err(e) = buffers.insert(TIME_BUFFER.id(), time) {
+                error!("geotags: the Time buffer: {e}");
+            }
+        }
+        None => error!("geotags: no shader buffers (the render plugin is missing): not drawn"),
+    }
+    if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+        render_app.add_systems(Render, write_time.in_set(RenderSystems::PrepareResources));
+    }
     app.add_plugins(MaterialPlugin::<GeotagMaterial>::default())
         .init_resource::<GeotagBursts>()
         .add_systems(crate::shell::level::LevelStartup, spawn.run_if(resource_exists::<PendingGeotags>))
         .add_systems(PostUpdate, update.before(bevy::transform::TransformSystems::Propagate));
     crate::shell::level::scoped::<PendingGeotags>(app);
     crate::shell::level::scoped::<Geotags>(app);
+}
+
+// PORT(choice): the clock is Bevy's virtual time since the app started (`Time::elapsed_secs_f64`, unwrapped, f32 at
+// the end; its step capped at Bevy's 250 ms), the port's frame clock; the console had its render loop's
+// nanosecond clock since the loop thread started.
+fn write_time(time: Res<Time>, buffers: Res<RenderAssets<GpuShaderBuffer>>, queue: Res<RenderQueue>) {
+    if let Some(buffer) = buffers.get(&TIME_BUFFER) {
+        queue.write_buffer(&buffer.buffer, 0, &(time.elapsed_secs_f64() as f32).to_le_bytes());
+    }
 }
 
 pub fn reset_level(world: &mut World) {
@@ -296,7 +323,8 @@ fn spawn(
                 tile: v("diffuseTile"),
                 light,
             };
-            (meshes.add(mesh), materials.add(GeotagMaterial { params, diffuse: diffuse.clone(), ldr }))
+            let material = GeotagMaterial { params, diffuse: diffuse.clone(), time: TIME_BUFFER, ldr };
+            (meshes.add(mesh), materials.add(material))
         })
         .collect();
     for (mesh, material) in &tiers {

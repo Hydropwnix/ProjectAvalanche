@@ -437,8 +437,20 @@ pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mu
     }
     s.print_logs(&ui);
     let t = s.host.time;
-    let rides_over = s.max_rides.is_some_and(|n| s.rides_done >= n) && s.stage == Stage::Menus;
-    if rides_over || s.seconds.is_some_and(|x| t >= x) {
+    let results_held = s.max_rides.is_some_and(|n| s.rides >= n)
+        && s.stage == Stage::Level
+        && !s.follow_prompts
+        && s.segment_started
+        && s.segments.is_empty()
+        && s.host.script.is_empty()
+        && f.level.as_ref().is_some_and(|l| l.results_shown() && l.test_run_done());
+    if results_held && s.done_at.is_none() {
+        info!("shell: level {}'s results are up and nothing scripted leaves them: the run ends", s.rides);
+    }
+    let rides_over = s.max_rides.is_some_and(|n| s.rides_done >= n) && s.stage == Stage::Menus || results_held;
+    if !rides_over && !s.seconds.is_some_and(|x| t >= x) {
+        s.done_at = None;
+    } else {
         let at = *s.done_at.get_or_insert(t);
         let pending = s.host.script.first().is_some_and(|(due, _)| *due <= at + 5.0);
         if (t - at >= 2.0 && !pending) || t - at >= 5.0 || s.seconds.is_some_and(|x| t >= x) {

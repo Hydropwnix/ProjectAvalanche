@@ -249,7 +249,7 @@ pub(super) fn air(s: &mut RiderState, w: &World, input: &Input, before: RideStat
         tutorial_mode: s.wingsuit.force_descent_in_air,
         heli_interact: s.heli.abort_aerial_trick.then_some(s.heli.arrive_left_forwards),
     };
-    s.alignment = s.air.step(&t.aerial, &w.props, &inp, s.alignment, &mut s.goofy, dt);
+    s.alignment = s.air.step(&t.aerial, &w.props, &inp, s.traj_orientation, &mut s.goofy, dt);
     dp
 }
 

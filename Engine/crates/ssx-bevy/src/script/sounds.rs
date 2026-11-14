@@ -32,7 +32,8 @@ struct Placed {
 
 #[derive(Resource)]
 pub(super) struct ScriptSounds {
-    pending: VecDeque<SoundOrder>,
+    pending: VecDeque<(u64, SoundOrder)>,
+    pushed: u64,
     held: BTreeMap<ContentId, Arc<OverrideSound>>,
     order: VecDeque<ContentId>,
     bytes: usize,
@@ -42,10 +43,35 @@ pub(super) struct ScriptSounds {
     rx: Mutex<Receiver<Decoded>>,
     pub(super) content: Option<Arc<ssx_assets::content::GameContent>>,
     played: BTreeMap<ContentId, u64>,
+    buses: Arc<Mutex<ScriptBuses>>,
+    buses_busy: bool,
+    since: f32,
+}
+
+#[derive(Default)]
+struct ScriptBuses {
     buses: [Option<Placed>; SCRIPT_BUSES.len()],
     clock: f32,
-    pub(super) refused_3d: u64,
+    refused_3d: u64,
     refused_voices: u64,
+}
+
+struct Orders {
+    ready: Vec<Ready>,
+    positioned: bool,
+    camera: Option<([f32; 3], [f32; 3])>,
+    dt: f32,
+}
+
+#[derive(Default)]
+struct Played {
+    log: Vec<(bool, String)>,
+    orders: Vec<SoundOrder>,
+}
+
+enum Ready {
+    Disc { o: SoundOrder, csis: u32, name: String, function: bool },
+    Package { o: SoundOrder, sound: Arc<OverrideSound> },
 }
 
 const LOGGED_PLAYS: u64 = 8;
@@ -71,6 +97,7 @@ impl Default for ScriptSounds {
         let (tx, rx) = channel();
         ScriptSounds {
             pending: VecDeque::new(),
+            pushed: 0,
             held: BTreeMap::new(),
             order: VecDeque::new(),
             bytes: 0,
@@ -80,10 +107,9 @@ impl Default for ScriptSounds {
             rx: Mutex::new(rx),
             content: None,
             played: BTreeMap::new(),
-            buses: [None; SCRIPT_BUSES.len()],
-            clock: 0.0,
-            refused_3d: 0,
-            refused_voices: 0,
+            buses: Arc::new(Mutex::new(ScriptBuses::default())),
+            buses_busy: false,
+            since: 0.0,
         }
     }
 }
@@ -94,7 +120,8 @@ impl ScriptSounds {
             if self.pending.len() == MAX_WAITING {
                 self.pending.pop_front();
             }
-            self.pending.push_back(o);
+            self.pending.push_back((self.pushed, o));
+            self.pushed += 1;
         }
     }
 
@@ -151,8 +178,13 @@ impl ScriptSounds {
     }
 }
 
-impl ScriptSounds {
-    fn take_bus(&mut self, senders: impl Fn(&str) -> usize, position: [f32; 3]) -> Option<usize> {
+impl ScriptBuses {
+    fn take_bus(
+        &mut self,
+        senders: impl Fn(&str) -> usize,
+        position: [f32; 3],
+        log: &mut Vec<String>,
+    ) -> Option<usize> {
         let now = self.clock;
         let free = (0..SCRIPT_BUSES.len()).find(|&k| match self.buses[k] {
             None => true,
@@ -166,10 +198,10 @@ impl ScriptSounds {
             None => {
                 self.refused_3d += 1;
                 if self.refused_3d == 1 {
-                    warn!(
+                    log.push(format!(
                         "scripts: a positioned sound waits for no bus: all {} script emitter buses are in use (counted)",
                         SCRIPT_BUSES.len()
-                    );
+                    ));
                 }
                 None
             }
@@ -184,7 +216,7 @@ pub(super) fn play(
     cameras: Query<&GlobalTransform, With<Camera3d>>,
 ) {
     let s = &mut *sounds;
-    s.clock += time.delta_secs();
+    s.since += time.delta_secs();
     while let Some((id, got)) = s.rx.lock().ok().and_then(|r| r.try_recv().ok()) {
         s.decoding.remove(&id);
         match got {
@@ -195,73 +227,137 @@ pub(super) fn play(
             }
         }
     }
-    if s.pending.is_empty() && s.buses.iter().all(Option::is_none) {
+    if s.pending.is_empty() && !s.buses_busy {
         return;
     }
     let Some(game) = game else {
         s.pending.clear();
         return;
     };
-    let Some(mut out) = game.lock() else { return };
-    let Some(engine) = out.sfx.as_mut() else {
-        s.pending.clear();
-        s.buses = [None; SCRIPT_BUSES.len()];
-        return;
-    };
-    if s.pending.iter().any(|o| o.position.is_some()) && engine.mixer.graph.submix_input(SCRIPT_BUSES[0]).is_none() {
-        let n = engine.script_buses();
-        info!("scripts: {n} script emitter buses (copies of Board_Center_BUS) for positioned sounds");
-        s.buses = [None; SCRIPT_BUSES.len()];
-    }
+    let positioned = s.pending.iter().any(|(_, o)| o.position.is_some());
+    let seen = s.pushed;
+    let mut ready = Vec::new();
     let mut waiting = VecDeque::new();
-    while let Some(o) = s.pending.pop_front() {
+    while let Some((n, o)) = s.pending.pop_front() {
         if o.id.namespace() == BASE_NAMESPACE {
             let disc = s.content.as_ref().and_then(|c| c.disc_sounds());
             let Some(d) = disc.as_ref().and_then(|d| d.get(&o.id)) else { continue };
-            let Some(key) = engine.aems.resolve(d.csis, &d.name) else {
-                info!("scripts: [{}] {}: not in the level's loaded sound banks", o.package, o.id);
-                continue;
-            };
-            let origin = match o.position {
-                Some(p) => match s.take_bus(|b| engine.bus_senders(b), p) {
-                    Some(k) => Some(SCRIPT_ORIGIN + k as u32),
-                    None => continue,
-                },
-                None => None,
-            };
-            if d.function {
-                let h = engine.aems.call_from(key, &[], origin);
-                engine.aems.stop(h);
-            } else {
-                match origin {
-                    Some(origin) => engine.fire_from(key, &[], origin),
-                    None => engine.fire(key, &[]),
-                }
-            }
-            s.logged(&o);
+            let (csis, name, function) = (d.csis, d.name.clone(), d.function);
+            ready.push(Ready::Disc { o, csis, name, function });
             continue;
         }
         if s.failed.contains_key(&o.id) {
             continue;
         }
         match s.held.get(&o.id).cloned() {
-            Some(sound) => {
+            Some(sound) => ready.push(Ready::Package { o, sound }),
+            None => {
+                s.decode(&o.id);
+                if !s.failed.contains_key(&o.id) {
+                    waiting.push_back((n, o));
+                }
+            }
+        }
+    }
+    s.pending = waiting;
+    let camera = cameras.iter().next().map(|t| (t.translation().to_array(), (*t.forward()).to_array()));
+    let orders = Orders { ready, positioned, camera, dt: time.delta_secs() };
+    let (buses, since) = (s.buses.clone(), std::mem::take(&mut s.since));
+    game.post(move |out, back| {
+        let Ok(mut b) = buses.lock() else { return };
+        b.clock += since;
+        let mut played = Played::default();
+        let busy = play_on(out.sfx.as_mut(), &mut b, orders, &mut played);
+        back.reply(move |w| {
+            let Some(mut s) = w.get_resource_mut::<ScriptSounds>() else { return };
+            for (warning, l) in played.log {
+                if warning {
+                    warn!("{l}");
+                } else {
+                    info!("{l}");
+                }
+            }
+            for o in &played.orders {
+                s.logged(o);
+            }
+            match busy {
+                Some(busy) => s.buses_busy = busy,
+                None => {
+                    s.pending.retain(|(n, _)| *n >= seen);
+                    s.buses_busy = false;
+                }
+            }
+        });
+    });
+}
+
+fn play_on(
+    engine: Option<&mut ssx_assets::sfx::SfxEngine>,
+    b: &mut ScriptBuses,
+    orders: Orders,
+    out: &mut Played,
+) -> Option<bool> {
+    let Orders { ready, positioned, camera, dt } = orders;
+    let mut taken = Vec::new();
+    let Some(engine) = engine else {
+        b.buses = [None; SCRIPT_BUSES.len()];
+        return None;
+    };
+    if positioned && engine.mixer.graph.submix_input(SCRIPT_BUSES[0]).is_none() {
+        let n = engine.script_buses();
+        out.log.push((
+            false,
+            format!("scripts: {n} script emitter buses (copies of Board_Center_BUS) for positioned sounds"),
+        ));
+        b.buses = [None; SCRIPT_BUSES.len()];
+    }
+    for r in ready {
+        match r {
+            Ready::Disc { o, csis, name, function } => {
+                let Some(key) = engine.aems.resolve(csis, &name) else {
+                    out.log.push((
+                        false,
+                        format!("scripts: [{}] {}: not in the level's loaded sound banks", o.package, o.id),
+                    ));
+                    continue;
+                };
+                let origin = match o.position {
+                    Some(p) => match b.take_bus(|bus| engine.bus_senders(bus), p, &mut taken) {
+                        Some(k) => Some(SCRIPT_ORIGIN + k as u32),
+                        None => continue,
+                    },
+                    None => None,
+                };
+                if function {
+                    let h = engine.aems.call_from(key, &[], origin);
+                    engine.aems.stop(h);
+                } else {
+                    match origin {
+                        Some(origin) => engine.fire_from(key, &[], origin),
+                        None => engine.fire(key, &[]),
+                    }
+                }
+                out.orders.push(o);
+            }
+            Ready::Package { o, sound } => {
                 let Some(draw) = sound.draw() else { continue };
                 let Some((patch, v)) = engine.mixer.voice_table().values().find(|(_, v)| v == VOICE).cloned() else {
-                    warn!("scripts: no {VOICE} in the level's voice table: {} not played", o.id);
+                    out.log
+                        .push((true, format!("scripts: no {VOICE} in the level's voice table: {} not played", o.id)));
                     continue;
                 };
                 if engine.mixer.released_voices() >= MAX_VOICES {
-                    s.refused_voices += 1;
-                    if s.refused_voices == 1 {
-                        warn!(
+                    b.refused_voices += 1;
+                    if b.refused_voices == 1 {
+                        let line = format!(
                             "scripts: a package sound is refused: {MAX_VOICES} package voices play at once (counted)"
                         );
+                        out.log.push((true, line));
                     }
                     continue;
                 }
                 let bus = match o.position {
-                    Some(p) => match s.take_bus(|b| engine.bus_senders(b), p) {
+                    Some(p) => match b.take_bus(|bus| engine.bus_senders(bus), p, &mut taken) {
                         Some(k) => Some(k),
                         None => continue,
                     },
@@ -276,31 +372,28 @@ pub(super) fn play(
                 if let Some(k) = bus
                     && !engine.mixer.route_pcm(h, SCRIPT_BUSES[k])
                 {
-                    warn!("scripts: {} plays without its position: no {} bus", o.id, SCRIPT_BUSES[k]);
+                    out.log.push((
+                        true,
+                        format!("scripts: {} plays without its position: no {} bus", o.id, SCRIPT_BUSES[k]),
+                    ));
                 }
-                s.logged(&o);
-            }
-            None => {
-                s.decode(&o.id);
-                if !s.failed.contains_key(&o.id) {
-                    waiting.push_back(o);
-                }
+                out.orders.push(o);
             }
         }
     }
-    s.pending = waiting;
-    let now = s.clock;
-    for (k, b) in s.buses.iter_mut().enumerate() {
-        if b.is_some_and(|p| now - p.since >= BUS_HOLD) && engine.bus_senders(SCRIPT_BUSES[k]) == 0 {
-            *b = None;
+    out.log.extend(taken.into_iter().map(|l| (true, l)));
+    let now = b.clock;
+    for (k, p) in b.buses.iter_mut().enumerate() {
+        if p.is_some_and(|p| now - p.since >= BUS_HOLD) && engine.bus_senders(SCRIPT_BUSES[k]) == 0 {
+            *p = None;
         }
     }
-    let emitters: Vec<Emitter> = s
+    let emitters: Vec<Emitter> = b
         .buses
         .iter()
         .enumerate()
-        .filter_map(|(k, b)| {
-            b.map(|p| Emitter {
+        .filter_map(|(k, p)| {
+            p.map(|p| Emitter {
                 bus: SCRIPT_BUSES[k],
                 settings: SCRIPT_EMITTER,
                 base: p.position,
@@ -310,9 +403,9 @@ pub(super) fn play(
         })
         .collect();
     if !emitters.is_empty() {
-        let camera = cameras.iter().next().map(|t| (t.translation().to_array(), (*t.forward()).to_array()));
-        engine.sound3d_frame_scripts(camera, &emitters, time.delta_secs());
+        engine.sound3d_frame_scripts(camera, &emitters, dt);
     }
+    Some(b.buses.iter().any(Option::is_some))
 }
 
 #[cfg(test)]
@@ -321,17 +414,18 @@ mod tests {
 
     #[test]
     fn positioned_sounds_take_the_eight_emitter_buses() {
-        let mut s = ScriptSounds::default();
-        let taken: Vec<_> = (0..8).map(|i| s.take_bus(|_| 0, [i as f32, 0.0, 0.0])).collect();
+        let mut s = ScriptBuses::default();
+        let log = &mut Vec::new();
+        let taken: Vec<_> = (0..8).map(|i| s.take_bus(|_| 0, [i as f32, 0.0, 0.0], log)).collect();
         assert_eq!(taken, (0..8).map(Some).collect::<Vec<_>>());
-        assert_eq!(s.take_bus(|_| 0, [9.0, 0.0, 0.0]), None);
-        assert_eq!(s.refused_3d, 1);
+        assert_eq!(s.take_bus(|_| 0, [9.0, 0.0, 0.0], log), None);
+        assert_eq!((s.refused_3d, log.len()), (1, 1));
         s.clock += BUS_HOLD;
         let senders = |b: &str| usize::from(b == SCRIPT_BUSES[0]);
-        assert_eq!(s.take_bus(senders, [1.0, 2.0, 3.0]), Some(1));
+        assert_eq!(s.take_bus(senders, [1.0, 2.0, 3.0], log), Some(1));
         assert_eq!(s.buses[1].map(|p| p.position), Some([1.0, 2.0, 3.0]));
         let busy = |b: &str| usize::from(b == SCRIPT_BUSES[2]);
-        assert_eq!(s.take_bus(busy, [0.0; 3]), Some(0));
-        assert_eq!(s.take_bus(busy, [0.0; 3]), Some(3), "bus 2 is held by its voice");
+        assert_eq!(s.take_bus(busy, [0.0; 3], log), Some(0));
+        assert_eq!(s.take_bus(busy, [0.0; 3], log), Some(3), "bus 2 is held by its voice");
     }
 }

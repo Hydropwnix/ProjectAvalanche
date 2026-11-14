@@ -21,7 +21,8 @@ use ssx_formats::reader::Reader;
 use ssx_formats::sbr::{SampleBank, SoundRef};
 use ssx_formats::speech::{evt::EventSystem, grf::Graffiti, rep::RepetitionPools};
 
-use crate::music::{Bytes, find_file};
+use crate::music::find_file;
+use crate::sfx_stream::{BlockKind, BlockType, Next, Ring, Slot, StreamFile};
 
 #[derive(Clone, Debug)]
 pub struct Song {
@@ -162,7 +163,7 @@ impl RaceType {
 struct Bank {
     bank: SampleBank,
     data: Vec<u8>,
-    sbs: Arc<Bytes>,
+    sbs: Arc<StreamFile>,
 }
 
 pub struct MusicBox {
@@ -195,7 +196,7 @@ impl MusicBox {
         let bank_data = read("music_samples.sbr")?;
         let bank = SampleBank::parse(&bank_data)?;
         let sbs_path = find_file(big_root, &rel("music_samples.sbs")).context("music_samples.sbs not found")?;
-        let sbs = Arc::new(Bytes::open(&sbs_path)?);
+        let sbs = StreamFile::open(&sbs_path)?;
         let mut mb = Self {
             songs,
             selectable,
@@ -250,7 +251,7 @@ impl MusicBox {
                     continue;
                 }
             };
-            let sbs = match Bytes::open(&files.sbs) {
+            let sbs = match StreamFile::open(&files.sbs) {
                 Ok(b) => b,
                 Err(e) => {
                     ssx_core::eprintln!(
@@ -262,7 +263,7 @@ impl MusicBox {
                     continue;
                 }
             };
-            self.banks.push(Bank { bank, data, sbs: Arc::new(sbs) });
+            self.banks.push(Bank { bank, data, sbs });
             banks += 1;
         }
         if banks == 0 {
@@ -318,13 +319,15 @@ impl MusicBox {
 
     pub fn duration(&self, id: u32) -> Option<f64> {
         let (bank, offset) = self.sps_offset(id).ok()?;
-        let sps = Sps::read(&self.banks.get(bank)?.sbs, offset).ok()?;
-        Some(f64::from(sps.header.num_samples) / f64::from(sps.header.sample_rate.max(1)))
+        let header = self.banks.get(bank)?.sbs.read_sps_header(offset as u64).ok()?;
+        Some(f64::from(header.num_samples) / f64::from(header.sample_rate.max(1)))
     }
 
     pub fn decode_song(&self, id: u32) -> Result<(Vec<f32>, u32, u16)> {
         let (bank, offset) = self.sps_offset(id)?;
-        let sps = Sps::read(&self.banks.get(bank).context("bank gone")?.sbs, offset)?;
+        let sbs = &self.banks.get(bank).context("bank gone")?.sbs;
+        let bytes = sbs.read_blocks(BlockKind::Sps, offset as u64, MAX_SONG_BYTES)?;
+        let sps = Sps::read(&bytes, 0)?;
         let d = ssx_formats::ealayer3_decode::decode_sound(&sps.header, &sps.blocks)?;
         Ok((d.samples, d.sample_rate, u16::from(d.channels)))
     }
@@ -398,12 +401,12 @@ enum SongSource {
     Package(Box<crate::content::audio::stream::MusicStream>),
 }
 
+const MAX_SONG_BYTES: u64 = 64 << 20;
+
 struct DiscSong {
-    blocks: Vec<(usize, usize, u32)>,
-    next: usize,
+    slot: Slot,
     channels: usize,
-    dec: Option<(usize, SectionDecoder)>,
-    sbs: Arc<Bytes>,
+    dec: Option<SectionDecoder>,
 }
 
 const PACKAGE_CHUNK: usize = 1024;
@@ -515,21 +518,15 @@ impl LicensedMusic {
         }
         let opened = self.mb.sps_offset(id).and_then(|(bank, o)| {
             let b = self.mb.banks.get(bank).context("bank gone")?;
-            Ok((b.sbs.clone(), Sps::read(&b.sbs, o)?))
+            let mut slot = Slot::new(Ring::MUSIC)?;
+            slot.queue(b.sbs.clone(), o as u64, BlockKind::Sps);
+            Ok(slot)
         });
         match opened {
-            Ok((sbs, sps)) => {
-                let blocks = sps
-                    .blocks
-                    .sections
-                    .iter()
-                    .enumerate()
-                    .flat_map(|(s, sec)| sec.iter().map(move |b| (b.offset, s, b.samples)))
-                    .collect();
+            Ok(slot) => {
                 let label = self.mb.song(id).map_or_else(|| format!("sound {id:#x}"), Song::label);
                 self.played.push((id, label));
-                let channels = sps.header.channels as usize;
-                let source = SongSource::Disc(Box::new(DiscSong { blocks, next: 0, channels, dec: None, sbs }));
+                let source = SongSource::Disc(Box::new(DiscSong { slot, channels: 0, dec: None }));
                 Some(SongStream { id, source, buf: Vec::new(), pos: 0, gain: 1.0 })
             }
             Err(e) => {
@@ -698,13 +695,7 @@ impl LicensedMusic {
     fn refill(s: &mut SongStream, tmp: &mut Vec<f32>) -> Refill {
         let id = s.id;
         match &mut s.source {
-            SongSource::Disc(d) => {
-                if d.decode_block(id, &mut s.buf, tmp) {
-                    Refill::More
-                } else {
-                    Refill::End
-                }
-            }
+            SongSource::Disc(d) => d.decode_block(id, &mut s.buf, tmp),
             SongSource::Package(stream) => {
                 s.buf.resize(PACKAGE_CHUNK * 2, 0.0);
                 let n = stream.render(&mut s.buf);
@@ -726,31 +717,62 @@ impl LicensedMusic {
 }
 
 impl DiscSong {
-    fn decode_block(&mut self, id: u32, buf: &mut Vec<f32>, tmp: &mut Vec<f32>) -> bool {
-        let Some(&(offset, section, samples)) = self.blocks.get(self.next) else { return false };
-        self.next += 1;
-        if self.dec.as_ref().is_none_or(|(x, _)| *x != section) {
-            match SectionDecoder::new(self.channels as u8) {
-                Ok(d) => self.dec = Some((section, d)),
-                Err(_) => return false,
+    fn decode_block(&mut self, id: u32, buf: &mut Vec<f32>, tmp: &mut Vec<f32>) -> Refill {
+        loop {
+            let block = match self.slot.next_block() {
+                Next::Block(b) => b,
+                Next::Pending => return Refill::Behind,
+                Next::Idle => return Refill::End,
+                Next::Failed { error, .. } => {
+                    ssx_core::eprintln!("musicbox: sound {id:#x}: {error}");
+                    return Refill::End;
+                }
+            };
+            match block.ty {
+                BlockType::Header => {
+                    let header = match ssx_formats::eaac::SoundHeader::parse(block.payload) {
+                        Ok(h) if h.version == 1 && !h.looped => h,
+                        Ok(h) => {
+                            ssx_core::eprintln!("musicbox: sound {id:#x}: header {h:?} not a one-shot SPS sound");
+                            return Refill::End;
+                        }
+                        Err(e) => {
+                            ssx_core::eprintln!("musicbox: sound {id:#x}: {e:#}");
+                            return Refill::End;
+                        }
+                    };
+                    self.channels = usize::from(header.channels);
+                    match SectionDecoder::new(header.channels) {
+                        Ok(d) => self.dec = Some(d),
+                        Err(e) => {
+                            ssx_core::eprintln!("musicbox: sound {id:#x}: {e:#}");
+                            return Refill::End;
+                        }
+                    }
+                }
+                BlockType::Data => {
+                    let Some(dec) = self.dec.as_mut() else {
+                        ssx_core::eprintln!("musicbox: sound {id:#x}: a data block before the H block");
+                        return Refill::End;
+                    };
+                    tmp.clear();
+                    let Ok(n) = dec.decode_payload(block.payload, tmp) else {
+                        ssx_core::eprintln!("musicbox: sound {id:#x}: an undecodable block");
+                        return Refill::End;
+                    };
+                    let ch = self.channels;
+                    for k in 0..n.min(block.samples as usize) {
+                        if ch == 1 {
+                            buf.extend_from_slice(&[tmp[k], tmp[k]]);
+                        } else {
+                            buf.extend_from_slice(&tmp[k * ch..k * ch + 2]);
+                        }
+                    }
+                    return Refill::More;
+                }
+                BlockType::End | BlockType::Other => return Refill::End,
             }
         }
-        let Ok(block) = ssx_formats::eaac::Block::read(&self.sbs, offset) else { return false };
-        tmp.clear();
-        let Some((_, dec)) = self.dec.as_mut() else { return false };
-        let Ok(n) = dec.decode_payload(block.payload, tmp) else {
-            ssx_core::eprintln!("musicbox: sound {id:#x}: undecodable block at {offset:#x}");
-            return false;
-        };
-        let ch = self.channels;
-        for k in 0..n.min(samples as usize) {
-            if ch == 1 {
-                buf.extend_from_slice(&[tmp[k], tmp[k]]);
-            } else {
-                buf.extend_from_slice(&tmp[k * ch..k * ch + 2]);
-            }
-        }
-        true
     }
 }
 

@@ -66,11 +66,7 @@ pub fn wrap_pi(a: f32) -> f32 {
 }
 
 pub fn stick_angle_and_magnitude(stick: Vec2) -> (f32, f32) {
-    let mag = stick.length().min(1.0);
-    if mag <= 1e-6 {
-        return (0.0, 0.0);
-    }
-    (-wrap_pi(stick.y.atan2(stick.x) - FRAC_PI_2), mag)
+    (-wrap_pi(stick.y.atan2(stick.x) - FRAC_PI_2), stick.length().min(1.0))
 }
 
 pub fn lean_input(c: &CarvingTuning, angle: f32, mag: f32, max_in: f32, ice: f32) -> f32 {

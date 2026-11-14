@@ -79,6 +79,7 @@ fn inputs(y: f32, end: bool, allow: bool) -> EventInputs {
         touching_end: end,
         health: 1.0,
         allow_race_end: allow,
+        rewind_enabled: true,
         ..Default::default()
     }
 }
@@ -145,7 +146,7 @@ fn a_pause_holds_the_clock_but_not_the_results_after_the_finish() {
     assert!(u.finished);
     m.waiting = true;
     let posted = (0..70).position(|_| m.update_paused(&mut timer, &inputs(-900.0, false, true)).results);
-    assert_eq!(posted, Some(48), "the finish message's intro, second and outro, then the results");
+    assert_eq!(posted, Some(62), "the finish message's intro, second and outro, then the results");
     assert_eq!(m.state, EventState::Results);
 }
 
@@ -179,6 +180,26 @@ fn a_free_ride_keeps_its_events_finish_and_loops_after_it() {
         (0..200).find(|_| m.update(&mut timer, &inputs(-10.0, false, false)).timer == Some(DeathTimerEvent::EventEnds));
     assert!(matches!(ends, Some(119..=120)), "{ends:?}");
     assert!(m.result.as_ref().is_some_and(|r| r.failed) && m.state == EventState::Idle);
+}
+
+#[test]
+fn the_death_message_counts_only_while_the_event_runs() {
+    let msg = RiderDead { by_death_volume: true, ..RiderDead::default() };
+    for state in [
+        EventState::Idle,
+        EventState::Running,
+        EventState::DelayedFinish,
+        EventState::Finished,
+        EventState::LoopOutro,
+        EventState::LoopRestart,
+        EventState::Results,
+    ] {
+        let m = EventManager { state, ..race(vec![]) };
+        let mut timer = DeathTimer::default();
+        m.on_rider_dead(&mut timer, &msg, true, 3, true);
+        let started = matches!(state, EventState::Running | EventState::DelayedFinish);
+        assert_eq!((timer.remaining >= 0.0, timer.hint), (started, started), "{state:?}");
+    }
 }
 
 #[test]
@@ -244,18 +265,62 @@ fn a_delayed_finish_builds_at_once_and_posts_after_the_race_end() {
     let mut timer = DeathTimer::default();
     m.on_trigger_race_start(&mut timer);
     let u = m.update(&mut timer, &inputs(-900.0, true, false));
-    assert!(u.crossed && !u.finished && !u.results && m.result.is_some());
-    assert!(m.state == EventState::DelayedFinish && m.rewind_disabled);
+    assert!(u.crossed && !u.finished && !u.results && m.built.is_some());
+    assert!(m.result.is_none(), "the record is built, not posted");
+    assert!(m.state == EventState::DelayedFinish);
+    assert_eq!(
+        (u.rewind_enabled, m.saved_rewind_enabled),
+        (Some(false), Some(true)),
+        "BLN_RewindEnabled saved, cleared"
+    );
     assert!(!m.track_finished, "IsTrackFinished waits for BLN_AllowRaceEnd (the heli outro's)");
-    assert!(!m.update(&mut timer, &inputs(-900.0, false, false)).results);
-    let u = m.update(&mut timer, &inputs(-900.0, false, true));
+    let u = m.update(&mut timer, &EventInputs { rewind_enabled: false, ..inputs(-900.0, false, false) });
+    assert!(!u.results && u.rewind_enabled.is_none(), "written once, at the crossing");
+    let u = m.update(&mut timer, &EventInputs { rewind_enabled: false, ..inputs(-900.0, false, true) });
     assert!(u.finished, "FinishTrack (0x1CC8ED4D) runs at the race end");
-    assert!(m.track_finished && m.state == EventState::Finished && !m.rewind_disabled);
+    assert!(m.track_finished && m.state == EventState::Finished);
+    assert_eq!((u.rewind_enabled, m.saved_rewind_enabled), (Some(true), None), "+0x1DF given back at the race end");
     let mut posted = false;
     for _ in 0..70 {
         posted |= m.update(&mut timer, &inputs(-900.0, false, true)).results;
     }
-    assert!(posted && m.state == EventState::Results);
+    assert!(posted && m.state == EventState::Results && m.result.is_some());
+}
+
+#[test]
+fn a_delayed_survive_finish_loops_without_results_until_the_death() {
+    let course = Course { start_y: 0.0, end_y: -900.0 };
+    let setup = EventSetup {
+        event_type: Some(EventType::SurviveToDeath),
+        delayed_finish: true,
+        course: Some(course),
+        ..Default::default()
+    };
+    let mut m = EventManager::new(setup);
+    let mut timer = DeathTimer::default();
+    m.on_trigger_race_start(&mut timer);
+    for lap in 1..=2 {
+        let u = m.update(&mut timer, &inputs(-900.0, true, false));
+        assert!(u.crossed && !u.results && m.state == EventState::DelayedFinish);
+        assert!(m.built.is_some() && m.result.is_none(), "loop {lap}: built at the crossing, not posted");
+        let mut i = inputs(-900.0, false, true);
+        assert!(m.update(&mut timer, &i).finished && m.state == EventState::Finished);
+        for _ in 0..70 {
+            assert!(!m.update(&mut timer, &i).results, "loop {lap}: no results after the grab");
+        }
+        i.nis_outro_active = true;
+        m.update(&mut timer, &i);
+        i.nis_outro_active = false;
+        assert!(m.update(&mut timer, &i).looped && m.loops == lap && m.result.is_none());
+        m.on_trigger_race_start(&mut timer);
+        m.on_entered_gameplay();
+        assert!(m.state == EventState::Running && !m.track_finished);
+    }
+    timer.on_rider_dead(&RiderDead { by_health: true, ..RiderDead::default() }, false, 0, false);
+    let u = m.update(&mut timer, &EventInputs { dt_s: 0.033, descent: 100.0, ..inputs(-10.0, false, false) });
+    let r = m.result.as_ref().expect("results at the death");
+    assert!(u.results && !r.failed && r.loops == 2);
+    assert_eq!(r.descent_mm, 2 * 900_000 + 100_000);
 }
 
 #[test]
@@ -340,4 +405,112 @@ fn a_rounds_end_ends_a_run_still_on_as_its_time_limit_would() {
     assert!(posted && m.result.as_ref().is_some_and(|r| !r.failed), "the finish crossed before the round's end");
     m.reset();
     assert_eq!(m.round_over, None);
+}
+
+#[test]
+fn the_launched_event_is_the_level_event() {
+    let row = |ghost_id| Rival {
+        starting_idx: 0,
+        ghost_id,
+        character: 0,
+        catchup: 0,
+        score: 1000,
+        tuned_score: u32::MAX,
+        lap: 0,
+        end_bits: [0; 3],
+    };
+    let event = |name: &str, key, t, ghosts: [i32; 3]| EventDef {
+        name: name.into(),
+        key,
+        drop_key: 7,
+        event_type: Some(t),
+        scripts: Vec::new(),
+        rivals: ghosts.into_iter().map(row).collect(),
+        required_equipment: Vec::new(),
+        avalanche_scripts: Vec::new(),
+        forced_rider: 0,
+        forced_items: [0; 5],
+        loadout: None,
+        objectives: None,
+        message: Default::default(),
+        places: None,
+        goal: None,
+    };
+    let events = [
+        event("exp_x_drop_7_race", 1, EventType::RaceGhosts, [11, 12, 13]),
+        event("exp_x_drop_7_trick", 2, EventType::TrickGhosts, [21, 22, 23]),
+    ];
+    let asked = || -> String { panic!("the viewer's choice asked for a launched event") };
+    let trick = level_event(&events, Some(2), asked).expect("the launched event");
+    assert_eq!(trick.name, "exp_x_drop_7_trick");
+    let mut ghosts: Vec<i32> = trick.rivals.iter().map(|r| r.ghost_id).collect();
+    ghosts.sort_unstable();
+    assert_eq!(ghosts, [21, 22, 23], "the trick's own rows");
+    assert!(level_event(&events, Some(3), asked).is_none(), "a launched key not on the drop: no event");
+    assert_eq!(level_event(&events, None, || "race".into()).map(|e| e.key), Some(1));
+    assert_eq!(level_event(&events, None, || "trick".into()).map(|e| e.key), Some(2));
+    assert!(level_event(&events, None, || "none".into()).is_none());
+}
+
+#[test]
+fn a_racers_race_clock_is_written_while_it_runs_unfinished() {
+    let mut m = race(vec![59_000]);
+    let mut timer = DeathTimer::default();
+    let racer = |y: f32, end: bool| {
+        let mut i = inputs(-10.0, false, false);
+        i.racers[0] = Some(RacerInput { y, touching_end: end, points: 0.0, trigger_wipeout: false, in_air: false });
+        i
+    };
+    m.update(&mut timer, &racer(0.0, false));
+    assert!(m.racers.iter().all(|r| r.clock_ms == 0), "idle before the start: no score update of the racer");
+    m.on_trigger_race_start(&mut timer);
+    m.update(&mut timer, &racer(-1.0, false));
+    let first = m.racers[0].clock_ms;
+    assert!(first > 0 && first == m.clock.ms(), "the first running update writes the advanced clock ({first} ms)");
+    for _ in 0..10 {
+        m.update(&mut timer, &racer(-2.0, false));
+    }
+    assert_eq!(m.racers[0].clock_ms, m.clock.ms());
+    m.update(&mut timer, &racer(-900.0, true));
+    let at_finish = m.racers[0].clock_ms;
+    assert_eq!(m.racers[0].finish_ms, Some(at_finish));
+    for _ in 0..10 {
+        m.update(&mut timer, &racer(-900.0, true));
+    }
+    assert_eq!(m.racers[0].clock_ms, at_finish, "a finished racer keeps its last");
+    m.reset();
+    assert!(m.racers.iter().all(|r| r.clock_ms == 0));
+}
+
+#[test]
+fn an_unfinished_trick_bot_is_projected_from_its_points_at_the_results() {
+    let setup = EventSetup {
+        event_type: Some(EventType::TrickBots),
+        results: Some(ResultsFlow::WorldTour),
+        course: Some(Course { start_y: 0.0, end_y: -1000.0 }),
+        ..EventSetup::default()
+    };
+    let mut m = EventManager::new(setup);
+    let mut timer = DeathTimer::default();
+    let frame = |player_y: f32, end: bool, allow: bool, bot_y: f32, bot_points: f32| {
+        let mut i = EventInputs { points: 450_000.0, ..inputs(player_y, end, allow) };
+        let bot =
+            RacerInput { y: bot_y, touching_end: false, points: bot_points, trigger_wipeout: false, in_air: false };
+        i.racers[0] = Some(bot);
+        i
+    };
+    m.on_trigger_race_start(&mut timer);
+    m.update(&mut timer, &frame(-500.0, false, false, -700.0, 250_000.0));
+    let crossing = m.update(&mut timer, &frame(-1000.0, true, false, -750.0, 300_000.0));
+    assert!(crossing.finished && m.state == EventState::Finished);
+    assert_eq!((m.racers[0].progress, m.racers[0].finish_ms, m.racers[0].points), (0.75, None, 300_000.0));
+    let result = (0..70).find_map(|k| {
+        let u = m.update(&mut timer, &frame(-1000.0, false, true, -800.0 - k as f32, 400_000.0));
+        u.results.then(|| m.result.clone()).flatten()
+    });
+    let r = result.expect("results");
+    assert_eq!(m.racers[0].progress, 0.75, "the progress stands as at the crossing");
+    assert_eq!(m.racers[0].points, 400_000.0, "the points are the feed's");
+    assert_eq!(r.rivals, [500_000]);
+    assert_eq!((r.value, r.place, r.rank), (450_000, u32::MAX, Some(1)));
 }

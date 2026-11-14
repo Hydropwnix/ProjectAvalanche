@@ -6,22 +6,15 @@ import bevy_pbr::render::{
     mesh_functions,
 };
 import package::render::lighting::game_lighting as gl;
+import package::render::objects::object_normal::{
+    ObjectParams, FOLIAGE, ADVANCED, SHADOW_ONLY, NEUTRAL_COV, gbuffer_normal,
+};
 @if(SSX_HOOK_SURFACE)
 import super::hook;
 @if(SSX_HOOK_SURFACE)
 import package::render::objects::hook_types::{SurfaceIn, Surface};
 @if(SSX_HOOK_SURFACE)
 import bevy_pbr::render::{mesh_view_bindings::globals, pbr_bindings};
-
-struct ObjectParams {
-    shading: vec4<f32>,
-    tiles: vec4<f32>,
-    snow: vec4<f32>,
-    snow_fall: vec4<f32>,
-    scatter: vec4<f32>,
-    lod_bias: vec4<f32>,
-    alpha_test: vec4<f32>,
-}
 
 @if(SSX_LOCAL_LIGHTS)
 var<private> light: gl::GameLight;
@@ -41,11 +34,6 @@ struct LdrTonemap {
     exposure: vec4<f32>,
 }
 @group(constants::MATERIAL_BIND_GROUP) @binding(122) var<storage, read> ldr_tonemap: LdrTonemap;
-
-const FOLIAGE: u32 = 1u;
-const ADVANCED: u32 = 2u;
-const SHADOW_ONLY: u32 = 3u;
-const NEUTRAL_COV: f32 = 2.0 * 128.0 / 255.0 - 1.0;
 
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
@@ -112,22 +100,17 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let d = pbr_input.material.base_color;
 
     let n_vtx = normalize(in.world_normal);
-    var n = n_vtx;
+    var tangent = vec4(0.0);
+    var mapped = false;
 @if(VERTEX_TANGENTS && VERTEX_UVS_A) {
-    if params.scatter.w > 0.0 {
-        let nt = normalize(vec3(tex_n * 2.0 - 1.0, 1.0));
-@if(SSX_TANGENT_SIGN)
-        n = gl::signed_tbn(in.world_normal, in.world_tangent, nt);
-@else
-        n = gl::game_tbn(in.world_normal, in.world_tangent, nt);
-    }
+    tangent = in.world_tangent;
+    mapped = params.scatter.w > 0.0;
 }
+    let g = gbuffer_normal(in.world_normal, tangent, mapped, tex_n, family, params, cov, scatter);
+    let n = g.n;
     var ecc = params.shading.z;
     if family == ADVANCED {
-        let b = saturate(params.scatter.z + cov);
-        let n_snow = normalize(n_vtx + params.scatter.y * (scatter * 2.0 - 1.0));
-        n = normalize(mix(n, n_snow, b));
-        ecc = mix(ecc, params.snow_fall.w, b);
+        ecc = mix(ecc, params.snow_fall.w, g.snow);
     }
 
     let v = gl::to_eye(p);

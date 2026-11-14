@@ -301,7 +301,7 @@ impl CoursePlayer {
                 break;
             }
             s.wingsuit.pad_r1 = c.r1;
-            let e = x.execute(&mut s, w, &c.input, &c.tricks, 0.0, &RewindPad::default(), None);
+            let e = x.execute(&mut s, w, &pad_for_intent(c.input), &c.tricks, 0.0, &RewindPad::default(), None);
             self.rollout_steps += 1;
             if e.rider_dead.is_some() {
                 out.survived = false;
@@ -374,6 +374,19 @@ impl CoursePlayer {
     }
 
     pub fn controls(
+        &mut self,
+        s: &RiderState,
+        x: &Session,
+        w: &World,
+        time: f32,
+        go_clock: f32,
+        rewind_idle: bool,
+    ) -> CourseControls {
+        let c = self.intent(s, x, w, time, go_clock, rewind_idle);
+        CourseControls { input: pad_for_intent(c.input), ..c }
+    }
+
+    fn intent(
         &mut self,
         s: &RiderState,
         x: &Session,
@@ -534,6 +547,21 @@ pub struct CourseReport {
     pub searches: u32,
 }
 
+// PORT(choice): the test players (the course player and its lookahead, `ride_sim`'s scripted player, the map test
+// player, the game's and the UI's scripted rides) steer by intent and push `s/|s|·(0.25 + 0.75·|s|)`, 0 staying 0 —
+// the inverse of the matchers' rescale `m = max(min(|s|, 1) − 0.25, 0) / 0.75` (`AnalogStickGestureMatch_Match`
+// 0x82D94028, MinMagnitude 0.25, MaxMagnitude 1), exact to one f32 step; the console has no test players, a person
+// pushes past the dead zone.
+pub fn pad_for_intent(intent: Input) -> Input {
+    let v = intent.stick();
+    let len = v.length();
+    if len <= 0.0 {
+        return intent;
+    }
+    let m = crate::graph::STICK_MIN_MAGNITUDE;
+    intent.with_stick(v / len * (m + (1.0 - m) * len.min(1.0)))
+}
+
 pub fn steer_towards(d: Vec3, v: Vec3, heading: Vec3) -> f32 {
     let d = d.with_y(0.0).normalize_or_zero();
     let f = if v.with_y(0.0).length() > 0.05 { v } else { heading }.with_y(0.0).normalize_or_zero();
@@ -575,6 +603,26 @@ mod tests {
         assert!((t - 0.35).abs() < 1e-5 && (d - 4.0).abs() < 1e-5);
         assert!((l.along_at(i, t) - 13.5).abs() < 1e-4);
         assert_eq!(l.nearest_in(Vec3::new(29.0, 0.0, 1.0), 0..4).map(|x| x.0), Some(3));
+    }
+
+    #[test]
+    fn the_intent_comes_through_the_dead_zone() {
+        let matched = |i: Input| crate::graph::stick_axes(i.stick());
+        for (steer, tuck, brake) in
+            [(0.2, 0.0, 0.0), (-0.05, 0.0, 0.0), (0.3, 0.4, 0.0), (0.0, 0.0, 0.6), (0.7, 0.0, 0.1)]
+        {
+            let intent = Input { steer, tuck, brake, jump: true, ..Input::default() };
+            let pad = pad_for_intent(intent);
+            assert!(pad.jump, "the buttons are kept");
+            assert!(pad.stick().length() >= 0.25, "past the dead zone: {:?}", pad.stick());
+            assert!((matched(pad) - intent.stick()).length() < 1e-6, "{:?} → {:?}", intent.stick(), matched(pad));
+        }
+        let centre = Input { jump: true, ..Input::default() };
+        assert_eq!(pad_for_intent(centre).stick(), glam::Vec2::ZERO);
+        for full in [glam::Vec2::X, glam::Vec2::NEG_Y, glam::Vec2::new(0.6, 0.8)] {
+            let i = Input::default().with_stick(full);
+            assert!((pad_for_intent(i).stick() - full).length() < 1e-6, "{full:?}");
+        }
     }
 
     #[test]

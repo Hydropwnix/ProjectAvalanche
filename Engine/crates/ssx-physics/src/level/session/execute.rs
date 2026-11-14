@@ -30,8 +30,13 @@ impl Session {
             Some(l) => l.update(s, w, &mut self.event, &effects, dt_s),
             None => survive::SurviveStep::None,
         };
+        let ready_loop = s.start.as_ref().and_then(|l| l.intro.as_ref()).is_some_and(|i| i.in_ready_loop());
+        let gate = self.ghost_manager.update(race_start, ready_loop);
         if let Some(b) = self.bots.as_mut() {
             b.step(s, race_start, sim_s);
+            if let Some(g) = gate {
+                b.ready_gate = g;
+            }
         }
         survive
     }
@@ -169,7 +174,7 @@ impl Session {
         }
         if let Some(m) = &rider_dead {
             let c = &self.manager.count;
-            self.timer.on_rider_dead(m, c.enabled, c.rewinds_left, self.ui_rewind_count > 0);
+            self.event.on_rider_dead(&mut self.timer, m, c.enabled, c.rewinds_left, self.ui_rewind_count > 0);
         }
         self.last_sim_dt_s = dt / TICKS_PER_SECOND;
         let event = self.score_manager(s, w, self.last_sim_dt_s, r.active && r.speed <= 1.525_878_9e-5, false);
@@ -210,6 +215,7 @@ impl Session {
             geotag_credits: self.geotags.as_ref().map_or(0, geotags::GeotagRun::credits),
             geotag_count: self.geotags.as_ref().map_or(0, |g| g.result_list.len() as u32),
             last_safe_ground: s.last_safe_ground.to_array(),
+            rewind_enabled: self.manager.count.enabled,
         };
         let finish_flag = crate::objectives::Name::new("CrossedFinishLine");
         let requested = self.objectives.as_ref().is_some_and(|o| o.runner.flags.check(&finish_flag));
@@ -220,6 +226,9 @@ impl Session {
         } else {
             self.event.update(&mut self.timer, &inputs)
         };
+        if let Some(enabled) = event.rewind_enabled {
+            self.manager.count.enabled = enabled;
+        }
         if running {
             let p = crate::stats::PlayerStats {
                 awesome: s.score.is_awesome,
@@ -265,6 +274,9 @@ impl Session {
             if event.results && !self.event.result.as_ref().is_some_and(|r| r.failed) {
                 o.runner.events.on_race_ended();
             }
+        }
+        if event.results && !self.event.result.as_ref().is_some_and(|r| r.failed) {
+            self.ghost_manager.on_results();
         }
         if event.timer == Some(DeathTimerEvent::RewoundOutOfDeath) {
             self.stats.rewound_out_of_death();

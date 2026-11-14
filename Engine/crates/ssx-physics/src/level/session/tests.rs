@@ -1,6 +1,7 @@
 use glam::Vec3;
 
 use super::*;
+use crate::rewind::RewindState;
 use crate::testutil::{plane, world};
 use crate::triggers::{IG_DEATH, TriggerScope, TriggerVolume, VolumeShape};
 
@@ -67,6 +68,66 @@ fn a_death_volume_kills_and_the_timer_ends_the_event() {
     assert!(!a.0.rewinding() && a.0.buffer.playback().is_none(), "no rewind after the end");
     x.reset();
     assert!(!x.pads_released, "a restart releases the latch");
+}
+
+#[test]
+fn a_delayed_crossing_refuses_the_rewind_until_a_restart() {
+    let mut w = world(plane(400.0, 0.3));
+    w.triggers.volumes.push(TriggerVolume {
+        name: "end".into(),
+        type_text: "gameflow".into(),
+        groups: crate::triggers::IG_GAMEFLOW,
+        interacts: crate::triggers::interaction_mask(crate::triggers::IG_GAMEFLOW),
+        shape: VolumeShape::Box { half_extents: Vec3::new(50.0, 40.0, 5.0) },
+        centre: Vec3::new(0.0, 0.0, 120.0),
+        rotation: glam::Quat::IDENTITY,
+        object: 0,
+        instance: 0,
+        placement: 0,
+        scope: TriggerScope::Track,
+    });
+    let start = || {
+        let mut s = RiderState::spawn(&w, Vec3::new(0.0, 50.0, 0.0), Vec3::Z).expect("ground");
+        s.velocity = Vec3::Z * 0.4;
+        let mut x = Session::default();
+        x.event.setup.delayed_finish = true;
+        x.manager.count.infinite = false;
+        x.event.on_trigger_race_start(&mut x.timer);
+        (x, s)
+    };
+    let input = Input { tuck: 1.0, ..Input::default() };
+    let rewind = RewindPad { rewind_held: true, takeover: false, flip_accel: 1.0 };
+    let none = RewindPad::default();
+    let ride = |x: &mut Session, s: &mut RiderState, from: usize, steps: usize| {
+        let mut seen = Vec::new();
+        for i in 0..steps {
+            let pad = if i >= from { &rewind } else { &none };
+            x.execute(s, &w, &input, &TrickInput::default(), 0.0, pad, None);
+            seen.push(x.manager.state);
+        }
+        seen
+    };
+    let (mut x, mut s) = start();
+    let mut crossed = None;
+    for i in 0..600 {
+        x.execute(&mut s, &w, &input, &TrickInput::default(), 0.0, &none, None);
+        if x.event.state == crate::event::EventState::DelayedFinish {
+            crossed = Some(i);
+            break;
+        }
+    }
+    let crossed = crossed.expect("the rider crosses the line");
+    assert!(crossed > 60, "the line is far enough for a rewind before it: {crossed}");
+    assert!(!x.manager.count.enabled && x.event.saved_rewind_enabled == Some(true));
+    let left = x.manager.count.rewinds_left;
+    let seen = ride(&mut x, &mut s, 0, 40);
+    assert!(seen.contains(&RewindState::Abort) && !seen.contains(&RewindState::Enter), "refused: {seen:?}");
+    assert!(!x.rewinding() && x.manager.count.rewinds_left == left);
+    let (mut y, mut t) = start();
+    let seen = ride(&mut y, &mut t, crossed - 30, crossed - 30 + 40);
+    assert!(seen.contains(&RewindState::Enter), "granted before the line: {seen:?}");
+    x.reset();
+    assert!(x.manager.count.enabled && x.event.saved_rewind_enabled.is_none());
 }
 
 #[test]
@@ -201,4 +262,24 @@ fn the_actors_run_after_the_step_once_per_execution() {
         let (traj, dt) = calls[0];
         assert!(traj != before && traj == s.traj && dt == e.dt, "{before} → {traj} (now {}), dt {dt}", s.traj);
     }
+}
+
+#[test]
+fn a_restart_clears_the_heli_jump_of_the_run_before() {
+    use glam::Quat;
+    let data = heli_jump::HeliJumpData {
+        end_location: (Vec3::ZERO, Quat::IDENTITY),
+        heli_start: (Vec3::new(0.0, 10.0, 0.0), Quat::IDENTITY),
+        rail: (Quat::IDENTITY, Vec3::ZERO),
+    };
+    let mut x = Session::default();
+    let mut h =
+        heli_jump::HeliJump::new(std::sync::Arc::new(data), true, std::path::Path::new("root"), "event", "elise");
+    h.contact = true;
+    h.intercept = heli_jump::Intercept { valid: true, position: Vec3::ONE, angle: 1.0, length_scale: 8.0 };
+    x.heli_jump = Some(h);
+    x.reset();
+    let h = x.heli_jump.as_ref().expect("kept");
+    assert!(!h.contact && h.outro.is_none());
+    assert_eq!(h.intercept, heli_jump::Intercept::default());
 }

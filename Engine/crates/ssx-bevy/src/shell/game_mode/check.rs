@@ -73,6 +73,16 @@ pub fn report_pipelines(mut main_world: ResMut<MainWorld>, pipelines: Res<Pipeli
     }
 }
 
+pub fn ride_shot_path(dir: &Path, ride: u32, t: f32) -> PathBuf {
+    let ms = (f64::from(t) * 1000.0).round();
+    let name = if ms % 1000.0 == 0.0 {
+        format!("game2_ride{ride}_{}.png", ms as u64 / 1000)
+    } else {
+        format!("game2_ride{ride}_{}ms.png", ms as u64)
+    };
+    dir.join(name)
+}
+
 pub fn screenshot(commands: &mut Commands, path: PathBuf, check_world: bool) {
     info!("screenshot {}", path.display());
     commands.spawn(Screenshot::primary_window()).observe(
@@ -195,6 +205,15 @@ mod tests {
         assert_eq!(ui_cover(&frame(full, 0.5, false)), None);
         assert_eq!(ui_cover(&frame(full, 1.0, true)), None);
         assert_eq!(ui_cover(&frame([0.0, 0.0, 640.0, 720.0], 1.0, false)), None);
+    }
+
+    #[test]
+    fn a_ride_shot_at_a_fraction_of_a_second_keeps_its_milliseconds() {
+        let d = Path::new("out");
+        assert_eq!(ride_shot_path(d, 1, 2.0), d.join("game2_ride1_2.png"));
+        assert_eq!(ride_shot_path(d, 1, 2.999_999_8), d.join("game2_ride1_3.png"));
+        assert_eq!(ride_shot_path(d, 2, 2.6166), d.join("game2_ride2_2617ms.png"));
+        assert_eq!(ride_shot_path(d, 1, 0.5), d.join("game2_ride1_500ms.png"));
     }
 
     #[test]

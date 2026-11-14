@@ -21,14 +21,17 @@ pub const FIELD_BLOOM_ACTIVE: u32 = 0x8E58_1409;
 const FIELD_COLOUR_CUBE_BLEND: u32 = 0x8E8B_3DA4;
 const FIELD_COLOUR_CUBE_STACK: u32 = 0x92F1_952A;
 
-pub const FIELD_NAMES: [&str; 16] = [
+pub const FIELD_NAMES: [&str; 19] = [
     "bloom_blur_x",
     "bloom_blur_y",
     "colourcube_depth_near",
     "colourcube_depth_far",
     "motion_blur_intensity",
     "motion_blur_origin",
+    "topogrid_colour",
     "topogrid_colour_grid",
+    "topogrid_scale",
+    "topogrid_pulse_rate",
     "topogrid_pulse_falloff",
     "topogrid_dist_start",
     "topogrid_dist_end",
@@ -244,6 +247,27 @@ pub fn load_presets(big_root: &Path, names: &[&str]) -> Result<Vec<(PostFxPreset
     Ok(presets.into_iter().map(|(p, b)| content.route_postfx(p, b)).collect())
 }
 
+pub struct LevelPresets {
+    pub base: PostFxPreset,
+    pub named: Vec<(String, PostFxPreset)>,
+    pub failed: Vec<String>,
+}
+
+impl LevelPresets {
+    pub fn load(big_root: &Path, names: &[String]) -> Result<LevelPresets> {
+        let base = load_presets(big_root, &["default"]).context("loading the default post-FX preset")?;
+        let base = base.into_iter().next().context("no default preset")?.0;
+        let (mut named, mut failed) = (Vec::new(), Vec::new());
+        for name in names {
+            match load_presets(big_root, &[name.as_str()]) {
+                Ok(mut v) if !v.is_empty() => named.push((name.clone(), v.remove(0).0)),
+                _ => failed.push(name.clone()),
+            }
+        }
+        Ok(LevelPresets { base, named, failed })
+    }
+}
+
 fn disc_presets(big_root: &Path, names: &[&str]) -> Result<Vec<(PostFxPreset, CubeBuild)>> {
     crate::vault_db::with_career_db(big_root, |db| {
         let stacks = stacks(db, big_root)?;
@@ -260,6 +284,15 @@ fn disc_presets(big_root: &Path, names: &[&str]) -> Result<Vec<(PostFxPreset, Cu
 
 pub fn load_preset_by_key(big_root: &Path, key: u32, name: &str) -> Result<PostFxPreset> {
     crate::vault_db::with_career_db(big_root, |db| preset(db, key, name))
+}
+
+pub fn load_preset_routed(big_root: &Path, key: u32) -> Result<PostFxPreset> {
+    let name = crate::vault_db::with_career_db(big_root, |db| Ok(db.collection_name(key)))?;
+    if fnv1(&name) == key {
+        let mut v = load_presets(big_root, &[name.as_str()])?;
+        return v.pop().map(|(p, _)| p).with_context(|| format!("no post-FX preset {name:?}"));
+    }
+    load_preset_by_key(big_root, key, &name)
 }
 
 pub fn build_cube_for(big_root: &Path, blends: &[ColourCubeBlend]) -> Result<CubeBuild> {
@@ -390,6 +423,13 @@ mod tests {
             ("colourcube_depth_far", 0xF408_EB22),
             ("vignette_colour", 0xAF70_D8F2),
             ("vignette_fadeoffbounds", 0x18EC_F294),
+            ("topogrid_colour", 0x5A6F_6924),
+            ("topogrid_colour_grid", 0x723E_D7D7),
+            ("topogrid_scale", 0x25F5_30BE),
+            ("topogrid_pulse_rate", 0x41A4_CFB0),
+            ("topogrid_dist_end", 0xBB0E_484E),
+            ("topogrid_min_intensities", 0x895A_AD5A),
+            ("topogrid_max_intensities", 0x32D6_B434),
         ];
         for (name, key) in known {
             assert_eq!(fnv1(name), key, "{name}");

@@ -72,15 +72,19 @@ fn spawn_level(world: &mut World, loaded: LoadedLevel) {
     crate::audio::music::start_level(world, music, drop_key);
     crate::audio::sfx::start_level(world, sfx);
     let goals = world.get_resource::<GameUiRes>().map(|ui| [ui.values.int(0x87), ui.values.int(0x6E)]);
-    let rng = world.get_resource::<FrontEndAudio>().and_then(FrontEndAudio::aems_rng);
-    if let (Some(goals), Some(g)) = (goals, world.get_resource::<crate::audio::music::GameAudio>())
-        && let Some(mut m) = g.lock()
-        && let Some(sfx) = m.sfx.as_mut()
-    {
-        sfx.ui_goals = goals;
-        sfx.launch_block = speech_block;
-        if let Some(rng) = rng {
-            sfx.aems.set_rng_state(rng);
+    if let Some(goals) = goals {
+        match world.get_resource::<FrontEndAudio>() {
+            Some(fe) => fe.hand_over_to_level(goals, speech_block),
+            None => {
+                if let Some(g) = world.get_resource::<crate::audio::music::GameAudio>() {
+                    g.post(move |m, _| {
+                        if let Some(sfx) = m.sfx.as_mut() {
+                            sfx.ui_goals = goals;
+                            sfx.launch_block = speech_block;
+                        }
+                    });
+                }
+            }
         }
     }
     let insert_secs = t0.elapsed().as_secs_f32();

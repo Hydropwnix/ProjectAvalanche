@@ -42,6 +42,7 @@ pub fn shader_files_on_disk() -> BTreeMap<String, PathBuf> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Registration {
     Embedded,
+    Library,
     Included,
 }
 
@@ -59,7 +60,7 @@ pub fn shader_files_registered() -> BTreeMap<String, Registration> {
         let dir = below_src(file.parent().expect("parent"));
         for (mac, how) in [
             ("embedded_asset!(", Registration::Embedded),
-            ("load_shader_library!(", Registration::Embedded),
+            ("load_shader_library!(", Registration::Library),
             ("include_str!(", Registration::Included),
         ] {
             for (at, _) in text.match_indices(mac) {
@@ -135,7 +136,9 @@ pub fn loaded_shaders() -> Vec<(String, AssetId<Shader>, Shader)> {
         for (path, file) in shader_files_on_disk() {
             let text = std::fs::read_to_string(&file).expect("a shader file");
             match registrations.get(&path) {
-                Some(Registration::Embedded) => registry.insert_asset(file, Path::new(&path), text.into_bytes()),
+                Some(Registration::Embedded | Registration::Library) => {
+                    registry.insert_asset(file, Path::new(&path), text.into_bytes())
+                }
                 Some(Registration::Included) => included.push((path.clone(), text)),
                 None => panic!("{path}: not registered"),
             }

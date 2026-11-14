@@ -32,13 +32,16 @@ pub use anim::{
 };
 #[cfg(feature = "pipeline")]
 pub use audio::{
-    sfx, sfx_aems, sfx_avalanche, sfx_bus, sfx_dsp, sfx_dsp_remix, sfx_game, sfx_mixer, sfx_override, sfx_tuna,
+    sfx, sfx_aems, sfx_avalanche, sfx_bus, sfx_dsp, sfx_dsp_remix, sfx_game, sfx_mixer, sfx_override, sfx_stream,
+    sfx_tuna,
 };
 #[cfg(feature = "pipeline")]
 pub use disc::folder;
 pub use disc::{exe, setup, subset};
 #[cfg(feature = "pipeline")]
-pub use effects::{light_script, particle_script, particles, postfx, postfx_overlay, track_particles};
+pub use effects::{
+    light_script, particle_script, particles, postfx, postfx_overlay, postfx_state, postfx_topogrid, track_particles,
+};
 #[cfg(feature = "pipeline")]
 pub use landscape::{subdiv, terrain, terrain_material, terrain_vertex};
 #[cfg(feature = "pipeline")]

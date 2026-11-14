@@ -67,9 +67,8 @@ pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &ActionPa
         "A_GameAdvanceFlow" => advance(fe, env),
         "A_EquipmentBackCategory" => match fe.equipment.state {
             state::RIDER => {
-                fe.note("equipment: back (FE manager +0x88(4), save)");
-                save_state_reset(env);
-                crate::game::fe::globe::back_from_equipment(fe, env);
+                fe.play_sound(4);
+                back_out(fe, env);
             }
             state::GEAR => {
                 let (k, slot) = (kind_of(fe.equipment.category), usize::try_from(fe.equipment.slot).unwrap_or(0));
@@ -123,9 +122,7 @@ pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &ActionPa
         }
         "A_EquipmentBackReady" => {
             if fe.equipment.rider_count == 1 {
-                fe.note("equipment: back (one rider: save and leave)");
-                save_state_reset(env);
-                crate::game::fe::globe::back_from_equipment(fe, env);
+                back_out(fe, env);
                 return;
             }
             fe.equipment.slot = 0;

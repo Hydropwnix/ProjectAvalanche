@@ -91,7 +91,13 @@ impl Session {
                 let seed: Vec<u32> = self.named_flag_seed.iter().copied().collect();
                 let message = self.event.setup.message.clone();
                 let load = crate::objectives::LoadWorld { slots, event_type, message, effects: Vec::new() };
-                let o = crate::objectives::LevelObjectives::load(&game, &batch, load, log, root.as_deref(), &seed);
+                let mut o = crate::objectives::LevelObjectives::load(&game, &batch, load, log, root.as_deref(), &seed);
+                if let Some(h) = self.heli_jump.as_mut()
+                    && o.nis_built.contains(ssx_assets::nis::HELI_GRAB_OUTRO_BINDING)
+                    && let Err(e) = h.read_outro_ahead()
+                {
+                    o.report.problems.push(format!("the heli grab's outros: {e:#}"));
+                }
                 self.objectives = Some(o);
                 if let Some(d) = drop {
                     let scripts = crate::objectives::LevelScripts::load(d, event);

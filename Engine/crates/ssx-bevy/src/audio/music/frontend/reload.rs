@@ -1,12 +1,13 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use bevy::log::{info, warn};
+use bevy::log::info;
 use ssx_assets::content::audio::{AudioScope, MusicDecision, apply};
 use ssx_assets::musicbox::MusicBox;
 use ssx_ui::game::fe::music::LicensedSong;
 
 use super::FrontEndAudio;
+use crate::audio::music::back_log;
 
 pub struct FrontEndReload {
     plan: Arc<MusicDecision>,
@@ -39,38 +40,46 @@ impl FrontEndAudio {
     }
 
     pub fn apply_reload(&mut self, r: &mut FrontEndReload) {
-        let turn = crate::audio::music::GameTurn::take();
-        if let Some(music) = &self.music
-            && let Ok(mut fm) = music.lock()
-        {
-            let fm = &mut fm.music;
-            fm.clear_packages();
-            match r.score.take() {
-                Some(Ok(s)) => fm.set_score(s, "the package's score (reloaded)"),
-                Some(Err(e)) => warn!("mod-dev: the front end's score not used: {e:#}; the project's own plays"),
-                None => {}
-            }
-            for (track, o) in r.tracks.drain(..) {
-                match o {
-                    Ok(o) if fm.rt.score.is_none() => fm.set_track_override(track, o),
-                    Ok(_) => {}
-                    Err(e) => warn!("mod-dev: ssx_fe track {track} not replaced: {e:#}; the project's own plays"),
-                }
-            }
-        }
+        let (score, tracks) = (r.score.take(), std::mem::take(&mut r.tracks));
+        let (music, menu, plan) = (self.music.clone(), self.menu.clone(), r.plan.clone());
         self.plan = r.plan.clone();
         self.menu_plan = r.menu_plan.clone();
-        let drawing = self.menu.lock().is_ok_and(|m| m.is_some());
-        if drawing {
-            if let Ok(mut m) = self.menu.lock()
-                && let Some((lm, _)) = m.as_mut()
+        self.game.post(move |_, back| {
+            if let Some(music) = &music
+                && let Ok(mut fm) = music.lock()
             {
-                lm.replace_packages(&self.plan.music, None);
+                let fm = &mut fm.music;
+                fm.clear_packages();
+                match score {
+                    Some(Ok(s)) => fm.set_score(s, "the package's score (reloaded)"),
+                    Some(Err(e)) => {
+                        back_log!(back, warn, "mod-dev: the front end's score not used: {e:#}; the project's own plays")
+                    }
+                    None => {}
+                }
+                for (track, o) in tracks {
+                    match o {
+                        Ok(o) if fm.rt.score.is_none() => fm.set_track_override(track, o),
+                        Ok(_) => {}
+                        Err(e) => back_log!(
+                            back,
+                            warn,
+                            "mod-dev: ssx_fe track {track} not replaced: {e:#}; the project's own plays"
+                        ),
+                    }
+                }
             }
-        } else if self.plugged {
-            drop(turn);
-            self.arm_menu_songs();
-        }
+            match menu.lock().ok().as_mut().and_then(|m| m.as_mut()) {
+                Some((lm, _)) => lm.replace_packages(&plan.music, None),
+                None => back.reply(|w| {
+                    if let Some(mut fe) = w.get_resource_mut::<super::FrontEndAudio>()
+                        && fe.plugged
+                    {
+                        fe.arm_menu_songs();
+                    }
+                }),
+            }
+        });
         info!("mod-dev: the front end's music re-applied ({})", self.plan.summary(&AudioScope::FrontEnd));
     }
 }

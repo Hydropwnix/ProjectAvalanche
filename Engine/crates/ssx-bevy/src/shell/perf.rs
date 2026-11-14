@@ -81,7 +81,8 @@ struct Counts<'w> {
 
 impl Counts<'_> {
     const HEADER: &'static str = "ents\tarchetypes\trender_ents\tmeshes\timages\tp_draws\tp_verts\tdyn_lights\tsnow_ms\t\
-                                  sfx_ms\tsfx_lock\tsfx_max\taud_load\taud_lock\taud_max\taud_demand\taud_silence\tvoices\tgpu_mem_mb\ttex_bc_mb\ttex_rgba_mb";
+                                  sfx_ms\tsfx_cmd\tsfx_max\taud_load\taud_drain\taud_max\taud_demand\taud_silence\tvoices\tgpu_mem_mb\ttex_bc_mb\ttex_rgba_mb\t\
+                                  aud_drain_max\taud_drain_longest";
 
     fn line(&self, render_entities: u32) -> String {
         use std::sync::atomic::Ordering::Relaxed;
@@ -93,16 +94,19 @@ impl Counts<'_> {
         let mb = |bytes: u64| bytes as f64 / (1024.0 * 1024.0);
         let calls = crate::audio::sfx::stats::CALLS.swap(0, Relaxed).max(1) as f64;
         let sfx = ms(crate::audio::sfx::stats::NS.swap(0, Relaxed)) / calls;
-        let sfx_lock = ms(crate::audio::sfx::stats::LOCK_NS.swap(0, Relaxed)) / calls;
+        let sfx_cmd = ms(crate::audio::sfx::stats::COMMAND_NS.swap(0, Relaxed)) / calls;
         let sfx_max = ms(crate::audio::sfx::stats::MAX_NS.swap(0, Relaxed));
         let audio_s =
             crate::audio::music::stats::FRAMES.swap(0, Relaxed) as f64 / f64::from(ssx_assets::sfx_aems::MIXER_RATE);
         let load = ms(crate::audio::music::stats::RENDER_NS.swap(0, Relaxed)) / (audio_s * 1000.0).max(1e-9) * 100.0;
-        let lock = ms(crate::audio::music::stats::LOCK_NS.swap(0, Relaxed));
+        let drain = ms(crate::audio::music::stats::DRAIN_NS.swap(0, Relaxed));
         let aud_max = ms(crate::audio::music::stats::RENDER_MAX_NS.swap(0, Relaxed));
+        let longest = crate::audio::music::stats::take_longest_drain(crate::audio::music::stats::DrainReader::Perf);
+        let drain_max = longest.map_or(0.0, |d| ms(d.ns));
+        let longest = longest.map_or_else(|| "-".to_owned(), |d| d.to_string());
         format!(
-            "{}\t{}\t{render_entities}\t{}\t{}\t{pd}\t{pv}\t{}\t{:.2}\t{sfx:.2}\t{sfx_lock:.2}\t{sfx_max:.1}\t\
-             {load:.1}\t{lock:.1}\t{aud_max:.1}\t{}\t{}\t{}\t{:.0}\t{:.1}\t{:.1}",
+            "{}\t{}\t{render_entities}\t{}\t{}\t{pd}\t{pv}\t{}\t{:.2}\t{sfx:.2}\t{sfx_cmd:.2}\t{sfx_max:.1}\t\
+             {load:.1}\t{drain:.1}\t{aud_max:.1}\t{}\t{}\t{}\t{:.0}\t{:.1}\t{:.1}\t{drain_max:.1}\t{longest}",
             self.entities.count_spawned(),
             self.archetypes.len(),
             self.meshes.len(),

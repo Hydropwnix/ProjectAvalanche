@@ -1,4 +1,5 @@
 use ssx_physics::event::{Course, EventState, EventType};
+use ssx_physics::objectives::Name;
 use ssx_physics::rider::{RiderState, World};
 
 const USER_GAMERTAG: u16 = 0x22B;
@@ -15,6 +16,13 @@ use super::leaderboard::{ExploreLeaderboard, RaceEntrant, TrickBot, TrickStandin
 use super::loc::Localization;
 use super::tricks::{TrickRecordView, trick_name};
 use super::values::{SplitsCallout, UiValue, UiValues, id};
+
+const COLD_DROP_FLAG: &str = "ColdDrop";
+
+pub fn race_start_survival_values(values: &mut UiValues, cold_drop: bool, death_permanent: bool) {
+    values.set_bool(id::IS_THERMAL_REQUIRED, cold_drop);
+    values.set_bool(id::IS_DEATH_PERMANENT, death_permanent);
+}
 
 pub fn nis_is_active(s: &RiderState, x: &Session) -> bool {
     x.flow.nis_active || s.start.is_some()
@@ -57,7 +65,7 @@ pub struct HudFeed {
     event_state: EventState,
     pub explore: ExploreLeaderboard,
     pub camera: Option<Camera>,
-    pub ghosts: Vec<Ghost>,
+    pub ghosts: Option<Vec<Ghost>>,
     pub rider: String,
     pub ghost_racers: Vec<RaceEntrant>,
     pub rider_titles: std::collections::BTreeMap<u32, String>,
@@ -102,6 +110,8 @@ impl HudFeed {
                 ui.values.set_bool(id::HUDMESSAGE_IS_SURVIVAL_LOOP_MSG, false);
                 ui.values.set_bool(id::HUDMESSAGE_IS_ENABLED, false);
             }
+            let cold_drop = x.objectives.as_ref().is_some_and(|o| o.runner.flags.check(&Name::new(COLD_DROP_FLAG)));
+            race_start_survival_values(&mut ui.values, cold_drop, world.survival.death_permanent);
             self.trick.reset(x.bots.as_ref().map_or(0, |b| b.bots.len()));
             if !self.race_started {
                 self.race_started = true;
@@ -215,19 +225,7 @@ impl HudFeed {
             .and_then(|f| f.career.event(drop))
             .is_none_or(|e| e.drop_type == ssx_assets::career::DropType::Campaign);
         let racers = self.racers(ui, x, world);
-        let bots: Vec<TrickBot> = x.bots.as_ref().map_or_else(Vec::new, |b| {
-            b.bots
-                .iter()
-                .zip(racers)
-                .enumerate()
-                .map(|(k, (bot, r))| TrickBot {
-                    name: r.name,
-                    picture: r.picture,
-                    live: x.event.racers.get(k).map_or(0.0, |p| p.points),
-                    recorded: bot.replay.header.score,
-                })
-                .collect()
-        });
+        let bots = x.bots.as_ref().map_or_else(Vec::new, |b| trick_bots(b, racers, &x.event.racers));
         let progress = x.event.progress;
         let frame = crate::game::leaderboard::TrickFrame {
             event_type: EventType::TrickBots,
@@ -361,7 +359,9 @@ impl HudFeed {
         let latch = self.race_started;
         let tombstones = if latch { tombstone_points(tombstones, loc) } else { Vec::new() };
         if let Some(cam) = &self.camera {
-            v.set(id::GHOST_LIST, UiValue::Markers(ghost_list(cam, &self.ghosts)));
+            if let Some(ghosts) = &self.ghosts {
+                v.set(id::GHOST_LIST, UiValue::Markers(ghost_list(cam, ghosts)));
+            }
             if let Some(p) = in_air.filter(|_| latch) {
                 let [x, y] = wingsuit_timer_pos(cam, p);
                 v.set_float(id::WINGSUIT_TIMER_POS_X, x);
@@ -543,6 +543,24 @@ fn ready_loop_values(v: &mut UiValues, loc: &mut Localization, drop: u32, tutori
     }
 }
 
+fn trick_bots(
+    race: &ssx_physics::session::bots::BotRace,
+    racers: Vec<RaceEntrant>,
+    live: &[ssx_physics::event::RacerProgress],
+) -> Vec<TrickBot> {
+    race.bots
+        .iter()
+        .zip(racers)
+        .enumerate()
+        .map(|(k, (bot, r))| TrickBot {
+            name: r.name,
+            picture: r.picture,
+            live: live.get(k).map_or(0.0, |p| p.points),
+            recorded: bot.request.score,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -651,7 +669,7 @@ mod tests {
         let mut f = HudFeed::new("elise");
         let identity = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
         f.camera = Some(Camera { view_proj: identity, screen: [1280.0, 720.0] });
-        f.ghosts = vec![Ghost { id: 7, name: "Gold".into(), colour: 0xFF00_0000, position: [0.0, -0.8, 10.0] }];
+        f.ghosts = Some(vec![Ghost { id: 7, name: "Gold".into(), colour: 0xFF00_0000, position: [0.0, -0.8, 10.0] }]);
         let mut v = UiValues::new();
         let mut loc = Localization::empty(crate::game::loc::Language::English);
         for _ in 0..2 {
@@ -666,5 +684,65 @@ mod tests {
         f.race_started = true;
         f.project_into(&mut v, &mut loc, Some([0.0, 0.0, 10.0]), None);
         assert_eq!((v.float(id::WINGSUIT_TIMER_POS_X), v.float(id::WINGSUIT_TIMER_POS_Y)), (715.0, 360.0));
+        f.ghosts = None;
+        v.clear_dirty();
+        f.project_into(&mut v, &mut loc, Some([0.0, 0.0, 10.0]), None);
+        assert!(!v.is_dirty(id::GHOST_LIST) && v.is_dirty(id::TOMBSTONE_LIST));
+        assert_eq!(v.markers(id::GHOST_LIST).len(), 1);
+    }
+
+    #[test]
+    fn a_trick_bots_recorded_score_is_its_rows() {
+        use ssx_physics::Vec3;
+        use ssx_physics::session::bots::{Bot, BotClock, BotRace, BotRequest, RacerName};
+        let header =
+            ssx_formats::ghost::UserHeader { gamertag: String::new(), gear_flags: 0, score: 7_742_509, build: 0 };
+        let replay = ssx_assets::ghosts::GhostReplay {
+            id: 967_363_868,
+            header,
+            times: vec![0.0],
+            positions: vec![[0.0; 3]],
+            scores: vec![0.0],
+            poses: Vec::new(),
+            rejected: 0,
+        };
+        let request = BotRequest {
+            ghost_id: 967_363_868,
+            start_slot: 3,
+            character: 0x405D_C1D5,
+            catchup: 0,
+            racer_type: 1,
+            collision: true,
+            tint: 0,
+            score: 2_500_000,
+            name: RacerName::Character,
+        };
+        let bot = Bot {
+            request,
+            replay,
+            curve: None,
+            clock: BotClock::default(),
+            position: Vec3::ZERO,
+            velocity: Vec3::ZERO,
+            factor: 1.0,
+            lead: 0.0,
+            finish_ms: None,
+            removed: false,
+            trigger_wipeout: false,
+            player_is_grinding: false,
+            in_air: false,
+            avoid_grind_collision: false,
+            player_location: Vec3::ZERO,
+            player_velocity: Vec3::ZERO,
+            contacts: 0,
+            wipeout: None,
+        };
+        let race = BotRace { bots: vec![bot], scores: vec![2_500_000], ..BotRace::default() };
+        let racers = vec![RaceEntrant { name: "Zoe".into(), picture: "zoe.dds".into(), ..Default::default() }];
+        let live = [ssx_physics::event::RacerProgress { points: 6_500.0, ..Default::default() }];
+        let bots = trick_bots(&race, racers, &live);
+        let zoe = TrickBot { name: "Zoe".into(), picture: "zoe.dds".into(), live: 6_500.0, recorded: 2_500_000 };
+        assert_eq!(bots, [zoe]);
+        assert_eq!(bots[0].recorded, race.scores[0], "the board's target is the results' bot score");
     }
 }

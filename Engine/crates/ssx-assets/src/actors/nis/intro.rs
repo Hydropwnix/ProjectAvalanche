@@ -13,6 +13,7 @@ pub fn load_sequence_nis(big_root: &Path, binding: &str, character: &str) -> Res
     let controller = seq.name().to_string();
     let coi = for_character_of_interest(b.value("CharacterOfInterestName").and_then(|v| v.as_str()), &bind.character);
     let requires_wingsuit = b.bool("RequiresWingsuit").unwrap_or(false);
+    let entry_blend = bind.entry_blend()?;
     let Binding { bundles, rigs: [rider, heli, camera], .. } = bind;
     Ok(IntroNis {
         binding: binding.to_string(),
@@ -20,6 +21,7 @@ pub fn load_sequence_nis(big_root: &Path, binding: &str, character: &str) -> Res
         ready: scene.clone(),
         jump: scene,
         transition_blend: Blend::cut(),
+        entry_blend,
         branch_out: None,
         bundles,
         rider,
@@ -46,6 +48,14 @@ pub(super) struct Binding {
 }
 
 impl Binding {
+    pub(super) fn entry_blend(&self) -> Result<Blend> {
+        let mut banks = self.banks.clone();
+        if let Some(&bank) = self.per_actor.get(&ROLE_CHARACTER1) {
+            banks.insert(PER_ACTOR_BANK.to_string(), bank);
+        }
+        crate::anim_graph::Graph::transition_blend(&self.db, GAMEPLAY_TO_NIS, banks)
+    }
+
     pub(super) fn load(big_root: &Path, binding: &str, character: &str) -> Result<Self> {
         Self::load_with(big_root, binding, character, &[])
     }
@@ -208,6 +218,7 @@ fn intro_of_binding(
     let (ready, jump) = (walk.scene(&ready)?, walk.scene(&jump)?);
     let controller = sf.name().to_string();
     let requires_wingsuit = b.bool("RequiresWingsuit").unwrap_or(false);
+    let entry_blend = bind.entry_blend()?;
     let Binding { bundles, rigs: [rider, heli, camera], .. } = bind;
     Ok(IntroNis {
         binding: binding.to_string(),
@@ -215,6 +226,7 @@ fn intro_of_binding(
         ready,
         jump,
         transition_blend: blend,
+        entry_blend,
         branch_out: None,
         bundles,
         rider,

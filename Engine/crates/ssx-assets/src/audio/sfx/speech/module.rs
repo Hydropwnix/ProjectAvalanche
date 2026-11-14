@@ -12,7 +12,8 @@ pub struct Bank {
     pub graffiti: Graffiti,
     sbr: ssx_formats::sbr::SampleBank,
     sbr_data: Vec<u8>,
-    sbs: Arc<crate::music::Bytes>,
+    sbs: Arc<crate::sfx_stream::StreamFile>,
+    sps_heads: HashMap<u32, ssx_formats::eaac::SoundHeader>,
     ids: HashMap<u32, usize>,
 }
 
@@ -28,12 +29,23 @@ impl Bank {
         let grf = find("graffitidata", "bin")?;
         let sbr = ssx_formats::sbr::SampleBank::parse(&sbr_data)?;
         let ids = sbr.sounds.iter().enumerate().map(|(i, s)| (s.id, i)).collect();
+        let sbs = crate::sfx_stream::StreamFile::open(&sbs)?;
+        let mut sps_heads = HashMap::new();
+        for s in &sbr.sounds {
+            if let Ok(ssx_formats::sbr::SoundRef::Sps { sps_offset }) = sbr.resolve(&sbr_data, s)
+                && !sps_heads.contains_key(&sps_offset)
+                && let Ok(h) = sbs.read_sps_header(u64::from(sps_offset))
+            {
+                sps_heads.insert(sps_offset, h);
+            }
+        }
         Ok(Self {
             name: name.to_string(),
             graffiti: Graffiti::parse(&std::fs::read(grf)?)?,
             sbr,
             sbr_data,
-            sbs: Arc::new(crate::music::Bytes::open(&sbs)?),
+            sbs,
+            sps_heads,
             ids,
         })
     }
@@ -42,18 +54,12 @@ impl Bank {
         self.ids.contains_key(&sample)
     }
 
+    // TODO(guess): an SPS sample (the NPC banks) counts its frames / rate like a sample whose header is in the bank:
+    // 0x835ECD20 counts a queued entry only when its +8 (the header SndPlayer1's 0x82A20840 reads, an SNR header or an
+    // SPS `H` block) is set, and where an SPS entry's +8 comes from is not traced; settle: the writer of the speech
+    // voice's queue entries (vector +0x68, 12 bytes each) for an SPS sample.
     pub fn seconds(&self, sample: u32) -> f32 {
-        use ssx_formats::eaac::Sps;
-        use ssx_formats::sbr::SoundRef;
-        let Some(s) = self.ids.get(&sample).map(|&i| &self.sbr.sounds[i]) else { return 0.0 };
-        let header = match self.sbr.resolve(&self.sbr_data, s) {
-            Ok(SoundRef::SnrSns { header, .. }) => header,
-            Ok(SoundRef::Sps { sps_offset }) => match Sps::read(&self.sbs, sps_offset as usize) {
-                Ok(sps) => sps.header.clone(),
-                Err(_) => return 0.0,
-            },
-            Err(_) => return 0.0,
-        };
+        let Some((header, _, _)) = self.sound(sample) else { return 0.0 };
         if header.num_samples > 100 && header.sample_rate > 0 {
             header.num_samples as f32 / header.sample_rate as f32
         } else {
@@ -61,38 +67,22 @@ impl Bank {
         }
     }
 
-    pub fn stream(&self, sample: u32) -> Result<crate::sfx_mixer::StreamedSound> {
-        use ssx_formats::eaac::{Sps, read_v0_blocks};
+    fn sound(&self, sample: u32) -> Option<(ssx_formats::eaac::SoundHeader, u64, crate::sfx_stream::BlockKind)> {
+        use crate::sfx_stream::BlockKind;
         use ssx_formats::sbr::SoundRef;
-        let s = &self.sbr.sounds[*self.ids.get(&sample).context("no such sample")?];
-        match self.sbr.resolve(&self.sbr_data, s)? {
-            SoundRef::SnrSns { header, sns_offset, .. } => {
-                let b = read_v0_blocks(&header, &self.sbs, sns_offset as usize)?;
-                crate::sfx_mixer::StreamedSound::new(self.sbs.clone(), header, &b)
-            }
+        let s = self.sbr.sounds.get(*self.ids.get(&sample)?)?;
+        match self.sbr.resolve(&self.sbr_data, s).ok()? {
+            SoundRef::SnrSns { header, sns_offset, .. } => Some((header, u64::from(sns_offset), BlockKind::V0)),
             SoundRef::Sps { sps_offset } => {
-                let sps = Sps::read(&self.sbs, sps_offset as usize)?;
-                crate::sfx_mixer::StreamedSound::new(self.sbs.clone(), sps.header.clone(), &sps.blocks)
+                Some((self.sps_heads.get(&sps_offset)?.clone(), u64::from(sps_offset), BlockKind::Sps))
             }
         }
     }
 
-    pub fn decode(&self, sample: u32) -> Result<(Vec<f32>, u32, usize)> {
-        use ssx_formats::eaac::{Sps, read_v0_blocks};
-        use ssx_formats::sbr::SoundRef;
-        let s = &self.sbr.sounds[*self.ids.get(&sample).context("no such sample")?];
-        let (header, blocks) = match self.sbr.resolve(&self.sbr_data, s)? {
-            SoundRef::SnrSns { header, sns_offset, .. } => {
-                let b = read_v0_blocks(&header, &self.sbs, sns_offset as usize)?;
-                (header, b)
-            }
-            SoundRef::Sps { sps_offset } => {
-                let sps = Sps::read(&self.sbs, sps_offset as usize)?;
-                (sps.header.clone(), sps.blocks)
-            }
-        };
-        let d = ssx_formats::xma_decode::decode_sound(&header, &blocks)?;
-        Ok((d.samples, d.sample_rate, usize::from(d.channels)))
+    pub fn stream(&self, sample: u32) -> Result<crate::sfx_mixer::StreamedSound> {
+        let (header, offset, kind) = self.sound(sample).context("no such sample")?;
+        let ring = crate::sfx_stream::Ring::SPEECH;
+        crate::sfx_mixer::StreamedSound::open(self.sbs.clone(), header, offset, kind, ring)
     }
 }
 

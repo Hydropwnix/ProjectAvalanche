@@ -5,23 +5,8 @@ enum Dec {
     L3(ssx_formats::ealayer3_decode::SectionDecoder),
 }
 
-#[derive(Clone)]
-pub(super) enum Data {
-    Abk(Arc<Vec<u8>>),
-    Ast(Arc<crate::music::Bytes>),
-}
-
-impl Data {
-    pub(super) fn bytes(&self) -> &[u8] {
-        match self {
-            Data::Abk(v) => v,
-            Data::Ast(b) => b,
-        }
-    }
-}
-
 pub(super) struct Cursor {
-    data: Data,
+    data: Arc<Vec<u8>>,
     pub(super) header: SoundHeader,
     blocks: Vec<(usize, usize, u32)>,
     next: usize,
@@ -30,8 +15,8 @@ pub(super) struct Cursor {
 }
 
 impl Cursor {
-    pub(super) fn new(data: Data, header: SoundHeader, body: usize) -> Result<Self> {
-        let sb = read_v0_blocks(&header, data.bytes(), body)?;
+    pub(super) fn new(data: Arc<Vec<u8>>, header: SoundHeader, body: usize) -> Result<Self> {
+        let sb = read_v0_blocks(&header, &data, body)?;
         let blocks = sb
             .sections
             .iter()
@@ -39,16 +24,6 @@ impl Cursor {
             .flat_map(|(s, sec)| sec.iter().map(move |b| (b.offset, s, b.samples)))
             .collect();
         Ok(Self { data, header, blocks, next: 0, dec: None, tmp: Vec::new() })
-    }
-
-    fn from_blocks(data: Data, header: SoundHeader, sb: &ssx_formats::eaac::SoundBlocks) -> Self {
-        let blocks = sb
-            .sections
-            .iter()
-            .enumerate()
-            .flat_map(|(s, sec)| sec.iter().map(move |b| (b.offset, s, b.samples)))
-            .collect();
-        Self { data, header, blocks, next: 0, dec: None, tmp: Vec::new() }
     }
 
     fn loop_section(&self) -> usize {
@@ -67,52 +42,221 @@ impl Cursor {
         let (offset, section, samples) = self.blocks[self.next];
         self.next += 1;
         if self.dec.as_ref().is_none_or(|(s, _)| *s != section) {
-            let ch = self.header.channels;
-            self.dec = Some((
-                section,
-                match self.header.codec {
-                    Codec::EaXma => Dec::Xma(ssx_formats::xma_decode::SectionDecoder::new(
-                        ch,
-                        ssx_formats::xma::rate_index_for(self.header.sample_rate),
-                    )?),
-                    Codec::EaLayer3V1 => Dec::L3(ssx_formats::ealayer3_decode::SectionDecoder::new(ch)?),
-                    c => bail!("codec {c:?} not on the disc"),
-                },
-            ));
+            self.dec = Some((section, Dec::new(&self.header)?));
         }
-        let block = Block::read(self.data.bytes(), offset)?;
-        match &mut self.dec.as_mut().unwrap().1 {
-            Dec::Xma(d) => {
-                d.decode_block(block.payload, samples, out)?;
-            }
-            Dec::L3(d) => {
-                self.tmp.clear();
-                let n = d.decode_payload(block.payload, &mut self.tmp)?.min(samples as usize);
-                out.extend_from_slice(&self.tmp[..n * usize::from(self.header.channels)]);
-            }
-        }
+        let block = Block::read(&self.data, offset)?;
+        let Some((_, dec)) = self.dec.as_mut() else { bail!("no decoder") };
+        dec.decode(block.payload, samples, usize::from(self.header.channels), out, &mut self.tmp)?;
         Ok(true)
     }
 }
 
-pub struct StreamedSound {
-    pub(super) cursor: Cursor,
+impl Dec {
+    fn new(header: &SoundHeader) -> Result<Self> {
+        let ch = header.channels;
+        Ok(match header.codec {
+            Codec::EaXma => Dec::Xma(ssx_formats::xma_decode::SectionDecoder::new(
+                ch,
+                ssx_formats::xma::rate_index_for(header.sample_rate),
+            )?),
+            Codec::EaLayer3V1 => Dec::L3(ssx_formats::ealayer3_decode::SectionDecoder::new(ch)?),
+            c => bail!("codec {c:?} not on the disc"),
+        })
+    }
+
+    fn decode(
+        &mut self,
+        payload: &[u8],
+        samples: u32,
+        channels: usize,
+        out: &mut Vec<f32>,
+        tmp: &mut Vec<f32>,
+    ) -> Result<()> {
+        match self {
+            Dec::Xma(d) => {
+                d.decode_block(payload, samples, out)?;
+            }
+            Dec::L3(d) => {
+                tmp.clear();
+                let n = d.decode_payload(payload, tmp)?.min(samples as usize);
+                out.extend_from_slice(&tmp[..n * channels]);
+            }
+        }
+        Ok(())
+    }
 }
 
-impl StreamedSound {
-    pub fn new(
-        data: Arc<crate::music::Bytes>,
+pub(super) struct StreamCursor {
+    reader: Reader,
+    pub(super) header: SoundHeader,
+    file: Arc<sfx_stream::StreamFile>,
+    kind: sfx_stream::BlockKind,
+    loop_at: Option<u64>,
+    dec: Option<(u64, Dec)>,
+    tmp: Vec<f32>,
+}
+
+pub(super) enum Step {
+    Decoded,
+    Pending,
+    End,
+}
+
+const LOOP_REQUESTS_AHEAD: usize = 2;
+
+enum Reader {
+    Own(sfx_stream::Slot),
+    Pooled(sfx_stream::Lease),
+    Refused,
+    Done,
+}
+
+pub(super) enum SlotFrom<'a> {
+    Own(sfx_stream::Ring),
+    Pool(&'a sfx_stream::Pool, f32),
+}
+
+static NEXT_OWNER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+impl StreamCursor {
+    pub(super) fn open(
+        file: Arc<sfx_stream::StreamFile>,
         header: SoundHeader,
-        blocks: &ssx_formats::eaac::SoundBlocks,
+        offset: u64,
+        kind: sfx_stream::BlockKind,
+        from: SlotFrom<'_>,
     ) -> Result<Self> {
-        if header.looped {
-            bail!("a looped sound cannot stream into a PCM voice");
-        }
         match header.codec {
             Codec::EaXma | Codec::EaLayer3V1 => {}
             c => bail!("codec {c:?} not on the disc"),
         }
-        Ok(Self { cursor: Cursor::from_blocks(Data::Ast(data), header, blocks) })
+        let loop_at = match (header.looped, kind) {
+            (false, _) => None,
+            (true, sfx_stream::BlockKind::Sps) => bail!("a looped SPS sound (none is on the disc)"),
+            (true, sfx_stream::BlockKind::V0) if header.has_intro_section() => {
+                let rel = header.loop_offset.context("looped stream without loop offset")?;
+                Some(offset + u64::from(rel))
+            }
+            (true, sfx_stream::BlockKind::V0) => Some(offset),
+        };
+        let reader = match from {
+            SlotFrom::Own(ring) => Reader::Own(sfx_stream::Slot::new(ring)?),
+            SlotFrom::Pool(pool, priority) => {
+                let owner = NEXT_OWNER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                pool.acquire(owner, priority)?.map_or(Reader::Refused, Reader::Pooled)
+            }
+        };
+        let mut c = Self { reader, header, file, kind, loop_at, dec: None, tmp: Vec::new() };
+        let first = (c.file.clone(), offset, kind, loop_at);
+        c.on_slot(|slot| {
+            slot.queue(first.0.clone(), first.1, first.2);
+            queue_loops(slot, &first.0, first.3, first.2);
+        });
+        Ok(c)
+    }
+
+    pub(super) fn refused(&self) -> bool {
+        matches!(self.reader, Reader::Refused)
+    }
+
+    fn on_slot<R>(&mut self, f: impl FnOnce(&mut sfx_stream::Slot) -> R) -> Option<R> {
+        match &mut self.reader {
+            Reader::Own(slot) => Some(f(slot)),
+            Reader::Pooled(lease) => lease.with(f),
+            Reader::Refused | Reader::Done => None,
+        }
+    }
+
+    pub(super) fn decode_next(&mut self, out: &mut Vec<f32>) -> Result<Step> {
+        if matches!(self.reader, Reader::Refused) {
+            return Ok(Step::Pending);
+        }
+        let Self { reader, header, file, kind, loop_at, dec, tmp } = self;
+        let parts = Parts { header, file, kind: *kind, loop_at: *loop_at, dec, tmp };
+        let step = match reader {
+            Reader::Own(slot) => Some(read(slot, parts, out)),
+            Reader::Pooled(lease) => lease.with(|slot| read(slot, parts, out)),
+            Reader::Refused | Reader::Done => None,
+        };
+        let step = match step {
+            Some(step) => step?,
+            None => Step::End,
+        };
+        if matches!(step, Step::End) && matches!(self.reader, Reader::Pooled(_)) {
+            self.reader = Reader::Done;
+        }
+        Ok(step)
+    }
+}
+
+fn queue_loops(
+    slot: &mut sfx_stream::Slot,
+    file: &Arc<sfx_stream::StreamFile>,
+    loop_at: Option<u64>,
+    kind: sfx_stream::BlockKind,
+) {
+    if let Some(at) = loop_at {
+        while slot.queued() < 1 + LOOP_REQUESTS_AHEAD {
+            slot.queue(file.clone(), at, kind);
+        }
+    }
+}
+
+struct Parts<'a> {
+    header: &'a SoundHeader,
+    file: &'a Arc<sfx_stream::StreamFile>,
+    kind: sfx_stream::BlockKind,
+    loop_at: Option<u64>,
+    dec: &'a mut Option<(u64, Dec)>,
+    tmp: &'a mut Vec<f32>,
+}
+
+fn read(slot: &mut sfx_stream::Slot, p: Parts<'_>, out: &mut Vec<f32>) -> Result<Step> {
+    let Parts { header, file, kind, loop_at, dec, tmp } = p;
+    loop {
+        let block = match slot.next_block() {
+            sfx_stream::Next::Block(b) => b,
+            sfx_stream::Next::Pending => return Ok(Step::Pending),
+            sfx_stream::Next::Idle => return Ok(Step::End),
+            sfx_stream::Next::Failed { error, .. } => bail!("{error}"),
+        };
+        let (tag, last) = (block.tag, block.last);
+        let decoded = match block.ty {
+            sfx_stream::BlockType::Data => {
+                if dec.as_ref().is_none_or(|(t, _)| *t != tag) {
+                    *dec = Some((tag, Dec::new(header)?));
+                }
+                let Some((_, d)) = dec.as_mut() else { bail!("no decoder") };
+                d.decode(block.payload, block.samples, usize::from(header.channels), out, tmp)?;
+                true
+            }
+            sfx_stream::BlockType::Header | sfx_stream::BlockType::End | sfx_stream::BlockType::Other => false,
+        };
+        if last {
+            queue_loops(slot, file, loop_at, kind);
+        }
+        if decoded {
+            return Ok(Step::Decoded);
+        }
+    }
+}
+
+pub struct StreamedSound {
+    pub(super) cursor: StreamCursor,
+}
+
+impl StreamedSound {
+    pub fn open(
+        file: Arc<sfx_stream::StreamFile>,
+        header: SoundHeader,
+        offset: u64,
+        kind: sfx_stream::BlockKind,
+        ring: sfx_stream::Ring,
+    ) -> Result<Self> {
+        if header.looped {
+            bail!("a looped sound cannot stream into a PCM voice");
+        }
+        Ok(Self { cursor: StreamCursor::open(file, header, offset, kind, SlotFrom::Own(ring))? })
     }
 }
 
@@ -141,7 +285,7 @@ pub fn decode_ram_sounds(bank: &Bank) -> Result<DecodedRam> {
 
 impl RamSound {
     pub(super) fn decode(data: &Arc<Vec<u8>>, offset: u32, header: &SoundHeader) -> Result<Self> {
-        let mut cursor = Cursor::new(Data::Abk(data.clone()), header.clone(), offset as usize + header.size)?;
+        let mut cursor = Cursor::new(data.clone(), header.clone(), offset as usize + header.size)?;
         let mut sections: Vec<Vec<f32>> = Vec::new();
         let mut last = usize::MAX;
         let total = cursor.blocks.len();
@@ -179,7 +323,7 @@ impl RamSound {
 
 pub(super) enum Frames {
     Ram(Arc<RamSound>),
-    Stream { cursor: Box<Cursor>, buf: Vec<f32>, base: usize, ended: bool },
+    Stream { cursor: Box<StreamCursor>, buf: Vec<f32>, base: usize, ended: bool },
     Package { sample: Arc<crate::sfx_override::Samples48>, looped: bool },
 }
 
@@ -196,30 +340,37 @@ pub(super) struct Source {
     pub(super) fade: Option<(f32, f32)>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Got {
+    Frame,
+    End,
+    Starved,
+}
+
 impl Source {
-    pub(super) fn frame(&mut self, i: usize, out: &mut [f32; 8]) -> bool {
+    pub(super) fn frame(&mut self, i: usize, out: &mut [f32; 8]) -> Got {
         let ch = self.channels;
         match &mut self.frames {
             Frames::Ram(r) => match r.frame(i) {
                 Some(f) => {
                     out[..ch].copy_from_slice(f);
-                    true
+                    Got::Frame
                 }
-                None => false,
+                None => Got::End,
             },
             Frames::Package { sample, looped } => {
                 let n = sample.frames();
                 if n == 0 || (!*looped && i >= n) {
-                    return false;
+                    return Got::End;
                 }
                 let j = i % n;
                 out[..ch].copy_from_slice(&sample.samples[j * ch..j * ch + ch]);
-                true
+                Got::Frame
             }
             Frames::Stream { cursor, buf, base, ended } => {
                 while *base + buf.len() / ch <= i {
                     if *ended {
-                        return false;
+                        return Got::End;
                     }
                     let keep = (self.resampler.index as usize).saturating_sub(1).max(*base);
                     if keep > *base + 8192 {
@@ -228,17 +379,18 @@ impl Source {
                         *base += drop;
                     }
                     match cursor.decode_next(buf) {
-                        Ok(true) => {}
-                        Ok(false) => *ended = true,
+                        Ok(Step::Decoded) => {}
+                        Ok(Step::Pending) => return Got::Starved,
+                        Ok(Step::End) => *ended = true,
                         Err(e) => {
-                            ssx_core::eprintln!("sfx: decoding {}: {e:#}", self.label);
+                            ssx_core::eprintln!("sfx: streaming {}: {e:#}", self.label);
                             *ended = true;
                         }
                     }
                 }
                 let k = (i - *base) * ch;
                 out[..ch].copy_from_slice(&buf[k..k + ch]);
-                true
+                Got::Frame
             }
         }
     }
@@ -259,12 +411,25 @@ impl Source {
             |f| {
                 for k in 0..BLOCK {
                     let i = self.resampler.index as usize;
-                    if !self.frame(i, &mut a) {
-                        self.finished = true;
-                        break;
+                    // TODO(guess): a stream whose next block is not read yet holds its position and is silent for the
+                    // rest of this 256-sample block, then tries again — decoded: SndPlayer1's process 0x82A39778 with
+                    // an empty ring produces nothing and returns 0 (position +0x1B4, ring read index +0x1DE kept), the
+                    // voice's block loop 0x82A2BD40 zero-fills the rest of the block; guessed is the voice's tail: the
+                    // loop first runs zeros through the chain (0x82A177D0, up to voice +0x30 / +0x28 frames), moving
+                    // the resampler's phase and history, where this resampler waits on its last frames; settle: the
+                    // stream voice's +0x28 (the plug-ins' tails summed) and the Resample plug-in on zero input.
+                    match self.frame(i, &mut a) {
+                        Got::Frame => {}
+                        Got::End => {
+                            self.finished = true;
+                            break;
+                        }
+                        Got::Starved => break,
                     }
-                    if !self.frame(i + 1, &mut b) {
-                        b = a;
+                    match self.frame(i + 1, &mut b) {
+                        Got::Frame => {}
+                        Got::End => b = a,
+                        Got::Starved => break,
                     }
                     let g = match &mut self.fade {
                         Some((g, d)) => {

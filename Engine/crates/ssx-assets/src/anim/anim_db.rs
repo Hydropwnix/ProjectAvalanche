@@ -10,6 +10,15 @@ pub struct AssetDb {
     root: Option<std::path::PathBuf>,
 }
 
+impl std::fmt::Debug for AssetDb {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AssetDb")
+            .field("bundles", &self.streams.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>())
+            .field("assets", &self.index.len())
+            .finish()
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Asset<'a> {
     pub schema: &'a Schema,

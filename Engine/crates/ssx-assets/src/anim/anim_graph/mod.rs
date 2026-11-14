@@ -450,7 +450,7 @@ impl Graph {
     pub fn load(db: &AssetDb, root: &str) -> Result<(Graph, CtrlId)> {
         let a = db.by_name(root).ok_or_else(|| anyhow::anyhow!("no asset {root}"))?;
         let overrides = db.character_config().map(|c| db.config_overrides(c)).unwrap_or_default();
-        let mut b = Builder { db, g: Graph::default(), overrides };
+        let mut b = Builder { db, g: Graph::default(), overrides, banks: HashMap::new() };
         let id = b.ctrl(Some(a.guid)).ok_or_else(|| anyhow::anyhow!("{root} is not a controller"))?;
         let mut g = b.g;
         if let Some(tricks) = crate::content::tricks::tricks_for(db.data_root()) {
@@ -459,5 +459,14 @@ impl Graph {
             }
         }
         Ok((g, id))
+    }
+
+    pub fn transition_blend(db: &AssetDb, transition: &str, banks: HashMap<String, Guid>) -> Result<Blend> {
+        let t = db.by_name(transition).ok_or_else(|| anyhow::anyhow!("no transition {transition}"))?;
+        let Some(over) = t.guid("OverrideBlend") else { return Ok(Blend::default_transition()) };
+        let overrides = db.character_config().map(|c| db.config_overrides(c)).unwrap_or_default();
+        let mut b = Builder { db, g: Graph::default(), overrides, banks };
+        let id = b.blend(Some(over)).ok_or_else(|| anyhow::anyhow!("{transition}'s OverrideBlend is not a blend"))?;
+        b.g.blends.get(id).cloned().ok_or_else(|| anyhow::anyhow!("{transition}: no blend {id}"))
     }
 }

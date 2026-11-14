@@ -223,6 +223,36 @@ fn buying_and_selling() {
 }
 
 #[test]
+fn a_purge_forgets_the_last_purchase() {
+    let (d, c) = (data(), ctx());
+    let mut s = Store::new(5);
+    s.update(&d, &c, false, 0);
+    let mut p = Profile::new();
+    p.add_credits(1_000_000, false);
+    let bought = s.offers(&d, &c, 2)[0].id;
+    let equip_id = p.buy_offer(&mut s, &d, &c, OfferPurchase { kind: 2, id: bought, clock_s: 1, now_ms: 0 }).unwrap();
+    assert_eq!(s.last_bought, Some((bought, equip_id)));
+    s.update(&d, &c, false, 1);
+    assert_eq!(s.last_bought, None, "−1 into +0x15C and +0x158 (0x825202A4 / 0x825202B4)");
+    let reused = s.stock[2].iter().find(|i| i.id == bought).expect("a renumbered offer takes the bought id");
+    assert!(s.offered[2].contains(&reused.id), "and is on the shown list as an offer");
+}
+
+#[test]
+fn the_purge_keeps_an_offer_ending_now() {
+    let (d, c) = (data(), ctx());
+    let mut s = Store::new(5);
+    s.update(&d, &c, false, 0);
+    let end = s.stock.iter().flatten().map(|i| i.expires_ms).min().expect("offers");
+    let ending = s.stock.iter().flatten().filter(|i| i.expires_ms == end).count();
+    let total = s.stock.iter().flatten().count();
+    s.purge(false, end);
+    assert_eq!(s.stock.iter().flatten().count(), total, "the offers ending at {end} stay");
+    s.purge(false, end + 1);
+    assert_eq!(s.stock.iter().flatten().count(), total - ending, "and go a millisecond later");
+}
+
+#[test]
 fn the_next_equip_id_wraps_as_a_word() {
     use crate::career::profile::GeneratedItem;
     let mut p = Profile::new();

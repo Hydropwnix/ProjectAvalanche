@@ -301,3 +301,31 @@ fn frame_builders_as_emulated() {
     assert_ne!(frame_heading_normal(Vec3::new(0.06, 0.1, 0.0), Vec3::Y, fb), fb);
     assert_eq!(frame_heading_normal(Vec3::Z, Vec3::new(-1.0, 0.04, 0.0), fb), fb);
 }
+
+#[test]
+fn landing_frames_fall_back_to_the_last_landing_frame() {
+    let (t, r) = (aerial(), props());
+    let mut a = takeoff(Takeoff::Jump, level_board(), Vec3::ZERO, Vec2::ZERO, 0.0, Some(40.0));
+    let mut goofy = false;
+    let mut inp = AirInputs {
+        stick: Vec2::ZERO,
+        velocity: Vec3::Z * 0.3,
+        allow_stance_switch: true,
+        grind_steering: None,
+        tutorial_mode: false,
+        heli_interact: None,
+    };
+    let mut board = level_board();
+    for _ in 0..3 {
+        board = a.step(&t, &r, &inp, board, &mut goofy, 2.0);
+    }
+    let last = a.q_land;
+    let turned = Quat::from_rotation_y(FRAC_PI_2) * board;
+    inp.velocity = Vec3::new(0.01, -0.4, 0.02);
+    for (prediction, heli) in [(Some(20.0), None), (None, None), (Some(20.0), Some(true))] {
+        a.prediction = prediction.map(|ticks| LandingPrediction { ticks, normal: Vec3::Y });
+        inp.heli_interact = heli;
+        a.step(&t, &r, &inp, turned, &mut goofy, 2.0);
+        assert_eq!(a.q_land, last, "prediction {prediction:?}, heli {heli:?}");
+    }
+}

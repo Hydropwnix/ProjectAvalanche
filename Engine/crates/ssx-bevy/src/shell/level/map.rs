@@ -244,7 +244,7 @@ fn map_ride(
                 c.name,
                 c.source,
                 c.gameobject,
-                h.grid.as_ref().map_or("none".to_string(), |g| format!("{} × {}", g.width, g.height))
+                h.grid.as_ref().map_or_else(|e| format!("none ({e})"), |g| format!("{} × {}", g.width, g.height))
             ),
             Err(e) => warn!("map {}: no helicopter ({e})", m.map.id),
         }

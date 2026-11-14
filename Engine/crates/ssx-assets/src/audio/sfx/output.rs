@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -10,9 +10,14 @@ pub use crate::sfx_bus::DAC_CHANNELS;
 pub mod capture;
 pub mod check;
 pub mod feed;
+pub mod priority;
+pub mod queue;
 pub mod resample;
 pub mod sim;
 pub mod stats;
+
+pub use priority::Scheduling;
+pub use queue::{Command, MixInbox, MixQueue, discard, mix_queue};
 
 pub const MIX_FRAMES: usize = FRAME_SAMPLES;
 pub const RATE: u32 = MIXER_RATE;
@@ -29,34 +34,6 @@ const SHRINK_WINDOW: Duration = Duration::from_secs(10);
 const SHRINK_KEEP: usize = 2 * MIX_FRAMES;
 const PULL_WINDOW: usize = 16;
 const SETTLE_PULLS: u8 = 4;
-
-pub struct GameTurn(());
-
-impl GameTurn {
-    pub fn take() -> Self {
-        GAME_TURNS.fetch_add(1, Ordering::SeqCst);
-        GameTurn(())
-    }
-}
-
-impl Drop for GameTurn {
-    fn drop(&mut self) {
-        GAME_TURNS.fetch_sub(1, Ordering::SeqCst);
-        let _g = HANDOFF.0.lock().unwrap_or_else(|e| e.into_inner());
-        HANDOFF.1.notify_all();
-    }
-}
-
-static GAME_TURNS: AtomicUsize = AtomicUsize::new(0);
-static HANDOFF: (Mutex<()>, Condvar) = (Mutex::new(()), Condvar::new());
-
-fn wait_for_game(limit: Duration) {
-    if GAME_TURNS.load(Ordering::SeqCst) == 0 {
-        return;
-    }
-    let g = HANDOFF.0.lock().unwrap_or_else(|e| e.into_inner());
-    let _ = HANDOFF.1.wait_timeout_while(g, limit, |_| GAME_TURNS.load(Ordering::SeqCst) > 0);
-}
 
 struct Lead {
     frames: VecDeque<f32>,
@@ -84,7 +61,6 @@ impl Lead {
 }
 
 struct Inner {
-    mix: Arc<Mutex<OutputMix>>,
     lead: Mutex<Lead>,
     room: Condvar,
     ready: Condvar,
@@ -119,7 +95,12 @@ impl Drop for Handle {
 }
 
 impl Output {
-    pub fn start(mix: Arc<Mutex<OutputMix>>, margin: Option<usize>) -> std::io::Result<Self> {
+    pub fn start(
+        mix: OutputMix,
+        inbox: MixInbox,
+        margin: Option<usize>,
+        scheduling: Scheduling,
+    ) -> std::io::Result<Self> {
         let env = std::env::var("SSX_AUDIO_LEAD").ok().and_then(|v| v.parse::<usize>().ok());
         let margin = margin.or(env).unwrap_or(MARGIN).next_multiple_of(MIX_FRAMES).clamp(MIX_FRAMES, MARGIN_MAX);
         let lead = Lead {
@@ -137,14 +118,13 @@ impl Output {
             settle: SETTLE_PULLS,
         };
         stats::LEAD.store(margin as u64, Ordering::Relaxed);
-        let inner = Arc::new(Inner { mix, lead: Mutex::new(lead), room: Condvar::new(), ready: Condvar::new() });
+        let inner = Arc::new(Inner { lead: Mutex::new(lead), room: Condvar::new(), ready: Condvar::new() });
         let thread = inner.clone();
-        std::thread::Builder::new().name("ssx_audio_mixer".into()).spawn(move || mixer_thread(&thread))?;
+        let scheduling = scheduling.or_env();
+        std::thread::Builder::new()
+            .name("ssx_audio_mixer".into())
+            .spawn(move || mixer_thread(&thread, mix, inbox, scheduling))?;
         Ok(Self(Arc::new(Handle(inner))))
-    }
-
-    pub fn mix(&self) -> &Arc<Mutex<OutputMix>> {
-        &self.0.0.mix
     }
 
     pub fn expect_pull(&self, frames: usize) {
@@ -247,36 +227,54 @@ pub fn delay() -> Duration {
     Duration::from_secs_f64(frames as f64 / f64::from(RATE))
 }
 
-fn mixer_thread(inner: &Inner) {
-    raise_priority();
+const DRAIN_PERIOD: Duration = Duration::from_nanos(FRAME_SAMPLES as u64 * 1_000_000_000 / MIXER_RATE as u64);
+
+fn mixer_thread(inner: &Inner, mut mix: OutputMix, inbox: MixInbox, scheduling: Scheduling) {
+    let mut promotion = priority::Promotion::start(scheduling);
+    crate::sfx_stream::mark_live_thread();
     let mut frame = Vec::new();
+    let mut drains = stats::DrainLog::default();
     loop {
-        let (ahead, demand, ch) = {
-            let mut lead = inner.state();
-            loop {
-                let level = lead.level();
-                let full = level + MIX_FRAMES > lead.target();
-                lead.primed |= full;
-                if lead.stop || !full || level < lead.want {
-                    break;
-                }
-                lead = inner.room.wait(lead).unwrap_or_else(|e| e.into_inner());
+        promotion.check();
+        let (t0, before) = (Instant::now(), stats::ThreadUsage::now());
+        let mut longest = ("", Duration::ZERO);
+        let commands = inbox.drain_each(&mut mix, |kind, took| {
+            if took > longest.1 {
+                longest = (kind, took);
             }
+            promotion.check();
+        });
+        if commands > 0 {
+            drains.record(stats::DrainRecord {
+                ns: t0.elapsed().as_nanos() as u64,
+                commands: commands as u64,
+                kind: longest.0,
+                kind_ns: longest.1.as_nanos() as u64,
+                thread: before.zip(stats::ThreadUsage::now()).map(|(b, a)| a.since(b)),
+            });
+        } else {
+            drains.publish();
+        }
+        let ch = {
+            let mut lead = inner.state();
+            let level = lead.level();
+            let full = level + MIX_FRAMES > lead.target();
+            lead.primed |= full;
             if lead.stop {
                 return;
             }
-            (lead.level(), lead.want > 0, lead.channels)
+            if full && level >= lead.want {
+                drop(inner.room.wait_timeout(lead, DRAIN_PERIOD));
+                promotion.blocked();
+                continue;
+            }
+            lead.channels
         };
-        let urgent = demand || ahead < GUARD;
-        wait_for_game(Duration::from_micros(if urgent { 500 } else { 2000 }));
-        let t0 = Instant::now();
-        let mut m = inner.mix.lock().unwrap_or_else(|e| e.into_inner());
         let t1 = Instant::now();
         frame.resize(ch * MIX_FRAMES, 0.0);
-        m.render_channels(&mut frame, ch);
-        let swapped = std::mem::take(&mut m.swapped);
-        drop(m);
-        stats::render((t1 - t0).as_nanos() as u64, t1.elapsed().as_nanos() as u64, MIX_FRAMES as u64);
+        mix.render_channels(&mut frame, ch);
+        let swapped = std::mem::take(&mut mix.swapped);
+        stats::render(t1.elapsed().as_nanos() as u64, MIX_FRAMES as u64);
         for x in &mut frame {
             *x = x.clamp(-1.0, 1.0);
         }
@@ -309,24 +307,6 @@ fn declick(queued: &mut VecDeque<f32>, next: &mut [f32], ch: usize) {
     }
 }
 
-// PORT(choice): the port leaves the thread's placement to the system (not run on Windows here, cross-checked only); the
-// game also pins the thread to hardware thread 4 (System +0x14E, `XSetThreadProcessor` 0x82351550; XAudio2 on 4 / 5,
-// mask 0x30), which a PC has no counterpart of.
-fn raise_priority() {
-    #[cfg(windows)]
-    {
-        #[link(name = "kernel32")]
-        unsafe extern "system" {
-            fn GetCurrentThread() -> *mut core::ffi::c_void;
-            fn SetThreadPriority(thread: *mut core::ffi::c_void, priority: i32) -> i32;
-        }
-        const THREAD_PRIORITY_TIME_CRITICAL: i32 = 15;
-        unsafe {
-            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,8 +336,14 @@ mod tests {
                 out.fill(0.25);
             }
         }
-        let mix = Arc::new(Mutex::new(OutputMix::new(Some(Box::new(Tone)), RATE, None)));
-        let out = Output::start(mix, Some(4 * MIX_FRAMES)).unwrap();
+        let (_queue, inbox) = mix_queue();
+        let out = Output::start(
+            OutputMix::new(Some(Box::new(Tone)), RATE, None),
+            inbox,
+            Some(4 * MIX_FRAMES),
+            Scheduling::Normal,
+        )
+        .unwrap();
         out.set_channels(DAC_CHANNELS);
         out.expect_pull(512);
         let mut buf = vec![0.0f32; DAC_CHANNELS * 512];
@@ -374,8 +360,9 @@ mod tests {
 
     #[test]
     fn a_pull_takes_the_lead_and_a_larger_one_waits_for_the_mixer() {
-        let mix = Arc::new(Mutex::new(OutputMix::new(None, 44_100, None)));
-        let out = Output::start(mix, Some(4 * MIX_FRAMES)).unwrap();
+        let (queue, inbox) = mix_queue();
+        let out =
+            Output::start(OutputMix::new(None, 44_100, None), inbox, Some(4 * MIX_FRAMES), Scheduling::Normal).unwrap();
         out.expect_pull(512);
         let mut buf = vec![1.0f32; 2 * 512];
         let limit = Instant::now() + Duration::from_secs(10);
@@ -400,11 +387,35 @@ mod tests {
         }
         std::thread::sleep(Duration::from_millis(20));
         assert!(out.level() <= 8192 + MARGIN_MAX + MIX_FRAMES, "the lead holds {} frames", out.level());
-        let held = out.mix().clone();
-        let guard = held.lock().unwrap();
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let (started, running) = std::sync::mpsc::channel::<()>();
+        assert!(queue.post(move |_| {
+            let _ = started.send(());
+            let _ = held.recv();
+        }));
+        running.recv_timeout(Duration::from_secs(10)).expect("the mixer applies the command");
         let mut huge = vec![1.0f32; 2 * 65_536];
         let p = out.pull(&mut huge, Duration::from_millis(20));
         assert!(p.silence > 0 && huge[huge.len() - 1] == 0.0);
-        drop(guard);
+        drop(release);
+    }
+
+    #[test]
+    fn commands_are_applied_while_the_lead_is_full() {
+        let (queue, inbox) = mix_queue();
+        let out =
+            Output::start(OutputMix::new(None, 44_100, None), inbox, Some(4 * MIX_FRAMES), Scheduling::Normal).unwrap();
+        out.expect_pull(512);
+        let limit = Instant::now() + Duration::from_secs(10);
+        while out.level() < 512 + 4 * MIX_FRAMES - MIX_FRAMES {
+            assert!(Instant::now() < limit, "the lead never filled");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(queue.post(move |m| {
+            let _ = tx.send(m.remix_event_type);
+        }));
+        assert_eq!(rx.recv_timeout(Duration::from_secs(10)), Ok(1));
+        drop(out);
     }
 }

@@ -176,6 +176,10 @@ impl LevelGame {
         self.results_posted
     }
 
+    pub fn test_run_done(&self) -> bool {
+        self.shots.is_empty() && (self.script.is_empty() || !self.live)
+    }
+
     #[cfg(feature = "net")]
     pub fn session_results_shown(&mut self, shown: bool) {
         self.results_posted = shown;

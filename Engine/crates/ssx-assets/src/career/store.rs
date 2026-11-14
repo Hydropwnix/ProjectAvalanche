@@ -173,9 +173,10 @@ impl Store {
     // TODO(guess): an expired item with the flag +0x33 also leaves its +0x4C in a 25-entry list at +0x6C (no reader traced); settle: the readers of the store's +0x6C…+0x70.
     pub fn purge(&mut self, force: bool, now_ms: i64) {
         self.offered = Default::default();
+        self.last_bought = None;
         self.next_id = FIRST_STOCK_ID;
         for list in &mut self.stock {
-            list.retain(|i| i.expires_ms > now_ms && !(force && !i.special));
+            list.retain(|i| i.expires_ms >= now_ms && !(force && !i.special));
             for i in list.iter_mut() {
                 i.id = self.next_id;
                 self.next_id += 1;

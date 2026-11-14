@@ -167,6 +167,43 @@ fn jump_with_spin_input_lands_aligned() {
     assert_eq!(s.landing.quality, crate::landing::LandingQuality::Clean);
 }
 
+#[test]
+fn the_air_reads_the_stick_past_its_dead_zone() {
+    let air_inputs = |steer: f32| {
+        let mut seen = Vec::new();
+        let (_, turned, _) = jump_with(Input { steer, ..Input::default() }, TrickInput::default(), |s, _| {
+            seen.push(s.air.spin_input);
+        });
+        (turned, seen)
+    };
+    let (centred, _) = air_inputs(0.0);
+    let (resting, seen) = air_inputs(0.2);
+    assert!(!seen.is_empty() && seen.iter().all(|&x| x == 0.0), "a resting pad reached the air: {seen:?}");
+    assert_eq!(resting, centred, "the resting pad's jump is the centred stick's");
+    let (_, seen) = air_inputs(0.625);
+    assert!(seen.iter().any(|&x| (x - 0.5).abs() < 1e-6), "0.625 reaches the air as 0.5: {seen:?}");
+    assert!(seen.iter().all(|&x| (x - 0.625).abs() > 1e-3), "the raw stick reached the air: {seen:?}");
+}
+
+#[test]
+fn the_aerial_reads_the_rigs_trajectory() {
+    let turn = Quat::from_rotation_y(40f32.to_radians());
+    let (mut stale, mut rig, mut checked) = (Quat::IDENTITY, Quat::IDENTITY, false);
+    jump_with(Input::default(), TrickInput::default(), |s, i| {
+        if i == 6 {
+            stale = s.alignment;
+            s.traj_orientation = (turn * s.traj_orientation).normalize();
+            rig = s.traj_orientation;
+        } else if i == 7 {
+            let (to_rig, to_stale) = (s.traj_orientation.angle_between(rig), s.traj_orientation.angle_between(stale));
+            assert!(to_rig < 5f32.to_radians(), "{}° from the turned trajectory", to_rig.to_degrees());
+            assert!(to_stale > 35f32.to_radians(), "{}° from the controller's last output", to_stale.to_degrees());
+            checked = true;
+        }
+    });
+    assert!(checked, "the rider was not in the air at the check");
+}
+
 fn land_pitched(pitch: f32) -> RiderState {
     jump_with(Input::default(), TrickInput::default(), |s, _| {
         if s.air.prediction.is_some_and(|p| p.ticks < 9.0) {

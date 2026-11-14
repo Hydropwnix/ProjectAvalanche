@@ -94,38 +94,41 @@ pub fn place_locators(set: &mut TriggerSet, def: &MapDefinition) {
 #[derive(Clone, Debug)]
 pub struct MapHeli {
     pub choice: Result<HeliChoice, String>,
-    pub grid: Option<HeightGrid>,
+    pub grid: Result<HeightGrid, String>,
     pub vault_track: Option<String>,
 }
 
 impl MapHeli {
     pub fn load(big_root: &Path, base: Option<&ssx_assets::content::maps::LayoutBase>, def: &MapDefinition) -> Self {
         let (choice, grid, vault_track) = match base {
-            Some(b) => {
-                let dir = big_root.join("data0/data/xenon/gameexplorer").join(&b.track);
-                (
-                    ssx_assets::helicopter::drop_helicopter(big_root, &b.ui_drop),
-                    HeightGrid::load(&dir, &b.track).ok(),
-                    Some(b.track.clone()),
-                )
-            }
-            None => (ssx_assets::helicopter::default_helicopter(big_root), terrain_grid(def).ok(), None),
+            Some(b) => (
+                ssx_assets::helicopter::drop_helicopter(big_root, &b.ui_drop),
+                layout_grid(big_root, &b.track),
+                Some(b.track.clone()),
+            ),
+            None => (
+                ssx_assets::helicopter::default_helicopter(big_root),
+                terrain_grid(def).map_err(|e| format!("{e:#}")),
+                None,
+            ),
         };
         MapHeli { choice: choice.map_err(|e| format!("{e:#}")), grid, vault_track }
     }
 }
 
+fn layout_grid(big_root: &Path, track: &str) -> Result<HeightGrid, String> {
+    let dir = ssx_assets::data_roots::track_dir(big_root, track)
+        .ok_or_else(|| format!("{track}: no track folder (the disc's data0 or a mounted package)"))?;
+    match HeightGrid::find(&dir, track) {
+        Ok(Some(g)) => Ok(g),
+        Ok(None) => Err(format!("{track}: no helicopter height grid in {}", dir.display())),
+        Err(e) => Err(format!("{e:#}")),
+    }
+}
+
 pub fn terrain_grid(def: &MapDefinition) -> Result<HeightGrid> {
     let g = ssx_content::map::heli::heli_grid(def).map_err(anyhow::Error::msg)?;
-    let cell = ssx_content::map::heli::HELI_CELL;
-    Ok(HeightGrid {
-        min: Vec3::from_array(g.min),
-        max: Vec3::from_array(g.max),
-        inv_cell: [1.0 / cell, 1.0 / cell],
-        width: g.width,
-        height: g.height,
-        cells: g.cells,
-    })
+    HeightGrid::new(Vec3::from_array(g.min), Vec3::from_array(g.max), g.width, g.height, g.cells)
 }
 
 pub fn map_intro(

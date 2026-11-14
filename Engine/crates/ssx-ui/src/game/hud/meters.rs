@@ -239,7 +239,6 @@ impl Component for HudMeters {
 
 impl HudMeters {
     fn assign(&mut self, env: &mut HudEnv) {
-        // TODO(guess): the game object's +0xE0 query is taken as "the `GearItem` slot is equipped" (`DropSurvival::slots`); settle: the object passed to 0x82596848 and its vtable +0xE0.
         let has = |n: usize| env.gear.get(n).copied().unwrap_or(false);
         let mut k = 0;
         if has(2) {
@@ -577,5 +576,52 @@ fn show(cx: &mut Ctx, c: Option<&mut Clip>) {
 fn hide(cx: &mut Ctx, c: Option<&mut Clip>) {
     if let Some(c) = c {
         c.set_visible(cx, false);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::feed::race_start_survival_values;
+    use crate::game::loc::{Language, Localization};
+    use crate::game::values::UiValues;
+
+    fn bars(gear: &[usize], cold_drop: bool, death_permanent: bool) -> (Vec<i32>, bool) {
+        let mut values = UiValues::new();
+        race_start_survival_values(&mut values, cold_drop, death_permanent);
+        let mut loc = Localization::empty(Language::English);
+        let (mut sounds, mut nav_events) = (Vec::new(), Vec::new());
+        let mut slots = [false; 15];
+        for &n in gear {
+            slots[n] = true;
+        }
+        let mut env = HudEnv {
+            values: &mut values,
+            loc: &mut loc,
+            event_type: 4,
+            sounds: &mut sounds,
+            nav_events: &mut nav_events,
+            gear: slots,
+        };
+        let mut m = HudMeters::default();
+        m.assign(&mut env);
+        (m.bars.iter().filter(|b| b.assigned).map(|b| b.kind).collect(), m.armour_mode)
+    }
+
+    #[test]
+    fn a_permanent_death_drop_has_the_health_bar_without_armour() {
+        let wingsuit = [0, 1, 12, 13];
+        assert_eq!(bars(&wingsuit, false, true), (vec![3], true));
+        assert_eq!(bars(&[0, 3, 7], false, true), (vec![3], true));
+        assert_eq!(bars(&[0, 3, 7], false, false), (vec![3], true));
+        assert_eq!(bars(&wingsuit, false, false), (vec![], false));
+    }
+
+    #[test]
+    fn a_cold_drop_has_the_thermal_bar_without_the_item() {
+        assert_eq!(bars(&[0], true, false), (vec![4], false));
+        assert_eq!(bars(&[0, 2], true, true), (vec![2, 4, 3], true));
+        assert_eq!(bars(&[0, 2, 4], false, false), (vec![2, 4], false));
+        assert_eq!(bars(&[0], false, false), (vec![], false));
     }
 }

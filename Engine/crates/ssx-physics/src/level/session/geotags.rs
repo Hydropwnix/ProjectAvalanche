@@ -146,7 +146,6 @@ pub struct GeotagEntity {
     inst: std::collections::BTreeMap<u64, GeotagInst>,
     pub phase: GeotagPhase,
     pub collected: bool,
-    // TODO(guess): +0x50 (render interface 0x992F2472 slot 0x14 / 0x18) is read as "drawn" from its writers alone (spawn, pickup, the manager's ¬BLN_DisableWorldRender, 0x82448D38); settle: the renderer's read of the render instance's +0x50 (the class of vtable 0x8210CEF4).
     pub visible: bool,
 }
 
@@ -408,5 +407,21 @@ st = s:AddState( "PostCollected" )
         assert_eq!(run.credits(), pickup_value(6, 1));
         assert_eq!(run.entities[0].phase, GeotagPhase::PostCollected);
         assert!(!run.entities[0].visible);
+    }
+
+    #[test]
+    fn the_flag_follows_the_world_render_switch_only_when_it_changes() {
+        let mut rng = Mt19937::seeded(1);
+        let mut run = GeotagRun::new(data(vec![row(1, 0.0, 2), row(2, 300.0, 9)]), |_| false, &mut rng);
+        let (dt, far) = (1.0 / 30.0, Vec3::new(0.0, 0.0, 5_000.0));
+        run.update(dt, far, true);
+        assert!(run.entities.iter().all(|e| !e.visible));
+        run.update(dt, far, false);
+        assert!(run.entities.iter().all(|e| e.visible));
+        run.entities[1].visible = false;
+        run.update(dt, far, false);
+        assert!(run.entities[0].visible && !run.entities[1].visible);
+        run.update(dt, far, true);
+        assert!(run.entities.iter().all(|e| !e.visible));
     }
 }

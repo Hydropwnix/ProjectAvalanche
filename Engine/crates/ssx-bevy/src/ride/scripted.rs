@@ -138,7 +138,8 @@ impl Ride {
                 self.course_logged = p.log.len();
                 return;
             }
-            (self.input, self.tricks) = autoplay_input(self);
+            let (input, tricks) = autoplay_input(self);
+            (self.input, self.tricks) = (ssx_physics::harness::pad_for_intent(input), tricks);
             let time = (self.steps - self.autoplay_waited) as f32 / SIM_HZ;
             let step = self.steps + 1;
             self.rewind_pad = self.auto_rewind.pad(&self.state, idle, time, step);
@@ -236,7 +237,7 @@ impl Ride {
         self.l2 = self.grind_fixed && held;
         self.l2_hold = self.l2;
         self.r1 = self.scripted_r1();
-        (self.input, self.tricks) = (input, tricks);
+        (self.input, self.tricks) = (ssx_physics::harness::pad_for_intent(input), tricks);
     }
 }
 
