@@ -379,7 +379,10 @@ impl Renderer {
             && !ghosting()
             && !ssx_core::rider_showcase::slot_found()
             && in_list_card(player, inst)
-            && highlighted_rider_portrait(lib, player, id, inst, here.cx.mult[3])
+            && (highlighted_rider_portrait(lib, player, id, inst, here.cx.mult[3])
+                || (inst.name == "mcPortraitContainer"
+                    && ssx_core::rider_showcase::enabled()
+                    && inst.parent.is_some_and(|p| pictureless_highlight(player, p))))
         {
             let b = player.local_bounds(lib, id);
             if !b.is_empty() {
@@ -2485,16 +2488,12 @@ fn draw_card_copies(menu_xf: &Mat2d, out: &mut Vec<Command>) {
 /// A plain card of the rider list just drawn (`out[start..]`): kept as its rider's.
 fn remember_card(lib: &Library, player: &Player, id: InstanceId, card: &Instance, menu_xf: &Mat2d, start: usize, out: &[Command]) {
     // (the card's rider as the list's layout knows it (the menu's own item, its pictures maybe not in yet), else by its
-    // pictures; a card still waiting for its pictures kept only for a rider with no card kept yet)
+    // pictures)
     let known = CARD_RIDERS.lock().ok().and_then(|m| m.as_ref().and_then(|h| h.get(&id).cloned()));
     let rider = match known {
         Some((r, true)) => r,
-        Some((r, false)) => {
-            if PLAIN_CARDS.lock().is_ok_and(|c| c.iter().any(|e| e.0 == r)) {
-                return;
-            }
-            r
-        }
+        // (a card with no pictures of its rider ("NA") never kept)
+        Some((_, false)) => return,
         None => match card_portrait_name(lib, player, id) {
             Some(r) => r,
             None => return,
@@ -2557,27 +2556,31 @@ fn check_grow_cell(lib: &Library, player: &Player, id: InstanceId, inst: &Instan
         return;
     }
     let InstanceKind::Sprite(s) = &inst.kind else { return };
+    // (the highlighted card with no pictures of its rider (an "NA" card): grown all the same, as a regular rider's)
+    let pictureless = pictureless_highlight(player, id);
     for &c in s.children.values() {
         let Some(child) = player.get(c) else { continue };
         if child.name != "mcPortraitContainer" || !child.visible {
             continue;
         }
-        if !highlighted_rider_portrait(lib, player, c, child, cx.concat(&child.cxform).mult[3]) {
+        let pictured = highlighted_rider_portrait(lib, player, c, child, cx.concat(&child.cxform).mult[3]);
+        if !pictured && !pictureless {
             continue;
         }
-        let b = player.local_bounds(lib, c);
-        if b.is_empty() {
-            return;
-        }
-        let b = b.transform(&child.matrix);
-        // (the card grown by its portrait's place in it as a regular rider's portrait has it: the retro riders'
-        // pictures (the classic riders' package) are of other sizes, which would grow the card out of shape)
         let inner_box = s.children.values().find_map(|&k| {
             let i = player.get(k).filter(|i| i.name == "mcInnerframe")?;
             let kb = player.local_bounds(lib, k);
             (!kb.is_empty()).then(|| kb.transform(&i.matrix))
         });
-        let b = portrait_fit(b, inner_box, &ssx_core::rider_showcase::highlight_portrait());
+        let b = player.local_bounds(lib, c);
+        let b = if b.is_empty() { inner_box.unwrap_or(b) } else { b.transform(&child.matrix) };
+        if b.is_empty() {
+            return;
+        }
+        // (the card grown by its portrait's place in it as a regular rider's portrait has it: the retro riders'
+        // pictures (the classic riders' package) are of other sizes, which would grow the card out of shape)
+        let rider = ssx_core::rider_showcase::highlight_portrait();
+        let b = portrait_fit(b, inner_box, pictured && !rider.starts_with("dlc"));
         let by = (b.y1 - b.y0) * GROW_FRACTION;
         let wide = (b.x1 - b.x0) * WIDEN_FRACTION;
         let (x0, y0) = xf.apply(b.x0, b.y0);
@@ -2625,16 +2628,29 @@ fn check_grow_cell(lib: &Library, player: &Player, id: InstanceId, inst: &Instan
     }
 }
 
+/// This card's cell (`cell`, an inner `mcCell`) is the rider list's highlighted card's, and that card has no pictures
+/// of its rider (an "NA" card: its rider known only from the menu).
+fn pictureless_highlight(player: &Player, cell: InstanceId) -> bool {
+    let Some(top) = GHOST_TOP.lock().ok().and_then(|t| *t) else { return false };
+    let clip = player.get(cell).and_then(|c| c.parent).and_then(|o| player.get(o)).and_then(|o| o.parent);
+    clip == Some(top)
+        && CARD_RIDERS
+            .lock()
+            .ok()
+            .and_then(|m| m.as_ref().and_then(|h| h.get(&top).cloned()))
+            .is_some_and(|(r, pictured)| !pictured && r == ssx_core::rider_showcase::highlight_portrait())
+}
+
 /// A regular rider's portrait's place on its card, from the card's inner square's (its left, top, right and bottom
 /// edges' distances from the square's), as last measured: the retro riders' cards grow by it.
 static PORTRAIT_FIT: std::sync::Mutex<Option<[f32; 4]>> = std::sync::Mutex::new(None);
 
 /// The highlighted card's portrait's place (`b`, in the card's units) for growing the card: a regular rider's as
 /// measured (and kept), a retro rider's (`dlc…`) as a regular rider's would be on its card.
-fn portrait_fit(b: RectF, inner: Option<RectF>, rider: &str) -> RectF {
+fn portrait_fit(b: RectF, inner: Option<RectF>, regular: bool) -> RectF {
     let Some(f) = inner.filter(|f| !f.is_empty()) else { return b };
     let Ok(mut fit) = PORTRAIT_FIT.lock() else { return b };
-    if !rider.starts_with("dlc") {
+    if regular {
         *fit = Some([b.x0 - f.x0, b.y0 - f.y0, b.x1 - f.x1, b.y1 - f.y1]);
         return b;
     }
@@ -3155,7 +3171,7 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
                 && !pb.is_empty()
                 && !fb.is_empty()
             {
-                let _ = portrait_fit(pb.transform(&pi.matrix), Some(fb.transform(&fi.matrix)), r);
+                let _ = portrait_fit(pb.transform(&pi.matrix), Some(fb.transform(&fi.matrix)), true);
             }
         }
         // (a card whose pictures aren't in yet: its rider as the menu has it)
@@ -3363,7 +3379,10 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
     // yet) takes no place; the others close up after it, each side)
     let plain: std::collections::HashSet<String> =
         PLAIN_CARDS.lock().map(|c| c.iter().map(|e| e.0.clone()).collect()).unwrap_or_default();
-    let drawable = |rider: &str| shown.contains_key(rider) || plain.contains(rider);
+    // (a card with no pictures of its rider (an "NA" card) is never shown but as the highlighted one: its rider shows
+    // as its card was last seen with them, else takes no place)
+    let pictured_card = |rider: &str| shown.get(rider).is_some_and(|&k| !cards[k].by_item);
+    let drawable = |rider: &str| rider == highlighted || pictured_card(rider) || plain.contains(rider);
     let mut shown_at: HashMap<String, i64> = HashMap::new();
     let (mut right_n, mut left_n) = (0i64, 0i64);
     let mut by_slot: Vec<(i64, &String)> = order.iter().map(|r| (slot_of(r), r)).collect();
@@ -3386,8 +3405,8 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
         }
     }
     for rider in order.iter() {
-        let card = shown.get(rider.as_str()).copied();
         let slot = slot_of(rider);
+        let card = shown.get(rider.as_str()).copied().filter(|&k| slot == 0 || !cards[k].by_item);
         let target = place(shown_at.get(rider).copied().unwrap_or(slot));
         let was = st.slot.insert(rider.clone(), slot);
         let now = st.now.entry(rider.clone()).or_insert(target);
