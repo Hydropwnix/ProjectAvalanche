@@ -400,6 +400,18 @@ pub fn set_script_paused(on: bool) {
     SCRIPT_PAUSED.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// A port addition for mods (`musicPlayer("menuMusic", "off")`): the menus' own music (their score and their
+/// songs) silenced and held back, so only a script's songs play there, with silence between them.
+static MENU_MUSIC_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn menu_music_off() -> bool {
+    MENU_MUSIC_OFF.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_menu_music_off(on: bool) {
+    MENU_MUSIC_OFF.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// A port addition for mods (`musicVolume`): a script's level for the licensed music, 0 to 1 (the f32's bits; 1 at
 /// the start). On top of the game's own music volume.
 static SCRIPT_VOLUME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3F80_0000);

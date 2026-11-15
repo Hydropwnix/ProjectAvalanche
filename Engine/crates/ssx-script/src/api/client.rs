@@ -293,7 +293,12 @@ fn music_player(ctx: &Ctx, _: &Lua, a: Args) -> Result<Vec<Ret>, ApiError> {
             }
             PlayerOrder::Seek(secs)
         }
-        other => return Err(format!("{other:?}: play, pause, resume, stop or seek").into()),
+        "menuMusic" => match a.str(1).map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+            Some("on" | "true") => PlayerOrder::MenuMusic(true),
+            Some("off" | "false") => PlayerOrder::MenuMusic(false),
+            _ => return Err("menuMusic: \"on\" or \"off\"".into()),
+        },
+        other => return Err(format!("{other:?}: play, pause, resume, stop, seek or menuMusic").into()),
     };
     if w.game.orders.player.len() >= 8 {
         return Err("at most 8 musicPlayer calls a frame".into());

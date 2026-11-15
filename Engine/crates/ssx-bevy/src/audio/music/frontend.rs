@@ -29,8 +29,13 @@ type MenuSongs = Arc<Mutex<Option<(LicensedMusic, Vec<f32>)>>>;
 impl MusicSource for FeMusicBus {
     fn render(&mut self, out: &mut [f32]) {
         out.fill(0.0);
+        // (a script has the menus' own music off: their score and songs silent, only its songs heard)
+        let off = ssx_assets::musicbox::menu_music_off();
         if let Ok(mut m) = self.0.lock() {
             m.music.render(out);
+            if off {
+                out.fill(0.0);
+            }
         }
         if let Ok(mut p) = self.1.lock()
             && let Some(pv) = p.as_mut()
@@ -40,6 +45,9 @@ impl MusicSource for FeMusicBus {
                 self.3.fetch_max(pv.id, Relaxed);
                 *p = None;
             }
+        }
+        if off && let Ok(mut menu) = self.2.lock() {
+            *menu = None;
         }
         if let Ok(mut menu) = self.2.lock()
             && let Some((lm, buf)) = menu.as_mut()
@@ -604,7 +612,7 @@ impl FrontEndAudio {
             if let Ok(mut menu) = menu.lock()
                 && let Some((lm, _)) = menu.as_mut()
             {
-                lm.hold_posts(level_song || preview_on || level_loading);
+                lm.hold_posts(level_song || preview_on || level_loading || ssx_assets::musicbox::menu_music_off());
             }
             let Some(e) = m.sfx.as_mut() else { return };
             if plugged {

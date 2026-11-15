@@ -318,6 +318,9 @@ pub enum PlayerOrder {
     Volume(f32),
     /// Move the playing song (a package's) to this many seconds in (`musicPlayer("seek", seconds)`).
     Seek(f32),
+    /// The menus' own music on (true) or off (false: only the scripts' songs play in the menus)
+    /// (`musicPlayer("menuMusic", "on" | "off")`).
+    MenuMusic(bool),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -430,6 +430,7 @@ fn frame(
         }
         ssx_assets::musicbox::set_script_paused(false);
         ssx_assets::musicbox::set_script_volume(1.0);
+        ssx_assets::musicbox::set_menu_music_off(false);
         info!("scripts: what the scripts left up is taken down (their draws, markers, fade, camera, message, sounds)");
     }
     if bridge.gone_handled {
@@ -481,6 +482,7 @@ fn frame(
                     PlayerOrder::Pause(on) => ssx_assets::musicbox::set_script_paused(on),
                     PlayerOrder::Volume(level) => ssx_assets::musicbox::set_script_volume(level),
                     PlayerOrder::Seek(secs) => ssx_assets::musicbox::request_seek(secs),
+                    PlayerOrder::MenuMusic(on) => ssx_assets::musicbox::set_menu_music_off(!on),
                     PlayerOrder::Stop if in_ride => {
                         ssx_assets::musicbox::set_script_paused(false);
                         if let Some(m) = r.music.as_ref() {
@@ -518,7 +520,8 @@ fn frame(
                         }
                         ssx_script::host::game::PlayerOrder::Pause(_)
                         | ssx_script::host::game::PlayerOrder::Volume(_)
-                        | ssx_script::host::game::PlayerOrder::Seek(_) => {}
+                        | ssx_script::host::game::PlayerOrder::Seek(_)
+                        | ssx_script::host::game::PlayerOrder::MenuMusic(_) => {}
                     }
                 }
             }
