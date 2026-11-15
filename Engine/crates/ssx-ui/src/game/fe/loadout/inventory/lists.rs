@@ -203,13 +203,23 @@ impl Inventory {
                 .collect();
         }
         let level = Self::rider_level(db, profile, self.rider).0;
+        // (the Custom Event Menus mod: a retro rider (`dlc…`) has the default board of the rider it's a retro version
+        // of)
+        let retro_board = ssx_core::rider_showcase::enabled()
+            .then(|| db.riders.iter().find(|r| r.key == self.rider))
+            .flatten()
+            .and_then(|r| {
+                let (name, portrait) = (r.name.to_lowercase(), r.portrait.to_lowercase());
+                let base = name.strip_prefix("dlc").or_else(|| portrait.strip_prefix("dlc"))?.to_string();
+                Some(fnv1(format!("board_{base}_default").as_bytes()))
+            });
         db.items
             .iter()
             .filter(|i| i.kind == kind)
             .filter(|i| {
                 let own = owned(i.key);
                 let mut shown = i.default || own;
-                if i.rider != 0 && self.rider != 0 {
+                if i.rider != 0 && self.rider != 0 && retro_board != Some(i.key) {
                     shown &= i.rider == self.rider;
                 }
                 if !own {

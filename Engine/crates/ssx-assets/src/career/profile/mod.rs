@@ -423,9 +423,10 @@ impl Profile {
     }
 
     /// A port addition for mods (Custom Event Menus): each retro rider (the classic riders, `dlc…`: the game's data
-    /// gives them no suit or board to start in) given a suit of its own, made as the store makes suits (its first
-    /// jacket and the pants that go with it, no perks, free), and dressed in it and in the default board of the rider
-    /// it's a retro version of, when it has neither. Kept in the profile (saved with it). The notes of what was given.
+    /// gives them no suit or board to start in) given a default suit of its own, made as the store makes suits (its
+    /// first jacket and the pants that go with it, no perks, free), alongside any bought for it; dressed in it, and in
+    /// the default board of the rider it's a retro version of (which its board list shows), when it wears neither a
+    /// suit nor a board. Kept in the profile (saved with it). The notes of what was given.
     pub fn give_retro_defaults(&mut self, db: &CareerDb) -> Vec<String> {
         use super::store::{KIND_SUIT, SLOT_SUIT_BOTTOM, SLOT_SUIT_TOP};
         let mut lines = Vec::new();
@@ -434,43 +435,54 @@ impl Profile {
             let Some(base) = name.strip_prefix("dlc").or_else(|| portrait.strip_prefix("dlc")) else { continue };
             let base = base.to_string();
             let item_exists = |k: u32| db.items.iter().any(|i| i.key == k);
-            // (a suit of its own: one made already, else one made now)
-            let made = self.generated.iter().find(|(_, g)| g.kind == KIND_SUIT && g.charlock == r.key).map(|(&k, _)| k);
-            let suit = match made {
-                Some(k) => Some(k),
-                None => {
-                    let parts = |slot: i64| {
-                        let mut v: Vec<_> =
-                            db.descriptions.iter().filter(|d| d.rider == r.key && d.slot == slot && !d.excluded).collect();
-                        v.sort_by_key(|d| (d.id, d.key));
-                        v
-                    };
-                    let (tops, bottoms) = (parts(SLOT_SUIT_TOP), parts(SLOT_SUIT_BOTTOM));
-                    tops.first().map(|top| {
-                        let bottom = bottoms.iter().find(|b| b.id == top.id).or(bottoms.first()).map_or(0, |b| b.key);
-                        let equip_id = self.next_equip_id();
-                        self.generated.insert(
-                            equip_id,
-                            GeneratedItem {
-                                equip_id,
-                                kind: KIND_SUIT,
-                                slot: SLOT_SUIT_TOP,
-                                level: 0,
-                                rarity: 0,
-                                cost: 0,
-                                charlock: r.key,
-                                descriptions: [top.key, bottom],
-                                stats: [(-1, 0); 6],
-                                name_format: [0; 4],
-                                wall_id: -1,
-                                sponsor: 0,
-                            },
-                        );
-                        lines.push(format!("retro riders: {} given a suit of its own ({equip_id:#x})", r.name));
-                        equip_id
-                    })
-                }
+            // (its default suit: the one given already, else one made now; any suits bought for it are kept as well)
+            let parts = |slot: i64| {
+                let mut v: Vec<_> =
+                    db.descriptions.iter().filter(|d| d.rider == r.key && d.slot == slot && !d.excluded).collect();
+                v.sort_by_key(|d| (d.id, d.key));
+                v
             };
+            let (tops, bottoms) = (parts(SLOT_SUIT_TOP), parts(SLOT_SUIT_BOTTOM));
+            let pair = tops.first().map(|top| {
+                let bottom = bottoms.iter().find(|b| b.id == top.id).or(bottoms.first()).map_or(0, |b| b.key);
+                [top.key, bottom]
+            });
+            let suit = pair.map(|descriptions| {
+                let given = self
+                    .generated
+                    .iter()
+                    .find(|(_, g)| {
+                        g.kind == KIND_SUIT
+                            && g.charlock == r.key
+                            && g.cost == 0
+                            && g.rarity == 0
+                            && g.descriptions == descriptions
+                            && g.stats.iter().all(|s| s.0 == -1)
+                    })
+                    .map(|(&k, _)| k);
+                given.unwrap_or_else(|| {
+                    let equip_id = self.next_equip_id();
+                    self.generated.insert(
+                        equip_id,
+                        GeneratedItem {
+                            equip_id,
+                            kind: KIND_SUIT,
+                            slot: SLOT_SUIT_TOP,
+                            level: 0,
+                            rarity: 0,
+                            cost: 0,
+                            charlock: r.key,
+                            descriptions,
+                            stats: [(-1, 0); 6],
+                            name_format: [0; 4],
+                            wall_id: -1,
+                            sponsor: 0,
+                        },
+                    );
+                    lines.push(format!("retro riders: {} given a default suit ({equip_id:#x})", r.name));
+                    equip_id
+                })
+            });
             let board = fnv1(format!("board_{base}_default").as_bytes());
             let stats = self.riders.entry(r.key).or_default();
             let suit_ok = match stats.last_suit {
