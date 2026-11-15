@@ -197,7 +197,7 @@ impl Renderer {
         if !inst.visible && !inh.mask {
             return;
         }
-        if !inh.mask && hidden_dock_tab(player, inst) {
+        if !inh.mask && (hidden_dock_tab(player, inst) || hidden_side_dimmer(lib, player, inst)) {
             return;
         }
         if !inh.mask && gear_hidden(id) {
@@ -1227,6 +1227,15 @@ mod tests {
         assert_eq!(build(-300 * 20, 100.0).len(), 1, "slid past the window's edge: it covers the extra width itself");
         assert_eq!(build(-500 * 20, 100.0).len(), 1, "wholly beside the stage: unchanged");
     }
+}
+
+// Port mod: the menus' side dimmer (dimmer.gfx: `mcDimmer`'s dark sheet down the left of the stage, under the World
+// Tour and Explore panels, character 2) is not drawn: on a wide screen it shows as a strip of another shade down the
+// left (v0.4.0 draws it on out to the window's edge). The full-screen dimmer beside it (character 4) is kept.
+fn hidden_side_dimmer(lib: &Library, player: &Player, inst: &Instance) -> bool {
+    inst.character.as_ref().is_some_and(|c| c.id == 2)
+        && inst.parent.and_then(|p| player.get(p)).is_some_and(|p| p.name == "mcDimmer")
+        && lib.movie(inst.movie).path.to_ascii_lowercase().rsplit(['/', '\\']).next() == Some("dimmer.gfx")
 }
 
 // Port mod: the front-end dock's three empty tab boxes (left of the menu options) are not drawn.
