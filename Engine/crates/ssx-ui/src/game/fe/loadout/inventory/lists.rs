@@ -193,14 +193,36 @@ impl Inventory {
         let owned = |k: u32| self.catalog.entries.get(&k).is_some_and(|e| profile.offered(k, e));
         let forced = drop.and_then(|d| d.forced(kind));
         if kind == RIDER {
-            return db
+            let riders: Vec<&ssx_assets::career::data::Rider> = db
                 .riders
                 .iter()
                 .filter(|r| r.default || owned(r.key))
                 .filter(|r| forced.is_none_or(|f| f == r.key))
                 .filter(|r| !drop.is_some_and(|d| d.rider_forced) || drop.and_then(|d| d.forced(RIDER)) == Some(r.key))
-                .map(|r| r.key)
                 .collect();
+            if !ssx_core::rider_showcase::enabled() {
+                return riders.iter().map(|r| r.key).collect();
+            }
+            // (the Custom Event Menus mod: Travis right after Eddie, and the retro riders (`dlc…`) right after Travis)
+            let id = |r: &ssx_assets::career::data::Rider| r.portrait.to_ascii_lowercase();
+            let retro = |r: &&ssx_assets::career::data::Rider| id(r).starts_with("dlc");
+            let travis = riders.iter().copied().find(|r| id(r) == "travis");
+            let retros: Vec<_> = riders.iter().copied().filter(retro).collect();
+            let mut out: Vec<u32> = Vec::with_capacity(riders.len());
+            let mut placed = false;
+            for r in riders.iter().copied().filter(|r| !retro(r) && Some(r.key) != travis.map(|t| t.key)) {
+                out.push(r.key);
+                if id(r) == "eddie" {
+                    out.extend(travis.map(|t| t.key));
+                    out.extend(retros.iter().map(|r| r.key));
+                    placed = true;
+                }
+            }
+            if !placed {
+                out.extend(travis.map(|t| t.key));
+                out.extend(retros.iter().map(|r| r.key));
+            }
+            return out;
         }
         let level = Self::rider_level(db, profile, self.rider).0;
         // (the Custom Event Menus mod: a retro rider (`dlc…`) has the default board of the rider it's a retro version
