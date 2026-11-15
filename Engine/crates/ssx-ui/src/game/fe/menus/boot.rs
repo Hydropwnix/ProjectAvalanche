@@ -92,20 +92,31 @@ pub fn activate(fe: &mut FrontEnd, env: &mut FeEnv) {
             fe.boot.play_intro = v.play_intro;
             fe.boot.attract_off = v.attract_started;
         }
+        if fe.boot.skip_intros && !env.values.bool(BOOT_FLOW_STARTED) {
+            // `skip-intros`: the title screen after the ESRB notice starts by itself, still under the black.
+            fe.boot.play_intro = false;
+            fe.boot.handle_input = false;
+            fe.boot.attract_off = true;
+            fe.boot.auto_start = true;
+        }
         return;
     }
     env.values.set_bool(BOOT_LOGO_STARTED, true);
     crate::game::fe::settings::init_values(env.values, &fe.audio_store);
     if fe.boot.skip_intros {
-        // Port mod (the `skip-intros` mod enabled): no EA logo movie, no ESRB notice and no start screen; the boot
-        // starts by itself at the next update and goes on to the main menu.
+        // Port mod (the `skip-intros` mod enabled): no EA logo movie and no start screen (and no ESRB notice to see);
+        // the boot starts by itself and goes on to the main menu, under the startup's black.
         fe.boot.play_intro = false;
         fe.boot.handle_input = false;
-        fe.boot.auto_start = true;
         fe.boot.startup_left = STARTUP_HOLD_S + STARTUP_FADE_S;
-        // The title update's ESRB notice goes too: with no notice the boot screen is never served
-        // `dp_boot_esrb_ready`, as without the title update, so it does not start the notice over the main menu.
-        fe.boot.esrb = None;
+        if fe.boot.esrb.is_some() {
+            // The title update's boot screen goes through its ESRB notice before it takes any other screen: the
+            // notice is served and ended as soon as it starts (under the black), and the title screen it leads to
+            // starts by itself (see the reactivation above).
+            fe.publish.push(ESRB_READY.into());
+        } else {
+            fe.boot.auto_start = true;
+        }
         startup_fade(fe, 0.0);
         fe.note("boot: the logo movie and the start screen are skipped");
     } else if !env.values.bool(BOOT_SKIP_INTRO) {
@@ -127,6 +138,9 @@ pub fn activate(fe: &mut FrontEnd, env: &mut FeEnv) {
 }
 
 pub fn update(fe: &mut FrontEnd, env: &mut FeEnv, dt: f64) {
+    if fe.boot.startup_left > 0.0 {
+        startup_fade(fe, dt);
+    }
     if let Some(e) = fe.boot.esrb.as_mut()
         && !e.played
     {
@@ -135,9 +149,6 @@ pub fn update(fe: &mut FrontEnd, env: &mut FeEnv, dt: f64) {
             esrb_done(fe, env);
         }
         return;
-    }
-    if fe.boot.startup_left > 0.0 {
-        startup_fade(fe, dt);
     }
     if std::mem::take(&mut fe.boot.auto_start) && !env.values.bool(BOOT_FLOW_STARTED) {
         action(fe, env, "A_BootStart", 0.0);
