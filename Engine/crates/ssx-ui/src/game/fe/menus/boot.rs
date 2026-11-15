@@ -103,9 +103,9 @@ pub fn activate(fe: &mut FrontEnd, env: &mut FeEnv) {
         fe.boot.handle_input = false;
         fe.boot.auto_start = true;
         fe.boot.startup_left = STARTUP_HOLD_S + STARTUP_FADE_S;
-        if let Some(e) = fe.boot.esrb.as_mut() {
-            e.played = true;
-        }
+        // The title update's ESRB notice goes too: with no notice the boot screen is never served
+        // `dp_boot_esrb_ready`, as without the title update, so it does not start the notice over the main menu.
+        fe.boot.esrb = None;
         startup_fade(fe, 0.0);
         fe.note("boot: the logo movie and the start screen are skipped");
     } else if !env.values.bool(BOOT_SKIP_INTRO) {
