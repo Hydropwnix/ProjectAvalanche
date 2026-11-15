@@ -1370,11 +1370,6 @@ const INNER_TOP_RAISE_PX: f32 = 14.0;
 const PLAIN_EDGE: [f32; 3] = [0.33, 0.62, 0.65];
 /// The gear and perks box over the rider list: this many pixels left of the highlighted card's border.
 const BIO_SHIFT_PX: f32 = 3.0;
-/// The rider list's cards either side of the highlighted one keep this many window pixels clear of the window's edges.
-const LIST_EDGE_PAD_PX: f32 = 16.0;
-/// The rider list's cards either side of the highlighted one are drawn no smaller than this (of the menu's size) to
-/// fit them all in the window.
-const LIST_MIN_SCALE: f32 = 0.5;
 /// The rider list's cards (and the description under the highlighted one): this many pixels lower than the menu has them.
 const LIST_DROP_PX: f32 = 25.0;
 /// The gear and perks box over the rider list: this many pixels lower than the menu has it.
@@ -2557,6 +2552,14 @@ fn check_grow_cell(lib: &Library, player: &Player, id: InstanceId, inst: &Instan
             return;
         }
         let b = b.transform(&child.matrix);
+        // (the card grown by its portrait's place in it as a regular rider's portrait has it: the retro riders'
+        // pictures (the classic riders' package) are of other sizes, which would grow the card out of shape)
+        let inner_box = s.children.values().find_map(|&k| {
+            let i = player.get(k).filter(|i| i.name == "mcInnerframe")?;
+            let kb = player.local_bounds(lib, k);
+            (!kb.is_empty()).then(|| kb.transform(&i.matrix))
+        });
+        let b = portrait_fit(b, inner_box, &ssx_core::rider_showcase::highlight_portrait());
         let by = (b.y1 - b.y0) * GROW_FRACTION;
         let wide = (b.x1 - b.x0) * WIDEN_FRACTION;
         let (x0, y0) = xf.apply(b.x0, b.y0);
@@ -2601,6 +2604,25 @@ fn check_grow_cell(lib: &Library, player: &Player, id: InstanceId, inst: &Instan
             });
         }
         return;
+    }
+}
+
+/// A regular rider's portrait's place on its card, from the card's inner square's (its left, top, right and bottom
+/// edges' distances from the square's), as last measured: the retro riders' cards grow by it.
+static PORTRAIT_FIT: std::sync::Mutex<Option<[f32; 4]>> = std::sync::Mutex::new(None);
+
+/// The highlighted card's portrait's place (`b`, in the card's units) for growing the card: a regular rider's as
+/// measured (and kept), a retro rider's (`dlc…`) as a regular rider's would be on its card.
+fn portrait_fit(b: RectF, inner: Option<RectF>, rider: &str) -> RectF {
+    let Some(f) = inner.filter(|f| !f.is_empty()) else { return b };
+    let Ok(mut fit) = PORTRAIT_FIT.lock() else { return b };
+    if !rider.starts_with("dlc") {
+        *fit = Some([b.x0 - f.x0, b.y0 - f.y0, b.x1 - f.x1, b.y1 - f.y1]);
+        return b;
+    }
+    match *fit {
+        Some([l, t, r, bo]) => RectF { x0: f.x0 + l, y0: f.y0 + t, x1: f.x1 + r, y1: f.y1 + bo },
+        None => b,
     }
 }
 
@@ -3099,6 +3121,22 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
             Some((b.x0, b.x1, b.y0))
         });
         let pictured = portrait.and_then(|p| card_portrait_name(lib, player, p)).filter(|r| order.contains(r));
+        // (a regular rider's card: its portrait's place on it kept for the retro riders' cards, should one of theirs
+        // be the first highlighted)
+        if let (Some(r), Some(p), Some(n)) = (pictured.as_deref(), portrait, inner)
+            && !r.starts_with("dlc")
+            && PORTRAIT_FIT.lock().is_ok_and(|f| f.is_none())
+            && let Some(f) = child(player, n, "mcInnerframe")
+        {
+            let pb = player.local_bounds(lib, p);
+            let fb = player.local_bounds(lib, f);
+            if let (Some(pi), Some(fi)) = (player.get(p), player.get(f))
+                && !pb.is_empty()
+                && !fb.is_empty()
+            {
+                let _ = portrait_fit(pb.transform(&pi.matrix), Some(fb.transform(&fi.matrix)), r);
+            }
+        }
         // (a card whose pictures aren't in yet: its rider as the menu has it)
         let by_item = pictured.is_none();
         let rider = pictured.or_else(|| {
@@ -3252,36 +3290,40 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
             }
         }
     }
-    // The other riders either side of the highlighted card, as many before it (in the list's order) as fit back to
-    // the window's left edge, the rest after it to the window's right edge, round the list; when they would not all
-    // fit at the menu's own size, the cards either side are drawn smaller (and closer) till they do.
-    // (the highlighted card widens to the right: the cards after it sit past its growth)
+    // The other riders either side of the highlighted card, at the menu's own size and spacing: as many before it (in
+    // the list's order) as reach back past the window's left edge, the rest after it, on past the right edge, round the
+    // list. Every gap the same, the highlighted card's either side too (as it's drawn, grown).
     let growth = grow_now_or_prev().map_or(0.0, grown_extra);
     let all = order.len();
     let (hl_left, hl_w, hl_top) = cards[list[h].1].edges.map_or((0.0, spacing, 0.0), |e| (e.0, e.1 - e.0, e.2));
-    let (window_right, _) = to_menu.apply(viewport.0 as f32, viewport.1 as f32 / 2.0);
-    let pad = LIST_EDGE_PAD_PX * to_menu.a.abs();
-    // (the cards seen: inside their backings' clear margins)
-    let seen_left = first + hl_left + CARD_MARGIN * hl_w;
-    let seen_w = hl_w * (1.0 - 2.0 * CARD_MARGIN);
-    let others = all.saturating_sub(1);
-    let fit = |k: f32| {
-        let pitch = spacing * k;
-        let l = ((seen_left - window_left - pad) / pitch).floor().max(0.0) as usize;
-        let r = ((window_right - pad - seen_left - growth - seen_w * k) / pitch).floor().max(0.0) as usize;
-        (l, r)
-    };
-    let mut k = 1.0f32;
-    while k > LIST_MIN_SCALE {
-        let (l, r) = fit(k);
-        if l + r >= others {
-            break;
+    let _ = hl_top;
+    // (the cards seen: inside their backings' clear margins; the gap between two of them)
+    let seen_l = hl_left + CARD_MARGIN * hl_w;
+    let seen_r = hl_left + (1.0 - CARD_MARGIN) * hl_w;
+    let gap = spacing - (seen_r - seen_l);
+    // (the highlighted card's edges as drawn (its grown frame, last frame), in the menu's units)
+    let (hx0, hx1) = match drawn {
+        Some(r) if r.x1 > r.x0 => {
+            let (a, _) = to_menu.apply(r.x0, r.y0);
+            let (b, _) = to_menu.apply(r.x1, r.y0);
+            (a.min(b), a.max(b))
         }
-        k = (k - 0.01).max(LIST_MIN_SCALE);
-    }
-    let pitch = spacing * k;
-    let before = fit(k).0.min(others);
+        _ => (first + seen_l, first + seen_r + growth),
+    };
+    let pitch = spacing;
+    let others = all.saturating_sub(1);
+    let before = (((hx0 - gap - window_left) / pitch).ceil().max(0.0) as usize).min(others);
     let after = others - before;
+    // (a card's place (its own, as `first` is the highlighted one's) by its slot)
+    let place = |slot: i64| -> f32 {
+        if slot >= 1 {
+            hx1 + gap + (slot - 1) as f32 * pitch - seen_l
+        } else if slot <= -1 {
+            hx0 - gap + (slot + 1) as f32 * pitch - seen_r
+        } else {
+            first
+        }
+    };
 
     let ease = (dt * 14.0).min(1.0);
     let mut row: Vec<(i64, String, Option<InstanceId>, f32, f32)> = Vec::with_capacity(all);
@@ -3293,7 +3335,7 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
         let card = shown.get(rider.as_str()).copied();
         let r = (order_at(rider) + all - h_at) % all;
         let slot = if r > after { r as i64 - all as i64 } else { r as i64 };
-        let target = first + slot as f32 * pitch + if slot >= 1 { growth } else { 0.0 };
+        let target = place(slot);
         let was = st.slot.insert(rider.clone(), slot);
         let now = st.now.entry(rider.clone()).or_insert(target);
         // The highlighted card stands still (put in its place at once). The others slide to theirs; one going round
@@ -3315,8 +3357,8 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
         }
         // (a card coming round either end of the list fades in as it slides on: anything past the list's last place
         // on the right, or its first on the left)
-        let last = first + after as f32 * pitch + growth;
-        let first_left = first - before as f32 * pitch;
+        let last = place(after as i64);
+        let first_left = place(-(before as i64));
         let alpha = if slot >= 1 {
             (1.0 - (*now - last).max(0.0) / pitch.max(1e-3)).clamp(0.0, 1.0)
         } else if slot <= -1 {
@@ -3342,7 +3384,7 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
         // (the riders the menu has no card for this frame: their cards as last seen, in their places)
         for (slot, rider, clip, x, alpha) in &row {
             if clip.is_none() && *slot != 0 && *alpha > 0.001 {
-                g.push((rider.clone(), *x + (1.0 - k) * hl_left, *alpha));
+                g.push((rider.clone(), *x, *alpha));
             }
         }
     }
@@ -3380,20 +3422,16 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
             }
         }
     }
-    let placed: Vec<(InstanceId, f32, f32, f32)> = row
-        .iter()
-        .filter_map(|c| c.2.map(|clip| (clip, c.3, c.4, if c.0 == 0 { 1.0 } else { k })))
-        .collect();
+    let placed: Vec<(InstanceId, f32, f32)> = row.iter().filter_map(|c| c.2.map(|clip| (clip, c.3, c.4))).collect();
     let chosen: Vec<InstanceId> = placed.iter().map(|p| p.0).collect();
     let drop = LIST_DROP_PX * to_menu.d.abs();
-    for (clip, x, alpha, scale) in placed {
+    for (clip, x, alpha) in placed {
         let own = st.own.get(&clip).map(|o| (o.y, o.abcd));
         if let Some(i) = player.get_mut(clip) {
-            // (a smaller card: its left edge and its top where the full-size card's would be)
-            i.matrix.tx = x + (1.0 - scale) * hl_left;
-            if let Some((y, [a, b, c, d])) = own {
-                i.matrix.ty = y + drop + (1.0 - scale) * hl_top;
-                [i.matrix.a, i.matrix.b, i.matrix.c, i.matrix.d] = [a * scale, b * scale, c * scale, d * scale];
+            i.matrix.tx = x;
+            if let Some((y, abcd)) = own {
+                i.matrix.ty = y + drop;
+                [i.matrix.a, i.matrix.b, i.matrix.c, i.matrix.d] = abcd;
             }
             i.visible = true;
             i.cxform.mult[3] = alpha;
