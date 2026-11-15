@@ -343,7 +343,23 @@ fn build_frame(
             None => drop(scene.player.tick(&scene.lib, time.delta_secs_f64())),
         }
     }
-    // (the 3D Rider Select mod: the rider list laid out in a centred row)
+    // (the 3D Rider Select mod: the rider list laid out in a row across the window, each card known by the rider the
+    // list's menu has put in it)
+    if ssx_core::rider_showcase::enabled()
+        && let Some(vm) = scene.vm.as_mut()
+    {
+        let mut cx = vm.ctx(&mut scene.lib, &mut scene.player);
+        ssx_ui::render::read_rider_menu(&mut cx);
+        // (logged as it changes)
+        static SEEN: std::sync::Mutex<(usize, usize)> = std::sync::Mutex::new((0, 0));
+        let counts = ssx_ui::render::rider_menu_counts();
+        if let Ok(mut seen) = SEEN.lock()
+            && *seen != counts
+        {
+            *seen = counts;
+            info!("rider list: the menu has {} cards for {} riders", counts.0, counts.1);
+        }
+    }
     ssx_ui::render::relayout_rider_list(&scene.lib, &mut scene.player, (size.x, size.y), scene.scale_mode);
     if scene.window_hidden {
         scene.last_cpu = t0.elapsed();

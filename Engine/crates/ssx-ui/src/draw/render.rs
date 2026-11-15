@@ -1370,6 +1370,11 @@ const INNER_TOP_RAISE_PX: f32 = 14.0;
 const PLAIN_EDGE: [f32; 3] = [0.33, 0.62, 0.65];
 /// The gear and perks box over the rider list: this many pixels left of the highlighted card's border.
 const BIO_SHIFT_PX: f32 = 3.0;
+/// The rider list's cards either side of the highlighted one keep this many window pixels clear of the window's edges.
+const LIST_EDGE_PAD_PX: f32 = 16.0;
+/// The rider list's cards either side of the highlighted one are drawn no smaller than this (of the menu's size) to
+/// fit them all in the window.
+const LIST_MIN_SCALE: f32 = 0.5;
 /// The rider list's cards (and the description under the highlighted one): this many pixels lower than the menu has them.
 const LIST_DROP_PX: f32 = 25.0;
 /// The gear and perks box over the rider list: this many pixels lower than the menu has it.
@@ -2767,6 +2772,71 @@ pub fn clear_rider_list_early() {
     }
 }
 
+/// The rider list's menu (`mcRiderMenu`, a `components.RiderMenu`) as last laid out: kept for `read_rider_menu`.
+static RIDER_MENU: std::sync::Mutex<Option<InstanceId>> = std::sync::Mutex::new(None);
+/// The rider list's menu's cells as the menu itself has them: each card (the menu's own child, a `clipInstance`) and
+/// the list item (the rider's index in the list) the menu has put in it. The menu hands riders from card to card as it
+/// scrolls and loads a rider's pictures into a card a moment later (the card meanwhile shows nothing, or "NA"): by its
+/// item, a card is known as its rider's before its pictures are in.
+/// (and how many items the menu has: its items are the list's riders only when it has as many)
+static RIDER_CELLS: std::sync::Mutex<(Vec<(InstanceId, usize)>, usize)> = std::sync::Mutex::new((Vec::new(), 0));
+
+/// Reads the rider list's menu's cells (`read_rider_menu`'s note): before `relayout_rider_list`, each frame.
+pub fn read_rider_menu(cx: &mut crate::avm1::Ctx) {
+    use crate::avm1::value::Value;
+    let mut cells = Vec::new();
+    let mut items = 0;
+    let menu = RIDER_MENU.lock().ok().and_then(|m| *m);
+    if let Some(menu) = menu.filter(|&m| cx.player.get(m).is_some_and(|i| i.name == "mcRiderMenu")) {
+        let obj = Value::Object(cx.object_for(menu));
+        let number = |cx: &mut crate::avm1::Ctx, name: &str| {
+            let v = cx.get_member(&obj, name).ok()?;
+            let n = cx.to_number(&v);
+            n.is_finite().then_some(n)
+        };
+        let first = number(cx, "mFirstVisibleItemIndex");
+        let total = number(cx, "mNumTotalItems");
+        let visible = number(cx, "mNumVisibleItems");
+        let circular = cx.get_member(&obj, "mIsCircular").map(|v| cx.to_bool(&v)).unwrap_or(false);
+        if let (Some(first), Some(total), Some(visible)) = (first, total, visible)
+            && total >= 1.0
+            && let Ok((get, _)) = cx.get_method(&obj, "GetCellByIndex")
+            && cx.is_function(&get)
+        {
+            let (first, total, visible) = (first as i64, total.min(1024.0) as i64, visible.clamp(0.0, 128.0) as i64);
+            items = total as usize;
+            for i in 0..visible {
+                let item = if circular { (first + i).rem_euclid(total) } else { first + i };
+                if item < 0 || item >= total {
+                    continue;
+                }
+                let cell = cx.call_top(&get, obj.clone(), &[Value::Number(i as f64)]);
+                let Some(mut c) = cx.display_of(&cell) else { continue };
+                // (the menu's own child: the card)
+                let mut steps = 0;
+                while let Some(parent) = cx.player.get(c).and_then(|k| k.parent)
+                    && parent != menu
+                    && steps < 8
+                {
+                    c = parent;
+                    steps += 1;
+                }
+                if cx.player.get(c).is_some_and(|k| k.parent == Some(menu)) {
+                    cells.push((c, item as usize));
+                }
+            }
+        }
+    }
+    if let Ok(mut c) = RIDER_CELLS.lock() {
+        *c = (cells, items);
+    }
+}
+
+/// The rider list's menu's cells as last read: how many cards it has, and how many items (for the log).
+pub fn rider_menu_counts() -> (usize, usize) {
+    RIDER_CELLS.lock().map(|c| (c.0.len(), c.1)).unwrap_or((0, 0))
+}
+
 pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u32), mode: ScaleMode) {
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -2775,6 +2845,8 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
     struct Own {
         x: f32,
         y: f32,
+        /// Its scale (the cards either side of the highlighted one are drawn smaller when they would not all fit).
+        abcd: [f32; 4],
         visible: bool,
         alpha: f32,
         cell: Option<(InstanceId, f32)>,
@@ -2846,6 +2918,7 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
             if let Some(i) = player.get_mut(c) {
                 i.matrix.tx = own.x;
                 i.matrix.ty = own.y;
+                [i.matrix.a, i.matrix.b, i.matrix.c, i.matrix.d] = own.abcd;
                 i.visible = own.visible;
                 i.cxform.mult[3] = own.alpha;
             }
@@ -2902,6 +2975,9 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
                 stack.extend(s.children.values().map(|&c| (c, depth + 1)));
             }
         }
+    }
+    if let Ok(mut m) = RIDER_MENU.lock() {
+        *m = st.menu;
     }
     let Some(menu) = st.menu else { return };
     if on && !gear && st.was_gear.take().is_some() {
@@ -2968,8 +3044,11 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
         clip: InstanceId,
         rider: Option<String>,
         alpha: f32,
-        /// The card's backing's left and right edges (menu units, from the card's own place).
-        edges: Option<(f32, f32)>,
+        /// The card's backing's left and right edges and its top (menu units, from the card's own place, at the
+        /// menu's own scale).
+        edges: Option<(f32, f32, f32)>,
+        /// Its rider known from the menu's own cells (its pictures maybe not in yet), not from its pictures.
+        by_item: bool,
         /// Its highlight frames are up; and where its clip, outer and inner cells are in their timelines.
         lit44: bool,
         frames: [u16; 3],
@@ -2981,6 +3060,7 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
         }
         _ => None,
     };
+    let cells = RIDER_CELLS.lock().ok().filter(|c| c.1 == order.len()).map(|c| c.0.clone()).unwrap_or_default();
     let mut cards = Vec::new();
     for &c in &clips {
         let Some(i) = player.get(c) else { continue };
@@ -2991,6 +3071,7 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
             let own = Own {
                 x: i.matrix.tx,
                 y: i.matrix.ty,
+                abcd: [i.matrix.a, i.matrix.b, i.matrix.c, i.matrix.d],
                 visible: i.visible,
                 alpha: i.cxform.mult[3],
                 cell: outer.and_then(|o| player.get(o).map(|oi| (o, oi.cxform.mult[3]))),
@@ -3012,11 +3093,18 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
             for k in [inner, outer].into_iter().flatten() {
                 m = player.get(k)?.matrix.mul(&m);
             }
-            let m = Mat2d { tx: 0.0, ..player.get(c)?.matrix }.mul(&m);
+            let [a, b, cc, d] = st.own.get(&c).map(|o| o.abcd)?;
+            let m = Mat2d { a, b, c: cc, d, tx: 0.0, ty: 0.0 }.mul(&m);
             let b = kb.transform(&m);
-            Some((b.x0, b.x1))
+            Some((b.x0, b.x1, b.y0))
         });
-        let rider = portrait.and_then(|p| card_portrait_name(lib, player, p));
+        let pictured = portrait.and_then(|p| card_portrait_name(lib, player, p)).filter(|r| order.contains(r));
+        // (a card whose pictures aren't in yet: its rider as the menu has it)
+        let by_item = pictured.is_none();
+        let rider = pictured.or_else(|| {
+            let item = cells.iter().find(|(k, _)| *k == c).map(|e| e.1)?;
+            order.get(item).cloned()
+        });
         let lit44 = inner.is_some_and(|n| match player.get(n).map(|i| &i.kind) {
             Some(InstanceKind::Sprite(s)) => s.children.values().any(|&k| {
                 player.get(k).is_some_and(|k| {
@@ -3030,14 +3118,17 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
             _ => 0,
         };
         let frames = [frame(Some(c)), frame(outer), frame(inner)];
-        cards.push(Card { clip: c, rider, alpha, edges, lit44, frames, inner });
+        cards.push(Card { clip: c, rider, alpha, edges, by_item, lit44, frames, inner });
     }
 
     // Each rider of the list on one card: the least faded the menu has for it.
     let mut shown: HashMap<&str, usize> = HashMap::new();
     for (k, card) in cards.iter().enumerate() {
         let Some(r) = card.rider.as_deref() else { continue };
-        let better = shown.get(r).is_none_or(|&o| card.alpha > cards[o].alpha);
+        // (a card showing the rider's pictures before one only waiting for them; then the least faded)
+        let better = shown
+            .get(r)
+            .is_none_or(|&o| (!card.by_item, card.alpha) > (!cards[o].by_item, cards[o].alpha));
         if better && order.iter().any(|o| o == r) {
             shown.insert(r, k);
         }
@@ -3141,7 +3232,6 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
         Some(x) => x - left - spacing * PIN_NUDGE + PIN_SHIFT_PX * to_menu.a.abs(),
         None => xs.first().copied().unwrap_or(0.0),
     };
-    let _ = window_left;
     // The gear and perks box over the list: its left edge lined up with the highlighted card's.
     // (to the highlighted card's edge as drawn: its glowing border, in window pixels, as last drawn)
     let drawn = CARD_NOW.lock().ok().and_then(|c| *c).or_else(|| CARD_PREV.lock().ok().and_then(|c| *c));
@@ -3162,55 +3252,80 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
             }
         }
     }
-    // Every other rider after the highlighted one.
-    let before = 0;
+    // The other riders either side of the highlighted card, as many before it (in the list's order) as fit back to
+    // the window's left edge, the rest after it to the window's right edge, round the list; when they would not all
+    // fit at the menu's own size, the cards either side are drawn smaller (and closer) till they do.
     // (the highlighted card widens to the right: the cards after it sit past its growth)
     let growth = grow_now_or_prev().map_or(0.0, grown_extra);
+    let all = order.len();
+    let (hl_left, hl_w, hl_top) = cards[list[h].1].edges.map_or((0.0, spacing, 0.0), |e| (e.0, e.1 - e.0, e.2));
+    let (window_right, _) = to_menu.apply(viewport.0 as f32, viewport.1 as f32 / 2.0);
+    let pad = LIST_EDGE_PAD_PX * to_menu.a.abs();
+    // (the cards seen: inside their backings' clear margins)
+    let seen_left = first + hl_left + CARD_MARGIN * hl_w;
+    let seen_w = hl_w * (1.0 - 2.0 * CARD_MARGIN);
+    let others = all.saturating_sub(1);
+    let fit = |k: f32| {
+        let pitch = spacing * k;
+        let l = ((seen_left - window_left - pad) / pitch).floor().max(0.0) as usize;
+        let r = ((window_right - pad - seen_left - growth - seen_w * k) / pitch).floor().max(0.0) as usize;
+        (l, r)
+    };
+    let mut k = 1.0f32;
+    while k > LIST_MIN_SCALE {
+        let (l, r) = fit(k);
+        if l + r >= others {
+            break;
+        }
+        k = (k - 0.01).max(LIST_MIN_SCALE);
+    }
+    let pitch = spacing * k;
+    let before = fit(k).0.min(others);
+    let after = others - before;
 
     let ease = (dt * 14.0).min(1.0);
-    let mut row: Vec<(i64, String, InstanceId, f32, f32)> = Vec::with_capacity(n);
-    // (places by the whole list's order: a rider the menu has no card for this frame, as it hands its cards round,
-    // leaves its own place empty, never moving the others)
-    let all = order.len();
+    let mut row: Vec<(i64, String, Option<InstanceId>, f32, f32)> = Vec::with_capacity(all);
+    // (places by the whole list's order: a rider the menu has no card for this frame (the menu has fewer cards than
+    // the list has riders, and hands them round as it scrolls) is drawn as its card was last seen)
     let order_at = |r: &str| order.iter().position(|o| o == r).unwrap_or(0);
     let h_at = order_at(&highlighted);
-    for (rider, card) in list.iter() {
+    for rider in order.iter() {
+        let card = shown.get(rider.as_str()).copied();
         let r = (order_at(rider) + all - h_at) % all;
-        let slot = if r + before >= all { r as i64 - all as i64 } else { r as i64 };
-        let target = first + slot as f32 * spacing + if slot >= 1 { growth } else { 0.0 };
-        let was = st.slot.insert((*rider).clone(), slot);
-        let now = st.now.entry((*rider).clone()).or_insert(target);
+        let slot = if r > after { r as i64 - all as i64 } else { r as i64 };
+        let target = first + slot as f32 * pitch + if slot >= 1 { growth } else { 0.0 };
+        let was = st.slot.insert(rider.clone(), slot);
+        let now = st.now.entry(rider.clone()).or_insert(target);
         // The highlighted card stands still (put in its place at once). The others slide to theirs; one going round
         // the end of the list starts a slot beyond its new place (off that end) and slides in.
-        // (the card coming in from the next place: a plain copy of it slides on from there, under the highlighted one)
-        if slot == 0 && was == Some(1) {
-            st.ghosts.push(((*rider).clone(), *now, *now, first, false));
-        }
-        // (the card coming from the far end (the list moving the other way): a copy of it slides on off that end,
-        // fading)
-        if slot == 0 && was.is_some_and(|w| w == all as i64 - 1 && w > 1) {
-            st.ghosts.push(((*rider).clone(), *now, *now, *now + spacing, true));
+        // (the card coming in from the next place either side: a plain copy of it slides on from there, under the
+        // highlighted one)
+        if slot == 0 && (was == Some(1) || was == Some(-1)) {
+            st.ghosts.push((rider.clone(), *now, *now, first, false));
         }
         match was {
             _ if slot == 0 => *now = target,
             None => *now = target,
             Some(w) if (w - slot).abs() > 1 => {
                 let from = if slot < w { -1.0 } else { 1.0 };
-                *now = target + from * spacing;
+                *now = target + from * pitch;
                 *now += (target - *now) * ease;
             }
             Some(_) => *now += (target - *now) * ease,
         }
-        // (a card coming round the end of the list fades in as it slides on)
-        // (and anything right of the list's last place: coming on from off its end)
-        let last = first + (all as f32 - 1.0) * spacing + growth;
+        // (a card coming round either end of the list fades in as it slides on: anything past the list's last place
+        // on the right, or its first on the left)
+        let last = first + after as f32 * pitch + growth;
+        let first_left = first - before as f32 * pitch;
         let alpha = if slot >= 1 {
-            (1.0 - (*now - last).max(0.0) / spacing.max(1e-3)).clamp(0.0, 1.0)
+            (1.0 - (*now - last).max(0.0) / pitch.max(1e-3)).clamp(0.0, 1.0)
+        } else if slot <= -1 {
+            (1.0 - (first_left - *now).max(0.0) / pitch.max(1e-3)).clamp(0.0, 1.0)
         } else {
             1.0
         };
         let alpha = if slot != 0 { alpha * fade_in } else { alpha };
-        row.push((slot, (*rider).clone(), cards[*card].clip, *now, alpha));
+        row.push((slot, rider.clone(), card.map(|c| cards[c].clip), *now, alpha));
     }
     st.ghosts.retain_mut(|(_, x, _, to, _)| {
         *x += (*to - *x) * ease;
@@ -3223,6 +3338,12 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
             let gone = (*x - *from).abs() / (*to - *from).abs().max(1e-3);
             let alpha = (1.0 - gone * if *fade { 2.0 } else { 1.0 }).clamp(0.0, 1.0);
             g.push(((*rider).clone(), *x, alpha));
+        }
+        // (the riders the menu has no card for this frame: their cards as last seen, in their places)
+        for (slot, rider, clip, x, alpha) in &row {
+            if clip.is_none() && *slot != 0 && *alpha > 0.001 {
+                g.push((rider.clone(), *x + (1.0 - k) * hl_left, *alpha));
+            }
         }
     }
     // The highlighted card drawn over the others (a card leaving it slides out from behind it, never seen over it):
@@ -3259,15 +3380,20 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
             }
         }
     }
-    let placed: Vec<(InstanceId, f32, f32)> = row.iter().map(|c| (c.2, c.3, c.4)).collect();
+    let placed: Vec<(InstanceId, f32, f32, f32)> = row
+        .iter()
+        .filter_map(|c| c.2.map(|clip| (clip, c.3, c.4, if c.0 == 0 { 1.0 } else { k })))
+        .collect();
     let chosen: Vec<InstanceId> = placed.iter().map(|p| p.0).collect();
     let drop = LIST_DROP_PX * to_menu.d.abs();
-    for (clip, x, alpha) in placed {
-        let own_y = st.own.get(&clip).map(|o| o.y);
+    for (clip, x, alpha, scale) in placed {
+        let own = st.own.get(&clip).map(|o| (o.y, o.abcd));
         if let Some(i) = player.get_mut(clip) {
-            i.matrix.tx = x;
-            if let Some(y) = own_y {
-                i.matrix.ty = y + drop;
+            // (a smaller card: its left edge and its top where the full-size card's would be)
+            i.matrix.tx = x + (1.0 - scale) * hl_left;
+            if let Some((y, [a, b, c, d])) = own {
+                i.matrix.ty = y + drop + (1.0 - scale) * hl_top;
+                [i.matrix.a, i.matrix.b, i.matrix.c, i.matrix.d] = [a * scale, b * scale, c * scale, d * scale];
             }
             i.visible = true;
             i.cxform.mult[3] = alpha;

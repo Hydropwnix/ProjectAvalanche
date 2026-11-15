@@ -38,9 +38,6 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let effect = u32(round(params.shading.x));
     let p = in.world_position.xyz;
 
-    // The texture's alpha before `alpha_discard` (which makes it 1 for opaque materials): the glow mask of glowing
-    // apparel and boards (their `glowEnable` makes them opaque, so alpha is the mask, not cover).
-    var glow_mask = pbr_input.material.base_color.a;
     var tex_n = vec2(0.5);
     var s = vec3(1.0);
     var ao_map = 1.0;
