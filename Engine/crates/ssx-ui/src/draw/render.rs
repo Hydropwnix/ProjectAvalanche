@@ -2955,6 +2955,22 @@ pub fn read_rider_menu(cx: &mut crate::avm1::Ctx) {
             let n = cx.to_number(&v);
             n.is_finite().then_some(n)
         };
+        // (the Custom Event Menus mod: the menu given a card for every rider (it makes as many cards as its
+        // `maxVisibleItems`, fewer than the riders now there are more of them): each rider shown in its own card, its
+        // pictures loaded, wherever the list puts it on the screen)
+        if let (Some(max), Some(total)) = (number(cx, "mMaxVisibleItems"), number(cx, "mNumTotalItems"))
+            && max < total
+            && total <= 64.0
+        {
+            let animating = cx.get_member(&obj, "mIsAnimating").map(|v| cx.to_bool(&v)).unwrap_or(false);
+            if !animating
+                && cx.set_member(&obj, "mMaxVisibleItems", Value::Number(total)).is_ok()
+                && let Ok((adjust, _)) = cx.get_method(&obj, "AdjustItems")
+                && cx.is_function(&adjust)
+            {
+                cx.call_top(&adjust, obj.clone(), &[]);
+            }
+        }
         let first = number(cx, "mFirstVisibleItemIndex");
         let total = number(cx, "mNumTotalItems");
         let visible = number(cx, "mNumVisibleItems");
