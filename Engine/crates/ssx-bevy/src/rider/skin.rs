@@ -152,20 +152,6 @@ impl LoadedRider {
             anyhow::bail!("{}: no part loaded ({})", req.id, character.problems.join("; "));
         }
         self.summary = character.summary();
-        // (diagnostic: which board mesh the gear gave, in the menus' showcase and in a run alike)
-        let boards: Vec<String> = character
-            .parts
-            .iter()
-            .filter(|p| p.slot == "snowboard")
-            .map(|p| format!("{} [{}]", p.mesh_name, p.source))
-            .collect();
-        bevy::log::info!(
-            "rider {}: board {:?} for {:?}; problems {:?}",
-            req.id,
-            boards,
-            loadout.descriptions.iter().find(|(i, _)| matches!(i, ssx_assets::character::GearItem::Board)),
-            character.problems
-        );
         let mut problems = character.problems.clone();
         let (parts, lights) = load_parts(&big_root, character, &self.rig, &mut problems);
         (self.parts, self.gear_lights) = (parts, lights);

@@ -133,11 +133,7 @@ pub fn scene_update(fe: &mut FrontEnd, env: &mut FeEnv, dt: f64) {
     }
     let dispatched = scene.dispatches != dispatches;
     let visible = scene.level.is_some() && (scene.visible() || scene.level.is_some_and(|l| l >= 4));
-    let sounds = std::mem::take(&mut scene.sounds);
     fe.globe_scene = Some(scene);
-    for id in sounds {
-        fe.play_sound(id);
-    }
     if dispatched {
         crate::game::fe::progression::globe_dispatched(fe);
     }
