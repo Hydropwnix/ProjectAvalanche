@@ -23,6 +23,49 @@ pub fn level_row(rows: &[(i64, i64)], level: i64) -> (i64, i64) {
     (last.0.saturating_add(step(prev.0, last.0)), last.1.saturating_add(step(prev.1, last.1)))
 }
 
+// A port change: the shops' offers lean towards what the event they're opened for rewards, and away from the joke
+// perks (big head, big hands). The game picks a design, a perk and the stat that gets the most points evenly; here
+// each is weighed: a stat the event rewards counts `EVENT_WEIGHT`, an ordinary one `BASE_WEIGHT`, a joke one
+// `JOKE_WEIGHT`.
+const BASE_WEIGHT: i64 = 100;
+const EVENT_WEIGHT: i64 = 450;
+const JOKE_WEIGHT: i64 = 15;
+
+/// The stats (`GEAR_STAT_NAMES`) an event of this type rewards.
+fn event_stats(event_type: i64) -> &'static [i64] {
+    match event_type {
+        // trick: the board's tricks, uber tricks, trick points, Tricky
+        0..=2 => &[2, 27, 28, 33],
+        // survive: the survival gear (wingsuit durability, ice axe, armour, thermal, oxygen, head lamp, pulse
+        // goggles), the board's stability, night vision, rewinds
+        3 | 4 => &[3, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 29, 32],
+        // race: the board's speed, boost, stability and carving, the wingsuit's speed and lift, boost bonus
+        5..=7 => &[0, 1, 3, 4, 5, 6, 31],
+        _ => &[],
+    }
+}
+
+fn stat_weight(stat: i64, event_type: i64) -> i64 {
+    if (34..=36).contains(&stat) {
+        JOKE_WEIGHT
+    } else if event_stats(event_type).contains(&stat) {
+        EVENT_WEIGHT
+    } else {
+        BASE_WEIGHT
+    }
+}
+
+/// A design's weight: by its best stat or perk for the event, and down when its only perks are the joke ones.
+fn template_weight(t: &StoreTemplate, event_type: i64) -> i64 {
+    let rewarded = t.stats.iter().chain(&t.bonus_stats).any(|s| event_stats(event_type).contains(s));
+    let jokes_only = !t.bonus_stats.is_empty() && t.bonus_stats.iter().all(|s| (34..=36).contains(s));
+    match (rewarded, jokes_only) {
+        (true, _) => EVENT_WEIGHT,
+        (false, true) => BASE_WEIGHT / 3,
+        (false, false) => BASE_WEIGHT,
+    }
+}
+
 pub fn score(data: &StoreData, item: &StoreItem) -> i64 {
     let s = match item.kind {
         KIND_SUIT => data.tables.suit_score,
@@ -77,7 +120,26 @@ impl Store {
         if candidates.is_empty() {
             return None;
         }
-        Some(candidates[self.rng.pick(candidates.len())])
+        let weights: Vec<i64> =
+            candidates.iter().map(|k| data.templates.get(k).map_or(BASE_WEIGHT, |t| template_weight(t, ctx.event_type))).collect();
+        Some(candidates[self.weighted(&weights)])
+    }
+
+    /// An index picked with these weights (evenly when they're all 0).
+    fn weighted(&mut self, weights: &[i64]) -> usize {
+        let total: i64 = weights.iter().map(|w| (*w).max(0)).sum();
+        if total <= 0 {
+            return self.rng.pick(weights.len());
+        }
+        let mut r = self.rng.below_i(total);
+        for (i, w) in weights.iter().enumerate() {
+            let w = (*w).max(0);
+            if r < w {
+                return i;
+            }
+            r -= w;
+        }
+        weights.len().saturating_sub(1)
     }
 
     fn choose_descriptions(&mut self, data: &StoreData, ctx: &StoreContext, item: &mut StoreItem) {
@@ -183,7 +245,10 @@ impl Store {
         }
         let cap = tb.stat_cap.min(100);
         if n >= 1 {
-            let fav = self.rng.below_i(n as i64 + 1) as usize;
+            // (the stat that gets the most points: one the event rewards, more likely; or none, as the game)
+            let mut fav_w: Vec<i64> = item.stats[..n].iter().map(|s| stat_weight(s.0, ctx.event_type)).collect();
+            fav_w.push(BASE_WEIGHT);
+            let fav = self.weighted(&fav_w);
             let bump = if fav != n { 5 } else { 0 };
             let per = (100 / n as i64 - bump).max(0);
             let mut w: Vec<i64> = (0..n).map(|i| if i == fav { per + n as i64 * bump } else { per }).collect();
@@ -221,7 +286,8 @@ impl Store {
         let mut bonus = false;
         if item.rarity >= tb.bonus_min_rarity && self.rng.below_i(100) < t.bonus_chance {
             if !t.bonus_stats.is_empty() {
-                item.stats[5].0 = t.bonus_stats[self.rng.pick(t.bonus_stats.len())];
+                let w: Vec<i64> = t.bonus_stats.iter().map(|&s| stat_weight(s, ctx.event_type)).collect();
+                item.stats[5].0 = t.bonus_stats[self.weighted(&w)];
             }
             if item.stats[5].0 != -1 {
                 let (bmin, bmax) = level_row(&tb.bonus_points, item.level);

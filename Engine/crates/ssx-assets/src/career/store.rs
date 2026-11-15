@@ -77,6 +77,9 @@ pub struct StoreContext {
     pub geotags_online: bool,
     /// A port addition for mods: the lowest rarity the store offers (0, the game's, offers every rarity).
     pub min_rarity: i64,
+    /// A port addition: the kind of event the shop is opened for (the event's type, `TXT_EVENTTYPE_*`'s order: 0..=2
+    /// trick, 3..=4 survive, 5..=7 race, 8 freeride; -1 none): its offers lean towards the perks that event rewards.
+    pub event_type: i64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

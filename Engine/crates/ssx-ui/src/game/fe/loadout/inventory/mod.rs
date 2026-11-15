@@ -178,6 +178,7 @@ impl Inventory {
             required_gear: drop.map_or(0, DropInfo::required_gear),
             blocked: drop.map_or([false; KINDS], DropInfo::forced_kinds),
             geotags_online: false,
+            event_type: drop.map_or(-1, |d| d.event_type),
         }
     }
 
