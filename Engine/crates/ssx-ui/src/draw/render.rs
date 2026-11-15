@@ -462,7 +462,11 @@ impl Renderer {
                     self.pop_mask(lib, player, m, here, out);
                 }
                 if !here.mask && player.hud_extra >= 0.5 && is_side_dimmer(lib, player, inst) {
-                    self.side_dimmer_edges(lib, player, inst, &matrix, &here, out);
+                    self.side_dimmer_edges(lib, player, inst, &matrix, &here, false, out);
+                }
+                // (a port mod: the full-screen dimmer behind the settings and pop-ups reaches the window's edges too)
+                if !here.mask && player.hud_extra >= 0.5 && full_dimmer(lib, player, inst) {
+                    self.side_dimmer_edges(lib, player, inst, &matrix, &here, true, out);
                 }
                 if !here.mask && inst.name == "mcItem" && ssx_core::rider_showcase::enabled() {
                     favourite_star(lib, player, id, &here, out);
@@ -1002,6 +1006,7 @@ impl Renderer {
     // edge, its padded end colour is drawn on out to the window's edge (the same gradient paint over a quad beyond the
     // shape's bounds), so the dimming does not stop in a hard edge beside the 16:9 stage; the stage's own pixels are
     // unchanged; the console's displays are 16:9 or 4:3.
+    #[allow(clippy::too_many_arguments)]
     fn side_dimmer_edges(
         &mut self,
         lib: &Library,
@@ -1009,6 +1014,8 @@ impl Renderer {
         inst: &Instance,
         matrix: &Mat2d,
         here: &Inherited,
+        // (the full-screen dimmer: drawn on out to both window edges from wherever it ends, solid fills too)
+        whole: bool,
         out: &mut Vec<Command>,
     ) {
         const STAGE_WIDTH_TWIPS: f32 = 1280.0 * 20.0;
@@ -1036,17 +1043,18 @@ impl Renderer {
             let to_local = |x: f32| (x - full.tx) / full.a;
             let span = |a: f32, b: f32| (to_local(a).min(to_local(b)), to_local(a).max(to_local(b)));
             let mut spans = Vec::new();
-            if left <= 0.5 && right > 0.5 && window.0 < left {
+            if (whole || (left <= 0.5 && right > 0.5)) && window.0 < left {
                 spans.push(span(window.0, left));
             }
-            if right >= STAGE_WIDTH_TWIPS - 0.5 && left < STAGE_WIDTH_TWIPS - 0.5 && window.1 > right {
+            if (whole || (right >= STAGE_WIDTH_TWIPS - 0.5 && left < STAGE_WIDTH_TWIPS - 0.5)) && window.1 > right {
                 spans.push(span(right, window.1));
             }
             let blend = if matches!(c.blend, BlendMode::Normal | BlendMode::Layer) { here.blend } else { c.blend };
             for layer in &mesh.layers {
-                let shape::Paint::Gradient(g) = &layer.paint else { continue };
-                if g.spread != 0 {
-                    continue;
+                match &layer.paint {
+                    shape::Paint::Gradient(g) if g.spread == 0 => {}
+                    shape::Paint::Solid(_) if whole => {}
+                    _ => continue,
                 }
                 for &(x0, x1) in &spans {
                     let quad = Mesh {
