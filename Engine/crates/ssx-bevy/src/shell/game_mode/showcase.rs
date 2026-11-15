@@ -251,6 +251,17 @@ pub(super) fn showcase_system(
     ),
 ) {
     let menus = ssx_core::rider_showcase::enabled() && shell.stage == Stage::Menus;
+    // (the Custom Event Menus mod: the retro riders given a suit and a board of their own to start in, once)
+    static RETRO_GIVEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if menus
+        && !RETRO_GIVEN.load(std::sync::atomic::Ordering::Relaxed)
+        && let Some(fe) = ui.0.fe.as_mut()
+    {
+        RETRO_GIVEN.store(true, std::sync::atomic::Ordering::Relaxed);
+        for line in fe.profile.give_retro_defaults(&fe.career) {
+            info!("{line}");
+        }
+    }
     // (past the rider step, on the gear steps: the chosen rider in a view of its own)
     let gear = menus && ui.fe.as_ref().is_some_and(sc::gear_view);
     let rider_step = menus && ui.fe.as_ref().is_some_and(sc::active);
