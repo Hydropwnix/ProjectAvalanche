@@ -56,7 +56,7 @@ fn stat_weight(stat: i64, event_type: i64) -> i64 {
 }
 
 /// A design's weight: by its best stat or perk for the event, and down when its only perks are the joke ones.
-fn template_weight(t: &StoreTemplate, event_type: i64) -> i64 {
+fn template_weight(t: &crate::career::StoreTemplate, event_type: i64) -> i64 {
     let rewarded = t.stats.iter().chain(&t.bonus_stats).any(|s| event_stats(event_type).contains(s));
     let jokes_only = !t.bonus_stats.is_empty() && t.bonus_stats.iter().all(|s| (34..=36).contains(s));
     match (rewarded, jokes_only) {
