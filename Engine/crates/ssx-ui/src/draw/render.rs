@@ -1503,6 +1503,19 @@ fn grown_card(inh: &Inherited, out: &mut Vec<Command>) {
     scroll_arrows(r, alpha, scale, out);
 }
 
+/// The scroll arrows' width and height, and the room kept clear either side of one (window pixels), for a highlighted
+/// card this tall: the room is clear of the card's glow.
+fn arrow_size(card_h: f32) -> (f32, f32, f32) {
+    let scale = (card_h / 760.0).max(0.5);
+    let h = card_h * 0.045;
+    let w = h * 0.62;
+    let m = (16.0 * scale).round().max(4.0) + 6.0 * scale;
+    (w, h, m)
+}
+
+/// The gap between two of the rider list's cards (window pixels), as last laid out.
+static LIST_GAP_PX: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 /// The rider list's last scroll: which way (-1 left, 1 right) and when (the arrow that way glows, fading).
 static LIST_SCROLL: std::sync::Mutex<Option<(i8, std::time::Instant)>> = std::sync::Mutex::new(None);
 /// How long a scroll's arrow glow takes to fade (seconds).
@@ -1520,10 +1533,12 @@ fn scroll_arrows(r: RectF, alpha: f32, scale: f32, out: &mut Vec<Command>) {
         let t = (at.elapsed().as_secs_f32() / ARROW_GLOW_SECS).clamp(0.0, 1.0);
         (dir, 1.0 - t * t * (3.0 - 2.0 * t))
     });
-    let h = (r.y1 - r.y0).abs() * 0.045;
-    let w = h * 0.62;
-    let cy = r.y1 - h * 0.9;
-    let gap = (10.0 * scale).max(6.0) + w * 0.5;
+    let _ = scale;
+    let (w, h, m) = arrow_size((r.y1 - r.y0).abs());
+    // (centred on the card's height, and in the room either side of it: between its edge and the next card's)
+    let cy = (r.y0 + r.y1) * 0.5;
+    let gap_px = f32::from_bits(LIST_GAP_PX.load(std::sync::atomic::Ordering::Relaxed));
+    let gap = (w + 2.0 * m + gap_px) * 0.5;
     let tri = |out: &mut Vec<Command>, dir: f32, cx: f32, grow: f32, colour: [f32; 3], a: f32| {
         let (hw, hh) = (w * 0.5 * grow, h * 0.5 * grow);
         let mut mesh = Mesh::default();
@@ -3393,14 +3408,20 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
     let seen_r = hl_left + (1.0 - CARD_MARGIN) * hl_w;
     let gap = spacing - (seen_r - seen_l);
     // (the highlighted card's edges as drawn (its grown frame, last frame), in the menu's units)
-    let (hx0, hx1) = match drawn {
+    // (and room either side of it for the scroll arrows)
+    let (hx0, hx1, room) = match drawn {
         Some(r) if r.x1 > r.x0 => {
             let (a, _) = to_menu.apply(r.x0, r.y0);
             let (b, _) = to_menu.apply(r.x1, r.y0);
-            (a.min(b), a.max(b))
+            let (w, _, m) = arrow_size((r.y1 - r.y0).abs());
+            (a.min(b), a.max(b), (w + 2.0 * m) * to_menu.a.abs())
         }
-        _ => (first + seen_l, first + seen_r + growth),
+        _ => (first + seen_l, first + seen_r + growth, 0.0),
     };
+    let (hx0, hx1) = (hx0 - room, hx1 + room);
+    if to_menu.a.abs() > 1e-6 {
+        LIST_GAP_PX.store((gap / to_menu.a.abs()).max(0.0).to_bits(), std::sync::atomic::Ordering::Relaxed);
+    }
     let pitch = spacing;
     let others = all.saturating_sub(1);
     let before = (((hx0 - gap - window_left) / pitch).ceil().max(0.0) as usize).min(others);
