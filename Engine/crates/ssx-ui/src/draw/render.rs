@@ -2955,20 +2955,38 @@ pub fn read_rider_menu(cx: &mut crate::avm1::Ctx) {
             let n = cx.to_number(&v);
             n.is_finite().then_some(n)
         };
-        // (the Custom Event Menus mod: the menu given a card for every rider (it makes as many cards as its
-        // `maxVisibleItems`, fewer than the riders now there are more of them): each rider shown in its own card, its
-        // pictures loaded, wherever the list puts it on the screen)
-        if let (Some(max), Some(total)) = (number(cx, "mMaxVisibleItems"), number(cx, "mNumTotalItems"))
-            && max < total
-            && total <= 64.0
+        // (the Custom Event Menus mod: the menu given a card for every rider. It makes `mMaxVisibleItems` cards (14,
+        // fewer than the riders now there are more of them), so riders far from the highlighted one had no card till
+        // it scrolled near them. Once per menu, while it's active and still: its most cards raised to its riders' count
+        // and its cards made again as it does when its riders are published (`RefreshMenuItems`, no argument:
+        // `AdjustItems(mMenuData.length)` makes that many cards on a list going round, `UpdateCellsWithData` fills
+        // them). Should the menu not come out whole, it's put back as it was.)
+        static RAISED: std::sync::Mutex<Option<InstanceId>> = std::sync::Mutex::new(None);
+        let flag = |cx: &mut crate::avm1::Ctx, name: &str| cx.get_member(&obj, name).map(|v| cx.to_bool(&v)).unwrap_or(false);
+        let tried = RAISED.lock().ok().and_then(|r| *r) == Some(menu);
+        if !tried
+            && let (Some(max), Some(total)) = (number(cx, "mMaxVisibleItems"), number(cx, "mNumTotalItems"))
+            && total >= 1.0
+            && flag(cx, "mIsActive")
+            && !flag(cx, "mIsAnimating")
+            && flag(cx, "mIsCircular")
         {
-            let animating = cx.get_member(&obj, "mIsAnimating").map(|v| cx.to_bool(&v)).unwrap_or(false);
-            if !animating
+            if let Ok(mut r) = RAISED.lock() {
+                *r = Some(menu);
+            }
+            if max < total
+                && total <= 64.0
+                && let Ok((refresh, _)) = cx.get_method(&obj, "RefreshMenuItems")
+                && cx.is_function(&refresh)
                 && cx.set_member(&obj, "mMaxVisibleItems", Value::Number(total)).is_ok()
-                && let Ok((adjust, _)) = cx.get_method(&obj, "AdjustItems")
-                && cx.is_function(&adjust)
             {
-                cx.call_top(&adjust, obj.clone(), &[]);
+                cx.call_top(&refresh, obj.clone(), &[]);
+                let whole = number(cx, "mFirstVisibleItemIndex").is_some()
+                    && number(cx, "mNumVisibleItems").is_some_and(|v| v >= 1.0)
+                    && number(cx, "mNumTotalItems") == Some(total);
+                if !whole && cx.set_member(&obj, "mMaxVisibleItems", Value::Number(max)).is_ok() {
+                    cx.call_top(&refresh, obj.clone(), &[]);
+                }
             }
         }
         let first = number(cx, "mFirstVisibleItemIndex");
