@@ -1504,17 +1504,14 @@ fn grown_card(inh: &Inherited, out: &mut Vec<Command>) {
 }
 
 /// The scroll arrows' width and height, and the room kept clear either side of one (window pixels), for a highlighted
-/// card this tall: the room is clear of the card's glow.
+/// card this tall.
 fn arrow_size(card_h: f32) -> (f32, f32, f32) {
     let scale = (card_h / 760.0).max(0.5);
     let h = card_h * 0.045;
     let w = h * 0.62;
-    let m = (16.0 * scale).round().max(4.0) + 6.0 * scale;
+    let m = (8.0 * scale).round().max(3.0);
     (w, h, m)
 }
-
-/// The gap between two of the rider list's cards (window pixels), as last laid out.
-static LIST_GAP_PX: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// The rider list's last scroll: which way (-1 left, 1 right) and when (the arrow that way glows, fading).
 static LIST_SCROLL: std::sync::Mutex<Option<(i8, std::time::Instant)>> = std::sync::Mutex::new(None);
@@ -1535,10 +1532,10 @@ fn scroll_arrows(r: RectF, alpha: f32, scale: f32, out: &mut Vec<Command>) {
     });
     let _ = scale;
     let (w, h, m) = arrow_size((r.y1 - r.y0).abs());
-    // (centred on the card's height, and in the room either side of it: between its edge and the next card's)
+    // (centred on the card's height)
     let cy = (r.y0 + r.y1) * 0.5;
-    let gap_px = f32::from_bits(LIST_GAP_PX.load(std::sync::atomic::Ordering::Relaxed));
-    let gap = (w + 2.0 * m + gap_px) * 0.5;
+    // (close beside the card's edge)
+    let gap = m + w * 0.5;
     let tri = |out: &mut Vec<Command>, dir: f32, cx: f32, grow: f32, colour: [f32; 3], a: f32| {
         let (hw, hh) = (w * 0.5 * grow, h * 0.5 * grow);
         let mut mesh = Mesh::default();
@@ -3420,9 +3417,13 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
         _ => (first + seen_l, first + seen_r + growth, 0.0),
     };
     let (hx0, hx1) = (hx0 - room, hx1 + room);
-    if to_menu.a.abs() > 1e-6 {
-        LIST_GAP_PX.store((gap / to_menu.a.abs()).max(0.0).to_bits(), std::sync::atomic::Ordering::Relaxed);
-    }
+    // (a card beside the highlighted one shows only once it's clear of the arrows: none seen behind them as it slides
+    // out from under the highlighted card, or in under it)
+    let zone_alpha = |x: f32| {
+        let dist = (hx0 - (x + seen_r)).max((x + seen_l) - hx1);
+        (dist / gap.max(1e-3)).clamp(0.0, 1.0)
+    };
+
     let pitch = spacing;
     let others = all.saturating_sub(1);
     let before = (((hx0 - gap - window_left) / pitch).ceil().max(0.0) as usize).min(others);
@@ -3535,6 +3536,7 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
         };
         let alpha = if slot != 0 { alpha * fade_in } else { alpha };
         let alpha = if drawable(rider) { alpha } else { 0.0 };
+        let alpha = if slot != 0 { alpha * zone_alpha(*now) } else { alpha };
         row.push((slot, rider.clone(), card.map(|c| cards[c].clip), *now, alpha));
     }
     st.ghosts.retain_mut(|(_, x, _, to, _)| {
@@ -3546,7 +3548,7 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
             // (both kinds fade as they go: off the list's end, gone halfway (clear of the card sliding into the end
             // place behind it); under the highlighted card as it goes)
             let gone = (*x - *from).abs() / (*to - *from).abs().max(1e-3);
-            let alpha = (1.0 - gone * if *fade { 2.0 } else { 1.0 }).clamp(0.0, 1.0);
+            let alpha = (1.0 - gone * if *fade { 2.0 } else { 1.0 }).clamp(0.0, 1.0) * zone_alpha(*x);
             g.push(((*rider).clone(), *x, alpha));
         }
         // (the riders the menu has no card for this frame: their cards as last seen, in their places)
