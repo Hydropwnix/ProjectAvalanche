@@ -1509,7 +1509,7 @@ fn arrow_size(card_h: f32) -> (f32, f32, f32) {
     let scale = (card_h / 760.0).max(0.5);
     let h = card_h * 0.045;
     let w = h * 0.62;
-    let m = (8.0 * scale).round().max(3.0);
+    let m = (14.0 * scale).round().max(5.0);
     (w, h, m)
 }
 
@@ -1532,8 +1532,9 @@ fn scroll_arrows(r: RectF, alpha: f32, scale: f32, out: &mut Vec<Command>) {
     });
     let _ = scale;
     let (w, h, m) = arrow_size((r.y1 - r.y0).abs());
-    // (centred on the card's height)
-    let cy = (r.y0 + r.y1) * 0.5;
+    // (level with the middle of the cards either side)
+    let mid = f32::from_bits(ARROW_MID_Y.load(std::sync::atomic::Ordering::Relaxed));
+    let cy = if mid > r.y0 && mid < r.y1 { mid } else { (r.y0 + r.y1) * 0.5 };
     // (close beside the card's edge)
     let gap = m + w * 0.5;
     let tri = |out: &mut Vec<Command>, dir: f32, cx: f32, grow: f32, colour: [f32; 3], a: f32| {
@@ -2531,6 +2532,39 @@ static PLAIN_CARDS: std::sync::Mutex<Vec<(String, Mat2d, Mat2d, Vec<Command>)>> 
 /// The copies of plain cards sliding on (under the highlighted card, or off the list's end): each rider's card as last
 /// drawn plain, at its copy's place in the menu (`x`), faded.
 fn draw_card_copies(menu_xf: &Mat2d, out: &mut Vec<Command>) {
+    // (the blank cards: the riders not seen yet, in their places till their cards are)
+    for [x0, y0, x1, y1, a] in BLANKS.lock().map(|b| b.clone()).unwrap_or_default() {
+        let corners = [menu_xf.apply(x0, y0), menu_xf.apply(x1, y0), menu_xf.apply(x1, y1), menu_xf.apply(x0, y1)];
+        let xs = corners.map(|c| c.0);
+        let ys = corners.map(|c| c.1);
+        let r = RectF {
+            x0: xs.iter().copied().fold(f32::MAX, f32::min).round(),
+            y0: ys.iter().copied().fold(f32::MAX, f32::min).round(),
+            x1: xs.iter().copied().fold(f32::MIN, f32::max).round(),
+            y1: ys.iter().copied().fold(f32::MIN, f32::max).round(),
+        };
+        let quad = |out: &mut Vec<Command>, q: [f32; 4], colour: [f32; 3], alpha: f32| {
+            let mut mesh = Mesh::default();
+            mesh.vertices.extend([[q[0], q[1]], [q[2], q[1]], [q[2], q[3]], [q[0], q[3]]]);
+            mesh.indices.extend([0, 1, 2, 0, 2, 3]);
+            out.push(Command::Draw(DrawItem {
+                mesh: Arc::new(mesh),
+                paint: Paint::Solid([colour[0], colour[1], colour[2], alpha]),
+                transform: Mat2d::IDENTITY,
+                cxform: Cxform::IDENTITY,
+                blend: BlendMode::Normal,
+            }));
+        };
+        quad(out, [r.x0, r.y0, r.x1, r.y1], BLANK_FILL, 0.85 * a);
+        for q in [
+            [r.x0, r.y0, r.x1, r.y0 + 1.0],
+            [r.x0, r.y1 - 1.0, r.x1, r.y1],
+            [r.x0, r.y0 + 1.0, r.x0 + 1.0, r.y1 - 1.0],
+            [r.x1 - 1.0, r.y0 + 1.0, r.x1, r.y1 - 1.0],
+        ] {
+            quad(out, q, PLAIN_EDGE, 0.8 * a);
+        }
+    }
     let ghosts = GHOST.lock().map(|g| g.clone()).unwrap_or_default();
     let Ok(cards) = PLAIN_CARDS.lock() else { return };
     for (rider, x, alpha) in ghosts {
@@ -2579,6 +2613,13 @@ fn remember_card(lib: &Library, player: &Player, id: InstanceId, card: &Instance
 }
 /// The rider list's cards as last laid out: each card's rider, and whether its pictures are in.
 static CARD_RIDERS: std::sync::Mutex<Option<HashMap<InstanceId, (String, bool)>>> = std::sync::Mutex::new(None);
+
+/// The rider list's blank cards (riders not seen yet): their rectangles in the menu's units, and how faded.
+static BLANKS: std::sync::Mutex<Vec<[f32; 5]>> = std::sync::Mutex::new(Vec::new());
+/// A blank card's inside.
+const BLANK_FILL: [f32; 3] = [0.05, 0.16, 0.18];
+/// The rider list's plain cards' middle, top to bottom (window pixels): the scroll arrows are level with it.
+static ARROW_MID_Y: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// That plain copy is being drawn now (none of the highlighted card's changes apply to it).
 static GHOSTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -3173,7 +3214,7 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
         alpha: f32,
         /// The card's backing's left and right edges and its top (menu units, from the card's own place, at the
         /// menu's own scale).
-        edges: Option<(f32, f32, f32)>,
+        edges: Option<(f32, f32, f32, f32)>,
         /// Its rider known from the menu's own cells (its pictures maybe not in yet), not from its pictures.
         by_item: bool,
         /// Its highlight frames are up; and where its clip, outer and inner cells are in their timelines.
@@ -3188,6 +3229,23 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
         _ => None,
     };
     let cells = RIDER_CELLS.lock().ok().filter(|c| c.1 == order.len()).map(|c| c.0.clone()).unwrap_or_default();
+    // (the menu's items trusted as the list's riders when, of its cards showing pictures, most show the rider its item
+    // says)
+    let trust_items = {
+        let (mut agree, mut differ) = (0, 0);
+        for &(clip, item) in &cells {
+            let portrait = child(player, clip, "mcCell")
+                .and_then(|o| child(player, o, "mcCell"))
+                .and_then(|n| child(player, n, "mcPortraitContainer"));
+            let Some(name) = portrait.and_then(|p| card_portrait_name(lib, player, p)) else { continue };
+            if order.get(item) == Some(&name) {
+                agree += 1;
+            } else {
+                differ += 1;
+            }
+        }
+        agree > 0 && agree >= differ * 2
+    };
     let mut cards = Vec::new();
     for &c in &clips {
         let Some(i) = player.get(c) else { continue };
@@ -3223,7 +3281,7 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
             let [a, b, cc, d] = st.own.get(&c).map(|o| o.abcd)?;
             let m = Mat2d { a, b, c: cc, d, tx: 0.0, ty: 0.0 }.mul(&m);
             let b = kb.transform(&m);
-            Some((b.x0, b.x1, b.y0))
+            Some((b.x0, b.x1, b.y0, b.y1))
         });
         let pictured = portrait.and_then(|p| card_portrait_name(lib, player, p)).filter(|r| order.contains(r));
         // (a regular rider's card: its portrait's place on it kept for the retro riders' cards, should one of theirs
@@ -3242,12 +3300,20 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
                 let _ = portrait_fit(pb.transform(&pi.matrix), Some(fb.transform(&fi.matrix)), true);
             }
         }
-        // (a card whose pictures aren't in yet: its rider as the menu has it)
-        let by_item = pictured.is_none();
-        let rider = pictured.or_else(|| {
-            let item = cells.iter().find(|(k, _)| *k == c).map(|e| e.1)?;
-            order.get(item).cloned()
-        });
+        // (the card's rider: as the menu has put it there (its item), when the menu's items are known to be the list's
+        // riders; else by its pictures. Its pictures may be another rider's still (the menu loads a card's pictures
+        // only as it comes into its own view): such a card, or one with none yet, counts as having no pictures)
+        let item_rider = cells.iter().find(|(k, _)| *k == c).and_then(|e| order.get(e.1).cloned());
+        let (rider, by_item) = match (trust_items, item_rider) {
+            (true, Some(r)) => {
+                let ok = pictured.as_deref() == Some(r.as_str());
+                (Some(r), !ok)
+            }
+            (_, item) => match pictured {
+                Some(p) => (Some(p), false),
+                None => (item, true),
+            },
+        };
         let lit44 = inner.is_some_and(|n| match player.get(n).map(|i| &i.kind) {
             Some(InstanceKind::Sprite(s)) => s.children.values().any(|&k| {
                 player.get(k).is_some_and(|k| {
@@ -3403,8 +3469,8 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
     // list. Every gap the same, the highlighted card's either side too (as it's drawn, grown).
     let growth = grow_now_or_prev().map_or(0.0, grown_extra);
     let all = order.len();
-    let (hl_left, hl_w, hl_top) = cards[list[h].1].edges.map_or((0.0, spacing, 0.0), |e| (e.0, e.1 - e.0, e.2));
-    let _ = hl_top;
+    let (hl_left, hl_w, hl_top, hl_bottom) =
+        cards[list[h].1].edges.map_or((0.0, spacing, 0.0, 0.0), |e| (e.0, e.1 - e.0, e.2, e.3));
     // (the cards seen: inside their backings' clear margins; the gap between two of them)
     let seen_l = hl_left + CARD_MARGIN * hl_w;
     let seen_r = hl_left + (1.0 - CARD_MARGIN) * hl_w;
@@ -3498,31 +3564,13 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
     // as its card was last seen with them, else takes no place)
     let pictured_card = |rider: &str| shown.get(rider).is_some_and(|&k| !cards[k].by_item);
     let drawable = |rider: &str| rider == highlighted || pictured_card(rider) || plain.contains(rider);
-    let mut shown_at: HashMap<String, i64> = HashMap::new();
-    let (mut right_n, mut left_n) = (0i64, 0i64);
-    let mut by_slot: Vec<(i64, &String)> = order.iter().map(|r| (slot_of(r), r)).collect();
-    by_slot.sort_by_key(|e| e.0);
-    for &(slot, rider) in by_slot.iter().filter(|e| e.0 >= 1) {
-        let _ = slot;
-        if drawable(rider) {
-            right_n += 1;
-            shown_at.insert(rider.clone(), right_n);
-        } else {
-            shown_at.insert(rider.clone(), right_n + 1);
-        }
-    }
-    for &(_, rider) in by_slot.iter().rev().filter(|e| e.0 <= -1) {
-        if drawable(rider) {
-            left_n += 1;
-            shown_at.insert(rider.clone(), -left_n);
-        } else {
-            shown_at.insert(rider.clone(), -(left_n + 1));
-        }
-    }
+    // (every rider keeps its place, in the list's order: one with nothing to show yet is drawn as a blank card)
+    let (right_n, left_n) = (after as i64, before as i64);
+    let mut blanks: Vec<(f32, f32)> = Vec::new();
     for rider in order.iter() {
         let slot = slot_of(rider);
         let card = shown.get(rider.as_str()).copied().filter(|&k| slot == 0 || !cards[k].by_item);
-        let target = place(shown_at.get(rider).copied().unwrap_or(slot));
+        let target = place(slot);
         let was = st.slot.insert(rider.clone(), slot);
         let now = st.now.entry(rider.clone()).or_insert(target);
         // The highlighted card stands still (put in its place at once). The others slide to theirs; one going round
@@ -3553,8 +3601,11 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
             1.0
         };
         let alpha = if slot != 0 { alpha * fade_in } else { alpha };
-        let alpha = if drawable(rider) { alpha } else { 0.0 };
         let alpha = if slot != 0 { alpha * zone_alpha(x) } else { alpha };
+        if !drawable(rider) {
+            blanks.push((x, alpha));
+        }
+        let alpha = if drawable(rider) { alpha } else { 0.0 };
         row.push((slot, rider.clone(), card.map(|c| cards[c].clip), x, alpha));
     }
     st.ghosts.retain_mut(|(_, x, _, to, _)| {
@@ -3574,6 +3625,20 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
             if clip.is_none() && *slot != 0 && *alpha > 0.001 {
                 g.push((rider.clone(), *x, *alpha));
             }
+        }
+    }
+    // (the blank cards, and the plain cards' height for the scroll arrows: a card's top and bottom in the menu's units)
+    {
+        let own_y = st.own.get(&cards[list[h].1].clip).map_or(0.0, |o| o.y);
+        let y0 = own_y + LIST_DROP_PX * to_menu.d.abs() + hl_top;
+        let y1 = own_y + LIST_DROP_PX * to_menu.d.abs() + hl_bottom;
+        if let Ok(mut b) = BLANKS.lock() {
+            b.clear();
+            b.extend(blanks.iter().filter(|e| e.1 > 0.001).map(|&(x, a)| [x + seen_l, y0, x + seen_r, y1, a]));
+        }
+        if let Some(from_menu) = to_menu.inverse() {
+            let (_, mid) = from_menu.apply(first, (y0 + y1) * 0.5);
+            ARROW_MID_Y.store(mid.to_bits(), std::sync::atomic::Ordering::Relaxed);
         }
     }
     // The highlighted card drawn over the others (a card leaving it slides out from behind it, never seen over it):
