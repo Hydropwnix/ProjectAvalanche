@@ -1554,7 +1554,8 @@ fn scroll_arrows(r: RectF, alpha: f32, scale: f32, out: &mut Vec<Command>) {
         }));
     };
     for (dir, cx) in [(-1.0f32, r.x0 - gap), (1.0, r.x1 + gap)] {
-        let lit = glow.filter(|g| f32::from(g.0) == dir).map_or(0.0, |g| g.1);
+        // (the list moving one way, the arrow on the other side lights: the side the cards come in from)
+        let lit = glow.filter(|g| f32::from(g.0) == -dir).map_or(0.0, |g| g.1);
         // (its glow: soft layers growing out from it)
         if lit > 0.001 {
             for i in (1..=6).rev() {
