@@ -2484,7 +2484,22 @@ fn draw_card_copies(menu_xf: &Mat2d, out: &mut Vec<Command>) {
 
 /// A plain card of the rider list just drawn (`out[start..]`): kept as its rider's.
 fn remember_card(lib: &Library, player: &Player, id: InstanceId, card: &Instance, menu_xf: &Mat2d, start: usize, out: &[Command]) {
-    let Some(rider) = card_portrait_name(lib, player, id) else { return };
+    // (the card's rider as the list's layout knows it (the menu's own item, its pictures maybe not in yet), else by its
+    // pictures; a card still waiting for its pictures kept only for a rider with no card kept yet)
+    let known = CARD_RIDERS.lock().ok().and_then(|m| m.as_ref().and_then(|h| h.get(&id).cloned()));
+    let rider = match known {
+        Some((r, true)) => r,
+        Some((r, false)) => {
+            if PLAIN_CARDS.lock().is_ok_and(|c| c.iter().any(|e| e.0 == r)) {
+                return;
+            }
+            r
+        }
+        None => match card_portrait_name(lib, player, id) {
+            Some(r) => r,
+            None => return,
+        },
+    };
     if out.len() <= start {
         return;
     }
@@ -2499,6 +2514,9 @@ fn remember_card(lib: &Library, player: &Player, id: InstanceId, card: &Instance
         None => cards.push((rider, *menu_xf, card.matrix, draws)),
     }
 }
+/// The rider list's cards as last laid out: each card's rider, and whether its pictures are in.
+static CARD_RIDERS: std::sync::Mutex<Option<HashMap<InstanceId, (String, bool)>>> = std::sync::Mutex::new(None);
+
 /// That plain copy is being drawn now (none of the highlighted card's changes apply to it).
 static GHOSTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -3019,6 +3037,9 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
     BIO_FADE.store(bio.to_bits(), std::sync::atomic::Ordering::Relaxed);
     if !on {
         restore(st, player);
+        if let Ok(mut m) = CARD_RIDERS.lock() {
+            *m = None;
+        }
         // (on the way back from the gear steps, before the showcase has the list again: its cards not shown yet (no
         // blink of the whole list before it fades in))
         if st.was_gear.is_some()
@@ -3206,6 +3227,9 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
         }
     }
     st.lit = lit_now;
+    if let Ok(mut m) = CARD_RIDERS.lock() {
+        *m = Some(shown.iter().map(|(r, &k)| (cards[k].clip, ((*r).to_string(), !cards[k].by_item))).collect());
+    }
     if let Some(r) = rider_list_early().filter(|r| shown.contains_key(r.as_str())) {
         highlighted = r;
         ssx_core::rider_showcase::set_highlight_portrait(&highlighted);
@@ -3331,11 +3355,40 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
     // the list has riders, and hands them round as it scrolls) is drawn as its card was last seen)
     let order_at = |r: &str| order.iter().position(|o| o == r).unwrap_or(0);
     let h_at = order_at(&highlighted);
+    let slot_of = |rider: &str| {
+        let r = (order_at(rider) + all - h_at) % all;
+        if r > after { r as i64 - all as i64 } else { r as i64 }
+    };
+    // (the cards drawn close up, no gaps: a rider with neither a card of the menu's nor a card last seen (one not seen
+    // yet) takes no place; the others close up after it, each side)
+    let plain: std::collections::HashSet<String> =
+        PLAIN_CARDS.lock().map(|c| c.iter().map(|e| e.0.clone()).collect()).unwrap_or_default();
+    let drawable = |rider: &str| shown.contains_key(rider) || plain.contains(rider);
+    let mut shown_at: HashMap<String, i64> = HashMap::new();
+    let (mut right_n, mut left_n) = (0i64, 0i64);
+    let mut by_slot: Vec<(i64, &String)> = order.iter().map(|r| (slot_of(r), r)).collect();
+    by_slot.sort_by_key(|e| e.0);
+    for &(slot, rider) in by_slot.iter().filter(|e| e.0 >= 1) {
+        let _ = slot;
+        if drawable(rider) {
+            right_n += 1;
+            shown_at.insert(rider.clone(), right_n);
+        } else {
+            shown_at.insert(rider.clone(), right_n + 1);
+        }
+    }
+    for &(_, rider) in by_slot.iter().rev().filter(|e| e.0 <= -1) {
+        if drawable(rider) {
+            left_n += 1;
+            shown_at.insert(rider.clone(), -left_n);
+        } else {
+            shown_at.insert(rider.clone(), -(left_n + 1));
+        }
+    }
     for rider in order.iter() {
         let card = shown.get(rider.as_str()).copied();
-        let r = (order_at(rider) + all - h_at) % all;
-        let slot = if r > after { r as i64 - all as i64 } else { r as i64 };
-        let target = place(slot);
+        let slot = slot_of(rider);
+        let target = place(shown_at.get(rider).copied().unwrap_or(slot));
         let was = st.slot.insert(rider.clone(), slot);
         let now = st.now.entry(rider.clone()).or_insert(target);
         // The highlighted card stands still (put in its place at once). The others slide to theirs; one going round
@@ -3357,8 +3410,8 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
         }
         // (a card coming round either end of the list fades in as it slides on: anything past the list's last place
         // on the right, or its first on the left)
-        let last = place(after as i64);
-        let first_left = place(-(before as i64));
+        let last = place(right_n.max(1));
+        let first_left = place(-left_n.max(1));
         let alpha = if slot >= 1 {
             (1.0 - (*now - last).max(0.0) / pitch.max(1e-3)).clamp(0.0, 1.0)
         } else if slot <= -1 {
@@ -3367,6 +3420,7 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
             1.0
         };
         let alpha = if slot != 0 { alpha * fade_in } else { alpha };
+        let alpha = if drawable(rider) { alpha } else { 0.0 };
         row.push((slot, rider.clone(), card.map(|c| cards[c].clip), *now, alpha));
     }
     st.ghosts.retain_mut(|(_, x, _, to, _)| {

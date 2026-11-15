@@ -150,14 +150,62 @@ impl Inventory {
     pub fn rider_stats(&self, db: &CareerDb, profile: &Profile, rider: u32) -> ssx_assets::career::profile::RiderStats {
         use ssx_assets::career::profile::{RiderStats, SRC_NONE};
         let created = || RiderStats::created_for(db, rider, |k| self.catalog.entries.contains_key(&k));
-        match profile.riders.get(&rider) {
+        let mut stats = match profile.riders.get(&rider) {
             Some(s) if s.last_suit.1 == SRC_NONE && s.last_board.1 == SRC_NONE => {
                 let c = created();
                 RiderStats { last_suit: c.last_suit, last_board: c.last_board, ..s.clone() }
             }
             Some(s) => s.clone(),
             None => created(),
+        };
+        // (the Custom Event Menus mod: a rider with no suit or board of its own to start in (the retro riders: their
+        // data names none) dressed in one the profile has for it)
+        if ssx_core::rider_showcase::enabled() {
+            let owned = |k: u32| self.catalog.entries.get(&k).is_some_and(|e| profile.offered(k, e));
+            let usable = |(k, src): (u32, u8)| match src {
+                0 => owned(k),
+                1 => profile.generated.contains_key(&k),
+                _ => false,
+            };
+            if !usable(stats.last_suit)
+                && let Some(suit) = self.fallback_item(db, profile, rider, 0)
+            {
+                stats.last_suit = suit;
+            }
+            if !usable(stats.last_board)
+                && let Some(board) = self.fallback_item(db, profile, rider, 1)
+            {
+                stats.last_board = board;
+            }
         }
+        stats
+    }
+
+    /// A suit (`kind` 0) or board (1) for a rider that has none to start in: one of the rider's own the profile has
+    /// (from the catalog, then made in the store), else (a board) the default board of the rider it's a retro version
+    /// of (`dlcmoby`: Moby's), else any default board.
+    fn fallback_item(&self, db: &CareerDb, profile: &Profile, rider: u32, kind: i64) -> Option<(u32, u8)> {
+        let owned = |k: u32| self.catalog.entries.get(&k).is_some_and(|e| profile.offered(k, e));
+        let own = db.items.iter().filter(|i| i.kind == kind && i.rider == rider && owned(i.key)).map(|i| i.key).min();
+        if let Some(k) = own {
+            return Some((k, 0));
+        }
+        let made = profile.generated.iter().find(|(_, g)| g.kind == kind && g.charlock == rider).map(|(&k, _)| k);
+        if let Some(k) = made {
+            return Some((k, 1));
+        }
+        if kind != 1 {
+            return None;
+        }
+        let r = db.riders.iter().find(|r| r.key == rider)?;
+        for name in [r.name.to_lowercase(), r.portrait.to_lowercase()] {
+            let base = name.strip_prefix("dlc").unwrap_or(&name);
+            let board = fnv1(format!("board_{base}_default").as_bytes());
+            if owned(board) {
+                return Some((board, 0));
+            }
+        }
+        db.items.iter().filter(|i| i.kind == 1 && i.default && i.rider == 0 && owned(i.key)).map(|i| (i.key, 0)).min()
     }
 
     pub(super) fn rider_suit(&self, db: &CareerDb, profile: &Profile, rider: u32) -> Option<(u32, u8)> {
