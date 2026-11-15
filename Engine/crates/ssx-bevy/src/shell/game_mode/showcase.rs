@@ -454,7 +454,9 @@ pub(super) fn showcase_system(
         if ready { None } else { state.stale.iter().rposition(|(r, _)| r.key == state.riders[highlighted].key) };
     ready |= stale_at.is_some();
     let slot = ssx_core::rider_showcase::slot();
-    ssx_core::rider_showcase::set_portrait_hidden(!gear && ready && slot.is_some());
+    // (the highlighted card's portrait never shown: the card shows the rider in 3-D only, empty for the moment its
+    // model takes to load (back from a run, say))
+    ssx_core::rider_showcase::set_portrait_hidden(!gear);
     if let (Some(c), Ok(w)) = (state.camera, windows.single())
         && let Ok(mut cam) = cameras.get_mut(c)
     {
