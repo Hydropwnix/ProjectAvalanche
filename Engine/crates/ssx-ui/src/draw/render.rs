@@ -2993,6 +2993,9 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
         /// other cards fading in as the rider's view moves back into the highlighted card).
         was_gear: Option<std::time::Instant>,
         back_at: Option<std::time::Instant>,
+        /// How far the whole list (but the highlighted card) is drawn from its places, easing to none: a step along
+        /// the list moves every card by one place together (none lagging the others).
+        shift: f32,
     }
     static STATE: Mutex<Option<State>> = Mutex::new(None);
     let Ok(mut guard) = STATE.lock() else { return };
@@ -3009,6 +3012,7 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
         ghosts: Vec::new(),
         was_gear: None,
         back_at: None,
+        shift: 0.0,
     });
     if let Ok(mut g) = GHOST.lock() {
         g.clear();
@@ -3446,6 +3450,7 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
     let order_at = |r: &str| order.iter().position(|o| o == r).unwrap_or(0);
     let h_at = order_at(&highlighted);
     // (a step along the list: the arrow that way glows)
+    let mut step = 0i8;
     {
         static LAST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
         if let Ok(mut last) = LAST.lock() {
@@ -3458,6 +3463,7 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
                 } else {
                     0
                 };
+                step = dir;
                 if dir != 0
                     && let Ok(mut s) = LIST_SCROLL.lock()
                 {
@@ -3466,6 +3472,19 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
             }
             *last = Some(highlighted.clone());
         }
+    }
+    // (the whole list stepped one place: every card's place moves a place, drawn where it was and easing there
+    // together)
+    if step != 0 {
+        let by = f32::from(step) * pitch;
+        for v in st.now.values_mut() {
+            *v -= by;
+        }
+        st.shift = (st.shift + by).clamp(-3.0 * pitch, 3.0 * pitch);
+    }
+    st.shift *= 1.0 - ease;
+    if st.shift.abs() < pitch * 0.002 {
+        st.shift = 0.0;
     }
     let slot_of = |rider: &str| {
         let r = (order_at(rider) + all - h_at) % all;
@@ -3511,33 +3530,32 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
         // (the card coming in from the next place either side: a plain copy of it slides on from there, under the
         // highlighted one)
         if slot == 0 && (was == Some(1) || was == Some(-1)) {
-            st.ghosts.push((rider.clone(), *now, *now, first, false));
+            let from = *now + st.shift;
+            st.ghosts.push((rider.clone(), from, from, first, false));
         }
         match was {
             _ if slot == 0 => *now = target,
             None => *now = target,
-            Some(w) if (w - slot).abs() > 1 => {
-                let from = if slot < w { -1.0 } else { 1.0 };
-                *now = target + from * pitch;
-                *now += (target - *now) * ease;
-            }
+            // (one going round the end of the list: at its new place at once, sliding on with the rest)
+            Some(w) if (w - slot).abs() > 1 => *now = target,
             Some(_) => *now += (target - *now) * ease,
         }
+        let x = if slot == 0 { *now } else { *now + st.shift };
         // (a card coming round either end of the list fades in as it slides on: anything past the list's last place
         // on the right, or its first on the left)
         let last = place(right_n.max(1));
         let first_left = place(-left_n.max(1));
         let alpha = if slot >= 1 {
-            (1.0 - (*now - last).max(0.0) / pitch.max(1e-3)).clamp(0.0, 1.0)
+            (1.0 - (x - last).max(0.0) / pitch.max(1e-3)).clamp(0.0, 1.0)
         } else if slot <= -1 {
-            (1.0 - (first_left - *now).max(0.0) / pitch.max(1e-3)).clamp(0.0, 1.0)
+            (1.0 - (first_left - x).max(0.0) / pitch.max(1e-3)).clamp(0.0, 1.0)
         } else {
             1.0
         };
         let alpha = if slot != 0 { alpha * fade_in } else { alpha };
         let alpha = if drawable(rider) { alpha } else { 0.0 };
-        let alpha = if slot != 0 { alpha * zone_alpha(*now) } else { alpha };
-        row.push((slot, rider.clone(), card.map(|c| cards[c].clip), *now, alpha));
+        let alpha = if slot != 0 { alpha * zone_alpha(x) } else { alpha };
+        row.push((slot, rider.clone(), card.map(|c| cards[c].clip), x, alpha));
     }
     st.ghosts.retain_mut(|(_, x, _, to, _)| {
         *x += (*to - *x) * ease;
