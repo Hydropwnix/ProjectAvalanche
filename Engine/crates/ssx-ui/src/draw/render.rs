@@ -197,7 +197,7 @@ impl Renderer {
         if !inst.visible && !inh.mask {
             return;
         }
-        if !inh.mask && (hidden_dock_tab(player, inst) || hidden_side_dimmer(lib, player, inst)) {
+        if !inh.mask && hidden_dock_tab(player, inst) {
             return;
         }
         if !inh.mask && gear_hidden(id) {
@@ -1323,9 +1323,6 @@ fn popup_shows_picture(player: &Player, popup: InstanceId) -> bool {
     false
 }
 
-// Port mod: the menus' side dimmer (dimmer.gfx: `mcDimmer`'s dark sheet down the left of the stage, under the World
-// Tour and Explore panels, character 2) is not drawn; on a wide screen it ends in a hard edge at the stage's side.
-// The full-screen dimmer beside it (character 4, behind popups) is kept.
 // Port mod (the menus' 3-D rider showcase): the highlighted rider's card in the list (a portrait holder showing its
 // pictures, `mac_top5.dds` for `mac`, not one of the faded copies at the row's ends) has its portrait's place on the
 // screen noted (the 3-D rider stands there), and its portrait isn't drawn while the rider shows.
@@ -2900,12 +2897,6 @@ fn highlighted_rider_portrait(lib: &Library, player: &Player, id: InstanceId, in
         }
     }
     false
-}
-
-fn hidden_side_dimmer(lib: &Library, player: &Player, inst: &Instance) -> bool {
-    inst.character.as_ref().is_some_and(|c| c.id == 2)
-        && inst.parent.and_then(|p| player.get(p)).is_some_and(|p| p.name == "mcDimmer")
-        && lib.movie(inst.movie).path.to_ascii_lowercase().rsplit(['/', '\\']).next() == Some("dimmer.gfx")
 }
 
 

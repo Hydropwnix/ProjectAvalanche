@@ -242,11 +242,6 @@ impl RiderAnimation {
         (&self.curr, &self.rig, self.rig_ops.effectors())
     }
 
-    /// The joints as drawn this frame (between the last two physics steps), in the world.
-    pub fn drawn_records(&self) -> &[JointRecord] {
-        &self.render
-    }
-
     pub fn drawn_joint(&self, name: &str) -> Option<JointRecord> {
         self.rig.find(name).and_then(|i| self.render.get(i).copied())
     }

@@ -12,15 +12,8 @@ use crate::ride::Ride;
 use crate::rider::anim::JointRecord;
 use crate::rider::skin::RiderRig;
 
-// A port fix: the rider's effects (the Tricky hand streaks and the like) follow the joints as drawn this frame, where
-// the body is (between the last two physics steps); the newest step's joints, used before, ran up to a step ahead of
-// the hands at speed.
 fn newest_joints(rig: &RiderRig, ride: &Ride) -> Vec<JointRecord> {
-    let drawn = rig.anim.drawn_records();
     let (pose, graph, _) = rig.anim.posed();
-    if drawn.len() == graph.nodes.len() {
-        return drawn.to_vec();
-    }
     crate::rider::anim::world_records(graph, &pose.nodes, ride.step().0.traj)
 }
 

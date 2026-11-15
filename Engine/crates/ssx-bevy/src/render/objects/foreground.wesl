@@ -1,6 +1,6 @@
 import bevy_pbr::render::{
     pbr_fragment::pbr_input_from_standard_material,
-    forward_io::VertexOutput,
+    forward_io::{VertexOutput, FragmentOutput},
     pbr_functions::main_pass_post_lighting_processing,
 };
 import package::render::lighting::game_lighting as gl;
@@ -20,18 +20,8 @@ struct ForegroundParams {
 @group(constants::MATERIAL_BIND_GROUP) @binding(107) var occlusion_texture: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(108) var normal_texture: texture_2d<f32>;
 
-// A port fix: the foreground mountains are the scenery past the course (the game draws them only where the course
-// itself drew nothing). Their depth is pushed far back (in order among themselves), so every piece of the course in
-// front of or behind them is drawn over them; on Silverthrone they stood across the run as ghost mountains.
-const FAR_DEPTH_SCALE: f32 = 0.01;
-
-struct ForegroundOutput {
-    @location(0) color: vec4<f32>,
-    @builtin(frag_depth) depth: f32,
-}
-
 @fragment
-fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> ForegroundOutput {
+fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     let pbr_input = pbr_input_from_standard_material(in, is_front);
     var n = normalize(in.world_normal);
     var alb = vec3(0.5);
@@ -58,8 +48,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Foregrou
     let diffuse = gl::forward_ramp(light, n, gl::to_eye(in.world_position.xyz));
     let c = diffuse * mix(light.ramp_shade.rgb, vec3(1.0), ao) * alb;
     let fogged = gl::apply_fog(light, c, in.world_position.w);
-    var out: ForegroundOutput;
+    var out: FragmentOutput;
     out.color = main_pass_post_lighting_processing(pbr_input, vec4(fogged, 1.0));
-    out.depth = in.position.z * FAR_DEPTH_SCALE;
     return out;
 }
