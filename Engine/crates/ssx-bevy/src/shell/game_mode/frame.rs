@@ -19,6 +19,27 @@ pub(super) struct TextKeys<'w, 's> {
     clipboard: Option<ResMut<'w, bevy::clipboard::Clipboard>>,
 }
 
+/// The rider list's held left or right: which, from which device, and when it next moves the list again.
+static RIDER_REPEAT: std::sync::Mutex<Option<(ssx_ui::game::input::Button, u8, Instant)>> =
+    std::sync::Mutex::new(None);
+/// Held this long, left or right starts moving the rider list on its own; then a card every this often (seconds; a
+/// card's slide is about this long, so the list never outruns its cards).
+const RIDER_REPEAT_DELAY: f32 = 0.4;
+const RIDER_REPEAT_EVERY: f32 = 0.22;
+/// The left stick held this far over counts as held left or right.
+const RIDER_REPEAT_STICK: f32 = 0.4;
+
+/// The rider list's left and right swapped (the 3D Rider Select mod: its list runs from the highlighted card rightwards,
+/// so right moves the next rider in).
+fn rider_list_turned(b: ssx_ui::game::input::Button) -> ssx_ui::game::input::Button {
+    use ssx_ui::game::input::Button;
+    match b {
+        Button::DpadLeft => Button::DpadRight,
+        Button::DpadRight => Button::DpadLeft,
+        other => other,
+    }
+}
+
 pub(super) fn shell_input(
     keys: Res<ButtonInput<KeyCode>>,
     pads: Query<(Entity, &Gamepad)>,
@@ -55,18 +76,61 @@ pub(super) fn shell_input(
     }
     let keyboard = ssx_ui::game::input::KEYBOARD_DEVICE;
     let search = ui.browser_active();
+    let pad_only = ui.fe.as_ref().is_some_and(|fe| ssx_ui::game::fe::screens::pad_only(fe.screen));
+    let rider_list = ssx_core::rider_showcase::enabled()
+        && ui.fe.as_ref().is_some_and(ssx_ui::game::fe::equipment::showcase::active);
     for (b, device) in pad_presses(&keys, &pads, &slots, &mut s.stick_dpad, search) {
-        if focused && device == keyboard {
+        if (focused || pad_only) && device == keyboard {
             continue;
         }
+        // (the 3D Rider Select mod: Y on a suit opens its menu (a favourite, its full portrait), which then takes the
+        // buttons while it's up)
+        if let Some(fe) = ui.fe.as_mut()
+            && ssx_ui::game::fe::equipment::take_suit_press(fe, b)
+        {
+            continue;
+        }
+        if rider_list && matches!(b, ssx_ui::game::input::Button::DpadLeft | ssx_ui::game::input::Button::DpadRight) {
+            if let Ok(mut r) = RIDER_REPEAT.lock() {
+                *r = Some((b, device, Instant::now() + std::time::Duration::from_secs_f32(RIDER_REPEAT_DELAY)));
+            }
+        }
+        let b = if rider_list { rider_list_turned(b) } else { b };
         s.host.press_from(&mut ui, b, device);
+    }
+    // (the 3D Rider Select mod: on the rider list, left or right held keeps the list going, a card at a time, no
+    // faster than the cards slide)
+    if let Ok(mut r) = RIDER_REPEAT.lock() {
+        let held = |left: bool| {
+            let (key, button) = if left {
+                (KeyCode::ArrowLeft, GamepadButton::DPadLeft)
+            } else {
+                (KeyCode::ArrowRight, GamepadButton::DPadRight)
+            };
+            let sign = if left { -1.0 } else { 1.0 };
+            (keys.pressed(key) && !focused && !pad_only)
+                || pads.iter().any(|(_, p)| {
+                    p.pressed(button) || p.get(GamepadAxis::LeftStickX).unwrap_or(0.0) * sign > RIDER_REPEAT_STICK
+                })
+        };
+        match *r {
+            Some((b, device, next)) if rider_list && held(matches!(b, ssx_ui::game::input::Button::DpadLeft)) => {
+                let now = Instant::now();
+                if now >= next {
+                    s.host.press_from(&mut ui, rider_list_turned(b), device);
+                    *r = Some((b, device, now + std::time::Duration::from_secs_f32(RIDER_REPEAT_EVERY)));
+                }
+            }
+            Some(_) => *r = None,
+            None => {}
+        }
     }
     let mut stick = Vec2::ZERO;
     for (_, pad) in &pads {
         stick +=
             Vec2::new(pad.get(GamepadAxis::LeftStickX).unwrap_or(0.0), pad.get(GamepadAxis::LeftStickY).unwrap_or(0.0));
     }
-    let key = |k: KeyCode| if keys.pressed(k) && !focused { 1.0 } else { 0.0 };
+    let key = |k: KeyCode| if keys.pressed(k) && !focused && !pad_only { 1.0 } else { 0.0 };
     stick += Vec2::new(key(KeyCode::KeyD) - key(KeyCode::KeyA), key(KeyCode::KeyW) - key(KeyCode::KeyS));
     if (stick != Vec2::ZERO || s.last_stick != Vec2::ZERO)
         && let Some(fe) = ui.fe.as_mut()
@@ -154,7 +218,11 @@ pub(super) struct Frame<'w, 's> {
     exit: MessageWriter<'w, AppExit>,
     live: Option<ResMut<'w, crate::shell::live::LiveSession>>,
     render_scale: Option<Res<'w, super::display::RenderScale>>,
+    fe_camera: Query<'w, 's, Entity, With<super::FrontEndCamera>>,
 }
+
+/// The globe counts as zoomed out while its radius on the screen is under this (in screen heights).
+const GLOBE_OUT_RADIUS: f32 = 0.75;
 
 pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mut f: Frame) {
     let s = &mut *shell;
@@ -170,10 +238,24 @@ pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mu
     }
     if f.ui_frame.viewport.y > 0 {
         let aspect = f.ui_frame.viewport.x as f32 / f.ui_frame.viewport.y as f32;
-        f.globe.frame = match s.stage {
+        let globe = match s.stage {
             Stage::Level => None,
             _ => ui.fe.as_ref().and_then(|fe| fe.globe_frame(aspect)),
         };
+        // A mod's background movie shows behind the globe, in place of its backdrop (a port addition).
+        s.background_wanted = globe.is_some() && s.background_available();
+        s.globe_shown = globe.is_some();
+        // Zoomed out (the main menu's view): the whole globe on the screen with room around it, not a range up close.
+        let radius = globe
+            .as_ref()
+            .filter(|g| g.visible && g.midground.is_none())
+            .map_or(0.0, |g| ui::globe::screen_circle(g).2);
+        let out = radius > 0.0 && radius < GLOBE_OUT_RADIUS;
+        if out != ssx_core::menu_background::globe_out() {
+            info!("shell: the globe zoomed {} (its radius {radius:.2} of the screen's height)", if out { "out" } else { "in" });
+            ssx_core::menu_background::set_globe_out(out);
+        }
+        f.globe.frame = globe;
     }
     if let Some(window) = f.windows.iter().next() {
         let now = f.real.elapsed_secs_f64();
@@ -285,6 +367,8 @@ pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mu
     s.play_movie(&mut ui, dt, window, &mut f.images, &mut f.sprites, &mut f.cameras, f.audio.as_deref_mut());
     let backdrop_shown = s.movie.is_none() && f.globe.frame.as_ref().is_some_and(|g| g.visible);
     f.globe.backdrop_movie = s.backdrop.frame(backdrop_shown, dt, &mut f.images);
+    let fe_camera = f.fe_camera.iter().next();
+    f.globe.background = s.play_background(dt, window, &mut f.images, &mut f.sprites, &mut f.cameras, fe_camera);
     s.stage_step(&mut ui, f.level.as_deref(), f.ride.as_deref(), f.live.as_deref_mut());
     let sc = &mut *f.scene;
     let t0 = Instant::now();
@@ -372,7 +456,8 @@ pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mu
         use ssx_ui::game::fe::music::MusicRequest;
         for r in music_requests {
             match r {
-                MusicRequest::Preview { id, key } => audio.preview(&s.big_root, id, key.as_ref()),
+                MusicRequest::Preview { id, key } => audio.preview(&s.big_root, id, key.as_ref(), false),
+                MusicRequest::ModSong { id, key } => audio.preview(&s.big_root, id, key.as_ref(), true),
                 MusicRequest::StopPreview => audio.stop_preview(),
             }
         }

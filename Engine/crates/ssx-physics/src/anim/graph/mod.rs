@@ -432,6 +432,32 @@ impl RiderGraph {
         self.updates = 0;
     }
 
+    /// A port addition (the menus' 3-D rider showcase): the level start's idle (the rider standing at the top of a
+    /// drop, before its jump) stepped by `dt` on its own, without a ride; its pose with the roots at the origin. None
+    /// without a level start graph.
+    pub fn idle_pose(&mut self, dt: f32) -> Option<RigPose> {
+        let st = self.start.as_mut()?;
+        if !st.running {
+            st.animator.reset();
+            (st.running, st.elapsed) = (true, None);
+        }
+        st.animator.set("deltaTicks", dt);
+        st.animator.set("BLN_NisActive", 1.0);
+        st.animator.set("BLN_NisTriggerTransition", 0.0);
+        st.animator.set_physics(None);
+        st.animator.update(dt);
+        let mut pose = st.animator.pose();
+        if let Some(t) = self.trajectory
+            && pose.nodes.len() == self.rig.nodes.len()
+        {
+            for &r in &self.roots {
+                pose.nodes[r] = SRT_IDENTITY;
+            }
+            pose.nodes[t] = SRT_IDENTITY;
+        }
+        Some(pose)
+    }
+
     pub fn animator(&self) -> &Animator {
         match &self.start {
             Some(st) if st.running => st.current(),

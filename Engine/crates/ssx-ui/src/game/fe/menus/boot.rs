@@ -14,6 +14,11 @@ const BOOT_LOGO_STARTED: u16 = 0x2F;
 const BOOT_FLOW_STARTED: u16 = 0x30;
 const BOOT_SKIP_INTRO: u16 = 0x31;
 const BACKGROUND_TRANSITION: u16 = 0x2E;
+/// With `skip-intros`: seconds the screen stays black and the music silent while the menu, its music and its
+/// background come up, then the seconds of the fade in.
+const STARTUP_HOLD_S: f64 = 2.5;
+const STARTUP_FADE_S: f64 = 1.5;
+const STARTUP_STEP_S: f64 = 1.0 / 30.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EsrbValues {
@@ -39,6 +44,11 @@ pub struct BootFlow {
     pub signed_in: bool,
     pub esrb: Option<Esrb>,
     pub esrb_values: EsrbValues,
+    pub auto_start: bool,
+    /// Set by the shell when the `skip-intros` mod is enabled in the launcher.
+    pub skip_intros: bool,
+    /// Seconds left of the startup's black screen and fade in (`skip-intros`).
+    pub startup_left: f64,
 }
 
 impl BootFlow {
@@ -55,6 +65,9 @@ impl BootFlow {
             signed_in: false,
             esrb: title_update.then(Esrb::default),
             esrb_values: EsrbValues::default(),
+            auto_start: false,
+            skip_intros: false,
+            startup_left: 0.0,
         }
     }
 }
@@ -83,7 +96,19 @@ pub fn activate(fe: &mut FrontEnd, env: &mut FeEnv) {
     }
     env.values.set_bool(BOOT_LOGO_STARTED, true);
     crate::game::fe::settings::init_values(env.values, &fe.audio_store);
-    if !env.values.bool(BOOT_SKIP_INTRO) {
+    if fe.boot.skip_intros {
+        // Port mod (the `skip-intros` mod enabled): no EA logo movie, no ESRB notice and no start screen; the boot
+        // starts by itself at the next update and goes on to the main menu.
+        fe.boot.play_intro = false;
+        fe.boot.handle_input = false;
+        fe.boot.auto_start = true;
+        fe.boot.startup_left = STARTUP_HOLD_S + STARTUP_FADE_S;
+        if let Some(e) = fe.boot.esrb.as_mut() {
+            e.played = true;
+        }
+        startup_fade(fe, 0.0);
+        fe.note("boot: the logo movie and the start screen are skipped");
+    } else if !env.values.bool(BOOT_SKIP_INTRO) {
         fe.queue_movie(MovieRequest { can_stop: false, ..MovieRequest::new(BOOT_MOVIE, "boot") });
         fe.note(format!("FLOW_PlayMovie {BOOT_MOVIE}"));
         fe.boot.play_intro = false;
@@ -109,6 +134,13 @@ pub fn update(fe: &mut FrontEnd, env: &mut FeEnv, dt: f64) {
             e.started = false;
             esrb_done(fe, env);
         }
+        return;
+    }
+    if fe.boot.startup_left > 0.0 {
+        startup_fade(fe, dt);
+    }
+    if std::mem::take(&mut fe.boot.auto_start) && !env.values.bool(BOOT_FLOW_STARTED) {
+        action(fe, env, "A_BootStart", 0.0);
         return;
     }
     if fe.boot.attract_off || env.values.bool(BOOT_FLOW_STARTED) {
@@ -169,6 +201,25 @@ pub fn bind(fe: &mut FrontEnd, bound: bool) {
     if let Some(e) = fe.boot.esrb.as_mut() {
         e.bound = bound;
         fe.note(if bound { "the ESRB notice's view is bound" } else { "the ESRB notice's view is unbound" });
+    }
+}
+
+/// The startup's black (0 none, 1 all black), as the shell's top overlay draws it over everything (`skip-intros`).
+static STARTUP_BLACK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+pub fn startup_black() -> f32 {
+    f32::from_bits(STARTUP_BLACK.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// The startup's black screen, then its fade in, with the music's gain following the picture (`skip-intros`).
+/// An update's time counts at most `STARTUP_STEP_S`, so the long first frames while the game loads do not use it up.
+fn startup_fade(fe: &mut FrontEnd, dt: f64) {
+    fe.boot.startup_left = (fe.boot.startup_left - dt.min(STARTUP_STEP_S)).max(0.0);
+    let black = (fe.boot.startup_left / STARTUP_FADE_S).clamp(0.0, 1.0) as f32;
+    STARTUP_BLACK.store(black.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    ssx_assets::musicbox::set_startup_gain(1.0 - black);
+    if fe.boot.startup_left <= 0.0 {
+        fe.note("boot: the startup fade in is over");
     }
 }
 

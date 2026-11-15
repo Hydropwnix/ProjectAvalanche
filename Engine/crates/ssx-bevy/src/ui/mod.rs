@@ -343,6 +343,8 @@ fn build_frame(
             None => drop(scene.player.tick(&scene.lib, time.delta_secs_f64())),
         }
     }
+    // (the 3D Rider Select mod: the rider list laid out in a centred row)
+    ssx_ui::render::relayout_rider_list(&scene.lib, &mut scene.player, (size.x, size.y), scene.scale_mode);
     if scene.window_hidden {
         scene.last_cpu = t0.elapsed();
         return;

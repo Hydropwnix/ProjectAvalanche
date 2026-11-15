@@ -243,10 +243,17 @@ fn categories(fe: &FrontEnd, cx: &mut Ctx, loc: &mut Localization) -> Value {
     let Some(inv) = eq.inv.as_ref() else { return Value::Object(cx.new_array(out)) };
     let mut gear = inv.selected_gear.iter().skip(1);
     for (k, &n) in inv.category_slots.iter().enumerate() {
-        if n <= 0 {
+        let cat = k as i32 + 1;
+        // (the 3D Rider Select mod: no geotags offline, where they can't be used; online they show)
+        let hidden = cat == 5 && eq.online == 0 && ssx_core::rider_showcase::enabled();
+        if n <= 0 || hidden {
+            if hidden {
+                for _ in 0..n {
+                    gear.next();
+                }
+            }
             continue;
         }
-        let cat = k as i32 + 1;
         let o = Value::Object(cx.new_object());
         set(cx, &o, "isAvailable", Value::Bool(cat != 5 || eq.online != 0));
         set(cx, &o, "numSlots", Value::Number(n as f64));

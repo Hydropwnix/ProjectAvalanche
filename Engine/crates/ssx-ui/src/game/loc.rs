@@ -250,6 +250,19 @@ impl Localization {
         if !include_symbol {
             return n;
         }
+        self.with_currency_symbol(&n)
+    }
+
+    pub fn currency_tight(&mut self, n: &str) -> String {
+        let symbol = self.text("TXT_DOLLAR");
+        match self.setting(11) {
+            0x33 => format!("{n}{symbol}"),
+            0x31 | 0x32 => format!("{symbol}{n}"),
+            _ => String::new(),
+        }
+    }
+
+    pub fn with_currency_symbol(&mut self, n: &str) -> String {
         let symbol = self.text("TXT_DOLLAR");
         match self.setting(11) {
             0x31 => format!("{symbol} {n}"),

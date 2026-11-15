@@ -118,6 +118,15 @@ impl InputProvider {
         self.queue.extend(rest);
     }
 
+    /// Takes `button`'s presses (and their releases) out of the queue; whether there was a press.
+    pub fn take_presses(&mut self, button: Button) -> bool {
+        let pressed = self.queue.iter().any(|(Input::Button { button: b, down }, _)| *b == button && *down);
+        if pressed {
+            self.queue.retain(|(Input::Button { button: b, .. }, _)| *b != button);
+        }
+        pressed
+    }
+
     pub fn deliver(&mut self, cx: &mut Ctx) -> usize {
         let mut n = 0;
         for (i, device) in std::mem::take(&mut self.queue) {

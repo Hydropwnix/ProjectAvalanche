@@ -388,3 +388,36 @@ fn upload_dynamic_lights(
         buffer.extend_from_slice(&bytes.words.bytes());
     }
 }
+
+/// A port addition (the menus' 3-D rider showcase): an empty light list and texture array when no level has made
+/// them yet, so the materials that bind them (riders drawn in the menus) can draw.
+/// The local lights as no level has them (no lights, the viewer's default daylight, blank textures), whatever a
+/// level left in them: the menus' rider showcase, opened again after a run (a night drop's lighting otherwise
+/// stays on the riders).
+pub fn reset_empty(buffers: &mut Assets<ShaderBuffer>, images: &mut Assets<Image>) {
+    let (words, _) = encode(&[], DYNAMIC_SLOTS, &GameLightUniform::viewer_default());
+    if let Err(e) =
+        buffers.insert(LOCAL_LIGHT_BUFFER.id(), ShaderBuffer::new(words.bytes(), RenderAssetUsages::default()))
+    {
+        warn!("local light buffer: {e:?}");
+    }
+    if let Err(e) = images.insert(LOCAL_LIGHT_TEXTURES.id(), blank_array()) {
+        warn!("local light texture array: {e:?}");
+    }
+}
+
+pub fn ensure_empty(buffers: &mut Assets<ShaderBuffer>, images: &mut Assets<Image>) {
+    if buffers.get(LOCAL_LIGHT_BUFFER.id()).is_none() {
+        let (words, _) = encode(&[], DYNAMIC_SLOTS, &GameLightUniform::viewer_default());
+        if let Err(e) =
+            buffers.insert(LOCAL_LIGHT_BUFFER.id(), ShaderBuffer::new(words.bytes(), RenderAssetUsages::default()))
+        {
+            warn!("local light buffer: {e:?}");
+        }
+    }
+    if images.get(LOCAL_LIGHT_TEXTURES.id()).is_none()
+        && let Err(e) = images.insert(LOCAL_LIGHT_TEXTURES.id(), blank_array())
+    {
+        warn!("local light texture array: {e:?}");
+    }
+}

@@ -12,6 +12,7 @@ use crate::game::values::{UiValue, UiValues};
 mod actions;
 mod data;
 mod info;
+pub mod showcase;
 #[cfg(test)]
 mod tests;
 
@@ -68,6 +69,15 @@ pub struct Equipment {
     pub inv: Option<Box<Inventory>>,
     pub offer_ms: i32,
     offer_shown: Option<i64>,
+    /// A port addition (the menus' 3-D rider showcase): the rider the list has highlighted (None: the chosen one,
+    /// `rider_index`, until the list highlights another).
+    pub highlight: Option<usize>,
+    /// The 3D Rider Select mod: the gear list's hovered item (its list, its place in the full list), the suit or board
+    /// the 3-D rider wears meanwhile (the hovered one: its kind, slot and item), and Y pressed on a suit or board
+    /// (marking it favourite, or not) for the next update.
+    pub hovered: Option<(List, usize)>,
+    pub preview: Option<(usize, usize, (u32, u8))>,
+    pub favourite_press: bool,
 }
 
 impl Equipment {
@@ -181,6 +191,20 @@ pub fn activate(fe: &mut FrontEnd, env: &mut FeEnv) {
     eq.category = env.values.int(0x5F);
     eq.slot = env.values.int(0x61);
     eq.last_rider = env.values.int(0x65) as u32;
+    // A port fix: with no rider picked yet this session (the value starts at 0 at every launch), the character select
+    // opens on the profile's last rider (its `LURI`, saved with the profile) rather than the first in the list.
+    // (the rider last chosen as kept on disk first: the profile's is only as new as its last save)
+    let kept = inventory::event_loadouts::last_rider()
+        .filter(|r| fe.career.riders.iter().any(|x| x.key == *r))
+        .map(i64::from);
+    if eq.last_rider == 0
+        && let Some(last) = kept.or_else(|| fe.profile.attribs.get(&ssx_assets::career::profile::ATTRIB_LAST_RIDER).copied())
+        && let Ok(last) = u32::try_from(last)
+        && last != 0
+    {
+        eq.last_rider = last;
+        env.values.set_int(0x65, last as i32);
+    }
     eq.rider_count = env.values.int(0x60);
     for id in [0x5F, 0x61, 0x62, 0x60] {
         env.values.set_int(id, 0);
@@ -204,6 +228,7 @@ pub fn activate(fe: &mut FrontEnd, env: &mut FeEnv) {
             return;
         }
         fe.equipment.state = state::RIDER;
+        fe.equipment.highlight = None;
         fe.publish.push("dp_screen_state".into());
         return;
     }
@@ -294,6 +319,35 @@ fn save_state(fe: &FrontEnd, env: &mut FeEnv) {
     env.values.set_int(0x60, eq.rider_count);
 }
 
+/// The 3D Rider Select mod: the suits' and boards' lists (their categories).
+pub(crate) fn favourite_kinds(category: i32) -> bool {
+    matches!(category, 1 | 2)
+}
+
+/// The 3D Rider Select mod: the lists whose hovered item the rider wears meanwhile on the 3D model (suits, boards and
+/// gear).
+pub(crate) fn preview_kinds(category: i32) -> bool {
+    matches!(category, 1..=3)
+}
+
+/// The 3D Rider Select mod: Y on an owned suit or board (the gear list's, or the full list's) marks it favourite (or
+/// not), listing it first; taken (not for the screen's script) for the next update.
+pub fn take_suit_press(fe: &mut FrontEnd, button: crate::game::input::Button) -> bool {
+    if !ssx_core::rider_showcase::enabled()
+        || !favourite_kinds(fe.equipment.category)
+        || button != crate::game::input::Button::DigitalThree
+    {
+        return false;
+    }
+    let gear = fe.screen == screens::id::EQUIPMENT && fe.equipment.state == state::GEAR;
+    let full_list = fe.screen == 0x31 && fe.equipment.state == state::INVENTORY;
+    if !gear && !full_list {
+        return false;
+    }
+    fe.equipment.favourite_press = true;
+    true
+}
+
 pub fn update(fe: &mut FrontEnd, env: &mut FeEnv) {
     if let Some(left) = fe.equipment.inv.as_ref().and_then(|i| i.store.shown_special_left((fe.time * 1000.0) as i64)) {
         env.values.set_int(LIMITED_TIME_OFFER, i32::try_from(left).unwrap_or(i32::MAX));
@@ -308,6 +362,24 @@ pub fn update(fe: &mut FrontEnd, env: &mut FeEnv) {
             eq.offer_shown = shown;
             fe.publish.push("dp_limited_time_offer".into());
         }
+    }
+    if std::mem::take(&mut fe.equipment.favourite_press) {
+        actions::toggle_favourite(fe, env);
+    }
+    let lists = matches!(fe.equipment.state, state::GEAR | state::INVENTORY);
+    let suits = favourite_kinds(fe.equipment.category) && lists;
+    if !(preview_kinds(fe.equipment.category) && lists) {
+        fe.equipment.preview = None;
+    }
+    if ssx_core::rider_showcase::enabled() {
+        ssx_core::rider_showcase::set_full_list_view(fe.screen == 0x31 && fe.equipment.state == state::INVENTORY);
+        // (the favourite suits' stars: which of the gear list's items, and of the full list's (with its highlighted one))
+        let stars = |l: &[UiItem]| -> Vec<bool> {
+            if suits { l.iter().map(inventory::favorites::is_favourite).collect() } else { Vec::new() }
+        };
+        let full = fe.equipment.inv.as_ref().map(|i| stars(&i.inventory_list)).unwrap_or_default();
+        let highlighted = fe.equipment.hovered.filter(|h| h.0 == List::Inventory).map(|h| h.1);
+        ssx_core::rider_showcase::set_favourite_cells(stars(&fe.equipment.list), full, highlighted);
     }
     if fe.equipment.state == state::HINT && env.values.bool(0x216) {
         fe.equipment.state = state::READY;

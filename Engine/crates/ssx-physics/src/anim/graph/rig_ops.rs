@@ -74,6 +74,18 @@ impl RiderRigOps {
         self.rigamate.as_ref().map(|(r, _)| r.summary())
     }
 
+    /// A port addition (the menus' 3-D rider showcase): the leg and rigamate passes on a pose with no ride (no
+    /// compression, no board placement): they fit the animation to each character's own proportions.
+    pub fn apply_pose(&mut self, rig: &SceneGraph, pose: &mut RigPose) {
+        if let Some(legs) = &mut self.legs {
+            legs.apply_with(rig, &mut pose.nodes, &pose.floats, None, false);
+        }
+        if let Some((rm, slots)) = &mut self.rigamate {
+            let floats: Vec<f32> = slots.iter().map(|s| s.map_or(0.0, |i| pose.floats[i])).collect();
+            rm.apply(&mut pose.nodes, &floats);
+        }
+    }
+
     pub fn apply(&mut self, s: &RiderState, g: &RiderGraph) -> RigPose {
         let mut pose = g.pose().clone();
         if let Some(legs) = &mut self.legs {

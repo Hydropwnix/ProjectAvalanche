@@ -31,6 +31,10 @@ pub(crate) struct DrawPool {
     tx: Sender<Loaded>,
     rx: Mutex<Receiver<Loaded>>,
     pub(super) content: Option<Arc<ssx_assets::content::GameContent>>,
+    /// A port addition for mods (`getScreen`): the window and the part of the stage it shows, as of the last frame.
+    pub(super) screen: Option<ssx_script::host::game::ScreenView>,
+    /// A port addition for mods (`getCursor`): the mouse cursor in stage units, as of the last frame.
+    pub(super) cursor: Option<(f32, f32)>,
 }
 
 impl Default for DrawPool {
@@ -47,6 +51,8 @@ impl Default for DrawPool {
             tx,
             rx: Mutex::new(rx),
             content: None,
+            screen: None,
+            cursor: None,
         }
     }
 }
@@ -113,6 +119,15 @@ impl DrawPool {
 }
 
 fn load_image(content: &ssx_assets::content::GameContent, id: &ContentId) -> Result<ImageData, String> {
+    if id.namespace() == ssx_core::menu_background::THUMB_NAMESPACE {
+        let file = ssx_core::menu_background::thumb_file(id.path()).ok_or("no such preview")?;
+        let img = image::open(&file).map_err(|e| format!("{id}: {e}"))?.to_rgba8();
+        let (w, h) = img.dimensions();
+        if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
+            return Err(format!("{id}: {w} × {h}"));
+        }
+        return Ok(ImageData { width: w, height: h, rgba: img.into_raw(), source: id.to_string() });
+    }
     let found = content.texture(id, &ssx_content::texture::Want::PLANE).map_err(|e| e.to_string())?;
     let t = &found.texture;
     let (w, h) = (t.width(), t.height());
@@ -154,6 +169,20 @@ fn overlay_draw(pool: &mut DrawPool, d: &Draw) -> Option<OverlayDraw> {
     })
 }
 
+/// The window's size and what it covers in stage units: the corners of the window taken back onto the stage.
+pub(super) fn screen_view(
+    (width, height): (u32, u32),
+    mode: ssx_ui::render::ScaleMode,
+) -> Option<ssx_script::host::game::ScreenView> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let inv = overlay::stage_transform((width, height), mode).inverse()?;
+    let (left, top) = inv.apply(0.0, 0.0);
+    let (right, bottom) = inv.apply(width as f32, height as f32);
+    Some(ssx_script::host::game::ScreenView { width, height, left, top, right, bottom })
+}
+
 pub(super) fn overlay(
     mut pool: ResMut<DrawPool>,
     mut out: ResMut<UiOverlay>,
@@ -161,9 +190,22 @@ pub(super) fn overlay(
     scene: Res<super::markers::MarkerScene>,
     ui: Option<Res<UiScene>>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
 ) {
     let p = &mut *pool;
     p.receive();
+    if let Ok(w) = windows.single() {
+        let mode = ui.as_ref().map_or(ssx_ui::render::ScaleMode::NoBorder, |u| u.scale_mode);
+        p.screen = screen_view((w.physical_width(), w.physical_height()), mode);
+        // The cursor on the stage: the window maps onto the screen view's rectangle.
+        p.cursor = match (p.screen, w.physical_cursor_position()) {
+            (Some(s), Some(c)) if s.width > 0 && s.height > 0 => Some((
+                s.left + c.x / s.width as f32 * (s.right - s.left),
+                s.top + c.y / s.height as f32 * (s.bottom - s.top),
+            )),
+            _ => None,
+        };
+    }
     if let Some(list) = p.pending.take() {
         p.list = list;
     }
@@ -203,6 +245,11 @@ pub(super) fn overlay(
     let list = std::mem::take(&mut p.list);
     draws.extend(list.iter().filter_map(|(_, d)| overlay_draw(p, d)));
     p.list = list;
+    // The `skip-intros` mod's startup black, over everything (the menus, the globe and the mods' own drawing).
+    let black = ssx_ui::game::fe::boot::startup_black();
+    if black > 0.0 {
+        draws.push(OverlayDraw::Fill { color: [0.0, 0.0, 0.0, black.min(1.0)] });
+    }
     out.images = p.order.iter().filter_map(|id| p.images.get(id).cloned()).collect();
     out.draws = draws;
     if out.font.is_empty() {

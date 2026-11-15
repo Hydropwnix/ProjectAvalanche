@@ -470,6 +470,16 @@ impl Library {
     // TODO(guess): the image movie's layout (one frame, the bitmap at depth 1 at 0, 0, the stage the image's size, 30 fps) follows Flash's loadMovie of a bitmap; settle: Scaleform's load-queue image branch.
     fn image_movie(&mut self, key: &str, file: &str, img: ImageData) -> Result<MovieId> {
         let (w, h) = (img.width, img.height);
+        // A port addition: a rider portrait a mod replaces with a sharper picture (of the same shape) shows at the game's
+        // portrait size (88 x 256 pixels), its texels finer.
+        let shown = if file.to_ascii_lowercase().contains("riderportraitslarge")
+            && (w, h) != (88, 256)
+            && u64::from(w) * 256 == u64::from(h) * 88
+        {
+            (88, 256)
+        } else {
+            (w, h)
+        };
         let image = self.insert_image(img);
         let id = self.movies.len();
         let dir = file.rsplit_once('/').map_or(String::new(), |(d, _)| format!("{d}/"));
@@ -494,13 +504,13 @@ impl Library {
         };
         let frame = FrameDef { tags: vec![FrameTag::Place(Arc::new(place))], ..Default::default() };
         let mut chars = HashMap::new();
-        chars.insert(1, Character::Bitmap(BitmapDef::of_rect(image, [0, 0, w, h])));
+        chars.insert(1, Character::Bitmap(BitmapDef { image, rect: [0, 0, w, h], size: [shown.0, shown.1] }));
         self.movies.push(MovieDef {
             path: key.to_string(),
             dir,
             version: 8,
             frame_rate: 30.0,
-            stage: RectF::new(0.0, 0.0, w as f32 * 20.0, h as f32 * 20.0),
+            stage: RectF::new(0.0, 0.0, shown.0 as f32 * 20.0, shown.1 as f32 * 20.0),
             background: None,
             swf_name: String::new(),
             root: Arc::new(TimelineDef { movie: id, id: 0, frames: vec![frame] }),

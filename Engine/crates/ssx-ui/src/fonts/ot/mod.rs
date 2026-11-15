@@ -57,7 +57,15 @@ impl std::fmt::Debug for OtFont {
 
 impl OtFont {
     pub fn open(name: &str, bytes: Bytes, limits: &Limits) -> Result<OtFont, String> {
-        let face = GlyphFont::open(bytes, limits)?;
+        Self::with_face(name, GlyphFont::open(bytes, limits)?)
+    }
+
+    /// A system font: font `index` of a collection, or a single font (index 0).
+    pub fn open_collection(name: &str, bytes: Bytes, index: u32, limits: &Limits) -> Result<OtFont, String> {
+        Self::with_face(name, GlyphFont::open_collection(bytes, index, limits)?)
+    }
+
+    fn with_face(name: &str, face: GlyphFont) -> Result<OtFont, String> {
         let shaper = catch_unwind(AssertUnwindSafe(|| face.font().map(|f| ShaperData::new(&f))))
             .map_err(|_| "the shaper failed on the font's tables".to_string())??;
         Ok(OtFont {

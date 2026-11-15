@@ -123,7 +123,7 @@ impl Profile {
         }
         r.total = r.reward + r.bonus + r.leaderboard;
         if !o.failed {
-            self.add_credits(-o.geotag_credits, true);
+            self.take_back_credits(o.geotag_credits);
         }
         self.add_credits(r.total, true);
         let stats = self.riders.entry(o.rider).or_default();

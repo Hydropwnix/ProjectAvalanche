@@ -34,9 +34,19 @@ impl Inventory {
         } else {
             u.name = rec.name.clone();
             u.description = self.perk_description(loc, rec);
+            u.perk = if rec.kind == 4 { -1 } else { (3..6).rev().find(|&i| rec.stats[i].0 != -1).map_or(-1, |i| rec.stats[i].0) };
             let icon = |k: u32| db.descriptions.iter().find(|d| d.key == k).map(|d| d.icon.clone()).unwrap_or_default();
             u.asset = icon(rec.descriptions[0]);
             u.secondary = icon(rec.descriptions[1]);
+            // A port fix: a suit made in the store with its rider's first pants (its pants description none the career's
+            // database knows: the suit's name counts it as pants 0) showed no pants in its picture: their picture is
+            // the rider's first pants' (the jacket's, `<rider>_top_<n>`, beside `<rider>_bottom_0`).
+            if rec.kind == 0
+                && u.secondary.is_empty()
+                && let Some((stem, _)) = u.asset.rsplit_once("_top_")
+            {
+                u.secondary = format!("{stem}_bottom_0.dds");
+            }
             let package_portrait = db
                 .riders
                 .iter()
@@ -142,6 +152,25 @@ impl Inventory {
             u.level = rec.level + 1;
         }
         u
+    }
+
+    /// A suit's full portrait on a rider (the jacket and pants pictures its card shows): none for a package's rider
+    /// (one picture of its own).
+    pub fn suit_portrait(&self, db: &CareerDb, profile: &Profile, rider: u32, suit: (u32, u8)) -> Option<(String, String)> {
+        let r = db.riders.iter().find(|r| r.key == rider)?;
+        let package = r.content.as_ref().and_then(|c| c.portrait.as_ref()).is_some_and(|p| p.namespace() != ssx_content::BASE_NAMESPACE);
+        if package {
+            return None;
+        }
+        let descs = match suit.1 {
+            0 => db.items.iter().find(|i| i.key == suit.0).map(|i| i.descriptions.clone()).unwrap_or_default(),
+            _ => profile.generated.get(&suit.0).map(|g| g.descriptions.to_vec()).unwrap_or_default(),
+        };
+        let id = |k: Option<&u32>| k.and_then(|k| db.descriptions.iter().find(|d| d.key == *k)).map_or(0, |d| d.id);
+        Some((
+            format!("{PORTRAIT_JACKET}{}_top{}.dds", r.portrait, id(descs.first())),
+            format!("{PORTRAIT_PANTS}{}_bottom{}.dds", r.portrait, id(descs.get(1))),
+        ))
     }
 
     pub(super) fn perk_description(&self, loc: &mut Localization, rec: &Record) -> String {
@@ -281,7 +310,7 @@ impl Inventory {
                     let boost_ok = rec.kind != 3 || item.sort >= 1;
                     if kind == RIDER {
                         self.owned_list.push(item.clone());
-                    } else if gear_ok && boost_ok {
+                    } else if gear_ok && boost_ok && item.rarity >= profile.shop_min_rarity {
                         self.store_list.push(item.clone());
                     }
                 } else if !equipped || kind == RIDER {
@@ -305,6 +334,19 @@ impl Inventory {
             }
             self.owned_list = owned;
             self.inventory_list.sort_by(super::order::by_value);
+            // (the Custom Event Menus mod: the suits' full list grouped by their perks, each group best first, those
+            // with no perk last)
+            if kind == 0 && ssx_core::rider_showcase::enabled() {
+                let group = |u: &UiItem| if u.perk < 0 { i64::MAX } else { u.perk };
+                self.inventory_list
+                    .sort_by(|a, b| group(a).cmp(&group(b)).then_with(|| super::order::by_value(a, b)));
+            }
+            // (the Custom Event Menus mod: favourite suits and boards first)
+            if matches!(kind, 0 | 1) && ssx_core::rider_showcase::enabled() {
+                let later = |u: &UiItem| !super::favorites::is_favourite(u);
+                self.owned_list.sort_by_key(later);
+                self.inventory_list.sort_by_key(later);
+            }
             let with_empty = matches!(kind, 2..=4);
             self.owned_list.truncate(if with_empty { 6 } else { 7 });
             if with_empty && let Some(rec) = self.record(db, profile, loc, fnv1(EMPTY[kind as usize].as_bytes()), 0) {

@@ -22,6 +22,8 @@ pub const MAX_COVERAGE_STEPS: usize = 2 * 0x11_0000;
 #[derive(Debug)]
 pub struct GlyphFont {
     bytes: Bytes,
+    /// The font's place in its file: 0, or its index in a collection (`ttcf`, a system's fonts only).
+    index: u32,
     pub family: String,
     pub units_per_em: u16,
     pub glyphs: u32,
@@ -42,14 +44,25 @@ pub struct Glyph {
 
 impl GlyphFont {
     pub fn open(bytes: Bytes, limits: &Limits) -> Result<GlyphFont, String> {
+        Self::open_in(bytes, None, limits)
+    }
+
+    /// A port addition for the system's fonts: font `index` of a collection (`ttcf`) as well as a single font (index
+    /// 0). Packages' and the shipped fonts keep to one font per file (`open`).
+    pub fn open_collection(bytes: Bytes, index: u32, limits: &Limits) -> Result<GlyphFont, String> {
+        Self::open_in(bytes, Some(index), limits)
+    }
+
+    fn open_in(bytes: Bytes, at: Option<u32>, limits: &Limits) -> Result<GlyphFont, String> {
         let data = bytes.get();
         if data.len() > limits.max_file_bytes {
             return Err(format!("{} bytes (a font file is at most {})", data.len(), limits.max_file_bytes));
         }
-        if data.get(..4) == Some(b"ttcf") {
+        if data.get(..4) == Some(b"ttcf") && at.is_none() {
             return Err("a font collection (ttcf): one font per file".into());
         }
-        let font = FontRef::new(data).map_err(|e| format!("not a TrueType / OpenType font: {e}"))?;
+        let index = at.unwrap_or(0);
+        let font = FontRef::from_index(data, index).map_err(|e| format!("not a TrueType / OpenType font: {e}"))?;
         let upem = font.head().map_err(|e| format!("head: {e}"))?.units_per_em();
         if !(16..=16384).contains(&upem) {
             return Err(format!("head: {upem} units per EM (16 to 16 384)"));
@@ -97,6 +110,7 @@ impl GlyphFont {
         let family = family_name(&font);
         Ok(GlyphFont {
             bytes,
+            index,
             family,
             units_per_em: upem,
             glyphs,
@@ -114,7 +128,7 @@ impl GlyphFont {
     }
 
     pub fn font(&self) -> Result<FontRef<'_>, String> {
-        FontRef::new(self.bytes.get()).map_err(|e| format!("not a TrueType / OpenType font: {e}"))
+        FontRef::from_index(self.bytes.get(), self.index).map_err(|e| format!("not a TrueType / OpenType font: {e}"))
     }
 
     pub fn covers(&self, c: char) -> bool {

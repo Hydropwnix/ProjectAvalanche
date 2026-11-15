@@ -194,6 +194,14 @@ impl GameUi {
                 self.input.push_from(i, device);
             }
             self.input.resume();
+            // A port addition: back on a port popup with a back event (its No, OK or Cancel) raises that event.
+            let back = self.fe.as_ref().and_then(|f| f.popups.stack.last().and_then(|n| f.popups.def(n)));
+            let back = back.map(|d| d.back.clone()).filter(|e| !e.is_empty());
+            if let Some(event) = back
+                && self.input.take_presses(input::Button::DigitalTwo)
+            {
+                nav_events.push(event);
+            }
             let mut cx = vm.ctx(lib, player);
             self.pointer_read(&mut cx);
             self.stats.inputs += self.input.deliver(&mut cx) as u64;

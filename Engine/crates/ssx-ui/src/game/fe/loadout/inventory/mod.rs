@@ -7,6 +7,8 @@ use crate::game::loc::Localization;
 
 mod drop_info;
 mod equip;
+pub mod event_loadouts;
+pub mod favorites;
 mod generated;
 mod lists;
 mod order;
@@ -73,6 +75,8 @@ pub struct UiItem {
     pub src: u8,
     pub flags: u32,
     pub stats: [(i64, i64); 3],
+    /// Its perk (the stat its perk text names; -1: none).
+    pub perk: i64,
 }
 
 impl UiItem {
@@ -101,6 +105,8 @@ pub struct Inventory {
     pub level_limit: i64,
     pub last_drop: u32,
     pub recommend_first: bool,
+    /// The kind of event (its mode) the loadout is for (a port addition: each kind of event keeps its own loadout).
+    pub event_type: Option<String>,
     pub new_items: [Vec<(u32, u8)>; KINDS + 1],
     pub owned_list: Vec<UiItem>,
     pub store_list: Vec<UiItem>,
@@ -140,6 +146,7 @@ impl Inventory {
             level_limit: -1,
             last_drop: 0,
             recommend_first: true,
+            event_type: None,
             new_items: Default::default(),
             owned_list: Vec::new(),
             store_list: Vec::new(),
@@ -161,7 +168,10 @@ impl Inventory {
     pub fn store_context(&self, db: &CareerDb, profile: &Profile, drop: Option<&DropInfo>) -> StoreContext {
         StoreContext {
             rider: self.rider,
+            // A mod's levels past the game's (`setMaxLevel`) stock the shops at the rider's own level: the game's
+            // highest gear designs, with stats that keep scaling (`store::generate::level_row`).
             level: Self::rider_level(db, profile, self.rider).0,
+            min_rarity: profile.shop_min_rarity,
             gear_types: profile.gear_types(),
             equipped_gear: self.worn_gear,
             unk_gear_mask: self.gear_mask,

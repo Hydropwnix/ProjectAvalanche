@@ -65,6 +65,13 @@ impl MoviePlayback {
         }
     }
 
+    /// A WebM file on this PC, without its sound (a port addition: the menus' background the player picked).
+    pub fn open_file(name: &str, path: &std::path::Path, images: &mut Assets<Image>) -> Result<Self> {
+        let m = WebmMovie::open_file(path, images)?;
+        let image = m.image.clone();
+        Ok(Self { name: name.to_string(), image, fps: 0.0, frames: 0, time: 0.0, inner: Inner::Package(Box::new(m)) })
+    }
+
     fn disc(name: &str, m: Vp6Movie) -> Self {
         let (image, fps, frames) = (m.image.clone(), m.fps, m.frames);
         Self { name: name.to_string(), image, fps, frames, time: 0.0, inner: Inner::Disc(m) }

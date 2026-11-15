@@ -127,7 +127,12 @@ fn image(ctx: &Ctx, _: &Lua, a: Args) -> Result<Vec<Ret>, ApiError> {
     if texture.kind() != Kind::Texture {
         return Err(format!("{texture} is not a texture id").into());
     }
-    if !ctx.host()?.lock().game.catalog.ids.contains_key(&texture) {
+    // A port addition: the menus' background library's previews come from their own files, not a package.
+    let library = texture.namespace() == ssx_core::menu_background::THUMB_NAMESPACE;
+    if library && !ssx_core::menu_background::thumb_file(texture.path()).is_some_and(|f| f.is_file()) {
+        return Err(format!("{texture}: no such preview").into());
+    }
+    if !library && !ctx.host()?.lock().game.catalog.ids.contains_key(&texture) {
         return Err(format!("{texture}: no source provides it").into());
     }
     let (w, h) = (f(&a, 2), f(&a, 3));

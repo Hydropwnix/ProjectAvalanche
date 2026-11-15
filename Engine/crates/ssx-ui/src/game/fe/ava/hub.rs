@@ -11,6 +11,8 @@ pub const OPEN: &str = "go_to_ava_hub";
 pub const MAIN_MENU_BACK: &str = "A_AvaMainMenuBack";
 pub const EXIT_POPUP: &str = "ava_exit";
 pub const EXIT_ACTION: &str = "do_ava_exit";
+/// The hub's Exit item (and its back): the quit popup.
+pub const EXIT_ITEM: &str = "A_AvaExit";
 
 #[derive(Clone, Debug, Default)]
 pub struct Hub {
@@ -38,7 +40,8 @@ pub fn activate(fe: &mut FrontEnd, env: &mut FeEnv) {
         advance,
         highlight: "A_AvaHubHighlight",
         rider_net: false,
-        back: "",
+        // TODO(guess): a port choice — back on the hub asks whether to quit, as its Exit item does.
+        back: EXIT_ITEM,
     };
     fe.ava.hub.items = vec![
         item(loc, "TXT_AVA_HUB_SINGLEPLAYER", true, "A_AvaSingleplayer"),
@@ -79,7 +82,7 @@ pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: f64) {
         "A_AvaMaps" => env.nav_events.push(crate::game::fe::ava::maps::OPEN.into()),
         "A_AvaOptions" => crate::game::fe::ava::options::open(fe, env),
         "A_AvaCredits" => env.nav_events.push("go_to_ava_credits".into()),
-        "A_AvaExit" => env.nav_events.push(EXIT_POPUP.into()),
+        EXIT_ITEM => env.nav_events.push(EXIT_POPUP.into()),
         "A_AvaHubHighlight" => {
             fe.ava.hub.index = param as i32;
             fe.note(format!("hub: item {param} highlighted"));

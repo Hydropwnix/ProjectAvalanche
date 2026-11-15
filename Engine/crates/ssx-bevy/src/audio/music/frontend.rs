@@ -53,6 +53,14 @@ impl MusicSource for FeMusicBus {
                 *menu = None;
             }
         }
+        // The `skip-intros` mod's startup: all of the menus' music silent, then fading in with the picture.
+        let start = ssx_assets::musicbox::startup_gain();
+        if start < 1.0 {
+            let g = start * start;
+            for x in out.iter_mut() {
+                *x *= g;
+            }
+        }
     }
 
     fn finished(&self) -> bool {
@@ -66,12 +74,34 @@ struct Preview {
     level: f32,
     fade: Option<(f32, u32)>,
     stopped: bool,
+    /// The song played to its end (not stopped).
+    ended: bool,
+    /// A mod's song (a music player's): when it ends, the menus' music stays away for `MOD_SONG_GAP`, so the mod's
+    /// next song follows on without the menus' music between them.
+    held: bool,
+    /// When the mod's song (`held`) was first seen ended (`MOD_SONG_GAP`).
+    ended_at: Option<std::time::Instant>,
     buf: Vec<f32>,
 }
 
 const PREVIEW_FADE_SAMPLES: u32 = 22_050;
 
+// TODO(guess): a port choice — how long the menus' music waits after a mod's song ends for the mod's next one
+// (the Custom Music Player starts it within a second); settle: none (port feature).
+const MOD_SONG_GAP: std::time::Duration = std::time::Duration::from_secs(3);
+
 impl Preview {
+    /// Whether the song holds the menus' music back: playing, or a mod's that ended within `MOD_SONG_GAP`.
+    fn holds(&mut self) -> bool {
+        if !self.stopped {
+            return true;
+        }
+        if !(self.ended && self.held) {
+            return false;
+        }
+        self.ended_at.get_or_insert_with(std::time::Instant::now).elapsed() < MOD_SONG_GAP
+    }
+
     fn render_add(&mut self, out: &mut [f32]) {
         if self.stopped {
             return;
@@ -92,6 +122,7 @@ impl Preview {
             o[1] += x[1] * self.level;
         }
         if !self.player.playing() {
+            self.ended |= self.fade.is_none();
             self.stopped = true;
         }
     }
@@ -410,7 +441,8 @@ impl FrontEndAudio {
         self.reset_pauses();
     }
 
-    pub fn preview(&mut self, big_root: &Path, id: u32, key: Option<&ssx_content::ContentId>) {
+    /// A song in the menus: the music menu's preview, or a mod's song (`held`: see `MOD_SONG_GAP`).
+    pub fn preview(&mut self, big_root: &Path, id: u32, key: Option<&ssx_content::ContentId>, held: bool) {
         if self.music.is_none() {
             return;
         }
@@ -444,6 +476,9 @@ impl FrontEndAudio {
             level: MUSIC_SUBMIX_LEVEL,
             fade: None,
             stopped: false,
+            ended: false,
+            held,
+            ended_at: None,
             buf: Vec::new(),
         };
         let (menu, slot) = (self.menu.clone(), self.preview.clone());
@@ -564,7 +599,8 @@ impl FrontEndAudio {
             }
             side.ui.frame();
             let level_song = m.music_tail.as_ref().is_some_and(|t| !t.finished());
-            let preview_on = preview.lock().is_ok_and(|p| p.as_ref().is_some_and(|pv| !pv.stopped));
+            // (a mod's song that just ended holds the menus' music back a moment for its next one: `MOD_SONG_GAP`)
+            let preview_on = preview.lock().is_ok_and(|mut p| p.as_mut().is_some_and(Preview::holds));
             if let Ok(mut menu) = menu.lock()
                 && let Some((lm, _)) = menu.as_mut()
             {
