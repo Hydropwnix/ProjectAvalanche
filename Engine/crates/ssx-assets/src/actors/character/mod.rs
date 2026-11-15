@@ -293,14 +293,16 @@ pub fn load_character(big_root: &Path, track: &str, name: &str) -> Result<Charac
 }
 
 pub fn load_character_with(big_root: &Path, track: &str, name: &str, loadout: &Loadout) -> Result<Character> {
-    let (equipped, lamp_accessory) = equipment_refs(big_root, name, loadout)?;
-    let outfit = with_track_db(big_root, track, |db| outfit(db, name, &equipped))?;
+    let (equipped, lamp_accessory, board) = outfit::equipment_refs_and_board(big_root, name, loadout)?;
+    let mut outfit = with_track_db(big_root, track, |db| outfit(db, name, &equipped))?;
+    outfit::apply_board_variant(big_root, &mut outfit, board);
     dressed(big_root, name, loadout, outfit, lamp_accessory)
 }
 
 pub fn load_character_untracked(big_root: &Path, name: &str, loadout: &Loadout) -> Result<Character> {
-    let (equipped, lamp_accessory) = equipment_refs(big_root, name, loadout)?;
-    let outfit = crate::vault_db::with_attribdb(big_root, |db| outfit(db, name, &equipped))?;
+    let (equipped, lamp_accessory, board) = outfit::equipment_refs_and_board(big_root, name, loadout)?;
+    let mut outfit = crate::vault_db::with_attribdb(big_root, |db| outfit(db, name, &equipped))?;
+    outfit::apply_board_variant(big_root, &mut outfit, board);
     dressed(big_root, name, loadout, outfit, lamp_accessory)
 }
 

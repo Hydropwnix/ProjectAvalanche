@@ -279,7 +279,20 @@ impl Ride {
         };
         let held = self.pads_held || self.chat_held || gate != super::live::StartGate::Free;
         let r2 = if held { 0.0 } else { self.r2 };
+        let gear = if self.live.is_none() { self.unlimited_gear } else { 0 };
+        let armour = self.world.props.physical_damage_modifier > 0.0;
+        let hold = match self.wingsuit_hold {
+            Some(h) => h,
+            None => {
+                let h = wingsuit_hold(&self.world.tuning.wingsuit, self.world.props.htv_falloff_wingsuit);
+                info!("ride: unlimited flight holds the wingsuit at {h:.1} of its flight time");
+                self.wingsuit_hold = Some(h);
+                h
+            }
+        };
+        keep_gear_new(&mut self.state, gear, armour, hold);
         let e = self.session.execute_with(&mut self.state, &self.world, &input, &tricks, r2, &pad, graph, &mut actors);
+        keep_gear_new(&mut self.state, gear, armour, hold);
         self.log_messages();
         if let Some(m) = self.map.as_mut() {
             let g = m.gates.update(&mut self.session, self.state.traj);
@@ -605,6 +618,55 @@ impl Ride {
         });
         if forced.unwrap_or(self.autoplay) { None } else { q.map(|q| q.value) }
     }
+}
+
+/// A port addition for mods (unlimited gear): tops up, before and after each step, what the drop wears down or uses up
+/// of the gear in `mask`: the wingsuit (its wear, and its flight time held at `hold` so its lift never fades), the ice
+/// axe, the armour (only with an armour item), the head lamp's and the pulse goggles' batteries and the oxygen tank.
+fn keep_gear_new(s: &mut RiderState, mask: u32, armour: bool, hold: f32) {
+    use ssx_assets::career::profile::unlimited_gear as g;
+    if mask & g::WINGSUIT != 0 {
+        s.wingsuit.effectiveness = 1.0;
+        // The controller's time is the flight time over the time scalar (the effectiveness is kept at 1).
+        s.wingsuit.time = s.wingsuit.time.min(hold * s.wingsuit.time_scalar.max(0.0));
+    }
+    let v = &mut s.survival;
+    if mask & g::ICE_AXE != 0 {
+        v.ice_axe_effectiveness = 1.0;
+    }
+    if mask & g::ARMOUR != 0 && armour {
+        v.armour = 1.0;
+    }
+    if mask & g::HEAD_LAMP != 0 {
+        v.head_lamp_battery = 1.0;
+    }
+    if mask & g::PULSE_GOGGLES != 0 {
+        v.pulse_goggles_battery = 1.0;
+    }
+    if mask & g::OXYGEN_TANK != 0 {
+        v.oxygen_tank = v.oxygen_tank.max(1.0);
+    }
+}
+
+/// Where unlimited flight holds the wingsuit's flight time (the controller's own time): the first moment its lift and
+/// its turning are both at their best together. Held at the start instead (time 0), a flight is the stiff first instant
+/// of a deploy throughout; held here, it handles as a flight does once it has opened up, and never fades from there.
+fn wingsuit_hold(t: &ssx_physics::wingsuit::WingsuitTuning, falloff: f32) -> f32 {
+    const SAMPLES: usize = 512;
+    let end = [&t.lift_time, &t.roll_to_turn_time]
+        .into_iter()
+        .flat_map(|c| c.points.iter().map(|p| p[0]))
+        .fold(falloff.max(0.0), f32::max);
+    if end <= 0.0 {
+        return 0.0;
+    }
+    let score = |x: f32| t.lift_time.eval(x).max(0.0) * t.roll_to_turn_time.eval(x).max(0.0);
+    let at = |i: usize| end * i as f32 / SAMPLES as f32;
+    let best = (0..=SAMPLES).map(|i| score(at(i))).fold(0.0, f32::max);
+    if best <= 0.0 {
+        return 0.0;
+    }
+    (0..=SAMPLES).map(at).find(|&x| score(x) >= best * 0.99).unwrap_or(0.0)
 }
 
 fn log_event(ride: &Ride, e: &Execution) {

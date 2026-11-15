@@ -31,9 +31,11 @@ mod display;
 mod frame;
 mod live;
 mod maps;
+mod menu_background;
 mod pads;
 mod pointer;
 mod save;
+mod showcase;
 mod stage;
 mod window;
 mod world;
@@ -211,6 +213,9 @@ pub fn boot_ui(big_root: &Path, lang: Language, classic: bool, display: DisplayC
 }
 
 const MOVIE_LAYER: usize = 7;
+/// A port addition: the menus' background movie (a mod's `menu-background:movie/background`), drawn under the globe
+/// (in place of its backdrop) and the menus.
+const BACKGROUND_LAYER: usize = 8;
 
 const FE_BACKGROUND: Color = Color::BLACK;
 
@@ -291,6 +296,19 @@ struct Shell {
     stick_dpad: StickDpad,
     movie_sprite: Entity,
     movie_camera: Entity,
+    /// The menus' background movie in place of the globe (a port addition): its player, sprite and camera, whether
+    /// a mod has one (known after the first look), and whether the globe would show this frame.
+    background: Option<ui::movie::MoviePlayback>,
+    background_sprite: Entity,
+    background_camera: Entity,
+    background_found: Option<bool>,
+    background_wanted: bool,
+    /// The menus' own background the player picked (a port addition: `chooseMenuBackground`), and whether the globe
+    /// shows this frame.
+    user_background: menu_background::UserBackground,
+    globe_shown: bool,
+    /// The picture last shown (kept while the movie opens again for its loop).
+    background_shown: Option<bevy::prelude::Handle<bevy::prelude::Image>>,
     ready_frames: u32,
     started: bool,
     hold: u32,
@@ -321,6 +339,8 @@ struct Shell {
 }
 
 const LAUNCH_BOOT_WAIT: f64 = 20.0;
+/// The mod whose presence skips the boot's logo movie, start screen and autosave notice (a port addition).
+const SKIP_INTROS_MOD: &str = "skip-intros";
 
 pub fn run(a: GameArgs) -> Result<AppExit> {
     use ssx_ui::game::fe::host::parse_script;
@@ -356,6 +376,10 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
         Profile::new(),
     )?;
     fe.ava.options.file = Some(ssx_assets::setup::app_dir().join("settings.json"));
+    fe.boot.skip_intros = mods.iter().flat_map(|r| &r.mounted).any(|m| m.name == SKIP_INTROS_MOD);
+    if fe.boot.skip_intros {
+        info!("mods: {SKIP_INTROS_MOD} enabled: the logo movie, the start screen and the autosave notice are skipped");
+    }
     ssx_ui::game::fe::ava::options::reload(&mut fe);
     #[cfg(feature = "net")]
     {
@@ -473,6 +497,30 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
             ui::fade::FadeCamera,
         ))
         .id();
+    let background_layer = RenderLayers::layer(BACKGROUND_LAYER);
+    let background_sprite = app
+        .world_mut()
+        .spawn((
+            Sprite { custom_size: Some(Vec2::new(w, h)), ..default() },
+            Visibility::Hidden,
+            background_layer.clone(),
+        ))
+        .id();
+    let background_camera = app
+        .world_mut()
+        .spawn((
+            Camera2d,
+            Camera {
+                order: -1,
+                clear_color: ClearColorConfig::Custom(FE_BACKGROUND),
+                is_active: false,
+                ..default()
+            },
+            Tonemapping::None,
+            Msaa::Off,
+            background_layer,
+        ))
+        .id();
     app.insert_resource(GameUiRes(game))
         .insert_resource(Shell {
             host,
@@ -517,6 +565,14 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
             stick_dpad: StickDpad::default(),
             movie_sprite,
             movie_camera,
+            background: None,
+            background_sprite,
+            background_camera,
+            background_found: None,
+            background_wanted: false,
+            user_background: menu_background::UserBackground::default(),
+            globe_shown: false,
+            background_shown: None,
             ready_frames: 0,
             started: false,
             hold: 0,
@@ -562,7 +618,9 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
             (apply_controller_scheme, game_level::level_frame, shell_input, pointer::pointer_system, shell_step)
                 .chain()
                 .after(crate::ride::RideStepSet),
-        );
+        )
+        .init_resource::<showcase::ShowcaseState>()
+        .add_systems(Update, showcase::showcase_system.after(shell_step));
     app.sub_app_mut(RenderApp).add_systems(ExtractSchedule, report_pipelines);
     #[cfg(feature = "net")]
     if !a.classic_front_end {

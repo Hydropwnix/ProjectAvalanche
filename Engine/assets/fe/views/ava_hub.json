@@ -28,7 +28,7 @@
     "sd": {"left": ["mcPanel", "mcMenu", "mcButtonCalloutBar"]},
     "data": ["ava_hub_menu", "ava_hub_menu_index"],
     "menus": [
-      {"target": "mcMenu", "rows": 6, "cell_width": 303, "cell_height": 80, "spacing": -10, "panel_gaps": [5, -14],
+      {"target": "mcMenu", "rows": 6, "cell_width": 303, "cell_height": 60, "spacing": -10, "panel_gaps": [5, -14],
         "wrap": false, "data": "ava_hub_menu", "index": "ava_hub_menu_index", "cell": "AvaHubCell"}
     ],
     "panels": [{"target": "mcPanel", "width": 303, "fit_menu": "mcMenu", "dimmer": 50}],

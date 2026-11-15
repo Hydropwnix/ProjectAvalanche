@@ -29,7 +29,7 @@ pub const FILES: &[(&str, &str)] = port_files![
     "views/ava_hub.json",
     // TODO(guess): a port choice — the maps' list (9 rows of 36 px, 2 apart, at (101, 252), 730 wide) gets the disc's scroll bar 1 px right of its rows as globaldrop places its own (views/globaldrop.gfx: `ListMenu` at x -110, `ROW_WIDTH` 220, the bar at x 111): x 832, from the rows' top for their height, 340 = 9 · 36 + 8 · 2 (the track listing's bar, views/activityfeedtracklisting.gfx, is 275 long beside 8 rows of 34); the bar runs over the table panel's edge (x 839) and ends 1 px before the details panel (x 849); settle: none (the disc has no such list).
     "views/ava_maps.json",
-    // TODO(guess): a port choice — the disc's `SettingsMenu` (5 rows, `MAX_VISIBLE_MENU_ROWS`) places no scroll bar, and the port's Options list has 6 rows (8 with the network); the bar (`components.ScrollBar`, 16 px wide) is placed as globaldrop places its own (views/globaldrop.gfx: 1 px right of its rows, `ListMenu` at x -110 with `ROW_WIDTH` 220, the bar at x 111) at x 441 (the menu's x 90 + `MENU_WIDTH` 350 + 1), from the panel's top (y 190) for the panel's height, 251 = `ListMenu.RedrawPanel`'s 5 · 60 − 4 · 10 + 5 − 14; the menu is set up at the view's `Initialize` and shown at once, where `SettingsMenu` (0x05da…0x09be) hides it until `settings_init` is published and sets it up then (the provider answers that subscription in the same update); settle: none (the disc's list never scrolls).
+    // TODO(guess): a port choice — the disc's `SettingsMenu` (5 rows, `MAX_VISIBLE_MENU_ROWS`) places no scroll bar, and the port's Options list has 6 rows (8 with the network); the bar (`components.ScrollBar`, 16 px wide) is placed as globaldrop places its own (views/globaldrop.gfx: 1 px right of its rows, `ListMenu` at x -110 with `ROW_WIDTH` 220, the bar at x 111) at x 571 (the menu's x 90 + the rows' width + 1; the port's rows are 480 wide, not `MENU_WIDTH` 350, so a long value such as the player's name fits), from the panel's top (y 190) for the panel's height, 251 = `ListMenu.RedrawPanel`'s 5 · 60 − 4 · 10 + 5 − 14; the menu is set up at the view's `Initialize` and shown at once, where `SettingsMenu` (0x05da…0x09be) hides it until `settings_init` is published and sets it up then (the provider answers that subscription in the same update); settle: none (the disc's list never scrolls).
     "views/ava_options.json",
     "viewmodels/avakeyboard.vm",
     "viewmodels/avahub.vm",
@@ -89,6 +89,27 @@ pub const NET_FILES: &[(&str, &str)] = port_files![
 ];
 #[cfg(not(feature = "net"))]
 pub const NET_FILES: &[(&str, &str)] = &[];
+
+/// A port addition for mods (`getMainMenu`): the hub's menu panel as its layout places it with all its rows,
+/// `[x, y, width, height]` in the 1280 × 720 stage.
+pub fn hub_panel() -> Option<[f32; 4]> {
+    static BOX: std::sync::OnceLock<Option<[f32; 4]>> = std::sync::OnceLock::new();
+    *BOX.get_or_init(|| {
+        let (file, text) = FILES.iter().find(|f| f.0 == "views/ava_hub.json")?;
+        let layout = crate::author::Layout::parse(file, text).ok()?;
+        let panel = layout.logic.panels.first()?;
+        let child = layout.resolve_path(&panel.target)?;
+        let crate::author::PanelHeight::FitMenu(target) = &panel.height else { return None };
+        let menu = layout.logic.menus.iter().find(|m| &m.target == target)?;
+        let crate::author::MenuKind::List { rows, cell_height, spacing, panel_gaps, .. } = menu.kind else {
+            return None;
+        };
+        let (top, bottom) = panel_gaps.unwrap_or((0.0, 0.0));
+        let n = rows as f32;
+        let height = n * cell_height + (n - 1.0) * spacing + top + bottom;
+        Some([layout.view_x + child.x, layout.view_y + child.y, panel.width, height])
+    })
+}
 
 pub fn all_files() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
     FILES.iter().chain(NET_FILES.iter())

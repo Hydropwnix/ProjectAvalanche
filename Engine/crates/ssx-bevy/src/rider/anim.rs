@@ -226,8 +226,25 @@ impl RiderAnimation {
         &self.render
     }
 
+    /// A port addition (the menus' 3-D rider showcase): the level start's idle stepped by `dt`, as joint records
+    /// with the rider's feet at the origin; None without the level start's animation.
+    pub fn idle_records(&mut self, dt: f32) -> Option<Vec<JointRecord>> {
+        let mut pose = self.graph.idle_pose(dt)?;
+        if pose.nodes.len() != self.rig.nodes.len() {
+            return None;
+        }
+        // (the passes a ride's pose gets too: each character's own proportions, its legs)
+        self.rig_ops.apply_pose(&self.rig, &mut pose);
+        Some(world_records(&self.rig, &pose.nodes, Vec3::ZERO))
+    }
+
     pub fn posed(&self) -> (&RigPose, &SceneGraph, Option<[ssx_assets::anim_rigops::Effector; 2]>) {
         (&self.curr, &self.rig, self.rig_ops.effectors())
+    }
+
+    /// The joints as drawn this frame (between the last two physics steps), in the world.
+    pub fn drawn_records(&self) -> &[JointRecord] {
+        &self.render
     }
 
     pub fn drawn_joint(&self, name: &str) -> Option<JointRecord> {

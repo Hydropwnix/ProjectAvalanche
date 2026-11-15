@@ -152,6 +152,20 @@ impl LoadedRider {
             anyhow::bail!("{}: no part loaded ({})", req.id, character.problems.join("; "));
         }
         self.summary = character.summary();
+        // (diagnostic: which board mesh the gear gave, in the menus' showcase and in a run alike)
+        let boards: Vec<String> = character
+            .parts
+            .iter()
+            .filter(|p| p.slot == "snowboard")
+            .map(|p| format!("{} [{}]", p.mesh_name, p.source))
+            .collect();
+        bevy::log::info!(
+            "rider {}: board {:?} for {:?}; problems {:?}",
+            req.id,
+            boards,
+            loadout.descriptions.iter().find(|(i, _)| matches!(i, ssx_assets::character::GearItem::Board)),
+            character.problems
+        );
         let mut problems = character.problems.clone();
         let (parts, lights) = load_parts(&big_root, character, &self.rig, &mut problems);
         (self.parts, self.gear_lights) = (parts, lights);
@@ -175,6 +189,8 @@ pub struct RiderRig {
     pub summary: String,
     pub anim_ms: f32,
     pub character_materials: Vec<Handle<CharacterMaterial>>,
+    /// Each character material's part slot (`jackets`, `gloves`…), in the same order.
+    pub character_slots: Vec<String>,
     pub wingsuit_materials: Vec<Handle<CharacterMaterial>>,
     pub gear_lights: Vec<GearLight>,
     pub drawn_gear_lights: Vec<JointRecord>,
@@ -182,6 +198,12 @@ pub struct RiderRig {
     pub(super) root: Entity,
     pub(super) part_entities: Vec<Entity>,
     pub(super) redress: Redress,
+    /// The menus' showcase: the board's heading when the idle started (the idle is held to it).
+    idle_heading: Option<f32>,
+    /// The menus' showcase: where the board stands and the hand grips it (fixed when the idle starts).
+    idle_grip: Option<(Vec3, Vec3)>,
+    /// The menus' showcase: the head's and the hands' size (a suit's BigHead / BigHands perk; 1: as they are).
+    idle_big: [f32; 2],
 }
 
 #[derive(Clone)]
@@ -206,6 +228,7 @@ impl RiderRig {
 pub(super) struct SpawnedParts {
     pub entities: Vec<Entity>,
     pub character_materials: Vec<Handle<CharacterMaterial>>,
+    pub character_slots: Vec<String>,
     pub wingsuit_materials: Vec<Handle<CharacterMaterial>>,
 }
 
@@ -228,7 +251,12 @@ pub(super) fn spawn_parts(
     a: &mut PartAssets,
 ) -> SpawnedParts {
     let mut out =
-        SpawnedParts { entities: Vec::new(), character_materials: Vec::new(), wingsuit_materials: Vec::new() };
+        SpawnedParts {
+            entities: Vec::new(),
+            character_materials: Vec::new(),
+            character_slots: Vec::new(),
+            wingsuit_materials: Vec::new(),
+        };
     for p in parts {
         let inverse_bindposes = a.bindposes.add(SkinnedMeshInverseBindposes::from(p.inverse_binds));
         let joints = p.palette.iter().filter_map(|&n| nodes.get(n).copied()).collect();
@@ -248,6 +276,7 @@ pub(super) fn spawn_parts(
                 out.wingsuit_materials.push(material.clone());
             }
             out.character_materials.push(material.clone());
+            out.character_slots.push(p.slot.clone());
             out.entities.push(commands.spawn((bundle, Mesh3d(mesh), MeshMaterial3d(material))).id());
             continue;
         }
@@ -366,7 +395,7 @@ pub fn spawn(
         .collect();
     let mut assets = PartAssets { meshes, images, light, rider_light, objects, foreground, characters, bindposes };
     let spawned = spawn_parts(commands, root, &nodes, rider.parts, &mut assets);
-    let SpawnedParts { entities: part_entities, character_materials, wingsuit_materials } = spawned;
+    let SpawnedParts { entities: part_entities, character_materials, character_slots, wingsuit_materials } = spawned;
     let props = PROPS_IN_HANDS
         .iter()
         .filter_map(|&(source, target, weight)| {
@@ -389,6 +418,7 @@ pub fn spawn(
         summary: rider.summary,
         anim_ms: 0.0,
         character_materials,
+        character_slots,
         wingsuit_materials,
         gear_lights: rider.gear_lights,
         drawn_gear_lights: Vec::new(),
@@ -402,7 +432,140 @@ pub fn spawn(
             loadout: rider.loadout,
             riders: rider.riders,
         },
+        idle_heading: None,
+        idle_grip: None,
+        idle_big: [1.0, 1.0],
     }
+}
+
+/// A port addition (the menus' 3-D rider showcase): poses the rig with the level start's idle stepped by `dt`
+/// (the rider standing at the top of a drop). False when the rider has no such animation.
+/// The menus' showcase: the board shown off. It stands on its tail at the rider's right (the viewer's left),
+/// upright, its base (the design) to the camera, beside the right hand where the idle starts, and stays there.
+fn show_board(rig: &mut RiderRig, records: &mut [JointRecord]) {
+    const HALF_LENGTH: f32 = 0.78;
+    const HALF_WIDTH: f32 = 0.14;
+    let find = |n: &str| rig.rig.find(n);
+    let board_at = match rig.idle_grip {
+        Some((at, _)) => at,
+        None => {
+            let Some(hand) = find("RightHand").and_then(|i| records.get(i)).map(|r| r.p) else { return };
+            let floor = ["LeftToeBase", "RightToeBase", "LeftFoot", "RightFoot"]
+                .iter()
+                .filter_map(|n| find(n).and_then(|i| records.get(i)).map(|r| r.p.y))
+                .reduce(f32::min)
+                .map_or(0.0, |y| y - 0.04);
+            // Beside the hand, a little further out (the viewer's left) and back, clear of the arm and leg.
+            let at = Vec3::new(hand.x - HALF_WIDTH - 0.1, floor + HALF_LENGTH, hand.z - 0.15);
+            rig.idle_grip = Some((at, hand));
+            at
+        }
+    };
+    // The board's rest (bind) pose lies flat under the feet, base down, its length along the rig's x: turned a
+    // quarter about x (base to the camera, +z) and a quarter about z (length up). Its mesh hangs on the Board joint
+    // and the joints below it (its nose, tail and bindings): all of them move with it, as one piece.
+    let (_, bind_q, _) =
+        Mat4::from_cols_array_2d(&model_matrix(&rig.rig, &rig.bind, rig.board)).to_scale_rotation_translation();
+    let upright = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2) * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+    let Some(board) = records.get(rig.board) else { return };
+    let (p0, q0) = (board.p, board.q);
+    let delta = (upright * bind_q).normalize() * q0.inverse();
+    let below = |mut i: usize| loop {
+        if i == rig.board {
+            return true;
+        }
+        match rig.rig.nodes.get(i).and_then(|n| n.parent) {
+            Some(p) => i = p,
+            None => return false,
+        }
+    };
+    for (i, r) in records.iter_mut().enumerate() {
+        if below(i) {
+            r.p = board_at + delta * (r.p - p0);
+            r.q = (delta * r.q).normalize();
+        }
+    }
+}
+
+/// The menus' showcase: a suit's big-head / big-hands perk shown (2: twice the size).
+pub fn set_big(rig: &mut RiderRig, head: f32, hands: f32) {
+    rig.idle_big = [head, hands];
+}
+
+/// The head, and the hands, scaled about their joints, with all that hangs below them (the face, the fingers, what
+/// the hands hold).
+fn big_parts(rig: &RiderRig, records: &mut [JointRecord]) {
+    let [head, hands] = rig.idle_big;
+    let below = |mut i: usize, top: usize| loop {
+        if i == top {
+            return true;
+        }
+        match rig.rig.nodes.get(i).and_then(|n| n.parent) {
+            Some(p) => i = p,
+            None => return false,
+        }
+    };
+    for (name, scale) in [("Head", head), ("LeftHand", hands), ("RightHand", hands)] {
+        if (scale - 1.0).abs() < 1e-3 {
+            continue;
+        }
+        let Some(top) = rig.rig.find(name) else { continue };
+        let Some(at) = records.get(top).map(|r| r.p) else { continue };
+        for (i, r) in records.iter_mut().enumerate() {
+            if below(i, top) {
+                r.p = at + (r.p - at) * scale;
+                r.s *= scale;
+            }
+        }
+    }
+}
+
+pub fn animate_idle(rig: &mut RiderRig, dt: f32, transforms: &mut Query<&mut Transform>) -> bool {
+    let Some(mut records) = rig.anim.idle_records(dt) else { return false };
+    // The idle comes from the helicopter scenes: the rider sways and swings the board in a hand. Held every frame by
+    // the body, not the board: the hips' place over the ground stays fixed, and the body's facing (across its hips and
+    // shoulders: left minus right, crossed with up) is turned to the camera (+z), so the front always faces it.
+    let joint = |n: &str| rig.rig.find(n).and_then(|i| records.get(i)).map(|r| r.p);
+    let mut side = Vec3::ZERO;
+    for (l, r) in [("LeftUpLeg", "RightUpLeg"), ("LeftArm", "RightArm"), ("LeftShoulder", "RightShoulder")] {
+        if let (Some(l), Some(r)) = (joint(l), joint(r)) {
+            side += Vec3::new(l.x - r.x, 0.0, l.z - r.z).normalize_or_zero();
+        }
+    }
+    let facing = side.cross(Vec3::Y);
+    let turn_by = if facing.length_squared() > 1e-6 {
+        let t = -facing.x.atan2(facing.z);
+        rig.idle_heading = Some(t);
+        t
+    } else {
+        rig.idle_heading.unwrap_or(0.0)
+    };
+    let turn = Quat::from_rotation_y(turn_by);
+    // Planted: the point between the feet stays put (the hips sway over it).
+    let feet = match (joint("LeftFoot"), joint("RightFoot")) {
+        (Some(l), Some(r)) => Some((l + r) / 2.0),
+        _ => None,
+    };
+    let centre = feet.or_else(|| joint("Hips")).or_else(|| records.get(rig.board).map(|b| b.p)).unwrap_or(Vec3::ZERO);
+    let centre = Vec3::new(centre.x, 0.0, centre.z);
+    for r in &mut records {
+        r.p = turn * (r.p - centre);
+        r.q = (turn * r.q).normalize();
+    }
+    show_board(rig, &mut records);
+    big_parts(rig, &mut records);
+    for (&entity, r) in rig.nodes.iter().zip(&records) {
+        if let Ok(mut t) = transforms.get_mut(entity) {
+            *t = record_transform(r);
+        }
+    }
+    if let Some((entity, extra)) = rig.board_entity
+        && let Some(board) = records.get(rig.board)
+        && let Ok(mut t) = transforms.get_mut(entity)
+    {
+        *t = board_transform(rig, board, extra);
+    }
+    true
 }
 
 pub fn animate(rig: &mut RiderRig, input: &crate::rider::anim::AnimInput, transforms: &mut Query<&mut Transform>) {

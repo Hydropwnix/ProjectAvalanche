@@ -51,6 +51,9 @@ pub struct SfxEngine {
     since_update: f32,
     pace: f32,
     remix_clock: f32,
+    /// A port addition: a mod's song (the custom music player) is playing. The remix is built around the
+    /// game's own songs and, laid over one of these, leaves it ducked or doubled after a Super Tricky.
+    pub script_song: bool,
     audio_ms: f64,
     update_period: f32,
     block6: Vec<f32>,
@@ -130,6 +133,7 @@ impl SfxEngine {
             pace: UPDATE_PERIOD,
             audio_ms: 0.0,
             remix_clock: crate::remix::TICK,
+            script_song: false,
             update_period: UPDATE_PERIOD,
             block6: vec![0.0; crate::sfx_bus::DAC_CHANNELS * FRAME_SAMPLES],
             block,
@@ -495,7 +499,7 @@ impl SfxEngine {
             if let Some(on) = ducker {
                 r.inputs.music_ducker(on);
             }
-            r.remix_setting = self.settings.get(settings::MUSIC_REMIX) != 0;
+            r.remix_setting = self.settings.get(settings::MUSIC_REMIX) != 0 && !self.script_song;
         }
         let ms = self.aems.now_ms;
         for text in self.tricky.log.drain(..) {

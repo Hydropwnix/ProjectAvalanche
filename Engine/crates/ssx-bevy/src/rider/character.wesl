@@ -79,6 +79,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let effect = u32(round(params.shading.x));
     let p = in.world_position.xyz;
 
+    // The texture's alpha before `alpha_discard` (which makes it 1 for opaque materials): the glow mask of glowing
+    // apparel and boards (their `glowEnable` makes them opaque, so alpha is the mask, not cover).
+    var glow_mask = pbr_input.material.base_color.a;
     var tex_n = vec2(0.5);
     var s = vec3(1.0);
     var ao_map = 1.0;
@@ -90,6 +93,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         ao_map = ao_uv0;
     }
     pbr_input.material.base_color = gl::diffuse_texel(in.uv, params.lod_bias.x);
+    glow_mask = pbr_input.material.base_color.a;
 }
 @if(VERTEX_UVS_B) {
     let ao_uv1 = textureSampleBias(ambient_map, character_sampler, in.uv_b, params.lod_bias.w).y;
@@ -170,9 +174,17 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         col = albedo * tint * (lit.rgb + rim_light * rider.rim_color.rgb + fill * rider.fill_color.rgb)
             + spec * spec_light * dyn_ao;
         if effect == APPAREL {
-            col += params.glow.rgb * d.a * rider_dynamic().y / max(light.misc.y, 1e-6);
+            // A port change: the glow reads as light from the cloth, not a coat of neon paint: it follows the cloth's
+            // own pattern (brighter where its picture's lighter) and softens at grazing angles; a little less of it,
+            // the bloom carrying the rest. (Its colour kept as the suit has it: no whitening, the glow's values are
+            // strong enough that any mixing in of white washes every colour out.)
+            let e = params.glow.rgb * glow_mask * rider_dynamic().y / max(light.misc.y, 1e-6);
+            let lum = dot(d.rgb, vec3(0.299, 0.587, 0.114));
+            let pattern = 0.35 + 1.3 * lum;
+            let facing = 0.55 + 0.45 * abs(dot(n, v));
+            col += e * pattern * facing * 0.7;
         } else if effect == BOARD {
-            col += params.board.y * d.a * rider_dynamic().y * albedo / max(light.misc.y, 1e-6);
+            col += params.board.y * glow_mask * rider_dynamic().y * albedo / max(light.misc.y, 1e-6);
         }
         col += holo_glow * albedo;
     }

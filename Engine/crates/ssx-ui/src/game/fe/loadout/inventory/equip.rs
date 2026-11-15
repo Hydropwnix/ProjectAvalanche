@@ -64,10 +64,12 @@ impl Inventory {
         self.category_slots = slots.to_vec();
         self.worn_gear = 0;
         let forced = DropInfo::of(db, profile, drop);
+        self.event_type = event_loadouts::event_kind(db, drop);
         for kind in 0..KINDS {
             let mut list = Vec::new();
             for slot in 0..slots[kind] as usize {
-                let item = self.last_equipped(db, profile, kind as i64, slot);
+                // (a port addition: the loadout last chosen for this kind of event, before the rider's last one)
+                let item = self.event_item(db, profile, kind, slot).or_else(|| self.last_equipped(db, profile, kind as i64, slot));
                 list.push(item.unwrap_or((fnv1(EMPTY[kind].as_bytes()), 0)));
             }
             if let Some(f) = forced.as_ref().and_then(|d| d.forced(kind as i64)) {
@@ -80,6 +82,28 @@ impl Inventory {
             self.equipped[kind] = list;
         }
         self.update_worn(db, profile);
+    }
+
+    /// The item last chosen for this slot in events of this kind (a port addition), while the profile still has it.
+    /// (suits, boards, gear, mods and geotags alike; mods too, though the game keeps no last mods: only while still
+    /// owned)
+    fn event_item(&self, db: &CareerDb, profile: &Profile, kind: usize, slot: usize) -> Option<(u32, u8)> {
+        let event = self.event_type.as_deref()?;
+        let (key, src) = event_loadouts::get(self.rider, event, kind, slot)?;
+        let ok = match src {
+            0 => {
+                Self::is_empty_item(kind as i64, key, 0)
+                    || self.catalog.entries.get(&key).is_some_and(|e| profile.offered(key, e))
+                    // (an item every rider (or this one) has from the start: its default board, say)
+                    || (kind != 3
+                        && db.items.iter().any(|i| {
+                            i.key == key && i.kind == kind as i64 && i.default && (i.rider == 0 || i.rider == self.rider)
+                        }))
+            }
+            1 => profile.generated.get(&key).is_some_and(|g| g.kind == kind as i64),
+            _ => false,
+        };
+        ok.then_some((key, src))
     }
 
     pub fn open_category(&mut self, db: &CareerDb, profile: &Profile, kind: i64, slot: usize) {
@@ -193,10 +217,19 @@ impl Inventory {
         }
         if kind == RIDER {
             profile.attribs.insert(ssx_assets::career::profile::ATTRIB_LAST_RIDER, i64::from(item.0));
+            event_loadouts::set_last_rider(item.0);
             return;
         }
         let count = self.category_slots.get(kind as usize).copied().unwrap_or(0).max(0) as usize;
-        if !(0..KINDS as i64).contains(&kind) || kind == 3 || slot >= count {
+        if !(0..KINDS as i64).contains(&kind) || slot >= count {
+            return;
+        }
+        // (a port addition: kept for this kind of event too; mods as well, which the rider's own last loadout doesn't
+        // keep)
+        if let Some(event) = self.event_type.as_deref() {
+            event_loadouts::set(self.rider, event, kind as usize, slot, item);
+        }
+        if kind == 3 {
             return;
         }
         let row = self.rider_stats(db, profile, self.rider);

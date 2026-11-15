@@ -1,5 +1,7 @@
 mod pipelines;
 mod prepare;
+
+pub(super) use prepare::globe_circle;
 mod upload;
 
 use std::collections::HashMap;
@@ -146,8 +148,11 @@ fn full_screen(
     rp.draw(0..3, 0..1);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn globe_pass(
     view: ViewQuery<&ViewTarget, With<UiCamera>>,
+    globe: Option<Res<super::GlobeView>>,
+    images: Res<bevy::render::render_asset::RenderAssets<bevy::render::texture::GpuImage>>,
     p: Option<Res<Pipelines>>,
     gpu: Res<GlobeGpu>,
     cache: Res<PipelineCache>,
@@ -195,6 +200,12 @@ fn globe_pass(
     else {
         return;
     };
+    // A mod's background movie's picture (a port addition), drawn around the globe in the last pass.
+    let under = globe
+        .as_ref()
+        .and_then(|g| g.background.as_ref())
+        .and_then(|h| images.get(h))
+        .map_or(blank, |i| &i.texture_view);
     let device = ctx.render_device().clone();
     let globe_layout = cache.get_bind_group_layout(&p.globe_layout);
     let globe_group = |u: &Buffer, tex: &TextureView| {
@@ -278,6 +289,7 @@ fn globe_pass(
             (5, &p.clamp_linear),
             (6, &t.bloom_a_view),
             (7, lut),
+            (8, under),
         )),
     );
     let cloud_layout = cache.get_bind_group_layout(&p.cloud_layout);

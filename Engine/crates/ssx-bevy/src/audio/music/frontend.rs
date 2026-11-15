@@ -51,6 +51,14 @@ impl MusicSource for FeMusicBus {
                 *menu = None;
             }
         }
+        // The `skip-intros` mod's startup: all of the menus' music silent, then fading in with the picture.
+        let start = ssx_assets::musicbox::startup_gain();
+        if start < 1.0 {
+            let g = start * start;
+            for x in out.iter_mut() {
+                *x *= g;
+            }
+        }
     }
 
     fn finished(&self) -> bool {
@@ -63,10 +71,19 @@ struct Preview {
     level: f32,
     fade: Option<(f32, u32)>,
     stopped: bool,
+    /// The song played to its end (not stopped).
+    ended: bool,
+    /// A mod's song (a music player's): when it ends, the menus' music stays away for `MOD_SONG_GAP`, so the mod's
+    /// next song follows on without the menus' music between them.
+    held: bool,
     buf: Vec<f32>,
 }
 
 const PREVIEW_FADE_SAMPLES: u32 = 22_050;
+
+// TODO(guess): a port choice — how long the menus' music waits after a mod's song ends for the mod's next one
+// (the Custom Music Player starts it within a second); settle: none (port feature).
+const MOD_SONG_GAP: std::time::Duration = std::time::Duration::from_secs(3);
 
 impl Preview {
     fn render_add(&mut self, out: &mut [f32]) {
@@ -89,6 +106,7 @@ impl Preview {
             o[1] += x[1] * self.level;
         }
         if !self.player.playing() {
+            self.ended |= self.fade.is_none();
             self.stopped = true;
         }
     }
@@ -107,6 +125,8 @@ pub struct FrontEndAudio {
     out: Arc<Mutex<OutputMix>>,
     music: Option<Arc<Mutex<FrontEndMusic>>>,
     preview: Arc<Mutex<Option<Preview>>>,
+    /// When a mod's song was first seen ended (`MOD_SONG_GAP`).
+    gap_since: Option<std::time::Instant>,
     engine: Mutex<Option<SfxEngine>>,
     plugged: bool,
     flow: FlowState,
@@ -184,6 +204,7 @@ pub fn start(world: &mut World, data: Option<FrontEndAudioData>) {
         out: g.out.clone(),
         music: data.music.map(|m| Arc::new(Mutex::new(m))),
         preview: Arc::new(Mutex::new(None)),
+        gap_since: None,
         engine: Mutex::new(Some(data.engine)),
         plugged: false,
         flow: FlowState::default(),
@@ -351,7 +372,8 @@ impl FrontEndAudio {
         self.reset_music_pause();
     }
 
-    pub fn preview(&mut self, big_root: &Path, id: u32, key: Option<&ssx_content::ContentId>) {
+    /// A song in the menus: the music menu's preview, or a mod's song (`held`: see `MOD_SONG_GAP`).
+    pub fn preview(&mut self, big_root: &Path, id: u32, key: Option<&ssx_content::ContentId>, held: bool) {
         if self.music.is_none() {
             return;
         }
@@ -378,7 +400,16 @@ impl FrontEndAudio {
         let player = LicensedMusic::song(mb, id);
         let label = player.mb.song(id).map_or_else(|| format!("{id:#x}"), |s| s.label());
         info!("music: preview {label} (PlaySong {id:#x})");
-        let preview = Preview { player, level: MUSIC_SUBMIX_LEVEL, fade: None, stopped: false, buf: Vec::new() };
+        let preview = Preview {
+            player,
+            level: MUSIC_SUBMIX_LEVEL,
+            fade: None,
+            stopped: false,
+            ended: false,
+            held,
+            buf: Vec::new(),
+        };
+        self.gap_since = None;
         let _turn = crate::audio::music::GameTurn::take();
         if let Ok(mut m) = self.menu.lock()
             && let Some((lm, _)) = m.as_mut()
@@ -387,6 +418,13 @@ impl FrontEndAudio {
         }
         if let Ok(mut p) = self.preview.lock() {
             *p = Some(preview);
+        }
+        // A port fix: the ride's song left playing on into the menus (its tail, or the game's song a stopped song of
+        // a mod's gives way to) stops, so the song asked for is the only one heard.
+        if let Ok(mut o) = self.out.lock()
+            && o.music_tail.take().is_some()
+        {
+            info!("music: the ride's song left playing stops for the preview");
         }
     }
 
@@ -408,6 +446,20 @@ impl FrontEndAudio {
 
     pub fn preview_playing(&self) -> bool {
         self.preview.lock().is_ok_and(|p| p.as_ref().is_some_and(|pv| !pv.stopped))
+    }
+
+    /// Whether a song holds the menus' music back: one playing, or a mod's that ended within `MOD_SONG_GAP`.
+    fn preview_holds(&mut self) -> bool {
+        let (live, gap) = self
+            .preview
+            .lock()
+            .map(|p| p.as_ref().map_or((false, false), |pv| (!pv.stopped, pv.stopped && pv.ended && pv.held)))
+            .unwrap_or((false, false));
+        if !gap {
+            self.gap_since = None;
+            return live;
+        }
+        self.gap_since.get_or_insert_with(std::time::Instant::now).elapsed() < MOD_SONG_GAP
     }
 
     pub fn gameplay_start(&mut self) {
@@ -465,9 +517,9 @@ impl FrontEndAudio {
         self.screen_state = ssx_assets::sfx::frontend::screen_state(screen, kind, boot_done);
         self.ui.frame();
         let _turn = crate::audio::music::GameTurn::take();
+        let preview = self.preview_holds();
         let Ok(mut m) = self.out.lock() else { return };
         let level_song = m.music_tail.as_ref().is_some_and(|t| !t.finished());
-        let preview = self.preview.lock().is_ok_and(|p| p.as_ref().is_some_and(|pv| !pv.stopped));
         if let Ok(mut menu) = self.menu.lock()
             && let Some((lm, _)) = menu.as_mut()
         {
@@ -497,9 +549,7 @@ impl FrontEndAudio {
             {
                 let fm = &mut *fm;
                 let menu_song = self.menu.lock().is_ok_and(|m| m.as_ref().is_some_and(|(lm, _)| lm.song_open()));
-                let playing = level_song
-                    || menu_song
-                    || self.preview.lock().is_ok_and(|p| p.as_ref().is_some_and(|pv| !pv.stopped));
+                let playing = level_song || menu_song || preview;
                 fm.module.state_msg(&mut fm.music.rt, &msg, &mut e.settings, playing);
                 fm.module.update(&mut fm.music.rt);
                 for l in fm.module.log.drain(..).chain(fm.music.rt.log.drain(..).map(|l| l.text)) {

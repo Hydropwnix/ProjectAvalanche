@@ -41,16 +41,26 @@ pub fn stage_transform(viewport: (u32, u32), mode: super::ScaleMode) -> Mat2d {
     super::stage_transform(stage, viewport, mode).mul(&Mat2d::scale(20.0, 20.0))
 }
 
+/// The text as the overlay draws it: what the font lacks from the port's shipped fallback fonts (other scripts: a
+/// mod's song titles in Japanese, Cyrillic...), the text then marked as outside text so the layout takes them;
+/// anything none of them draws as `?`.
 pub fn drawable(lib: &Library, font: &str, text: &str) -> String {
     let font = lib.font_library().get(font);
-    text.chars()
+    let mut outside = false;
+    let body: String = text
+        .chars()
         .map(|c| match c {
             '\n' => c,
-            c if c.is_control() => '?',
+            c if c.is_control() || text::isolate::is_mark(c) => '?',
             c if font.is_some_and(|f| text::glyph_index(f, c).is_some()) => c,
+            c if crate::fallback::draws(c) => {
+                outside = true;
+                c
+            }
             _ => '?',
         })
-        .collect()
+        .collect();
+    if outside { text::isolate::wrap(&body) } else { body }
 }
 
 fn quad(x0: f32, y0: f32, x1: f32, y1: f32) -> Arc<Mesh> {
@@ -85,6 +95,8 @@ impl Renderer {
             return l.commands.clone();
         }
         let mut out = Vec::new();
+        // A fallback font's glyphs are converted over a few frames: a list with text still waiting is drawn again.
+        let mut waiting = false;
         let here = Inherited { xf: stage, cx: Cxform::IDENTITY, blend: BlendMode::Normal, mask: false, slice: None };
         for d in draws {
             match d {
@@ -101,6 +113,7 @@ impl Renderer {
                 }
                 OverlayDraw::Text { text, x, y, size, color, align, shadow } => {
                     let Some(layout) = self.overlay_layout(lib, font, text, *size, *align) else { continue };
+                    waiting |= layout.pending;
                     let at = stage.mul(&Mat2d::translate(*x, *y)).mul(&Mat2d::scale(0.05, 0.05));
                     let mut layers = TextLayers::default();
                     if *shadow {
@@ -119,6 +132,10 @@ impl Renderer {
                     out.push(item(quad(0.0, 0.0, w, h), Paint::Solid(*color), Mat2d::IDENTITY, Cxform::IDENTITY));
                 }
             }
+        }
+        if waiting {
+            self.overlay.last = None;
+            return out;
         }
         self.overlay.last = Some(LastList {
             draws: draws.to_vec(),
@@ -181,6 +198,9 @@ impl Renderer {
         let bounds = RectF { x0, y0: -g, x1: x0 + w + 2.0 * g, y1: STAGE.1 * 20.0 };
         let paras = text::plain(&shown, &ch, &para);
         let layout = Arc::new(text::layout(lib, 0, None, &paras, &ch, bounds, false));
+        if layout.pending {
+            return Some(layout); // (laid out again until its glyphs are in)
+        }
         if self.overlay.layouts.len() >= KEPT_LAYOUTS {
             self.overlay.layouts.clear();
         }
@@ -233,10 +253,14 @@ mod tests {
     }
 
     #[test]
-    fn what_the_font_lacks_is_drawn_as_a_question_mark() {
+    fn what_the_font_lacks_comes_from_the_fallback_fonts_or_is_a_question_mark() {
         let lib = library();
-        assert_eq!(drawable(&lib, "Test Font", "ÜBA\n\u{7}日"), "ÜBA\n??");
-        assert_eq!(drawable(&lib, "No Such Font", "AB"), "??");
+        assert_eq!(drawable(&lib, "Test Font", "ÜBA\n\u{7}"), "ÜBA\n?", "the font's own: plain text");
+        assert_eq!(drawable(&lib, "Test Font", "\u{E000}\u{FDD0}"), "??", "nothing draws these");
+        if crate::fallback::draws('日') {
+            let wrap = crate::text::isolate::wrap;
+            assert_eq!(drawable(&lib, "Test Font", "ÜB 日本"), wrap("ÜB 日本"), "the rest from a fallback font");
+        }
     }
 
     #[test]

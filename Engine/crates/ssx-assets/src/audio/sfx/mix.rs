@@ -6,6 +6,11 @@ pub trait MusicSource: Send {
     fn finished(&self) -> bool {
         false
     }
+
+    /// A mod's song, not the game's own (see `SfxEngine::script_song`).
+    fn script_song(&self) -> bool {
+        false
+    }
 }
 
 pub struct OutputMix {
@@ -54,6 +59,7 @@ impl OutputMix {
         }
         if let Some(sfx) = self.sfx.as_mut() {
             sfx.set_trims(self.sfx_volume, self.music_volume);
+            sfx.script_song = self.music.as_ref().is_some_and(|m| m.script_song());
             sfx.mixer.set_music(self.music.is_some() || self.music_tail.is_some());
             sfx.mixer.sources.music = self.music.take();
             sfx.mixer.sources.music_tail = self.music_tail.take();

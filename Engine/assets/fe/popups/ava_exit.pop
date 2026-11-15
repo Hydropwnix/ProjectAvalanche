@@ -1,6 +1,7 @@
 {
 	"title": "TXT_AVA_EXIT_TITLE",
 	"body": "TXT_AVA_EXIT_BODY",
+	"back": "ava_exit_no",
 	"defaultButton": 1,
 	"buttons":	[
 					{"label": "TXT_YES", "event": "ava_exit_yes"},

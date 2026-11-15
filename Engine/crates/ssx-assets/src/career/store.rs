@@ -156,6 +156,8 @@ pub struct StoreContext {
     pub required_gear: u32,
     pub blocked: [bool; KINDS],
     pub geotags_online: bool,
+    /// A port addition for mods: the lowest rarity the store offers (0, the game's, offers every rarity).
+    pub min_rarity: i64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -240,7 +242,7 @@ impl Store {
         let mut out = Vec::new();
         for item in self.stock.get(kind).into_iter().flatten() {
             let mut it = item.clone();
-            if it.level == ctx.level && fits_rider(data, &mut it, ctx.rider) {
+            if at_level(&it, ctx) && fits_rider(data, &mut it, ctx.rider) {
                 out.push(it);
             }
         }
@@ -251,6 +253,11 @@ impl Store {
         if ctx.rider == 0 {
             return;
         }
+        if ctx.min_rarity > 0 {
+            for list in &mut self.stock {
+                list.retain(|i| i.rarity >= ctx.min_rarity);
+            }
+        }
         let blocked = |k: usize| ctx.blocked[k] || (k == KIND_GEOTAG as usize && !ctx.geotags_online);
         for k in 0..KINDS {
             if blocked(k) {
@@ -258,7 +265,7 @@ impl Store {
             }
             let mut shown = 0;
             for item in &mut self.stock[k] {
-                if item.level == ctx.level && fits_rider(data, item, ctx.rider) {
+                if at_level(item, ctx) && fits_rider(data, item, ctx.rider) {
                     shown += 1;
                 }
             }
@@ -281,6 +288,13 @@ impl Store {
         self.purge(force, now_ms);
         self.refresh(data, ctx, now_ms);
     }
+}
+
+/// Whether an offer is for the rider's level. Suits are made at level 0 whatever the rider's level (`generate`), so
+/// they are for every level: matched on the level like the rest, the store showed suits only to riders at level 1 and
+/// made four more on every visit for everyone else (a port fix).
+fn at_level(item: &StoreItem, ctx: &StoreContext) -> bool {
+    item.kind == KIND_SUIT || item.level == ctx.level
 }
 
 pub fn fits_rider(data: &StoreData, item: &mut StoreItem, rider: u32) -> bool {

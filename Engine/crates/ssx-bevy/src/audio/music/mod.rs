@@ -62,6 +62,14 @@ impl MusicSource for MusicBus {
         }
         done
     }
+
+    fn script_song(&self) -> bool {
+        #[cfg(feature = "scripts")]
+        if let Ok(s) = self.0.lock() {
+            return s.level.is_some();
+        }
+        false
+    }
 }
 
 #[derive(Resource, Clone)]
@@ -147,6 +155,17 @@ impl Music {
             && let Some(level) = shared.level.take()
         {
             shared.engine = level;
+        }
+    }
+
+    /// A port addition for mods (`musicPlayer("stop")`): the level's licensed music (a script's song or the
+    /// game's own) fades out and stops.
+    pub(crate) fn stop_licensed(&self) {
+        let _turn = GameTurn::take();
+        if let Ok(mut shared) = self.shared.lock()
+            && let Engine::Licensed(lm) = &mut shared.engine
+        {
+            lm.stop(0.5);
         }
     }
 

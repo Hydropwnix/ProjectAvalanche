@@ -2,6 +2,7 @@
 	"title": "TXT_AVA_LINK_TITLE",
 	"body": "",
 	"useoverride": true,
+	"back": "ava_link_no",
 	"defaultButton": 1,
 	"buttons":	[
 					{"label": "TXT_YES", "event": "ava_link_yes"},

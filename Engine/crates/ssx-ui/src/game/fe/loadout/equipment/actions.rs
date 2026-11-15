@@ -134,6 +134,7 @@ pub fn action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &ActionPa
             publish_list(fe, "dp_playable_characters");
             fe.publish.push("dp_playable_characters_index".into());
             fe.equipment.state = state::RIDER;
+            fe.equipment.highlight = None;
             fe.publish.push("dp_screen_state".into());
         }
         "A_EquipmentItemSelected" => {
@@ -162,6 +163,7 @@ fn highlight_action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &Ac
     match action {
         "A_EquipmentItemHighlighted" => {
             let Some(e) = entry(&fe.equipment.list, index) else { return };
+            hover(fe, Some((List::Items, index)));
             preview(fe, env, Some(e));
             fe.equipment.score = env.values.int(0x6C);
             let item = live(fe, List::Items, index);
@@ -170,6 +172,7 @@ fn highlight_action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &Ac
         }
         "A_EquipmentRiderHighlighted" if fe.equipment.category == 0 => {
             let Some(e) = entry(&fe.equipment.list, index) else { return };
+            fe.equipment.highlight = Some(index);
             preview(fe, env, Some(e));
             let item = live(fe, List::Items, index);
             fill(fe, env, item);
@@ -192,6 +195,7 @@ fn highlight_action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &Ac
         }
         "A_EquipmentStoreItemHighlighted" => {
             let Some(e) = entry(&fe.equipment.store, index) else { return };
+            hover(fe, Some((List::Store, index)));
             preview(fe, env, Some(e));
             fe.equipment.score = env.values.int(0x6C);
             let item = live(fe, List::Store, index);
@@ -208,6 +212,7 @@ fn highlight_action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &Ac
             fe.go_to_screen(env, 0x31);
         }
         "A_EquipmentViewMoreHighlighted" if fe.equipment.state == state::GEAR => {
+            hover(fe, None);
             preview(fe, env, None);
             fe.equipment.score = env.values.int(0x6C);
             fill_view_more(&mut fe.equipment.gear_info, env.loc, env.values, fe.equipment.category);
@@ -226,6 +231,7 @@ fn highlight_action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &Ac
             let Some(e) = entry(&fe.equipment.inventory, index) else { return };
             preview(fe, env, Some(e));
             let at = usize::try_from(fe.equipment.inv_first).ok().and_then(|f| f.checked_add(index));
+            hover(fe, at.map(|a| (List::Inventory, a)));
             let item = at.and_then(|a| live(fe, List::Inventory, a));
             fill(fe, env, item);
             fe.publish.push("dp_selected_gear_info".into());
@@ -239,7 +245,58 @@ fn highlight_action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &Ac
             fe.equipment.pending = Some((List::Inventory, index));
             env.nav_events.push("equip_sell_confirm_popup".into());
         }
+        // (the 3D Rider Select mod: no attribute descriptions (Y), Y is a suit's favourite there)
+        "A_EquipmentShowHelp" if ssx_core::rider_showcase::enabled() => {}
         "A_EquipmentShowHelp" => crate::game::fe::hint::gear_help(fe, env, param.number, true),
         _ => {}
     }
+}
+
+/// The 3D Rider Select mod: the gear list's hovered item; a hovered suit or board is what the 3-D rider wears
+/// meanwhile.
+fn hover(fe: &mut FrontEnd, at: Option<(List, usize)>) {
+    fe.equipment.hovered = at;
+    fe.equipment.preview = None;
+    if super::preview_kinds(fe.equipment.category)
+        && let Some((list, i)) = at
+        && let Some(item) = live(fe, list, i)
+        && !item.has(flag::EMPTY)
+        && !item.has(flag::MYSTERY)
+        && let Ok(kind) = usize::try_from(kind_of(fe.equipment.category))
+    {
+        let slot = usize::try_from(fe.equipment.slot).unwrap_or(0);
+        fe.equipment.preview = Some((kind, slot, (item.key, item.src)));
+    }
+}
+
+/// Y on a suit (see `take_suit_press`): an owned one marked favourite, or not.
+pub(super) fn toggle_favourite(fe: &mut FrontEnd, env: &mut FeEnv) {
+    let Some((list, at)) = fe.equipment.hovered.filter(|h| h.0 != List::Store) else { return };
+    let Some(item) = live(fe, list, at) else { return };
+    if item.has(flag::EMPTY) || item.has(flag::MYSTERY) {
+        return;
+    }
+    let on = inventory::favorites::toggle(&item);
+    fe.note(format!("equipment: suit {:#010x}/{} {}", item.key, item.src, if on { "a favourite" } else { "no favourite" }));
+    // (the lists again, favourites first; the score as it was)
+    let survival = fe.equipment.inv.as_ref().map(|i| i.survival);
+    set_category(fe, env, fe.equipment.category);
+    if let Some(s) = survival {
+        if let Some(inv) = fe.equipment.inv.as_mut() {
+            inv.survival = s;
+        }
+        env.values.set_int(0x6C, s);
+    }
+    if fe.equipment.state == state::INVENTORY {
+        publish_list(fe, "dp_inventory_items");
+        fe.publish.push("dp_inventory_items_index".into());
+    } else {
+        publish_list(fe, "dp_equipment_items");
+        publish_list(fe, "dp_store_items");
+    }
+    // (the item now where the hovered one was: its information, and the rider in it)
+    hover(fe, Some((list, at)));
+    let item = live(fe, list, at);
+    fill(fe, env, item);
+    fe.publish.push("dp_selected_gear_info".into());
 }

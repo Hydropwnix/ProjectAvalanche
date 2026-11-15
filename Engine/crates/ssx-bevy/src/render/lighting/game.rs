@@ -231,6 +231,21 @@ fn reflection_image(l: &GameLighting) -> Option<Image> {
     decode_cube(root, id).inspect_err(|e| warn!("reflection cube: {e:#}")).ok()
 }
 
+impl GameLightAssets {
+    /// A port addition (the menus' 3-D rider showcase): the viewer's default light and plain textures, for drawing a
+    /// rider outside a level (no lighting preset, no reflection).
+    pub fn viewer(images: &mut Assets<Image>) -> Self {
+        GameLightAssets {
+            uniform: GameLightUniform::viewer_default(),
+            reflect_cube: images.add(solid_cube([0, 0, 0, 255])),
+            white: images.add(solid_2d([255; 4], TextureFormat::Rgba8Unorm)),
+            flat_normal: images.add(solid_2d([128, 128, 0, 0], TextureFormat::Rg8Unorm)),
+            neutral_rgb: images.add(solid_2d([128, 128, 128, 255], TextureFormat::Rgba8Unorm)),
+            summary: "the menus' rider showcase: viewer default".to_string(),
+        }
+    }
+}
+
 fn setup_light_assets(mut commands: Commands, lighting: Option<Res<GameLighting>>, mut images: ResMut<Assets<Image>>) {
     let black_cube = || solid_cube([0, 0, 0, 255]);
     let (uniform, cube, summary) = match lighting.as_deref() {

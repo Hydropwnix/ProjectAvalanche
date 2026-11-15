@@ -79,7 +79,16 @@ pub struct CustomSlot {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum MusicRequest {
-    Preview { id: u32, key: Option<ssx_content::ContentId> },
+    Preview {
+        id: u32,
+        key: Option<ssx_content::ContentId>,
+    },
+    /// A port addition: a mod's song in the menus (a music player's), as a preview whose end doesn't bring the
+    /// menus' music straight back (the mod's next song follows).
+    ModSong {
+        id: u32,
+        key: Option<ssx_content::ContentId>,
+    },
     StopPreview,
 }
 

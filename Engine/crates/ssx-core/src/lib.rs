@@ -1,4 +1,6 @@
 pub mod master;
+pub mod menu_background;
+pub mod rider_showcase;
 pub mod print;
 pub mod text;
 

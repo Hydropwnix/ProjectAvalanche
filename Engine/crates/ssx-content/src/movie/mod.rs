@@ -36,6 +36,14 @@ pub struct Limits {
     pub max_obus: usize,
 }
 
+impl Limits {
+    /// A port addition: the menus' own background (a video the player picked on this PC) may be as big as a 1440p
+    /// screen, so it stays sharp there.
+    pub fn menu_background() -> Self {
+        Limits { max_width: 2560, max_height: 1440, ..Self::default() }
+    }
+}
+
 impl Default for Limits {
     fn default() -> Self {
         Limits {

@@ -17,7 +17,7 @@
     {"name": "AvaOptions", "export": true, "children": [
       {"instance": "mcMenu", "symbol": "ListMenu", "x": 90, "y": 190},
       {"instance": "mcButtonCalloutBar", "symbol": "Callouts", "x": 90, "y": 634},
-      {"instance": "mcScrollBar", "symbol": "ScrollBar", "x": 441, "y": 190}
+      {"instance": "mcScrollBar", "symbol": "ScrollBar", "x": 571, "y": 190}
     ]}
   ],
   "view_symbol": {"symbol": "AvaOptions"},
@@ -28,7 +28,7 @@
     "consume_unmapped": true,
     "data": ["settings_menu", "settings_menu_index"],
     "menus": [
-      {"target": "mcMenu", "rows": 5, "cell_width": 350, "cell_height": 60, "spacing": -10, "panel_gaps": [5, -14],
+      {"target": "mcMenu", "rows": 5, "cell_width": 480, "cell_height": 60, "spacing": -10, "panel_gaps": [5, -14],
         "wrap": true, "use_panel": true, "data": "settings_menu", "index": "settings_menu_index",
         "cell": "AvaOptionsCell"}
     ],

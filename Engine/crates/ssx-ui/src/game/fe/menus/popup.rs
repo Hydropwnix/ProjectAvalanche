@@ -20,6 +20,9 @@ pub struct PopupDef {
     pub custom: bool,
     pub default_button: i64,
     pub buttons: Vec<(String, String)>,
+    /// A port addition (`"back"` in a port popup's file): the event the back button raises while the popup is up
+    /// (its No, OK or Cancel); empty: back does nothing, as in the game's own popups.
+    pub back: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -149,6 +152,7 @@ pub fn parse(name: &str, text: &str) -> Option<PopupDef> {
         custom: v.get("custom").and_then(|x| x.as_bool()).unwrap_or(false),
         default_button: v.get("defaultButton").and_then(|x| x.as_i64()).unwrap_or(0),
         buttons,
+        back: s("back"),
     })
 }
 
@@ -177,5 +181,21 @@ mod tests {
         assert!(!p.push("b", ""));
         assert!(!p.pop("b"));
         assert!(p.pop("a"));
+        assert_eq!(d.back, "", "the game's popups: back does nothing");
+        let q = parse("ava_exit", r#"{"title": "T", "back": "ava_exit_no", "buttons": []}"#).unwrap();
+        assert_eq!(q.back, "ava_exit_no");
+    }
+
+    #[test]
+    fn back_presses_come_out_of_the_queue() {
+        use crate::game::input::{Button, Input, InputProvider};
+        let mut i = InputProvider::default();
+        assert!(!i.take_presses(Button::DigitalTwo));
+        i.push(Input::Button { button: Button::DpadUp, down: true });
+        i.push(Input::Button { button: Button::DigitalTwo, down: true });
+        i.push(Input::Button { button: Button::DigitalTwo, down: false });
+        assert!(i.take_presses(Button::DigitalTwo));
+        assert!(!i.take_presses(Button::DigitalTwo), "taken");
+        assert!(i.take_presses(Button::DpadUp), "the other buttons stay");
     }
 }

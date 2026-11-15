@@ -27,7 +27,12 @@ pub(super) fn select_drop_screen(fe: &mut FrontEnd, env: &mut FeEnv) {
             let queue_playing = fe.progression.running() && !fe.movie_queued();
             if screen == 0x42 && wt && !fe.profile.new_game_active() && !queue_playing {
                 let movie = fe.career.range(range).map(|r| r.movie.clone()).unwrap_or_default();
-                if !movie.is_empty() {
+                let key = u32::from_be_bytes(*b"PRMV");
+                let seen = fe.profile.attribs.get(&key).copied().unwrap_or(0);
+                let bit = fe.career.ranges.iter().position(|r| r.key == range).filter(|i| *i < 31).map(|i| 1i64 << i);
+                if let Some(bit) = bit.filter(|b| seen & b == 0 && !movie.is_empty()) {
+                    // TODO(guess): a port choice — each range's movie plays only the first time the range is opened in World Tour.
+                    fe.profile.attribs.insert(key, seen | bit);
                     fe.note(format!("FLOW_PlayMovie {movie} (range)"));
                     fe.queue_movie(MovieRequest::new(movie, "range"));
                 }

@@ -48,6 +48,14 @@ pub fn dimmer_object(cx: &mut Ctx, action: i32, state: &str) -> Value {
 
 pub fn update(fe: &mut FrontEnd, env: &mut FeEnv) {
     let v = &mut *env.values;
+    // A port addition for mods: with infinite credits the bank on screen is the profile's, never counted down.
+    if fe.profile.infinite_credits {
+        let bank = fe.profile.credits().clamp(0, i64::from(i32::MAX)) as i32;
+        if v.int(0x228) != bank {
+            v.set_int(0x228, bank);
+        }
+        v.set_int(0x93, 0);
+    }
     let adjust = v.int(0x93);
     if [0x228u16, 0x22B, 0x22F].iter().any(|&i| v.is_dirty(i)) || adjust != 0 {
         fe.publish.push("dp_user_data".into());
@@ -84,15 +92,22 @@ pub fn build(fe: &mut FrontEnd, cx: &mut Ctx, values: &UiValues, loc: &mut Local
         }
         return Some(o);
     }
-    let adjust = fe.user.adjust;
+    let infinite = fe.profile.infinite_credits;
+    let adjust = if infinite { 0 } else { fe.user.adjust };
     let bank = i64::from(values.int(0x228)) - adjust;
     let status = values.int(0x22F);
+    let unlimited = infinite.then(|| infinite_text(fe));
+    let mut money = |v: i64| match &unlimited {
+        Some(t) => loc.currency_tight(t),
+        None => loc.currency(v, true),
+    };
+    let (balance, adjustment, new_balance) = (money(bank), money(adjust), money(bank + adjust));
     for (k, v) in [
         ("imageurl", Value::str(values.str(0x22C))),
         ("username", Value::str(values.str(0x22B))),
-        ("bankBalance", Value::str(&loc.currency(bank, true))),
-        ("bankAdjustment", Value::str(&loc.currency(adjust, true))),
-        ("newBankBalance", Value::str(&loc.currency(bank + adjust, true))),
+        ("bankBalance", Value::str(&balance)),
+        ("bankAdjustment", Value::str(&adjustment)),
+        ("newBankBalance", Value::str(&new_balance)),
         ("isBankAdjustmentPositive", Value::Bool(adjust >= 0)),
         ("isBankAdjustmentEnabled", Value::Bool(adjust != 0)),
         ("onlinestatus", Value::str(&loc.text(&format!("TXT_ONLINE_STATUS_{status}")))),
@@ -100,6 +115,13 @@ pub fn build(fe: &mut FrontEnd, cx: &mut Ctx, values: &UiValues, loc: &mut Local
         let _ = cx.set_member(&o, k, v);
     }
     Some(o)
+}
+
+/// The bank shown while credits are infinite: the infinity sign when the menus' font (or a fallback) draws it.
+fn infinite_text(fe: &FrontEnd) -> String {
+    const SIGN: char = '\u{221E}';
+    let drawn = fe.ava.glyphs.as_ref().is_some_and(|g| g.contains(&SIGN)) || crate::fallback::draws(SIGN);
+    if drawn { SIGN.to_string() } else { "INFINITE".to_string() }
 }
 
 pub fn build_offline(_fe: &mut FrontEnd, cx: &mut Ctx, loc: &mut Localization, dp: &str) -> Option<Value> {

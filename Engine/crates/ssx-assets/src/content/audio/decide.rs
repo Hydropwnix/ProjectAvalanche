@@ -24,8 +24,10 @@ pub struct AudioBudget {
     pub music_files: usize,
 }
 
+// Port change for mods: 4 GB of music (the game's was 1 GB), for whole libraries at a good quality. Songs are read
+// from disk as they play, so it costs no memory.
 pub const BUDGET: AudioBudget =
-    AudioBudget { sound_bytes: 512 << 20, sound_files: 4096, music_bytes: 1 << 30, music_files: 2048 };
+    AudioBudget { sound_bytes: 512 << 20, sound_files: 4096, music_bytes: 4 << 30, music_files: 2048 };
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AudioScope {

@@ -68,6 +68,40 @@ impl WebmMovie {
         })
     }
 
+    /// A WebM file on this PC (a port addition: the menus' background the player picked), without its sound.
+    pub fn open_file(path: &std::path::Path, images: &mut Assets<Image>) -> Result<Self> {
+        let file = std::fs::File::open(path)?;
+        let len = file.metadata()?.len();
+        let sink: Arc<dyn AudioSink> = Arc::new(Silent);
+        let play = Playback::start(file, len, &Limits::menu_background(), decoder_threads(), sink)
+            .map_err(anyhow::Error::msg)?;
+        let v = &play.info.video;
+        let size = Extent3d { width: v.width, height: v.height, depth_or_array_layers: 1 };
+        let black = vec![0u8; v.width as usize * v.height as usize * 4];
+        let image = images.add(Image::new(
+            size,
+            TextureDimension::D2,
+            black,
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::default(),
+        ));
+        let id =
+            "menu-background:movie/background".parse::<ssx_content::ContentId>().map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(Self {
+            play,
+            image,
+            time: 0.0,
+            audio: None,
+            stopwatch: 0.0,
+            voice_end: None,
+            since_picture: 0.0,
+            frames_seen: 0,
+            failure: None,
+            id,
+            source: path.display().to_string(),
+        })
+    }
+
     pub fn audio(&self) -> Option<Arc<MovieAudio>> {
         self.audio.clone()
     }

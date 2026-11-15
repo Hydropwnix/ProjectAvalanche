@@ -123,6 +123,7 @@ fn sd_layout(cx: &mut Ctx, this: &Value, sd: &crate::author::SdDef) -> R {
 
 pub fn view_initialize(cx: &mut Ctx, this: Value, args: &[Value]) -> R {
     let Some(class) = class_of::<ViewClass>(cx, &this) else { return Ok(Value::Undefined) };
+    short_main_menu_cells(cx);
     let logic = &class.logic;
     let input_manager = arg(args, 0);
     if let Some(sd) = &logic.sd {
@@ -272,6 +273,7 @@ pub fn menu_refreshed(cx: &mut Ctx, this: Value, _: &[Value]) -> R {
 
 pub fn view_publish(cx: &mut Ctx, this: Value, args: &[Value]) -> R {
     let Some(class) = class_of::<ViewClass>(cx, &this) else { return Ok(Value::Undefined) };
+    short_main_menu_cells(cx);
     let name = cx.to_string(&arg(args, 0))?;
     let value = arg(args, 1);
     for t in class.logic.texts.iter().filter(|t| *t.data == *name) {
@@ -655,6 +657,79 @@ cell_methods! {
     cell_highlight => "Highlight",
     cell_unhighlight => "Unhighlight",
     cell_is_enabled => "IsEnabled",
+}
+
+// TODO(guess): a port choice — a `MainMenuCell` with no line under its name (the port's hub) plays the cell's plain
+// frames ("Highlight", a 60-high glow) where the disc's class always plays its "Info" ones (an 80-high glow for a name
+// and a line; components/mainmenucell.gfx); a cell with a line (the game's main menu) is as the disc has it. The
+// class's methods are wrapped once: with no line, `FRAME_INFO` reads "" for the call.
+const CELL_CLASS: &str = "components.MainMenuCell";
+const CELL_WRAPPED: &str = "__avaShortCells";
+const MAIN_CELL_WRAPS: [(&str, crate::avm1::object::NativeFn); 3] =
+    [("Update", main_cell_update), ("Highlight", main_cell_highlight), ("Unhighlight", main_cell_unhighlight)];
+
+fn short_main_menu_cells(cx: &mut Ctx) {
+    let class = global_path(cx, CELL_CLASS);
+    let proto = match cx.get_member(&class, "prototype") {
+        Ok(p) if !p.is_nullish() => p,
+        _ => return,
+    };
+    let Some(obj) = proto.as_object() else { return };
+    if !cx.get_member(&proto, CELL_WRAPPED).unwrap_or(Value::Undefined).is_undefined() {
+        return;
+    }
+    for (name, f) in MAIN_CELL_WRAPS {
+        let Ok(orig) = cx.get_member(&proto, name) else { return };
+        if !cx.is_function(&orig) {
+            return;
+        }
+        hidden(cx, obj, &format!("__avaOrig{name}"), orig);
+        let wrapper = native(cx, f);
+        let _ = cx.set_member(&proto, name, Value::Object(wrapper));
+    }
+    hidden(cx, obj, CELL_WRAPPED, Value::Bool(true));
+}
+
+fn main_cell_update(cx: &mut Ctx, this: Value, args: &[Value]) -> R {
+    let desc = cx.get_member(&arg(args, 0), "strModeDesc")?;
+    let lineless = desc.is_nullish() || cx.to_string(&desc)?.to_string().is_empty();
+    main_cell_call(cx, this, args, "Update", lineless)
+}
+
+fn main_cell_highlight(cx: &mut Ctx, this: Value, args: &[Value]) -> R {
+    let lineless = main_cell_lineless(cx, &this)?;
+    main_cell_call(cx, this, args, "Highlight", lineless)
+}
+
+fn main_cell_unhighlight(cx: &mut Ctx, this: Value, args: &[Value]) -> R {
+    let lineless = main_cell_lineless(cx, &this)?;
+    main_cell_call(cx, this, args, "Unhighlight", lineless)
+}
+
+fn main_cell_lineless(cx: &mut Ctx, this: &Value) -> Result<bool, crate::avm1::Fault> {
+    let text = path_from(cx, this, "mcCell.mcInfoText.txt");
+    if text.is_nullish() {
+        return Ok(false);
+    }
+    let t = cx.get_member(&text, "text")?;
+    Ok(t.is_nullish() || cx.to_string(&t)?.to_string().is_empty())
+}
+
+fn main_cell_call(cx: &mut Ctx, this: Value, args: &[Value], name: &str, lineless: bool) -> R {
+    let (f, home) = cx.get_method(&this, &format!("__avaOrig{name}"))?;
+    if !cx.is_function(&f) {
+        return Ok(Value::Undefined);
+    }
+    let class = global_path(cx, CELL_CLASS);
+    let info = if lineless { Some(cx.get_member(&class, "FRAME_INFO")?) } else { None };
+    if info.is_some() {
+        cx.set_member(&class, "FRAME_INFO", Value::str(""))?;
+    }
+    let out = cx.call(&f, this, args, home);
+    if let Some(v) = info {
+        cx.set_member(&class, "FRAME_INFO", v)?;
+    }
+    out
 }
 
 pub const VIEW_METHODS: &[(&str, crate::avm1::object::NativeFn)] = &[

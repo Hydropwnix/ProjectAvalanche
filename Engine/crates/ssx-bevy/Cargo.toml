@@ -33,6 +33,9 @@ ssx-ui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 wgpu = { version = "30.0.1", default-features = false }
+# The menus' own background (a port addition): the file picker, and reading the picked picture.
+rfd.workspace = true
+image = { workspace = true, features = ["png", "jpeg", "webp", "bmp", "gif", "tga", "tiff"] }
 naga.workspace = true
 wgpu-naga-bridge = "30.0.1"
 wesl.workspace = true

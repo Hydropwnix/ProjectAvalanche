@@ -2,6 +2,9 @@ use super::*;
 
 impl FrontEnd {
     pub fn activate(&mut self, env: &mut FeEnv, provider: &str, view_model: &str) {
+        if menu::COVERING.contains(&provider) {
+            self.menu.covered_by.insert(provider.to_string());
+        }
         match provider {
             "bootflow" => boot::activate(self, env),
             "menuhub" => menu::activate(self, env),
@@ -50,7 +53,9 @@ impl FrontEnd {
     }
 
     pub fn deactivate(&mut self, env: &mut FeEnv, provider: &str, _view_model: &str) {
+        self.menu.covered_by.remove(provider);
         match provider {
+            "menuhub" => self.menu.shown = false,
             "pausemenu" => pause::deactivate(self, env),
             "postracemenu" => postrace::deactivate(self),
             "settings" => settings::deactivate(self),

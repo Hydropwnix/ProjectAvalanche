@@ -149,10 +149,10 @@ fn refresh_fills_four_per_kind_and_purges() {
     let mut s = Store::new(1);
     s.update(&d, &c, false, 0);
     let shown: Vec<usize> = (0..KINDS).map(|k| s.offers(&d, &c, k).len()).collect();
-    assert_eq!(shown, vec![0, 4, 4, 4, 0]);
+    assert_eq!(shown, vec![4, 4, 4, 4, 0], "suits too, made at level 0 for a rider past it");
     assert_eq!(s.stock[0].len(), 4);
     s.update(&d, &c, false, 1);
-    assert_eq!((s.stock[0].len(), s.stock[1].len()), (8, 4));
+    assert_eq!((s.stock[0].len(), s.stock[1].len()), (4, 4), "and not made again on every visit");
     let online = StoreContext { geotags_online: true, ..c.clone() };
     s.update(&d, &online, false, FIRST_SPECIAL_MS + 1);
     assert_eq!(s.stock.iter().flatten().filter(|i| i.special).count(), 1);
@@ -220,4 +220,37 @@ fn the_next_equip_id_wraps_as_a_word() {
     assert_eq!(p.next_equip_id(), 42);
     p.generated.insert(u32::MAX, GeneratedItem::default());
     assert_eq!(p.next_equip_id(), 0);
+}
+
+#[test]
+fn a_mods_rarity_floor_fills_the_store_with_that_rarity_and_up() {
+    let (d, c) = (data(), ctx());
+    let mut s = Store::new(5);
+    s.update(&d, &c, false, 0);
+    assert!(s.stock.iter().flatten().any(|i| i.rarity < 3), "the game's own draw has lower rarities");
+    let floor = StoreContext { min_rarity: 3, ..c.clone() };
+    s.update(&d, &floor, false, 1);
+    assert!(s.stock.iter().flatten().all(|i| i.rarity >= 3), "lower rarities leave the stock");
+    let shown: Vec<usize> = (0..KINDS).map(|k| s.offers(&d, &floor, k).len()).collect();
+    assert_eq!(shown, vec![4, 4, 4, 4, 0], "and are replaced");
+}
+#[test]
+fn a_mods_rarity_floor_keeps_every_design() {
+    // Template 14 is made only up to rare (2): the game's own legendary draw never picks it.
+    let mut d = data();
+    d.templates.get_mut(&14).unwrap().max_rarity = 2;
+    let designs = |c: &StoreContext, req: &Request| {
+        let mut s = Store::new(3);
+        for _ in 0..200 {
+            s.generate(&d, c, 3, req, 0);
+        }
+        let mut seen: Vec<(u32, i64)> = s.stock[3].iter().map(|i| (i.template, i.rarity)).collect();
+        seen.sort();
+        seen.dedup();
+        seen
+    };
+    let legendary = Request { min_rarity: 4, ..Request::NORMAL };
+    assert_eq!(designs(&ctx(), &legendary), vec![(13, 4)], "the game's legendary draw");
+    let floor = StoreContext { min_rarity: 4, ..ctx() };
+    assert_eq!(designs(&floor, &Request::NORMAL), vec![(13, 4), (14, 4)], "a mod's floor: every design, legendary");
 }

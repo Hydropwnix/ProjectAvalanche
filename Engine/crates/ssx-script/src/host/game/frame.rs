@@ -190,12 +190,28 @@ impl ScriptHost {
         }
         self.shared.lock().game.drawing = Some(DrawList::default());
         self.raise_engine("onClientRender", ROOT, &[]);
-        let drawn = self.shared.lock().game.drawing.take().map(|d| d.items).unwrap_or_default();
+        let drawn = self
+            .shared
+            .lock()
+            .game
+            .drawing
+            .take()
+            .map(|d| {
+                let (top, mut rest): (Vec<_>, Vec<_>) = d.items.into_iter().partition(|(p, _)| d.on_top.contains(p));
+                rest.extend(top);
+                rest
+            })
+            .unwrap_or_default();
         self.shared.lock().game.bound = None;
         self.tick(now);
         let mut w = self.shared.lock();
         let mut orders = std::mem::take(&mut w.game.orders);
         orders.draws = Some(drawn);
+        let held: Vec<String> = w.game.capture.iter().filter(|p| w.running(p).is_none()).cloned().collect();
+        for p in held {
+            w.game.capture.remove(&p);
+        }
+        orders.capture = !w.game.capture.is_empty();
         let markers = (w.game.markers.generation != generation_before).then(|| w.game.markers.list());
         Ok(FrameReport { orders, markers, skipped: w.game.skipped })
     }

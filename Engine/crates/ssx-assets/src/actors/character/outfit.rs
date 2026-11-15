@@ -224,10 +224,21 @@ pub(super) fn outfit(db: &Db, name: &str, equipped: &EquippedRefs) -> Result<Out
 pub(crate) type EquippedRefs = HashMap<GearItem, Option<(u32, u32)>>;
 
 pub(crate) fn equipment_refs(big_root: &Path, name: &str, loadout: &Loadout) -> Result<(EquippedRefs, bool)> {
+    equipment_refs_and_board(big_root, name, loadout).map(|(refs, lamp, _)| (refs, lamp))
+}
+
+/// As `equipment_refs`, and the equipped board's look variant: its equipment description's `id` (the icon's
+/// `_board_NN`), which picks the board's colour textures.
+pub(crate) fn equipment_refs_and_board(
+    big_root: &Path,
+    name: &str,
+    loadout: &Loadout,
+) -> Result<(EquippedRefs, bool, Option<u32>)> {
     let mut out: EquippedRefs = HashMap::new();
     let mut lamp_accessory = false;
+    let mut board_variant = None;
     if loadout.items.is_empty() && loadout.descriptions.is_empty() {
-        return Ok((out, lamp_accessory));
+        return Ok((out, lamp_accessory, board_variant));
     }
     let dir = big_root.join("bootcache/data/xenon/attribdb");
     let read = |stem: &str| -> Result<(Vec<u8>, Vec<u8>)> {
@@ -261,6 +272,11 @@ pub(crate) fn equipment_refs(big_root: &Path, name: &str, loadout: &Loadout) -> 
             if item == GearItem::HeadLamp {
                 lamp_accessory = t.is_some_and(|(k, _)| k == FIELD_EQ_ACCESSORY);
             }
+            if item == GearItem::Board
+                && let Some(Value::UInt32(id)) = value(FIELD_EQ_ID)
+            {
+                board_variant = Some(*id);
+            }
             out.insert(item, t.map(|(_, r)| r));
         }
         if loadout.items.is_empty() || reference(FIELD_EQ_CHARACTER).map(|(_, (_, k))| k) != Some(fnv1(name)) {
@@ -279,5 +295,62 @@ pub(crate) fn equipment_refs(big_root: &Path, name: &str, loadout: &Loadout) -> 
     if let Some((item, id)) = loadout.items.iter().find(|(item, _)| !out.contains_key(item)) {
         bail!("no equipment_description for {name}: {item:?} id {id}");
     }
-    Ok((out, lamp_accessory))
+    Ok((out, lamp_accessory, board_variant))
+}
+
+/// A port addition: the board drawn in its equipped look. Every board mesh's material names the shared
+/// `common_board_diffuse`; the game draws the board's own design over it, one of ten per board shape, named by the
+/// look's id: `{rider}_board_00`…`_09` for a rider's own board (`{rider}_board_mesh`), `custom_NNNN_board_a0`, `_a1`,
+/// `_b0`…`_e1` for the others (`custom_NNNN_mesh`). The board's diffuse texture is switched to that file (only when
+/// it exists), and the material is then built from the vault (not a cached copy of the shared one).
+pub(super) fn apply_board_variant(big_root: &Path, outfit: &mut Outfit, variant: Option<u32>) {
+    let Some(v) = variant.filter(|&v| v < 10) else { return };
+    let exists = |p: &str| crate::track_objects::asset_file(big_root, p).is_some();
+    let mut notes = Vec::new();
+    for m in outfit.meshes.iter_mut().filter(|m| m.slot == "snowboard") {
+        let Some(file) = board_texture_file(&m.mesh_name, v) else {
+            notes.push(format!("{}: no design textures known for this mesh", m.mesh_name));
+            continue;
+        };
+        let mut switched = false;
+        for (param, tex) in m.material.textures.iter_mut() {
+            let lower = tex.to_ascii_lowercase().replace('\\', "/");
+            if !(lower.contains("diffuse") || param.to_ascii_lowercase().contains("diffuse")) {
+                continue;
+            }
+            let dir = lower.rfind('/').map_or("character/textures/", |i| &lower[..=i]).to_string();
+            let new = format!("{dir}{file}.xpr");
+            if exists(&new) {
+                notes.push(format!("{param} {tex} -> {new}"));
+                *tex = new;
+                switched = true;
+            } else {
+                notes.push(format!("{param} {tex}: {new} not found"));
+            }
+        }
+        if !switched {
+            let new = format!("character/textures/{file}.xpr");
+            if exists(&new) {
+                notes.push(format!("diffuseTexture (none of {:?}) -> {new}", m.material.textures));
+                m.material.textures.insert("diffuseTexture".to_string(), new);
+                switched = true;
+            }
+        }
+        if switched {
+            m.material.key = 0;
+        }
+    }
+    outfit.chain += &format!("; board look {v}");
+    if !notes.is_empty() {
+        outfit.chain += &format!(" ({})", notes.join(", "));
+    }
+}
+
+fn board_texture_file(mesh_name: &str, v: u32) -> Option<String> {
+    let mesh = mesh_name.to_ascii_lowercase();
+    if let Some(n) = mesh.strip_prefix("custom_").and_then(|r| r.strip_suffix("_mesh")) {
+        return Some(format!("custom_{n}_board_{}{}_diffuse", char::from(b'a' + (v / 2) as u8), v % 2));
+    }
+    let rider = mesh.strip_suffix("_board_mesh")?;
+    Some(format!("{rider}_board_{v:02}_diffuse"))
 }

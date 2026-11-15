@@ -143,6 +143,12 @@ impl TrickySong {
             self.playing = -1;
             self.sample_end = -1;
             self.log.push("TrickySampleEnd".into());
+            // The Tricky call holds the Tricky_2 mix snapshot (music and effects pulled down) for as
+            // long as it lives; once its sample is over, let it go so the mix comes back.
+            if let Some(h) = self.handle.take() {
+                aems.stop(h);
+                self.log.push("released after its sample".into());
+            }
         }
         self.countdown = self.countdown.saturating_sub(1);
         if self.super_tricky && self.race_event_type != SURVIVE_IT && !self.paused && self.countdown == 0 {

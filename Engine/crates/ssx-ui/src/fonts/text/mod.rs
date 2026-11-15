@@ -169,6 +169,82 @@ pub fn glyph_ink_right(font: &Font, index: usize) -> f32 {
     if right.is_finite() { right } else { 0.0 }
 }
 
+pub fn glyph_ink_y(font: &Font, index: usize) -> Option<(f32, f32)> {
+    let shape = font.glyphs.get(index)?;
+    let (mut y, mut lo, mut hi) = (0.0f32, f32::INFINITY, f32::NEG_INFINITY);
+    let mut take = |v: f32| {
+        lo = lo.min(v);
+        hi = hi.max(v);
+    };
+    for r in &shape.records {
+        match *r {
+            ShapeRecord::StyleChange { move_to: Some((_, my)), .. } => y = my as f32,
+            ShapeRecord::StyleChange { .. } => {}
+            ShapeRecord::Straight { dy, .. } => {
+                take(y);
+                y += dy as f32;
+                take(y);
+            }
+            ShapeRecord::Curved { control_dy, anchor_dy, .. } => {
+                let (p0, p1, p2) = (y, y + control_dy as f32, y + (control_dy + anchor_dy) as f32);
+                take(p0);
+                take(p2);
+                let d = p0 - 2.0 * p1 + p2;
+                if d != 0.0 {
+                    let t = (p0 - p1) / d;
+                    if (0.0..=1.0).contains(&t) {
+                        take((1.0 - t) * (1.0 - t) * p0 + 2.0 * t * (1.0 - t) * p1 + t * t * p2);
+                    }
+                }
+                y = p2;
+            }
+        }
+    }
+    (lo <= hi).then_some((lo, hi))
+}
+
+const CENTRED_SIGN: char = '\u{221E}';
+const SIGN_SCALE: f32 = 1.55;
+const SIGN_GAP_EM: f32 = 0.12;
+
+// TODO(guess): a port choice — an infinity sign beside a symbol (the bank's credit sign with infinite credits) is drawn
+// centred on that symbol's height rather than on the baseline, SIGN_SCALE times its size and SIGN_GAP_EM of an em
+// further from the symbol.
+fn centre_signs(paras: &[Paragraph], glyphs: &mut [PlacedGlyph]) {
+    let chars: Vec<char> =
+        paras.iter().flat_map(|p| p.runs.iter().flat_map(|r| r.text.chars()).chain(std::iter::once('\n'))).collect();
+    let char_of = |g: &PlacedGlyph| chars.get(g.char_index as usize).copied();
+    let centre = |g: &PlacedGlyph| glyph_ink_y(&g.font, g.index).map(|(a, b)| g.y + (a + b) / 2.0 * g.scale);
+    for i in 0..glyphs.len() {
+        if char_of(&glyphs[i]) != Some(CENTRED_SIGN) {
+            continue;
+        }
+        let line = glyphs[i].line;
+        let symbol = |j: usize| {
+            let g = &glyphs[j];
+            let c = char_of(g)?;
+            (g.line == line && !c.is_alphanumeric() && !c.is_whitespace() && c != CENTRED_SIGN)
+                .then(|| centre(g))
+                .flatten()
+        };
+        let before = (0..i).rev().take_while(|&j| glyphs[j].line == line).find_map(symbol);
+        let after = || (i + 1..glyphs.len()).take_while(|&j| glyphs[j].line == line).find_map(symbol);
+        let target = before.or_else(after);
+        if target.is_some() {
+            let g = &mut glyphs[i];
+            let em = g.scale * em_units(&g.font);
+            let grown = g.ink_right * (SIGN_SCALE - 1.0);
+            g.scale *= SIGN_SCALE;
+            g.ink_right *= SIGN_SCALE;
+            g.advance *= SIGN_SCALE;
+            g.x += if before.is_some() { em * SIGN_GAP_EM } else { -(grown + em * SIGN_GAP_EM) };
+        }
+        if let (Some(t), Some(c)) = (target, centre(&glyphs[i])) {
+            glyphs[i].y += t - c;
+        }
+    }
+}
+
 pub(crate) const MISSING_GLYPH_EM: f32 = 0.5;
 
 pub fn em_units(font: &Font) -> f32 {
@@ -376,6 +452,7 @@ pub fn layout(
         }
         char_base = char_base.saturating_add(1);
     }
+    centre_signs(paras, &mut out.glyphs);
     out.text_height = (top - last_leading - origin).max(0.0);
     out
 }

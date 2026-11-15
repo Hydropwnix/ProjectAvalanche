@@ -47,6 +47,9 @@ pub struct GlobeView {
     pub post: Option<Arc<FePost>>,
     pub dt: f32,
     pub dump: Option<Arc<PathBuf>>,
+    /// A port addition: a mod's background movie's picture, shown in place of the globe's own backdrop around the
+    /// globe (the globe and its halo are drawn over it, in the globe's last pass).
+    pub background: Option<bevy::prelude::Handle<bevy::prelude::Image>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -337,4 +340,10 @@ pub fn uniform(frame: &GlobeFrame, m: &Material, light: &LightState, radius: f32
     }
     out.extend(vectors.iter().flatten());
     out
+}
+
+/// The globe with its atmosphere on the screen: its centre (uv) and radius (in uv heights); a zero radius when the
+/// camera is inside it (a port addition, for `isGlobeZoomedOut`).
+pub fn screen_circle(frame: &GlobeFrame) -> (f32, f32, f32) {
+    render::globe_circle(frame)
 }

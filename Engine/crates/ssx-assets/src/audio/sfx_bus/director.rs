@@ -17,6 +17,8 @@ pub struct SnapshotInputs {
     pub deadly_descent: bool,
     pub kind: i32,
     pub front_end: bool,
+    /// A port addition: the "It's Tricky" song is playing (see `layer2` below).
+    pub tricky_song: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -74,10 +76,15 @@ impl SnapshotDirector {
         layer2.set(15, on(bit(7) && s.time_dilation < td));
         layer2.set(4, on((bit(0) && bit(14)) || bit(21)));
         layer2.set(5, on(bit(5)));
-        layer2.set(6, on(bit(4)));
-        layer2.set(7, on(bit(5) && bit(4)));
-        layer2.set(8, on(bit(18)));
-        layer2.set(9, on(bit(18) && bit(5)));
+        // Super Tricky (bit 18) holds the Tricky mixes for its whole length, as the game does. A port change for a
+        // mod's song (`tricky_song` stays true for the game's own music): once "It's Tricky" is over the rest of
+        // Super Tricky mixes as Awesome, so a mod's song comes back.
+        let tricky = bit(18) && s.tricky_song;
+        let awesome = bit(4) || bit(18);
+        layer2.set(6, on(awesome));
+        layer2.set(7, on(bit(5) && awesome));
+        layer2.set(8, on(tricky));
+        layer2.set(9, on(tricky && bit(5)));
         layer2.set(11, on(bit(3)));
         use crate::sfx_game::tuning;
         if bit(28) {

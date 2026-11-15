@@ -2,6 +2,7 @@
 	"title": "TXT_AVA_MAPS_TITLE",
 	"body": "",
 	"useoverride": true,
+	"back": "ava_maps_message_ok",
 	"defaultButton": 0,
 	"buttons":	[
 					{"label": "TXT_OK", "event": "ava_maps_message_ok"}

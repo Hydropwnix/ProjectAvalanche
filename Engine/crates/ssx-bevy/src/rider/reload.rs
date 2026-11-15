@@ -135,6 +135,7 @@ fn put_on(
     }
     rig.part_entities = spawned.entities;
     rig.character_materials = spawned.character_materials;
+    rig.character_slots = spawned.character_slots;
     rig.wingsuit_materials = spawned.wingsuit_materials;
     rig.gear_lights = r.lights;
     rig.summary = r.summary;

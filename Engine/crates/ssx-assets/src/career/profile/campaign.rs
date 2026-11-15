@@ -186,7 +186,72 @@ impl Profile {
     }
 }
 
+/// A port addition for mods (`setMaxLevel`): the most levels a rider can reach, as the game shows them; 0 keeps the
+/// game's own count. Levels past the game's take the XP step between its last two levels each and cost nothing.
+static LEVEL_CAP: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// The highest level a mod may ask for.
+pub const LEVEL_CAP_MAX: i64 = 20;
+
+pub fn set_level_cap(levels: i64) {
+    LEVEL_CAP.store(levels.clamp(0, LEVEL_CAP_MAX), std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn level_cap() -> i64 {
+    LEVEL_CAP.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// How many levels there are: the game's, or more with a mod's cap.
+pub fn level_count(thresholds: &[i64]) -> usize {
+    thresholds.len().max(usize::try_from(level_cap()).unwrap_or(0))
+}
+
+/// The thresholds with the levels past the game's added (`cap` levels in all), or `None` when there are none to add.
+pub fn extended_thresholds(thresholds: &[i64], cap: i64) -> Option<Vec<i64>> {
+    let n = thresholds.len();
+    let cap = usize::try_from(cap.clamp(0, LEVEL_CAP_MAX)).unwrap_or(0);
+    if n == 0 || cap <= n {
+        return None;
+    }
+    let step = if n >= 2 { thresholds[n - 1] - thresholds[n - 2] } else { thresholds[0] }.max(1);
+    let mut t = thresholds.to_vec();
+    for _ in n..cap {
+        let next = t[t.len() - 1].saturating_add(step);
+        t.push(next);
+    }
+    Some(t)
+}
+
+/// A port addition for mods: puts a rider at a level (0-based, as [`update_rider_level`] counts) with the levels on
+/// the way bought, and the XP that level needs; returns the level reached (the last there is, at most).
+pub fn set_rider_level(stats: &mut RiderStats, level: i64, thresholds: &[i64], prices: &[i64]) -> i64 {
+    set_rider_level_capped(stats, level, thresholds, prices, level_cap())
+}
+
+pub fn set_rider_level_capped(stats: &mut RiderStats, level: i64, thresholds: &[i64], prices: &[i64], cap: i64) -> i64 {
+    let ext = extended_thresholds(thresholds, cap);
+    let thresholds = ext.as_deref().unwrap_or(thresholds);
+    let Some(last) = thresholds.len().checked_sub(1) else { return 0 };
+    let target = usize::try_from(level.max(0)).unwrap_or(0).min(last);
+    stats.money_earned = thresholds[target];
+    stats.max_purchased_level = stats.max_purchased_level.max(target as i64);
+    stats.max_achieved_level = 0;
+    stats.next_level_offset = 0;
+    level_of(stats, thresholds, prices).0
+}
+
 pub fn update_rider_level(stats: &mut RiderStats, thresholds: &[i64], prices: &[i64]) -> (i64, i64) {
+    update_rider_level_capped(stats, thresholds, prices, level_cap())
+}
+
+pub fn update_rider_level_capped(stats: &mut RiderStats, thresholds: &[i64], prices: &[i64], cap: i64) -> (i64, i64) {
+    match extended_thresholds(thresholds, cap) {
+        Some(t) => level_of(stats, &t, prices),
+        None => level_of(stats, thresholds, prices),
+    }
+}
+
+fn level_of(stats: &mut RiderStats, thresholds: &[i64], prices: &[i64]) -> (i64, i64) {
     let n = thresholds.len();
     let price = |i: usize| prices.get(i).copied().unwrap_or(0);
     let (money, purchased) = (stats.money_earned, stats.max_purchased_level);

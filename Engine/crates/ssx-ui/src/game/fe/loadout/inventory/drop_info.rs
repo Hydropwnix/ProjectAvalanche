@@ -147,6 +147,24 @@ impl Inventory {
     }
 
     pub(super) fn rider_suit(&self, db: &CareerDb, profile: &Profile, rider: u32) -> Option<(u32, u8)> {
+        // (a port addition: the suit last chosen for this kind of event, while the profile still has it: the rider
+        // list's portraits show the riders as this kind of event dresses them)
+        let event_suit = self.event_type.as_deref().and_then(|e| super::event_loadouts::get(rider, e, 0, 0)).filter(|&(key, src)| {
+            match src {
+                0 => {
+                    !Self::is_empty_item(0, key, 0)
+                        && (self.catalog.entries.get(&key).is_some_and(|e| profile.offered(key, e))
+                            || db.items.iter().any(|i| {
+                                i.key == key && i.kind == 0 && i.default && (i.rider == 0 || i.rider == rider)
+                            }))
+                }
+                1 => profile.generated.get(&key).is_some_and(|g| g.kind == 0),
+                _ => false,
+            }
+        });
+        if event_suit.is_some() {
+            return event_suit;
+        }
         let (key, src) = self.rider_stats(db, profile, rider).last_suit;
         match src {
             0 => self.catalog.entries.get(&key).filter(|e| profile.offered(key, e)).map(|_| (key, 0)),

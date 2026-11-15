@@ -36,6 +36,17 @@ pub struct Sfx {
     paused_frames: u32,
     objects: ssx_assets::sfx_game::audio_objects::AudioObjects,
     character: String,
+    /// The ride's messages (a trick landed, the race started, a death, geotags) from updates in which no audio frame
+    /// ran, kept for the next audio frame: at high frame rates most updates run none (a port fix; they were lost).
+    carried: Carried,
+}
+
+#[derive(Default)]
+struct Carried {
+    speech: Option<crate::audio::sfx_input::SpeechStep>,
+    trick_update: Option<(i32, i32)>,
+    rider_dead: bool,
+    geotags: usize,
 }
 
 struct SpeechPending {
@@ -223,6 +234,7 @@ pub fn start_level(world: &mut World, level: Option<SfxLevel>) {
         intro: None,
         big_root: l.big_root,
         geotags_seen: 0,
+        carried: Carried::default(),
         event_key: l.event_key,
         held: None,
         paused_frames: 0,
@@ -424,9 +436,18 @@ fn drive_sfx(
         None
     };
     sfx.last_steps = ride.steps;
-    let mut trick_update =
+    if respawn {
+        sfx.carried = Carried::default();
+    }
+    let carried = std::mem::take(&mut sfx.carried);
+    rider_dead |= carried.rider_dead;
+    speech_events = crate::audio::sfx_input::SpeechStep::merge(carried.speech, speech_events);
+    let trick_update =
         if fresh { ride.state.score.trick_update.map(|r| (r.kind as i32, r.interaction)) } else { None };
-    let mut geotag_pickups = crate::audio::sfx_input::geotag_pickups(&ride.session, &mut sfx.geotags_seen);
+    let trick_update = trick_update.or(carried.trick_update);
+    let mut trick_update = trick_update;
+    let mut geotag_pickups =
+        crate::audio::sfx_input::geotag_pickups(&ride.session, &mut sfx.geotags_seen) + carried.geotags;
     let kind = crate::audio::sfx_input::event_kind(&ride.session);
     let dd = engine.remix_event_type == 3;
     let mut parts = [0.0f32; 4];
@@ -535,6 +556,8 @@ fn drive_sfx(
         engine.sound3d_frame(camera, &emitters, FRAME_DT);
         part(2, &mut from);
     }
+    // No audio frame ran this update: the messages wait for the next one.
+    sfx.carried = Carried { speech: speech_events, trick_update, rider_dead, geotags: geotag_pickups };
     marks[3] = std::time::Instant::now();
     if engine.mixer.graph.profiling() && (marks[3] - marks[0]).as_secs_f32() > 0.02 {
         let ms = |a: std::time::Instant, b: std::time::Instant| (b - a).as_secs_f32() * 1000.0;

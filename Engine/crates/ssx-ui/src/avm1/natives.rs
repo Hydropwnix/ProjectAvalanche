@@ -13,6 +13,10 @@ pub struct NativeState {
     pub refused: u64,
     pub sd_moves: HashMap<crate::display::InstanceId, bool>,
     pub sd_scales: HashMap<crate::display::InstanceId, [f64; 3]>,
+    /// A port addition: the HUD's `RepositionIfSD` clips moved out towards the edges of a window wider than 16:9 (the
+    /// side each keeps to, the stage units it was moved), and how far the window's sides reach past the 16:9 stage.
+    pub hud_wide: HashMap<crate::display::InstanceId, (bool, f64)>,
+    pub hud_extra: f64,
 }
 
 impl NativeState {

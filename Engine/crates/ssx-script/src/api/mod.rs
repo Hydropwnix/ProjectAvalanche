@@ -351,6 +351,71 @@ pub const RECORDS: &[(&str, &[(&str, Ty)])] = &[
             ("shadow", Ty::Opt(&Ty::Bool)),
         ],
     ),
+    (
+        "ProfileRider",
+        &[
+            ("name", Ty::Str { max: 64 }),
+            ("displayName", Ty::Str { max: 128 }),
+            ("xp", Ty::Int { min: 0, max: crate::host::game::PROFILE_MAX }),
+            ("level", Ty::Int { min: 0, max: 64 }),
+        ],
+    ),
+    (
+        "Profile",
+        &[
+            ("credits", Ty::Int { min: 0, max: crate::host::game::PROFILE_MAX }),
+            ("infiniteCredits", Ty::Bool),
+            ("infiniteEarnings", Ty::Int { min: 0, max: crate::host::game::PROFILE_MAX }),
+            ("unlimitedGear", Ty::Int { min: 0, max: crate::host::game::GEAR_ALL }),
+            ("shopMinRarity", Ty::Int { min: 0, max: 4 }),
+            ("maxLevel", Ty::Int { min: 0, max: 64 }),
+            ("riders", Ty::List(&Ty::Record("ProfileRider"))),
+        ],
+    ),
+    (
+        "Screen",
+        &[
+            ("width", Ty::Int { min: 0, max: 65_535 }),
+            ("height", Ty::Int { min: 0, max: 65_535 }),
+            ("left", Ty::Number { min: -65_535.0, max: 65_535.0 }),
+            ("top", Ty::Number { min: -65_535.0, max: 65_535.0 }),
+            ("right", Ty::Number { min: -65_535.0, max: 65_535.0 }),
+            ("bottom", Ty::Number { min: -65_535.0, max: 65_535.0 }),
+        ],
+    ),
+    (
+        "Cursor",
+        &[("x", Ty::Number { min: -65_535.0, max: 65_535.0 }), ("y", Ty::Number { min: -65_535.0, max: 65_535.0 })],
+    ),
+    (
+        "MainMenu",
+        &[
+            ("x", Ty::Number { min: -65_535.0, max: 65_535.0 }),
+            ("y", Ty::Number { min: -65_535.0, max: 65_535.0 }),
+            ("width", Ty::Number { min: 0.0, max: 65_535.0 }),
+            ("height", Ty::Number { min: 0.0, max: 65_535.0 }),
+        ],
+    ),
+    (
+        "MenuBackground",
+        &[
+            ("state", Ty::Enum(&["none", "picking", "converting", "ready", "failed"])),
+            ("kind", Ty::Opt(&Ty::Enum(&["image", "video"]))),
+            ("name", Ty::Str { max: 1024 }),
+            ("progress", Ty::Number { min: 0.0, max: 1.0 }),
+            ("message", Ty::Str { max: 2048 }),
+            ("id", Ty::Opt(&Ty::Str { max: 64 })),
+        ],
+    ),
+    (
+        "MenuBackgroundEntry",
+        &[
+            ("id", Ty::Str { max: 64 }),
+            ("kind", Ty::Enum(&["image", "video"])),
+            ("name", Ty::Str { max: 1024 }),
+            ("thumb", Ty::Opt(&Ty::Str { max: 256 })),
+        ],
+    ),
 ];
 
 pub const COLOUR: Ty = Ty::Int { min: 0, max: 0xFFFF_FFFF };
