@@ -1500,6 +1500,57 @@ fn grown_card(inh: &Inherited, out: &mut Vec<Command>) {
     }
     ring(out, -(line as f32) - 1.0, CARD_EDGE, 0.45 * alpha);
     ring(out, 0.0, CARD_EDGE, 0.6 * alpha);
+    scroll_arrows(r, alpha, scale, out);
+}
+
+/// The rider list's last scroll: which way (-1 left, 1 right) and when (the arrow that way glows, fading).
+static LIST_SCROLL: std::sync::Mutex<Option<(i8, std::time::Instant)>> = std::sync::Mutex::new(None);
+/// How long a scroll's arrow glow takes to fade (seconds).
+const ARROW_GLOW_SECS: f32 = 0.45;
+/// The arrows' brightness when not glowing.
+const ARROW_REST: f32 = 0.45;
+
+/// The arrows either side of the highlighted card's bottom (`r`, its window rectangle), just outside its edges, under
+/// the cards beside it: the one the list last scrolled towards glowing, fading back.
+fn scroll_arrows(r: RectF, alpha: f32, scale: f32, out: &mut Vec<Command>) {
+    if alpha <= 0.001 {
+        return;
+    }
+    let glow = LIST_SCROLL.lock().ok().and_then(|s| *s).map(|(dir, at)| {
+        let t = (at.elapsed().as_secs_f32() / ARROW_GLOW_SECS).clamp(0.0, 1.0);
+        (dir, 1.0 - t * t * (3.0 - 2.0 * t))
+    });
+    let h = (r.y1 - r.y0).abs() * 0.045;
+    let w = h * 0.62;
+    let cy = r.y1 - h * 0.9;
+    let gap = (10.0 * scale).max(6.0) + w * 0.5;
+    let tri = |out: &mut Vec<Command>, dir: f32, cx: f32, grow: f32, colour: [f32; 3], a: f32| {
+        let (hw, hh) = (w * 0.5 * grow, h * 0.5 * grow);
+        let mut mesh = Mesh::default();
+        // (the tip pointing out, away from the card)
+        mesh.vertices.extend([[cx + dir * hw, cy], [cx - dir * hw, cy - hh], [cx - dir * hw, cy + hh]]);
+        mesh.indices.extend([0, 1, 2]);
+        out.push(Command::Draw(DrawItem {
+            mesh: Arc::new(mesh),
+            paint: Paint::Solid([colour[0], colour[1], colour[2], a.clamp(0.0, 1.0)]),
+            transform: Mat2d::IDENTITY,
+            cxform: Cxform::IDENTITY,
+            blend: BlendMode::Normal,
+        }));
+    };
+    for (dir, cx) in [(-1.0f32, r.x0 - gap), (1.0, r.x1 + gap)] {
+        let lit = glow.filter(|g| f32::from(g.0) == dir).map_or(0.0, |g| g.1);
+        // (its glow: soft layers growing out from it)
+        if lit > 0.001 {
+            for i in (1..=6).rev() {
+                let grow = 1.0 + i as f32 * 0.16;
+                tri(out, dir, cx, grow, CARD_GLOW, 0.16 * lit * alpha * (1.0 - i as f32 / 7.0));
+            }
+        }
+        let k = ARROW_REST + (1.0 - ARROW_REST) * lit;
+        let colour: [f32; 3] = std::array::from_fn(|c| PLAIN_EDGE[c] + (CARD_EDGE[c] - PLAIN_EDGE[c]) * lit);
+        tri(out, dir, cx, 1.0, colour, k * alpha);
+    }
 }
 
 thread_local! {
@@ -3371,6 +3422,28 @@ pub fn relayout_rider_list(lib: &Library, player: &mut Player, viewport: (u32, u
     // the list has riders, and hands them round as it scrolls) is drawn as its card was last seen)
     let order_at = |r: &str| order.iter().position(|o| o == r).unwrap_or(0);
     let h_at = order_at(&highlighted);
+    // (a step along the list: the arrow that way glows)
+    {
+        static LAST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+        if let Ok(mut last) = LAST.lock() {
+            if let Some(prev) = last.as_deref().filter(|p| **p != *highlighted) {
+                let p = order_at(prev);
+                let dir = if (p + 1) % all == h_at {
+                    1
+                } else if (h_at + 1) % all == p {
+                    -1
+                } else {
+                    0
+                };
+                if dir != 0
+                    && let Ok(mut s) = LIST_SCROLL.lock()
+                {
+                    *s = Some((dir, std::time::Instant::now()));
+                }
+            }
+            *last = Some(highlighted.clone());
+        }
+    }
     let slot_of = |rider: &str| {
         let r = (order_at(rider) + all - h_at) % all;
         if r > after { r as i64 - all as i64 } else { r as i64 }
