@@ -1348,16 +1348,24 @@ fn test_peak_path(player: &Player, id: InstanceId, inst: &Instance, inh: &Inheri
         let (m0, m1) = (marks[k], marks.get(k + 1).copied().unwrap_or(marks[k] + 1.0));
         let u = ((s - m0) / (m1 - m0).max(1e-3)).clamp(0.0, 1.0);
         let side = if k % 2 == 0 { 1.0 } else { -1.0 };
-        let size = 9.0 + 3.5 * (k as f32 * 1.7 + 0.5).sin();
+        let size = 4.0 * (1.0 + 0.4 * (k as f32 * 1.7 + 0.5).sin());
         side * size * (std::f32::consts::PI * u).sin()
     };
-    // (smoothed a little, so the turn at each marker is a curve, not a corner)
+    // (and on top, the game's lines' irregular jogs: a few waves of unlike lengths, so it never repeats; easing off right
+    // at each marker, so the line still goes through it)
+    let jog = |s: f32| 5.0 * ((s * 0.085 + 0.3).sin() + 0.65 * (s * 0.14 + 2.1).sin() + 0.35 * (s * 0.23 + 1.0).sin());
+    let markers_end = marks.len().saturating_sub(4);
+    // (smoothed a little, so no turn is a corner)
     let mut shaped: Vec<(f32, f32)> = Vec::with_capacity(walked.len());
     for i in 0..walked.len() {
         let (a, b) = (walked[i.saturating_sub(3)], walked[(i + 3).min(walked.len() - 1)]);
         let (dx, dy) = (b.0 - a.0, b.1 - a.1);
         let l = (dx * dx + dy * dy).sqrt().max(1e-6);
-        let w = (-6..=6).map(|d| bow(along[i] + d as f32)).sum::<f32>() / 13.0;
+        let near =
+            marks[..=markers_end.min(marks.len() - 1)].iter().map(|m| (along[i] - m).abs()).fold(f32::MAX, f32::min);
+        let k = (near / 7.0).min(1.0);
+        let k = k * k * (3.0 - 2.0 * k);
+        let w = (-2..=2).map(|d| bow(along[i] + d as f32) + k * jog(along[i] + d as f32)).sum::<f32>() / 5.0;
         shaped.push((walked[i].0 - dy / l * w, walked[i].1 + dx / l * w));
     }
     // (the fit gives stage places; drawn here in this clip's parent's space)
