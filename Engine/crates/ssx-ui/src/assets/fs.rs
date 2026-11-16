@@ -283,14 +283,16 @@ fn dev_peak_image(path: &str) -> ImageData {
     const W: u32 = 512;
     const H: u32 = 288;
     const HALF: f32 = 9.0;
-    // (the left brace as quadratic curves (start, control, end); the right one is it mirrored)
+    // (the left brace as quadratic curves (start, control, end); the right one is it mirrored. The peak box shows the
+    // picture stretched taller than it is and cut off at the bottom: its middle as shown is about 131.5 px down, not
+    // 144, so the braces are centred there)
     const LEFT: [[(f32, f32); 3]; 6] = [
-        [(218.0, 84.0), (190.0, 84.0), (190.0, 110.0)],
-        [(190.0, 110.0), (190.0, 119.0), (190.0, 128.0)],
-        [(190.0, 128.0), (190.0, 144.0), (164.0, 144.0)],
-        [(164.0, 144.0), (190.0, 144.0), (190.0, 160.0)],
-        [(190.0, 160.0), (190.0, 169.0), (190.0, 178.0)],
-        [(190.0, 178.0), (190.0, 204.0), (218.0, 204.0)],
+        [(218.0, 71.5), (190.0, 71.5), (190.0, 97.5)],
+        [(190.0, 97.5), (190.0, 106.5), (190.0, 115.5)],
+        [(190.0, 115.5), (190.0, 131.5), (164.0, 131.5)],
+        [(164.0, 131.5), (190.0, 131.5), (190.0, 147.5)],
+        [(190.0, 147.5), (190.0, 156.5), (190.0, 165.5)],
+        [(190.0, 165.5), (190.0, 191.5), (218.0, 191.5)],
     ];
     let mirror = |q: [(f32, f32); 3]| q.map(|(x, y)| (W as f32 - x, y));
     let mut strokes: Vec<((f32, f32), (f32, f32))> = Vec::new();
