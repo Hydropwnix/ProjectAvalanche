@@ -361,6 +361,12 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
     let lang = Language::parse(&a.lang).with_context(|| format!("--lang {}", a.lang))?;
     let speech_lang = crate::audio::sfx_input::SpeechLanguage::of(Some(lang));
     let (mods, dev) = mount_mods(&a);
+    // (the Hidden Maps mod: the test peak and its events are added to the game's data as it's read, so before any is)
+    use ssx_assets::content::data::dev_peak;
+    dev_peak::set_enabled(mods.iter().flat_map(|r| &r.mounted).any(|m| m.name == dev_peak::MOD));
+    if dev_peak::enabled() {
+        info!("mods: {} enabled: the Rockies have the Test Peak and its drops", dev_peak::MOD);
+    }
     let dlc = a.dlc_root.as_ref().map(|root| ssx_assets::content::GameContent::of(&a.big_root).mount_dlc(root));
     let save_path = a.save.clone().unwrap_or_else(default_save_path);
     let tuner_note = match ssx_assets::content::tuner::load(a.tuner.as_deref(), Some(&save_path)) {

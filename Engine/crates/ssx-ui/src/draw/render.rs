@@ -1233,13 +1233,9 @@ mod tests {
     }
 }
 
-// Port mod: the menus' side dimmer (dimmer.gfx: `mcDimmer`'s dark sheet down the left of the stage, under the World
-// Tour and Explore panels, character 2) is not drawn: on a wide screen it shows as a strip of another shade down the
-// left (v0.4.0 draws it on out to the window's edge). The full-screen dimmer beside it (character 4) is kept.
-/// The test peak's path (its drop screen's markers, top to bottom, on down the mountain) and the chosen drop's place, in
+/// The test peak's path (the Hidden Maps mod): its drop screen's markers, top to bottom, then on down the mountain, in
 /// the drop screen's places; set by the menus each frame, `None` off that screen.
-#[allow(clippy::type_complexity)]
-static TEST_PEAK_PATH: std::sync::Mutex<Option<(Vec<(f32, f32)>, (f32, f32))>> = std::sync::Mutex::new(None);
+static TEST_PEAK_PATH: std::sync::Mutex<Option<Vec<(f32, f32)>>> = std::sync::Mutex::new(None);
 /// The frames built (the test peak's path is drawn once in each).
 static RENDER_FRAME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// The frame the path was last drawn in (once a frame).
@@ -1258,18 +1254,18 @@ pub fn set_test_peak_markers(markers: Vec<((f32, f32), (f32, f32), InstanceId, b
     }
 }
 
-pub fn set_test_peak_path(path: Option<(Vec<(f32, f32)>, (f32, f32))>) {
+pub fn set_test_peak_path(path: Option<Vec<(f32, f32)>>) {
     if let Ok(mut p) = TEST_PEAK_PATH.lock() {
         *p = path;
     }
 }
 
-/// A port mod (the test peak): its drop screen's path, a swerving glowing line through its markers on down the
-/// mountain to where the snow ends, pulsing as the game's peaks' drop lines do. It's drawn in the space of the first
-/// marker drawn (a clip the screen puts at a drop's place), under it.
+/// A port mod (Hidden Maps): the test peak's drop screen's path, a swerving glowing line through its markers on down the
+/// mountain to where the snow ends, pulsing as the game's peaks' drop lines do. It's drawn once a frame, as the first of
+/// the markers is (under them all).
 fn test_peak_path(player: &Player, id: InstanceId, inst: &Instance, inh: &Inherited, out: &mut Vec<Command>) {
     let Ok(guard) = TEST_PEAK_PATH.lock() else { return };
-    let Some((points, _)) = guard.as_ref() else { return };
+    let Some(points) = guard.as_ref() else { return };
     let Ok(markers) = TEST_PEAK_MARKERS.lock() else { return };
     if !markers.iter().any(|&(_, _, m, _)| m == id) {
         return;
@@ -1297,16 +1293,11 @@ fn test_peak_path(player: &Player, id: InstanceId, inst: &Instance, inh: &Inheri
     };
     let (ax, bx) = fit(|&((x, _), (u, _))| (x, u));
     let (ay, by) = fit(|&((_, y), (_, v))| (y, v));
-    ssx_assets::content::data::dev_peak::note(format!(
-        "test peak: path under `{}` ({} markers): x*{ax:.3}+{bx:.1}, y*{ay:.3}+{by:.1}",
-        inst.name,
-        pairs.len()
-    ));
-    // (a Catmull-Rom curve through the points, a dozen steps a span: it swerves through each)
     // (the line's shape is made in a space of its own, stretched from the stage's (wider than tall), the one its look
     // was settled in; its swerves, widths and lengths are in that space's units)
     const LOOK: (f32, f32) = (2.086, 1.417);
     let points: Vec<(f32, f32)> = points.iter().map(|&(x, y)| (x * LOOK.0, y * LOOK.1)).collect();
+    // (a Catmull-Rom curve through the points, a dozen steps a span: it swerves through each)
     let mut line: Vec<(f32, f32)> = Vec::new();
     let n = points.len();
     for i in 0..n - 1 {
@@ -1490,6 +1481,9 @@ fn test_peak_path(player: &Player, id: InstanceId, inst: &Instance, inh: &Inheri
 /// Whether the loading screen is up (set by the menus each frame).
 pub static LOADING_SCREEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+// Port mod: the menus' side dimmer (dimmer.gfx: `mcDimmer`'s dark sheet down the left of the stage, under the World
+// Tour and Explore panels, character 2) is not drawn: on a wide screen it shows as a strip of another shade down the
+// left (v0.4.0 draws it on out to the window's edge). The full-screen dimmer beside it (character 4) is kept.
 fn hidden_side_dimmer(lib: &Library, player: &Player, inst: &Instance) -> bool {
     // (not on the loading screen: there the sheet, drawn on out to the window's edges, is the black beside the picture)
     !LOADING_SCREEN.load(std::sync::atomic::Ordering::Relaxed)

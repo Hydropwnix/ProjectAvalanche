@@ -1,14 +1,30 @@
-//! A port mod: the disc's unused developer peak, `test_peak`, on the globe.
+//! A port mod, Hidden Maps (the `hidden-maps` mod): the disc's unused developer peak, `test_peak`, on the globe.
 //!
-//! `ge_attribdb` keeps twenty drops on the peak `test_peak` (the ten `test_*` tracks of `gameexplorer`, whose level
-//! files are all on the disc), but the disc has no `peak` record of that name and no `ui_drop` (event) on any of
-//! them, so nothing in the menus reaches them. This adds both to the `attribdb` collections as they are read (next to
-//! the content packages' routing of `ui_drop`s, so every reader of the events sees the same ones): a peak "Test Peak"
-//! in the Rockies, between Mount Robson and Extinguisher Tower, and one Explore Trick It event per drop on it, built
-//! from an Explore event of the disc (its scripts, targets and loadout), with no rivals (no ghost rows have them).
+//! `ge_attribdb` keeps drops on the peak `test_peak` (the `test_*` tracks of `gameexplorer` and a few of the unused
+//! `classic_peak`'s, whose level files are all on the disc), but the disc has no `peak` record of that name and no
+//! `ui_drop` (event) on any of them, so nothing in the menus reaches them. With the mod switched on in the launcher this
+//! adds both to the `attribdb` collections as they are read (next to the content packages' routing of `ui_drop`s, so
+//! every reader of the events sees the same ones): a peak "Test Peak" in the Rockies, between Mount Robson and
+//! Extinguisher Tower, and on it a Trick It and a Race It event per drop (Y on its drop screen switches between them),
+//! each built from an Explore event of the disc (its scripts, targets and loadout), with no rivals. The menus' side of it
+//! (the markers, their path, the camera, the picture) is in `ssx-ui`.
 
 use ssx_formats::attrib::collection::{Collection, DecodedCollection, Field, FieldData};
 use ssx_formats::attrib::{RefSpec, Value, fnv1};
+
+/// The mod whose presence in the launcher adds the peak.
+pub const MOD: &str = "hidden-maps";
+
+static ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the `hidden-maps` mod is on (set by the game at startup, before the game's data is read).
+pub fn enabled() -> bool {
+    ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_enabled(on: bool) {
+    ENABLED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
 
 pub const PEAK_NAME: &str = "test_peak";
 pub const PEAK: u32 = fnv1(PEAK_NAME.as_bytes());
@@ -49,10 +65,9 @@ const F_POSITION: u32 = 0x45B5_F74A;
 const F_RIVALS: u32 = 0xC211_FF58;
 const F_PEAK_REF: u32 = 0x8296_DA5A;
 
-/// The peak's drops, one on each of the test tracks (and the `classic_peak`'s), from the top of the mountain down: the `ge_drop` (in
-/// `ge_attribdb`, on `test_peak`), the event's name and the title's string key. (The disc has twelve drops on the flat
-/// `test_plane`, the same track in different light and weather; the first of them stands for it. After them, the drops
-/// of the unused `classic_peak`.)
+/// The peak's drops, one on each track, from the top of the mountain down: the `ge_drop` (in `ge_attribdb`, on
+/// `test_peak`), the event's name and the title's string key (or the title itself). (The disc has twelve drops on the
+/// flat `test_plane`, the same track in different light and weather; the first of them stands for it.)
 pub const DROPS: [(u32, &str, &str); 11] = [
     (0x8E20_696D, "dev_test_profile", "TXT_NM_DRP_TEST_1_1"),
     (0x7F11_465C, "dev_test_happiness", "TXT_NM_DRP_HAPPINESS_1_1"),
@@ -129,7 +144,7 @@ pub fn strings() -> Vec<(String, String)> {
 /// The drops' places on the drop screen (`droppos.rnf`, where the game keeps each drop's marker by name): the test
 /// peak's snake down the mountain from its top in a widening wave (up and down move along them).
 pub fn add_drop_points(entries: &mut Vec<(String, f32, f32)>) {
-    if entries.is_empty() || entries.iter().any(|(n, _, _)| n.starts_with("dev_test_")) {
+    if !enabled() || entries.is_empty() || entries.iter().any(|(n, _, _)| n.starts_with("dev_test_")) {
         return;
     }
     let (mut x0, mut x1, mut y0, mut y1) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
@@ -182,7 +197,7 @@ pub fn inject_from(
     decoded: &mut Vec<DecodedCollection>,
     others: &[(&[Collection], &[DecodedCollection])],
 ) {
-    if cols.iter().any(|c| c.class == CLASS_PEAK && c.key == PEAK) {
+    if !enabled() || cols.iter().any(|c| c.class == CLASS_PEAK && c.key == PEAK) {
         return;
     }
     let lookup = |class: u32, key: u32| -> Option<(Collection, DecodedCollection)> {
@@ -266,7 +281,7 @@ pub fn inject_from(
 }
 
 /// One line in the game's log for each different note (the collections are read by several parts of the game).
-pub fn note(line: String) {
+fn note(line: String) {
     static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
     let mut seen = SEEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if !seen.contains(&line) {

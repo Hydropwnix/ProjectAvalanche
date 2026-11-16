@@ -225,14 +225,14 @@ pub fn dpad(fe: &mut FrontEnd, x: f32) {
     }
 }
 
-/// The test peak's path on its drop screen (its markers' places top to bottom, then down to where the snow ends) and
-/// the chosen drop's place, both in the drop screen's own places (`droppos.rnf`'s).
-pub fn test_peak_path(fe: &FrontEnd) -> Option<(Vec<(f32, f32)>, (f32, f32))> {
+/// The test peak's path on its drop screen (its markers' places top to bottom, then down to where the snow ends), in the
+/// drop screen's own places (`droppos.rnf`'s).
+pub fn test_peak_path(fe: &FrontEnd) -> Option<Vec<(f32, f32)>> {
     if !test_peak_drop_screen(fe) {
         return None;
     }
     let points = ssx_assets::content::data::dev_peak::path_points(&fe.career.drop_positions.entries);
-    (points.len() >= 2).then(|| (points, drop_panels::drop_point(fe, fe.globe.drop)))
+    (points.len() >= 2).then_some(points)
 }
 
 /// The test peak's markers as drawn (the screen's billboard clips, by drop): each with its place in the drop screen's
