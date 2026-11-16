@@ -88,7 +88,7 @@ pub fn drop_starts(db: &Db, track: &str) -> Result<Vec<DropStart>> {
                     break;
                 }
             }
-            if out.len() == found && track.starts_with("test_") {
+            if out.len() == found && (track.starts_with("test_") || CLASSIC_TRACKS.contains(&track)) {
                 missing.push((key, terrain_files));
             }
         }
@@ -105,6 +105,10 @@ pub fn drop_starts(db: &Db, track: &str) -> Result<Vec<DropStart>> {
         Ok(out)
     }
 }
+
+/// The unused `classic_peak`'s tracks (the test peak's too): like the test tracks, a drop of one without its own start
+/// uses the track's.
+const CLASSIC_TRACKS: [&str; 4] = ["stylemile", "snowjam", "intimidator", "happiness"];
 
 /// The start locator among the track's own scene instances (not a drop's).
 fn track_start(db: &Db, track: &str) -> Result<Option<Vec<Placement>>> {

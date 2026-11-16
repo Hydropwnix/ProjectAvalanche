@@ -67,10 +67,16 @@ pub const DROPS: [(u32, &str, &str); 14] = [
     (0x2596_D667, "dev_test_intimidator", "TXT_NM_DRP_INTIMIDATOR_1_1"),
     (0x7F11_465C, "dev_test_happiness", "TXT_NM_DRP_HAPPINESS_1_1"),
     // (the `ge_drop` named `default`: the record the others are made from, on no track; its marker can't be chosen)
-    (0x9F7A_6694, DEFAULT_DROP, "default"),
+    (DEFAULT_GE_DROP, DEFAULT_DROP, "default"),
 ];
 
 const DEFAULT_DROP: &str = "dev_test_default";
+const DEFAULT_GE_DROP: u32 = 0x9F7A_6694;
+
+/// A drop's title: its own, but the `default` record's ("default" is the key of the game's word "Idle") made its own.
+pub fn drop_title(ge_drop: u32, title: String) -> String {
+    if ge_drop == DEFAULT_GE_DROP { "TXT_NM_DRP_DEV_DEFAULT".to_string() } else { title }
+}
 
 /// Whether a drop of the test peak has a level to load (all but the `default` record's).
 pub fn playable(key: u32) -> bool {
@@ -134,7 +140,7 @@ pub fn strings() -> Vec<(String, String)> {
         ("TXT_NM_DRP_SNOWJAM_1_1".to_string(), "Snow Jam".to_string()),
         ("TXT_NM_DRP_INTIMIDATOR_1_1".to_string(), "Intimidator".to_string()),
         ("TXT_NM_DRP_HAPPINESS_1_1".to_string(), "Happiness".to_string()),
-        ("default".to_string(), "Default (no track)".to_string()),
+        ("TXT_NM_DRP_DEV_DEFAULT".to_string(), "Default".to_string()),
     ]
 }
 
