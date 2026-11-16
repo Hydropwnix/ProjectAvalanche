@@ -1405,18 +1405,30 @@ fn test_peak_path(player: &Player, id: InstanceId, inst: &Instance, inh: &Inheri
     // rests in its colour for the rest)
     let p = (t % 1.35) / 0.97;
     let pulse = if p < 1.0 { (std::f32::consts::PI * p).sin().powi(2) } else { 0.0 };
-    // (one strip down the line, its sides at the given half width either side (times the brush's width there): no part
-    // of it laid over another, so a faint stroke is evenly faint)
-    let stroke = |half: f32| {
+    // (one strip down the line, its sides `core` (times the brush's width there) and `extra` (the glow, the same all
+    // along but where the brush is thinnest) out either side: no part of it laid over another, so a faint stroke is
+    // evenly faint. On the inside of a bend a side goes no further out than the bend's radius, so a wide strip never
+    // folds back over itself at a tight turn)
+    let stroke = |core: f32, extra: f32| {
         let mut mesh = Mesh::default();
         let last = world.len().saturating_sub(1);
+        let unit = |v: (f32, f32)| {
+            let l = (v.0 * v.0 + v.1 * v.1).sqrt().max(1e-6);
+            (v.0 / l, v.1 / l, l)
+        };
         for (i, &(x, y)) in world.iter().enumerate() {
             let (a, b) = (world[i.saturating_sub(2)], world[(i + 2).min(last)]);
-            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-            let l = (dx * dx + dy * dy).sqrt().max(1e-6);
-            let (nx, ny) = (-dy / l, dx / l);
-            let h = half * width[i];
-            mesh.vertices.extend([[x + nx * h, y + ny * h], [x - nx * h, y - ny * h]]);
+            let (tx, ty, _) = unit((b.0 - a.0, b.1 - a.1));
+            let (nx, ny) = (-ty, tx);
+            let h = core * width[i] + extra * (0.4 + width[i]).min(1.0);
+            let (p, q) = (world[i.saturating_sub(4)], world[(i + 4).min(last)]);
+            let (ax, ay, la) = unit((x - p.0, y - p.1));
+            let (bx, by, lb) = unit((q.0 - x, q.1 - y));
+            let turn = (ax * by - ay * bx).atan2(ax * bx + ay * by);
+            let radius = if turn.abs() > 1e-4 { 0.5 * (la + lb) / turn.abs() } else { f32::MAX };
+            let inner = (0.9 * radius).max(0.5);
+            let (left, right) = if turn > 0.0 { (h.min(inner), h) } else { (h, h.min(inner)) };
+            mesh.vertices.extend([[x + nx * left, y + ny * left], [x - nx * right, y - ny * right]]);
             if i > 0 {
                 let v = 2 * i as u32;
                 mesh.indices.extend([v - 2, v - 1, v + 1, v - 2, v + 1, v]);
@@ -1458,7 +1470,7 @@ fn test_peak_path(player: &Player, id: InstanceId, inst: &Instance, inh: &Inheri
         let near = 1.0 - mid / reach;
         let c = lerp(glow, core, 0.9 * near * near);
         out.push(Command::Draw(DrawItem {
-            mesh: stroke((core_half + g) * scale),
+            mesh: stroke(core_half * scale, g * scale),
             paint: Paint::Solid([c[0], c[1], c[2], a]),
             transform: Mat2d::IDENTITY,
             cxform: inh.cx,
@@ -1467,7 +1479,7 @@ fn test_peak_path(player: &Player, id: InstanceId, inst: &Instance, inh: &Inheri
     }
     // (the core, solid and sharp-edged)
     out.push(Command::Draw(DrawItem {
-        mesh: stroke(core_half * scale),
+        mesh: stroke(core_half * scale, 0.0),
         paint: Paint::Solid([core[0], core[1], core[2], 1.0]),
         transform: Mat2d::IDENTITY,
         cxform: inh.cx,
