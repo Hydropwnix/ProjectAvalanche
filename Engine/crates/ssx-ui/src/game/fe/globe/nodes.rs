@@ -129,16 +129,31 @@ impl NodeMap {
                 },
             );
         }
-        // (a port mod: the test peak's drop shot is Extinguisher Tower's moved to the test peak, so the camera faces the
-        // test peak's part of the mountains as Extinguisher Tower's faces it (Robson's direction has a mountain between))
+        // (a port mod: the test peak's drop shot is Mount Robson's moved to the test peak (the same direction and
+        // distance), raised by half its distance along the range's up so it looks down past the ridge in front, on
+        // the same spot)
         use ssx_assets::content::data::dev_peak;
         if let Some(t) = map.peaks.get(&dev_peak::CAMERA_TEMPLATE).cloned()
             && let Some(p) = map.peaks.get_mut(&dev_peak::PEAK)
+            && let Some(range) = map.ranges.get(&p.range)
         {
             let at = p.position;
             let moved = |v: V3| [0, 1, 2].map(|i| at[i] + v[i] - t.position[i]);
-            p.shot_drop.offset = moved(t.shot_drop.offset);
-            p.shot_drop.look = moved(t.shot_drop.look);
+            let offset = moved(t.shot_drop.offset);
+            let up = [range.world[1][0], range.world[1][1], range.world[1][2]];
+            let len = |v: V3| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+            let away = [0, 1, 2].map(|i| offset[i] - at[i]);
+            let lift = 0.5 * len(away) / len(up).max(1e-9);
+            let raised = [0, 1, 2].map(|i| offset[i] + up[i] * lift);
+            // (it still faces what the shot faced: the point as far along its view as the test peak is from it)
+            let look = moved(t.shot_drop.look);
+            let view = [0, 1, 2].map(|i| look[i] - offset[i]);
+            let reach = len(view).max(1e-9);
+            let aim = [0, 1, 2].map(|i| offset[i] + view[i] / reach * len(away));
+            let to_aim = [0, 1, 2].map(|i| aim[i] - raised[i]);
+            let n = len(to_aim).max(1e-9);
+            p.shot_drop.offset = raised;
+            p.shot_drop.look = [0, 1, 2].map(|i| raised[i] + to_aim[i] / n * reach);
         }
         for d in &data.drops {
             let Some(peak) = map.peaks.get_mut(&d.peak) else { continue };
