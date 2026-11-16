@@ -3236,47 +3236,35 @@ pub fn test_peak_callout(cx: &mut crate::avm1::Ctx, show: bool) {
             continue;
         }
         let n = number(cx, &infos, "length").unwrap_or(0.0).clamp(0.0, 16.0) as usize;
-        let (mut freeride, mut ours) = (None, None);
+        let (mut style, mut ours, mut freeride) = (None, false, false);
         for i in 0..n {
             let info = cx.get_member(&infos, &i.to_string()).unwrap_or_default();
             let icon = number(cx, &info, "iconId");
             let label = cx.get_member(&info, "label").unwrap_or_default();
             let label = cx.to_string(&label).map(|s| s.to_string()).unwrap_or_default();
             if icon == Some(x) {
-                freeride = Some((i, info));
-            } else if icon == Some(y) && label == LABEL {
-                ours = Some(i);
+                freeride = true;
+                style = cx.get_member(&info, "style").ok();
+            }
+            if icon == Some(y) && label == LABEL {
+                ours = true;
             }
         }
-        if show && let Some((at, info)) = freeride {
+        if show && freeride {
             wrap_callout_bar(cx, &bar, x, y);
-            // (ours goes before Freeride: Freeride taken off and put back after it, once, as the screen opens)
-            if ours.is_none_or(|o| o > at) {
-                let field = |cx: &mut crate::avm1::Ctx, k: &str| cx.get_member(&info, k).unwrap_or_default();
-                let again = [
-                    Value::Number(x),
-                    field(cx, "label"),
-                    field(cx, "style"),
-                    field(cx, "eventType"),
-                    field(cx, "eventMessage"),
-                ];
-                let (add, remove) = (
-                    cx.get_member(&bar, "__pa_add").unwrap_or_default(),
-                    cx.get_member(&bar, "__pa_remove").unwrap_or_default(),
-                );
-                cx.call_top(&remove, bar.clone(), &[Value::Number(x)]);
-                if ours.is_none() {
-                    let mine =
-                        [Value::Number(y), Value::str(LABEL), again[2].clone(), Value::Undefined, Value::Undefined];
-                    cx.call_top(&add, bar.clone(), &mine);
-                }
-                cx.call_top(&add, bar.clone(), &again);
+        }
+        if show && freeride && !ours {
+            if let Ok((f, _)) = cx.get_method(&bar, "AddButton") {
+                let args = [Value::Number(y), Value::str(LABEL), style.unwrap_or_default(), Value::Undefined, Value::Undefined];
+                cx.call_top(&f, bar.clone(), &args);
             }
             added = true;
-        } else if !show && ours.is_some() {
+        } else if !show && ours {
             if let Ok((f, _)) = cx.get_method(&bar, "RemoveButtonById") {
                 cx.call_top(&f, bar.clone(), &[Value::Number(y)]);
             }
+        } else if show && ours {
+            added = true;
         }
     }
     ADDED.store(added, std::sync::atomic::Ordering::Relaxed);
@@ -3285,8 +3273,8 @@ pub fn test_peak_callout(cx: &mut crate::avm1::Ctx, show: bool) {
 /// The test peak's Y button kept steady on its drop screen: the screen takes its bar's Y button off and puts its
 /// buttons back as the chosen drop changes, and a button put back shows a frame or two late (it loads first), so the Y
 /// blinked as the drops were scrolled. The bar's own `AddButton` and `RemoveButtonById` are wrapped (once a bar): on the
-/// test peak's drop screen, the Y isn't taken off (nor another Y put in its place), and when X (Freeride) is put back
-/// without it, the Y goes in first, in the same moment (the Y sits before Freeride).
+/// test peak's drop screen, the Y isn't taken off (nor another Y put in its place), and when X (Freeride) is put back,
+/// the Y goes in just after it, in the same moment.
 fn wrap_callout_bar(cx: &mut crate::avm1::Ctx, bar: &crate::avm1::value::Value, x: f64, y: f64) {
     use crate::avm1::object::{Func, FuncCode};
     use crate::avm1::value::Value;
@@ -3338,13 +3326,14 @@ fn callout_add(
     if on && icon == y && label != TEST_PEAK_LABEL {
         return Ok(Value::Undefined);
     }
-    // (X put back: ours first, unless it's there (then X goes in after it anyway))
+    let out = cx.call(&orig, this.clone(), args, Value::Undefined)?;
+    // (X put back: ours just after it, unless it's there)
     if on && icon == x && !callout_has(cx, &this, y) {
         let style = args.get(2).cloned().unwrap_or_default();
         let ours = [Value::Number(y), Value::str(TEST_PEAK_LABEL), style, Value::Undefined, Value::Undefined];
-        cx.call(&orig, this.clone(), &ours, Value::Undefined)?;
+        cx.call(&orig, this, &ours, Value::Undefined)?;
     }
-    cx.call(&orig, this, args, Value::Undefined)
+    Ok(out)
 }
 
 fn callout_remove(
