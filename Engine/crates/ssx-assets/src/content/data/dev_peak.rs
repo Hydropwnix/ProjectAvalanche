@@ -47,26 +47,24 @@ const F_POSITION: u32 = 0x45B5_F74A;
 const F_RIVALS: u32 = 0xC211_FF58;
 const F_PEAK_REF: u32 = 0x8296_DA5A;
 
-/// The peak's drops, one on each of the test tracks, from the top of the mountain down: the `ge_drop` (in
+/// The peak's drops, one on each of the test tracks (and the `classic_peak`'s), from the top of the mountain down: the `ge_drop` (in
 /// `ge_attribdb`, on `test_peak`), the event's name and the title's string key. (The disc has twelve drops on the flat
 /// `test_plane`, the same track in different light and weather; the first of them stands for it. After them, the drops
 /// of the unused `classic_peak`.)
 pub const DROPS: [(u32, &str, &str); 14] = [
-    (0x7B8C_2A8E, "dev_test_plane", "TXT_NM_DRP_TESTPLANE_1_1"),
-    (0xC627_0A13, "dev_test_slope", "Test Slope"),
-    (0x23A1_AB80, "dev_test_rail", "Test Rail"),
-    (0xE325_ADE7, "dev_test_surface", "Test Surface"),
-    (0x8572_9FDD, "dev_test_spray", "Test Spray"),
-    (0x321B_99E8, "dev_test_scene", "Test Scene"),
-    (0x3A14_67B6, "dev_test_audio", "Test Audio"),
-    (0x6C85_B3E7, "dev_test_online", "Test Online"),
     (0x8E20_696D, "dev_test_profile", "TXT_NM_DRP_TEST_1_1"),
-    // (the four drops of the disc's `classic_peak`, on their own tracks: no peak record and no event either)
-    (0xCE47_CAA1, "dev_test_stylemile", "TXT_NM_DRP_STYLEMILE_1_1"),
-    (0x9F3C_2FF0, "dev_test_snowjam", "TXT_NM_DRP_SNOWJAM_1_1"),
-    (0x2596_D667, "dev_test_intimidator", "TXT_NM_DRP_INTIMIDATOR_1_1"),
     (0x7F11_465C, "dev_test_happiness", "TXT_NM_DRP_HAPPINESS_1_1"),
-    // (the `ge_drop` named `default`: the record the others are made from, on no track; its marker can't be chosen)
+    (0x9F3C_2FF0, "dev_test_snowjam", "TXT_NM_DRP_SNOWJAM_1_1"),
+    (0xCE47_CAA1, "dev_test_stylemile", "TXT_NM_DRP_STYLEMILE_1_1"),
+    (0xE325_ADE7, "dev_test_surface", "Test Surface"),
+    (0x6C85_B3E7, "dev_test_online", "Test Online"),
+    (0x23A1_AB80, "dev_test_rail", "Test Rail"),
+    (0xC627_0A13, "dev_test_slope", "Test Slope"),
+    (0x8572_9FDD, "dev_test_spray", "Test Spray"),
+    (0x7B8C_2A8E, "dev_test_plane", "TXT_NM_DRP_TESTPLANE_1_1"),
+    (0x3A14_67B6, "dev_test_audio", "Test Audio"),
+    (0x321B_99E8, "dev_test_scene", "Test Scene"),
+    (0x2596_D667, "dev_test_intimidator", "TXT_NM_DRP_INTIMIDATOR_1_1"),
     (DEFAULT_GE_DROP, DEFAULT_DROP, "default"),
 ];
 
