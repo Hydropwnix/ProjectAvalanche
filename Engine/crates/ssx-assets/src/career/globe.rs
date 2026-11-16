@@ -225,7 +225,8 @@ impl GlobeData {
                 event_type: r.int(0x146B_5937).unwrap_or(-1),
                 position,
                 title: ge.as_ref().and_then(|g| g.text(0x1A32_9A87)).unwrap_or_default(),
-                selectable: ge.as_ref().and_then(|g| g.int(fnv1(b"Selectable"))) == Some(1),
+                selectable: ge.as_ref().and_then(|g| g.int(fnv1(b"Selectable"))) == Some(1)
+                    && crate::content::data::dev_peak::playable(key),
             });
         }
         let capacity = schema_class(big_root, CLASS_UI_DROP)?.map_or(0, |c| c.unk_collection_capacity);

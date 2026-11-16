@@ -42,7 +42,7 @@ const F_PEAK_REF: u32 = 0x8296_DA5A;
 /// `ge_attribdb`, on `test_peak`), the event's name and the title's string key. (The disc has twelve drops on the flat
 /// `test_plane`, the same track in different light and weather; the first of them stands for it. After them, the drops
 /// of the unused `classic_peak`.)
-pub const DROPS: [(u32, &str, &str); 13] = [
+pub const DROPS: [(u32, &str, &str); 14] = [
     (0x7B8C_2A8E, "dev_test_plane", "TXT_NM_DRP_TESTPLANE_1_1"),
     (0xC627_0A13, "dev_test_slope", "Test Slope"),
     (0x23A1_AB80, "dev_test_rail", "Test Rail"),
@@ -57,7 +57,16 @@ pub const DROPS: [(u32, &str, &str); 13] = [
     (0x9F3C_2FF0, "dev_test_snowjam", "TXT_NM_DRP_SNOWJAM_1_1"),
     (0x2596_D667, "dev_test_intimidator", "TXT_NM_DRP_INTIMIDATOR_1_1"),
     (0x7F11_465C, "dev_test_happiness", "TXT_NM_DRP_HAPPINESS_1_1"),
+    // (the `ge_drop` named `default`: the record the others are made from, on no track; its marker can't be chosen)
+    (0x9F7A_6694, DEFAULT_DROP, "default"),
 ];
+
+const DEFAULT_DROP: &str = "dev_test_default";
+
+/// Whether a drop of the test peak has a level to load (all but the `default` record's).
+pub fn playable(key: u32) -> bool {
+    key != fnv1(DEFAULT_DROP.as_bytes())
+}
 
 /// The strings the peak and its drops show (none of them is in the game's text).
 pub fn strings() -> Vec<(String, String)> {
@@ -70,6 +79,7 @@ pub fn strings() -> Vec<(String, String)> {
         ("TXT_NM_DRP_SNOWJAM_1_1".to_string(), "Snow Jam".to_string()),
         ("TXT_NM_DRP_INTIMIDATOR_1_1".to_string(), "Intimidator".to_string()),
         ("TXT_NM_DRP_HAPPINESS_1_1".to_string(), "Happiness".to_string()),
+        ("default".to_string(), "Default (no track)".to_string()),
     ]
 }
 
@@ -88,7 +98,7 @@ pub fn add_drop_points(entries: &mut Vec<(String, f32, f32)>) {
     for (i, (_, name, _)) in DROPS.iter().enumerate() {
         // (a wave whose swing grows on the way down: a snaking line)
         let t = i as f32;
-        let (u, v) = (0.62 + (0.05 + 0.012 * t) * (0.9 * t).sin(), 0.08 + 0.065 * t);
+        let (u, v) = (0.62 + (0.05 + 0.012 * t) * (0.9 * t).sin(), 0.08 + 0.061 * t);
         entries.push(((*name).to_string(), x0 + w * u, y0 + h * v));
     }
 }

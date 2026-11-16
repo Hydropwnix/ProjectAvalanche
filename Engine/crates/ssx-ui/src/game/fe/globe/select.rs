@@ -18,6 +18,11 @@ pub fn freeride(fe: &mut FrontEnd, env: &mut FeEnv) {
         return;
     }
     let drop = fe.globe.drop;
+    // (a port mod: the test peak's `default` marker has no level)
+    if !ssx_assets::content::data::dev_peak::playable(drop) {
+        fe.play_sound(3);
+        return;
+    }
     let Some(e) = fe.career.event(drop) else { return };
     if e.cost != 0
         || e.event_type == 4
