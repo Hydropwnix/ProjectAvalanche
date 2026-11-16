@@ -1400,14 +1400,8 @@ fn test_peak_path(player: &Player, id: InstanceId, inst: &Instance, inh: &Inheri
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0.0, |d| (d.as_secs() % 1000) as f32 + d.subsec_nanos() as f32 * 1e-9);
-    // (and, as the game's do, about once a second it flashes white: up quickly, then fading back to its colour)
-    let phase = (t / 1.1).fract();
-    let pulse = if phase < 0.2 {
-        let u = phase / 0.2;
-        u * u * (3.0 - 2.0 * u)
-    } else {
-        (-(phase - 0.2) * 4.5).exp()
-    };
+    // (and, as the game's do, it pulses: about once a second it swells smoothly to white and eases back to its colour)
+    let pulse = 0.5 - 0.5 * (t * std::f32::consts::TAU / 1.1).cos();
     let stroke = |half: f32| {
         let mut mesh = Mesh::default();
         for (i, w) in world.windows(2).enumerate() {
@@ -1461,7 +1455,7 @@ fn test_peak_path(player: &Player, id: InstanceId, inst: &Instance, inh: &Inheri
             blend: BlendMode::Normal,
         }));
     }
-    // (the flash: a white glow added over it, wider than its own, and its body gone white, fading as it ends)
+    // (the pulse: a white glow added over it, wider than its own, and its body turning white, as it swells)
     if pulse > 0.01 {
         for (half, a, blend) in [
             (6.0 * scale, 0.4 * pulse, BlendMode::Add),
