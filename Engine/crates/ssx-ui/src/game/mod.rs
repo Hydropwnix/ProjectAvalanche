@@ -112,6 +112,9 @@ impl GameUi {
         for (key, text) in port::builtin_strings()? {
             loc.add_port_string(&key, &text)?;
         }
+        for (key, text) in ssx_assets::content::data::dev_peak::strings() {
+            let _ = loc.add_port_string(&key, &text);
+        }
         let refused = apply_package_strings(files, &mut loc);
         let store = DataStore::load_files(files)?;
         let nav = nav::Nav::load(files)?;
@@ -305,6 +308,9 @@ impl GameUi {
         let mut loc = Localization::load(files, self.loc.language)?;
         for (key, text) in port::builtin_strings()? {
             loc.add_port_string(&key, &text)?;
+        }
+        for (key, text) in ssx_assets::content::data::dev_peak::strings() {
+            let _ = loc.add_port_string(&key, &text);
         }
         let refused = apply_package_strings(files, &mut loc);
         if let Some(fe) = &self.fe {

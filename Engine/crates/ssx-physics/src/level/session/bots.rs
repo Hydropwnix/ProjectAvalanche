@@ -244,9 +244,9 @@ impl BotData {
         let (svlt, sbin) = read_pair(&dir.join("attribdb_schema.vlt"))?;
         let schema = Schema::from_vault(&Vault::parse(&svlt, &sbin)?).context("reading the schema")?;
         let vault = Vault::parse(&vlt, &bin).context("parsing attribdb.vlt")?;
-        let cols = collection::collections(&vault)?;
+        let mut cols = collection::collections(&vault)?;
         let mut decoded = cols.iter().map(|c| c.decode(&vault, &schema)).collect::<ssx_formats::Result<Vec<_>>>()?;
-        ssx_assets::content::data::events::route_ui_drops(big_root, &cols, &mut decoded);
+        ssx_assets::content::data::events::route_ui_drops(big_root, &mut cols, &mut decoded);
         let index = collection::index(&cols);
         let mut out = Self::default();
         for (i, c) in cols.iter().enumerate() {

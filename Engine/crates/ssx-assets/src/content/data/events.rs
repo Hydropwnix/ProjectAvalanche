@@ -327,7 +327,10 @@ impl GameContent {
     }
 }
 
-pub fn route_ui_drops(big_root: &Path, cols: &[Collection], decoded: &mut [DecodedCollection]) {
+pub fn route_ui_drops(big_root: &Path, cols: &mut Vec<Collection>, decoded: &mut Vec<DecodedCollection>) {
+    // (a port mod: the disc's unused test peak and its events, before the packages' routing)
+    super::dev_peak::inject(cols, decoded);
+    let cols: &[Collection] = cols;
     let content = GameContent::of(big_root);
     if !KINDS.iter().any(|&k| content.packages_provide(k)) {
         return;
@@ -406,9 +409,9 @@ pub fn read_attribdb(big_root: &Path) -> Result<AttribDb> {
     let schema = Schema::from_vault(&Vault::parse(&svlt, &sbin)?).context("reading the schema")?;
     let (vlt, bin) = read(ATTRIBDB)?;
     let vault = Vault::parse(&vlt, &bin).context("parsing attribdb.vlt")?;
-    let cols = collection::collections(&vault)?;
+    let mut cols = collection::collections(&vault)?;
     let mut decoded = cols.iter().map(|c| c.decode(&vault, &schema)).collect::<ssx_formats::Result<Vec<_>>>()?;
-    route_ui_drops(big_root, &cols, &mut decoded);
+    route_ui_drops(big_root, &mut cols, &mut decoded);
     let index = collection::index(&cols);
     Ok((cols, decoded, index))
 }

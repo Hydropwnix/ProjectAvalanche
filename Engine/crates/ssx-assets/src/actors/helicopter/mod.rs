@@ -87,7 +87,7 @@ impl Vaults {
                 kept.push(c);
             }
             if route {
-                crate::content::data::events::route_ui_drops(big_root, &kept, &mut decoded);
+                crate::content::data::events::route_ui_drops(big_root, &mut kept, &mut decoded);
             }
             out.index.push(collection::index(&kept));
             out.cols.push(kept);

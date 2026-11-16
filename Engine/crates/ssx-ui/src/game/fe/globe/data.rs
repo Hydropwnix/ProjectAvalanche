@@ -14,6 +14,8 @@ pub(super) fn overlay(fe: &FrontEnd, cx: &mut Ctx, values: &UiValues) -> Value {
     let entries = fe.globe_scene.as_ref().map(|s| s.entries(STAGE, STAGE.0 / STAGE.1)).unwrap_or_default();
     let g = &fe.globe;
     let event = fe.career.event(g.provider_node).filter(|_| g.provider_is_drop && drop_level && !entries.is_empty());
+    // (a port mod: the test peak has no outline picture of its own)
+    let event = event.filter(|e| !ssx_assets::content::data::dev_peak::is_dev_drop(e.key));
     let Some(e) = event else {
         let _ = cx.set_member(&o, "isEnabled", Value::Bool(false));
         return o;

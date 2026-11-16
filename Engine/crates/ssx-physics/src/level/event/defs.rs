@@ -139,9 +139,9 @@ pub(super) fn read_attribdb(
     let schema_vault = Vault::parse(&svlt, &sbin)?;
     let schema = Schema::from_vault(&schema_vault).context("reading the schema")?;
     let vault = Vault::parse(&vlt, &bin).context("parsing attribdb.vlt")?;
-    let cols = collection::collections(&vault)?;
+    let mut cols = collection::collections(&vault)?;
     let mut decoded = cols.iter().map(|c| c.decode(&vault, &schema)).collect::<ssx_formats::Result<Vec<_>>>()?;
-    ssx_assets::content::data::events::route_ui_drops(big_root, &cols, &mut decoded);
+    ssx_assets::content::data::events::route_ui_drops(big_root, &mut cols, &mut decoded);
     let index = collection::index(&cols);
     let mut gear = GearDb::from_vault(&cols, &decoded, &index)?;
     if let Ok((gv, gb)) = read_pair(&dir.join("ge_attribdb.vlt")) {

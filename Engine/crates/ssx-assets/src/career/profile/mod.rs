@@ -569,7 +569,12 @@ impl Profile {
     }
 
     pub fn drop_state(&self, drop: u32) -> DropState {
-        self.drop_states.get(&drop).copied().unwrap_or_default()
+        match self.drop_states.get(&drop) {
+            Some(&s) => s,
+            // (a port mod: the test peak's events are open from the start)
+            None if crate::content::data::dev_peak::is_dev_drop(drop) => DropState::Unlocked,
+            None => DropState::default(),
+        }
     }
 
     pub fn add_credits(&mut self, amount: i64, earned: bool) {
