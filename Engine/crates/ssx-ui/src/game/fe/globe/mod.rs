@@ -240,14 +240,14 @@ pub fn test_peak_path(fe: &FrontEnd) -> Option<(Vec<(f32, f32)>, (f32, f32))> {
 pub fn test_peak_markers(
     fe: &FrontEnd,
     boards: Vec<(u32, crate::display::InstanceId)>,
-) -> Vec<((f32, f32), crate::display::InstanceId)> {
+) -> Vec<((f32, f32), crate::display::InstanceId, bool)> {
     if !test_peak_drop_screen(fe) {
         return Vec::new();
     }
     boards
         .into_iter()
         .filter(|(k, _)| ssx_assets::content::data::dev_peak::is_dev_drop(*k))
-        .map(|(k, id)| (drop_panels::drop_point(fe, k), id))
+        .map(|(k, id)| (drop_panels::drop_point(fe, k), id, k == fe.globe.drop))
         .collect()
 }
 

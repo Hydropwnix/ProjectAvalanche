@@ -1245,11 +1245,14 @@ static RENDER_FRAME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 /// The frame the path was last drawn in (once a frame).
 static TEST_PEAK_PATH_DRAWN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
 
-/// The test peak's markers as the screen draws them: each one's place in the drop screen's places and its clip.
+/// The test peak's markers as the screen draws them: each one's place in the drop screen's places, where it's drawn on
+/// the stage, its clip, and whether it's the chosen one (drawn bigger, with its pin).
 #[allow(clippy::type_complexity)]
-static TEST_PEAK_MARKERS: std::sync::Mutex<Vec<((f32, f32), InstanceId)>> = std::sync::Mutex::new(Vec::new());
+static TEST_PEAK_MARKERS: std::sync::Mutex<Vec<((f32, f32), (f32, f32), InstanceId, bool)>> =
+    std::sync::Mutex::new(Vec::new());
 
-pub fn set_test_peak_markers(markers: Vec<((f32, f32), InstanceId)>) {
+#[allow(clippy::type_complexity)]
+pub fn set_test_peak_markers(markers: Vec<((f32, f32), (f32, f32), InstanceId, bool)>) {
     if let Ok(mut m) = TEST_PEAK_MARKERS.lock() {
         *m = markers;
     }
@@ -1268,7 +1271,7 @@ fn test_peak_path(player: &Player, id: InstanceId, inst: &Instance, inh: &Inheri
     let Ok(guard) = TEST_PEAK_PATH.lock() else { return };
     let Some((points, _)) = guard.as_ref() else { return };
     let Ok(markers) = TEST_PEAK_MARKERS.lock() else { return };
-    if !markers.iter().any(|&(_, m)| m == id) {
+    if !markers.iter().any(|&(_, _, m, _)| m == id) {
         return;
     }
     let frame = RENDER_FRAME.load(std::sync::atomic::Ordering::Relaxed);
@@ -1278,14 +1281,8 @@ fn test_peak_path(player: &Player, id: InstanceId, inst: &Instance, inh: &Inheri
     // (the screen puts its markers in a space of its own, scaled and moved from the drop screen's places: that's worked
     // out from the markers beside this one (each axis a scale and a shift, fitted), so the line, made in the drop
     // screen's places, is drawn through them)
-    let pairs: Vec<((f32, f32), (f32, f32))> = markers
-        .iter()
-        .filter_map(|&(p, m)| {
-            let i = player.get(m)?;
-            let w = player.world_matrix(m);
-            i.visible.then_some((p, (w.tx / 20.0, w.ty / 20.0)))
-        })
-        .collect();
+    let pairs: Vec<((f32, f32), (f32, f32))> =
+        markers.iter().filter(|m| !m.3 || markers.len() < 3).map(|&(p, at, _, _)| (p, at)).collect();
     let fit = |f: fn(&((f32, f32), (f32, f32))) -> (f32, f32)| {
         let n = pairs.len().max(1) as f32;
         let (sx, sy) = pairs.iter().map(f).fold((0.0, 0.0), |a, (x, y)| (a.0 + x, a.1 + y));

@@ -181,7 +181,16 @@ impl GameUi {
         let markers = match self.fe.as_ref() {
             Some(fe) if crate::game::fe::globe::test_peak_drop_screen(fe) => {
                 let order = lists::paint_order(cx);
+                // (each where it's drawn: the middle of what it draws, on the stage (the clip itself sits at 0, 0,
+                // what it draws moved out to the marker's place))
                 crate::game::fe::globe::test_peak_markers(fe, lists::billboards(cx, &order))
+                    .into_iter()
+                    .filter_map(|(p, id, chosen)| {
+                        let r = crate::display::hit::drawn_bounds(cx.player, cx.lib, id)
+                            .transform(&cx.player.world_matrix(id));
+                        (!r.is_empty()).then(|| (p, ((r.x0 + r.x1) / 40.0, (r.y0 + r.y1) / 40.0), id, chosen))
+                    })
+                    .collect()
             }
             _ => Vec::new(),
         };
