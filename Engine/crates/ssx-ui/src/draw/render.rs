@@ -1464,6 +1464,15 @@ fn test_peak_path(player: &Player, id: InstanceId, inst: &Instance, inh: &Inheri
             blend: BlendMode::Normal,
         }));
     }
+    // (and over the glow, the line itself, sharp-edged as the game's are: about 6 px wide at 1440 high, in the glow's
+    // middle colour)
+    out.push(Command::Draw(DrawItem {
+        mesh: stroke(2.5 * scale),
+        paint: Paint::Solid([mid[0], mid[1], mid[2], 1.0]),
+        transform: Mat2d::IDENTITY,
+        cxform: inh.cx,
+        blend: BlendMode::Normal,
+    }));
 }
 
 /// Whether the loading screen is up (set by the menus each frame).
