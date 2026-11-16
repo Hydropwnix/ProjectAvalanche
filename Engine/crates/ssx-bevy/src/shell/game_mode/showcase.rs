@@ -5,8 +5,9 @@
 //!
 //! The riders load on threads of their own (the menus keep running) as soon as the rider step opens: the
 //! highlighted one first, then outwards, all of them, so each is there by the time it's highlighted. They stay
-//! loaded while the menus run (a rider whose suit or gear changed loads again); a run lets them all go. Anywhere
-//! else in the menus they load ahead (out of sight), so they're there when the rider step opens.
+//! loaded while the menus run (a rider whose suit or gear changed loads again), and through a run too, hidden, so
+//! they're there at once back in the menus. Anywhere else in the menus they load ahead (out of sight), so they're
+//! there when the rider step opens.
 
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
@@ -110,6 +111,8 @@ pub(super) struct ShowcaseState {
     was_active: bool,
     /// Elsewhere in the menus: when the riders the rider step will show were last worked out (to load them ahead).
     prefetched_at: Option<f64>,
+    /// In a run: the riders kept loaded but hidden (so they're there at once back in the menus).
+    parked: bool,
     /// The rider's view on the screen as drawn (fractions of the window): moving to where the menus have it.
     view: Option<[f32; 4]>,
     /// The view's long move under way (where from, how long it's been going).
@@ -179,8 +182,41 @@ impl ShowcaseState {
         self.frame_written = false;
         self.was_active = false;
         self.prefetched_at = None;
+        self.parked = false;
         self.chosen = None;
         self.view = None;
+    }
+
+    /// In a run (or on its way): the riders kept, hidden, so the rider step has them at once afterwards (they'd take a
+    /// moment each to load again).
+    fn park(&mut self, commands: &mut Commands, cameras: &mut Query<&mut Camera>) {
+        self.hide(cameras);
+        self.frame_written = false;
+        if self.parked {
+            return;
+        }
+        self.parked = true;
+        for root in self.roots() {
+            commands.entity(root).insert(Visibility::Hidden);
+        }
+    }
+
+    /// Back in the menus: the riders kept through a run shown again (they're still out of sight till highlighted),
+    /// and the riders to show worked out again at once (a rider's gear may have changed).
+    fn unpark(&mut self, commands: &mut Commands) {
+        if !self.parked {
+            return;
+        }
+        self.parked = false;
+        self.prefetched_at = None;
+        for root in self.roots() {
+            commands.entity(root).insert(Visibility::Inherited);
+        }
+    }
+
+    fn roots(&self) -> Vec<Entity> {
+        let ready = self.slots.iter().filter_map(|s| if let Slot::Ready(s) = s { Some(s.root) } else { None });
+        ready.chain(self.stale.iter().map(|(_, s)| s.root)).collect()
     }
 
     /// Off screen: the camera off and the portrait back; the riders kept (for the next time).
@@ -279,11 +315,21 @@ pub(super) fn showcase_system(
         ssx_core::rider_showcase::set_portrait_hidden(false);
         ssx_core::rider_showcase::set_highlight_portrait("");
         ssx_core::rider_showcase::set_list_order(Vec::new());
-        if !menus && (state.camera.is_some() || !state.slots.is_empty()) {
+        let on = ssx_core::rider_showcase::enabled();
+        if !on && (state.camera.is_some() || !state.slots.is_empty()) {
             info!("showcase: off (the riders let go)");
             state.clear(&mut commands);
+        } else if on && !menus {
+            // (in a run: the riders kept, hidden, for the rider step afterwards)
+            if !state.parked && !state.slots.is_empty() {
+                info!("showcase: the riders kept through the run (hidden)");
+            }
+            state.park(&mut commands, &mut cameras);
         } else if state.was_active {
             state.hide(&mut cameras);
+        }
+        if menus {
+            state.unpark(&mut commands);
         }
         // Elsewhere in the menus: the rider step's riders loaded ahead, out of sight (worked out again now and
         // then: the profile, a rider's gear may change meanwhile; those already loaded and the same are kept).
