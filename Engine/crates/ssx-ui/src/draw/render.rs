@@ -1306,7 +1306,7 @@ fn test_peak_path(inst: &Instance, inh: &Inherited, out: &mut Vec<Command>) {
     }
     let wobble = |s: f32| {
         let tri = |x: f32| (2.0 / std::f32::consts::PI) * x.sin().asin();
-        4.0 * (s * 0.04 + 0.7).sin() + 2.2 * tri(s * 0.17 + 1.9) + 1.0 * tri(s * 0.43 + 0.4) + 0.4 * tri(s * 0.97 + 2.6)
+        1.4 * (s * 0.04 + 0.7).sin() + 1.0 * tri(s * 0.17 + 1.9) + 0.6 * tri(s * 0.43 + 0.4) + 0.3 * tri(s * 0.97 + 2.6)
     };
     let mut shaped: Vec<(f32, f32)> = Vec::with_capacity(walked.len());
     for i in 0..walked.len() {
