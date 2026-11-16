@@ -136,7 +136,7 @@ impl NodeMap {
             && let Some(p) = map.peaks.get_mut(&dev_peak::PEAK)
         {
             let at = p.position;
-            let moved = |v: V3| add(at, sub(v, t.position));
+            let moved = |v: V3| [0, 1, 2].map(|i| at[i] + v[i] - t.position[i]);
             p.shot_drop.offset = moved(t.shot_drop.offset);
             p.shot_drop.look = moved(t.shot_drop.look);
         }
