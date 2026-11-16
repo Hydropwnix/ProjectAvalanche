@@ -81,13 +81,28 @@ pub fn is_dev_drop(key: u32) -> bool {
 /// Adds the peak and its events to `attribdb`'s collections (once; nothing when the templates are not there, as in a
 /// vault that is not the disc's `attribdb`).
 pub fn inject(cols: &mut Vec<Collection>, decoded: &mut Vec<DecodedCollection>) {
-    let find = |cols: &[Collection], class: u32, key: u32| cols.iter().position(|c| c.class == class && c.key == key);
-    if find(&cols[..], CLASS_PEAK, PEAK).is_some() {
+    inject_from(cols, decoded, &[]);
+}
+
+/// As `inject`, the templates looked for in these vaults too (read before `attribdb`, such as the tuner pack and the
+/// DLC's, whose copies of a record take its place).
+pub fn inject_from(
+    cols: &mut Vec<Collection>,
+    decoded: &mut Vec<DecodedCollection>,
+    others: &[(&[Collection], &[DecodedCollection])],
+) {
+    if cols.iter().any(|c| c.class == CLASS_PEAK && c.key == PEAK) {
         return;
     }
-    let (Some(pt), Some(et)) =
-        (find(&cols[..], CLASS_PEAK, PEAK_TEMPLATE), find(&cols[..], CLASS_UI_DROP, EVENT_TEMPLATE))
-    else {
+    let lookup = |class: u32, key: u32| -> Option<(Collection, DecodedCollection)> {
+        let mine = std::iter::once((&cols[..], &decoded[..]));
+        others.iter().copied().rev().chain(mine).find_map(|(c, d)| {
+            let i = c.iter().position(|c| c.class == class && c.key == key)?;
+            Some((c[i].clone(), d.get(i)?.clone()))
+        })
+    };
+    let (Some(pt), Some(et)) = (lookup(CLASS_PEAK, PEAK_TEMPLATE), lookup(CLASS_UI_DROP, EVENT_TEMPLATE)) else {
+        note(format!("test peak: not added (no template peak or event among {} collections)", cols.len()));
         return;
     };
     let vec3 = |d: &DecodedCollection, k: u32| match d.field(k).map(|f| &f.data) {
@@ -95,61 +110,80 @@ pub fn inject(cols: &mut Vec<Collection>, decoded: &mut Vec<DecodedCollection>) 
         _ => None,
     };
     let mid = |a: [f32; 3], b: [f32; 3]| [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, (a[2] + b[2]) / 2.0];
+    let (peak_a, peak_b) = (lookup(CLASS_PEAK, PEAK_A), lookup(CLASS_PEAK, PEAK_B));
     let between = |k: u32| {
-        let a = find(&cols[..], CLASS_PEAK, PEAK_A).and_then(|i| vec3(&decoded[i], k));
-        let b = find(&cols[..], CLASS_PEAK, PEAK_B).and_then(|i| vec3(&decoded[i], k));
+        let a = peak_a.as_ref().and_then(|(_, d)| vec3(d, k));
+        let b = peak_b.as_ref().and_then(|(_, d)| vec3(d, k));
         a.zip(b).map(|(a, b)| mid(a, b))
     };
+    // (the fields a copy lacks come from any record that has them)
+    let mut all: Vec<&[DecodedCollection]> = vec![&decoded[..]];
+    all.extend(others.iter().map(|(_, d)| *d));
     let position = between(F_PEAK_POSITION).unwrap_or([-26_220.0, 8_444.0, -22_096.0]);
 
     // The peak.
-    let mut peak = cols[pt].clone();
+    let mut peak = pt.0.clone();
     peak.key = PEAK;
     peak.export_key = fnv1(format!("peak/{PEAK_NAME}").as_bytes());
-    let mut fields = decoded[pt].clone();
-    set(&mut fields, &decoded[..], F_PEAK_TITLE, FieldData::Single(Value::Text(Some("TXT_NM_PEA_TEST".into()))));
-    set(&mut fields, &decoded[..], F_PEAK_INFO, FieldData::Single(Value::Text(Some("TXT_PEAK_INFO_TEST".into()))));
-    set(&mut fields, &decoded[..], F_PEAK_POSITION, FieldData::Single(Value::Vector3(position)));
-    set(&mut fields, &decoded[..], F_PEAK_SELECTABLE, FieldData::Single(Value::Bool(true)));
+    let mut fields = pt.1.clone();
+    set(&mut fields, &all, F_PEAK_TITLE, FieldData::Single(Value::Text(Some("TXT_NM_PEA_TEST".into()))));
+    set(&mut fields, &all, F_PEAK_INFO, FieldData::Single(Value::Text(Some("TXT_PEAK_INFO_TEST".into()))));
+    set(&mut fields, &all, F_PEAK_POSITION, FieldData::Single(Value::Vector3(position)));
+    set(&mut fields, &all, F_PEAK_SELECTABLE, FieldData::Single(Value::Bool(true)));
     for k in PEAK_SHOTS {
         if let Some(v) = between(k) {
-            set(&mut fields, &decoded[..], k, FieldData::Single(Value::Vector3(v)));
+            set(&mut fields, &all, k, FieldData::Single(Value::Vector3(v)));
         }
     }
-    cols.push(peak);
-    decoded.push(fields);
+    let mut added = vec![(peak, fields)];
 
     // Its events, on a ring below the peak.
     let n = DROPS.len() as f32;
     for (i, (ge_drop, name, _)) in DROPS.iter().enumerate() {
         let key = fnv1(name.as_bytes());
-        let mut c = cols[et].clone();
+        let mut c = et.0.clone();
         c.key = key;
         c.export_key = fnv1(format!("ui_drop/{name}").as_bytes());
         let a = i as f32 / n * std::f32::consts::TAU;
         let at = [position[0] + 3_000.0 * a.cos(), position[1] - 2_000.0, position[2] + 3_000.0 * a.sin()];
-        let mut fields = decoded[et].clone();
+        let mut fields = et.1.clone();
         let ge = RefSpec { class: CLASS_GE_DROP, collection: *ge_drop };
-        set(&mut fields, &decoded[..], F_GE_DROP, FieldData::Single(Value::Ref(ge)));
-        set(&mut fields, &decoded[..], F_NAME, FieldData::Single(Value::Text(Some((*name).into()))));
-        set(&mut fields, &decoded[..], F_PEAK_SHORT, FieldData::Single(Value::Text(Some(PEAK_NAME.into()))));
-        set(&mut fields, &decoded[..], F_POSITION, FieldData::Single(Value::Vector3(at)));
-        set(&mut fields, &decoded[..], F_RIVALS, FieldData::Array(Vec::new()));
+        set(&mut fields, &all, F_GE_DROP, FieldData::Single(Value::Ref(ge)));
+        set(&mut fields, &all, F_NAME, FieldData::Single(Value::Text(Some((*name).into()))));
+        set(&mut fields, &all, F_PEAK_SHORT, FieldData::Single(Value::Text(Some(PEAK_NAME.into()))));
+        set(&mut fields, &all, F_POSITION, FieldData::Single(Value::Vector3(at)));
+        set(&mut fields, &all, F_RIVALS, FieldData::Array(Vec::new()));
         let peak = RefSpec { class: CLASS_PEAK, collection: PEAK };
-        set(&mut fields, &decoded[..], F_PEAK_REF, FieldData::Single(Value::Ref(peak)));
+        set(&mut fields, &all, F_PEAK_REF, FieldData::Single(Value::Ref(peak)));
+        added.push((c, fields));
+    }
+    drop(all);
+    let n = added.len();
+    for (c, d) in added {
         cols.push(c);
-        decoded.push(fields);
+        decoded.push(d);
+    }
+    note(format!("test peak: added (the peak and {} events)", n - 1));
+}
+
+/// One line in the game's log for each different note (the collections are read by several parts of the game).
+fn note(line: String) {
+    static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let mut seen = SEEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !seen.contains(&line) {
+        eprintln!("{line}");
+        seen.push(line);
     }
 }
 
 /// Sets a field of a copied record: its own, or else one of the same key copied from any record that has it (the
 /// field's type comes with it); nothing when no record has the field.
-fn set(fields: &mut DecodedCollection, all: &[DecodedCollection], key: u32, data: FieldData) {
+fn set(fields: &mut DecodedCollection, all: &[&[DecodedCollection]], key: u32, data: FieldData) {
     if let Some(f) = fields.fields.iter_mut().find(|f| f.key == key) {
         f.data = data;
         return;
     }
-    let found: Option<Field> = all.iter().find_map(|d| d.field(key)).cloned();
+    let found: Option<Field> = all.iter().flat_map(|v| v.iter()).find_map(|d| d.field(key)).cloned();
     if let Some(mut f) = found {
         f.data = data;
         fields.fields.push(f);

@@ -91,6 +91,10 @@ impl Vaults {
                 kept.push(c);
             }
             if route {
+                // (a port mod: the test peak, its templates also from the vaults read before, the tuner's and DLC's)
+                let others: Vec<(&[Collection], &[DecodedCollection])> =
+                    loaded.iter().map(|l| (&l.cols[..], &l.decoded[..])).collect();
+                crate::content::data::dev_peak::inject_from(&mut kept, &mut decoded, &others);
                 crate::content::data::events::route_ui_drops(big_root, &mut kept, &mut decoded);
             }
             if kept.is_empty() {
