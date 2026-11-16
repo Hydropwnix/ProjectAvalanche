@@ -133,6 +133,11 @@ impl NodeMap {
         // distance), raised by three tenths of its distance along the range's up so it looks down past the ridge in front, on
         // the same spot)
         use ssx_assets::content::data::dev_peak;
+        // (and not a Deadly Descent peak, as Mount Robson, whose record it's made from, is: on its drop screen the globe
+        // keeps the range's own colours, not Deadly Descent's darker, greyer look)
+        if let Some(p) = map.peaks.get_mut(&dev_peak::PEAK) {
+            p.dd = false;
+        }
         if let Some(t) = map.peaks.get(&dev_peak::CAMERA_TEMPLATE).cloned()
             && let Some(p) = map.peaks.get_mut(&dev_peak::PEAK)
             && let Some(range) = map.ranges.get(&p.range)
