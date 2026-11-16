@@ -113,8 +113,6 @@ pub(super) struct ShowcaseState {
     prefetched_at: Option<f64>,
     /// In a run: the riders kept loaded but hidden (so they're there at once back in the menus).
     parked: bool,
-    /// When a run started from the rider's view (it stays till the loading screen's up).
-    starting_since: Option<f64>,
     /// The rider's view on the screen as drawn (fractions of the window): moving to where the menus have it.
     view: Option<[f32; 4]>,
     /// The view's long move under way (where from, how long it's been going).
@@ -289,21 +287,6 @@ pub(super) fn showcase_system(
     ),
 ) {
     let menus = ssx_core::rider_showcase::enabled() && shell.stage == Stage::Menus;
-    // (a run starting from the rider's view: everything kept as it is, the rider showing, till the loading screen
-    // covers it, so the card's portrait doesn't show for a moment in between (or a few seconds at most))
-    let starting = state.was_active
-        && ssx_core::rider_showcase::enabled()
-        && shell.stage != Stage::Level
-        && !ssx_ui::render::LOADING_SCREEN.load(std::sync::atomic::Ordering::Relaxed)
-        && (shell.stage != Stage::Menus || ui.fe.as_ref().is_some_and(|f| f.launch.is_some()));
-    if starting {
-        let now = time.elapsed_secs_f64();
-        if now - *state.starting_since.get_or_insert(now) < 3.0 {
-            return;
-        }
-    } else {
-        state.starting_since = None;
-    }
     // (the Custom Event Menus mod: the retro riders given a suit and a board of their own to start in, once)
     static RETRO_GIVEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if menus
