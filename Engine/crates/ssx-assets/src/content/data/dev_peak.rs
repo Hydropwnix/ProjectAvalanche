@@ -76,7 +76,7 @@ pub fn strings() -> Vec<(String, String)> {
 }
 
 /// The drops' places on the drop screen (`droppos.rnf`, where the game keeps each drop's marker by name): the test
-/// peak's are in two rows of ten across the middle of the area the disc's markers take.
+/// peak's are in a zigzag across the middle of the area the disc's markers take, in order from left to right.
 pub fn add_drop_points(entries: &mut Vec<(String, f32, f32)>) {
     if entries.is_empty() || entries.iter().any(|(n, _, _)| n.starts_with("dev_test_")) {
         return;
@@ -87,8 +87,9 @@ pub fn add_drop_points(entries: &mut Vec<(String, f32, f32)>) {
     }
     let (w, h) = (x1 - x0, y1 - y0);
     for (i, (_, name, _)) in DROPS.iter().enumerate() {
-        let (col, row) = ((i % 10) as f32, (i / 10) as f32);
-        entries.push(((*name).to_string(), x0 + w * (0.12 + 0.084 * col), y0 + h * (0.35 + 0.3 * row)));
+        // (each at its own x, as left and right move by x: a zigzag of two rows)
+        let (col, row) = (i as f32, (i % 2) as f32);
+        entries.push(((*name).to_string(), x0 + w * (0.10 + 0.042 * col), y0 + h * (0.38 + 0.2 * row)));
     }
 }
 
