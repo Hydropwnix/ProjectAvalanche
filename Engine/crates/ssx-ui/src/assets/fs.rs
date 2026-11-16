@@ -221,7 +221,7 @@ impl FileSource for Disc {
     }
 
     fn exists(&self, path: &str) -> bool {
-        self.find(path).is_some() || self.is_content_image(path)
+        self.find(path).is_some() || self.is_content_image(path) || is_dev_peak_image(path)
     }
 
     fn content(&self) -> Option<std::sync::Arc<ssx_assets::content::GameContent>> {
@@ -239,6 +239,9 @@ impl FileSource for Disc {
 
     fn image(&self, path: &str) -> Result<ImageData> {
         let full = normalise(path);
+        if is_dev_peak_image(path) {
+            return Ok(dev_peak_image(path));
+        }
         if !(full.ends_with(".xpr") || full.ends_with(".dds")) {
             bail!("{path}: no reader for this image type");
         }
@@ -264,6 +267,39 @@ impl FileSource for Disc {
         let rgba = level.images.into_iter().next().with_context(|| format!("{path}: no image"))?;
         Ok(ImageData { width, height, rgba, source: path.to_string() })
     }
+}
+
+fn is_dev_peak_image(path: &str) -> bool {
+    normalise(path) == ssx_assets::content::data::dev_peak::IMAGE
+}
+
+/// A port mod: the test peak's picture, drawn here (no file has it): "</>" in white on black, the developers' sign.
+fn dev_peak_image(path: &str) -> ImageData {
+    const W: u32 = 512;
+    const H: u32 = 288;
+    const HALF: f32 = 9.0;
+    let strokes: [((f32, f32), (f32, f32)); 5] = [
+        ((196.0, 92.0), (124.0, 144.0)),
+        ((124.0, 144.0), (196.0, 196.0)),
+        ((290.0, 80.0), (222.0, 208.0)),
+        ((316.0, 92.0), (388.0, 144.0)),
+        ((388.0, 144.0), (316.0, 196.0)),
+    ];
+    let distance = |p: (f32, f32), (a, b): ((f32, f32), (f32, f32))| {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let t = (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+        ((p.0 - a.0 - t * dx).powi(2) + (p.1 - a.1 - t * dy).powi(2)).sqrt()
+    };
+    let mut rgba = Vec::with_capacity((W * H * 4) as usize);
+    for y in 0..H {
+        for x in 0..W {
+            let p = (x as f32 + 0.5, y as f32 + 0.5);
+            let d = strokes.iter().map(|&s| distance(p, s)).fold(f32::MAX, f32::min);
+            let v = ((HALF + 0.5 - d).clamp(0.0, 1.0) * 255.0) as u8;
+            rgba.extend_from_slice(&[v, v, v, 255]);
+        }
+    }
+    ImageData { width: W, height: H, rgba, source: path.to_string() }
 }
 
 pub fn join(dir: &str, url: &str) -> String {

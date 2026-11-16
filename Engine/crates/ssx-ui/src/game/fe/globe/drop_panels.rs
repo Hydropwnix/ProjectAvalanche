@@ -40,6 +40,8 @@ pub(super) fn write_peak(fe: &FrontEnd, env: &mut FeEnv) {
         3 => "TXT_PEAK_TYPE_BACKCOUNTRY",
         _ => "TXT_PEAK_TYPE_DETAILS",
     };
+    // (a port mod: the test peak's own heading)
+    let title = if p.key == ssx_assets::content::data::dev_peak::PEAK { "TXT_PEAK_TYPE_TEST" } else { title };
     let (enabled, t, asset, name, desc) =
         if world_tour(fe) { (0x46, 0x44, 0x41, 0x43, 0x42) } else { (0x8E, 0x8D, 0x8A, 0x8C, 0x8B) };
     let v = &mut *env.values;

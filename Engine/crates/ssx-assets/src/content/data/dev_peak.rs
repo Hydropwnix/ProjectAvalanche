@@ -4,7 +4,7 @@
 //! files are all on the disc), but the disc has no `peak` record of that name and no `ui_drop` (event) on any of
 //! them, so nothing in the menus reaches them. This adds both to the `attribdb` collections as they are read (next to
 //! the content packages' routing of `ui_drop`s, so every reader of the events sees the same ones): a peak "Test Peak"
-//! in the Rockies, between Whitehorn and the range's third peak, and one Explore Trick It event per drop on it, built
+//! in the Rockies, between Mount Robson and Extinguisher Tower, and one Explore Trick It event per drop on it, built
 //! from an Explore event of the disc (its scripts, targets and loadout), with no rivals (no ghost rows have them).
 
 use ssx_formats::attrib::collection::{Collection, DecodedCollection, Field, FieldData};
@@ -12,6 +12,8 @@ use ssx_formats::attrib::{RefSpec, Value, fnv1};
 
 pub const PEAK_NAME: &str = "test_peak";
 pub const PEAK: u32 = fnv1(PEAK_NAME.as_bytes());
+/// The peak's picture: no file, the menus draw it (`ssx-ui`'s file source).
+pub const IMAGE: &str = "assets/peak/dev_test_peak.dds";
 
 const CLASS_PEAK: u32 = fnv1(b"peak");
 const CLASS_UI_DROP: u32 = 0xB11E_A551;
@@ -20,7 +22,8 @@ const CLASS_GE_DROP: u32 = fnv1(b"ge_drop");
 /// The disc's records the new ones are copied from: the Rockies' second peak (its range, scene link and look) and an
 /// Explore Trick It event (`exp_newzealand_wakefield_drop_4_trick`).
 const PEAK_TEMPLATE: u32 = 0x89E6_E130;
-const PEAK_A: u32 = 0x89E6_E133;
+// (it stands between Mount Robson, the template, and Extinguisher Tower)
+const PEAK_A: u32 = PEAK_TEMPLATE;
 const PEAK_B: u32 = 0x89E6_E131;
 const EVENT_TEMPLATE: u32 = 0xBA22_B246;
 
@@ -28,6 +31,8 @@ const F_PEAK_TITLE: u32 = 0x4785_FF31;
 const F_PEAK_INFO: u32 = 0x31BA_F20E;
 const F_PEAK_POSITION: u32 = 0x5E19_D274;
 const F_PEAK_SELECTABLE: u32 = 0x0E54_07B9;
+const F_PEAK_IMAGE: u32 = 0xC181_C790;
+const F_PEAK_TYPE: u32 = fnv1(b"CampaignPeakType");
 // (the peak's own shots, between its neighbours'; the drop shot is the template peak's own, its drops are by those)
 const PEAK_SHOTS: [u32; 4] = [0xBD46_56E0, 0xBAD1_AEA6, 0x9746_39E4, 0x8ECD_EEEA];
 
@@ -72,6 +77,7 @@ pub fn playable(key: u32) -> bool {
 pub fn strings() -> Vec<(String, String)> {
     vec![
         ("TXT_NM_PEA_TEST".to_string(), "Test Peak".to_string()),
+        ("TXT_PEAK_TYPE_TEST".to_string(), "Test".to_string()),
         ("TXT_PEAK_INFO_TEST".to_string(), "The developers' test tracks, left unused in the game's files.".to_string()),
         ("TXT_NM_DRP_TEST_1_1".to_string(), "Test Profile".to_string()),
         ("TXT_NM_DRP_TESTPLANE_1_1".to_string(), "Test Plane".to_string()),
@@ -159,6 +165,9 @@ pub fn inject_from(
     set(&mut fields, &all, F_PEAK_INFO, FieldData::Single(Value::Text(Some("TXT_PEAK_INFO_TEST".into()))));
     set(&mut fields, &all, F_PEAK_POSITION, FieldData::Single(Value::Vector3(position)));
     set(&mut fields, &all, F_PEAK_SELECTABLE, FieldData::Single(Value::Bool(true)));
+    set(&mut fields, &all, F_PEAK_IMAGE, FieldData::Single(Value::Text(Some(IMAGE.into()))));
+    let plain = Value::Raw { bytes: vec![0; 4], pointers: Vec::new() };
+    set(&mut fields, &all, F_PEAK_TYPE, FieldData::Single(plain));
     for k in PEAK_SHOTS {
         if let Some(v) = between(k) {
             set(&mut fields, &all, k, FieldData::Single(Value::Vector3(v)));
