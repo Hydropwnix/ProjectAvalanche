@@ -1283,13 +1283,42 @@ fn test_peak_path(inst: &Instance, inh: &Inherited, out: &mut Vec<Command>) {
         }
     }
     line.push(points[n - 1]);
-    let world: Vec<(f32, f32)> = line.iter().map(|&(x, y)| inh.xf.apply(x * 20.0, y * 20.0)).collect();
+    // (the game's drop lines are hand-drawn: swerves along the way and a fine jagged wobble throughout. Here the curve,
+    // walked a stage pixel at a time, is pushed sideways by a few waves of their sizes: a wide slow one, a middle one
+    // and short sharp ones, the same each frame)
+    let mut walked: Vec<(f32, f32)> = vec![line[0]];
+    let mut along = vec![0.0f32];
+    for w in line.windows(2) {
+        let ((x0, y0), (x1, y1)) = (w[0], w[1]);
+        let l = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt();
+        let steps = (l / 1.0).ceil().max(1.0) as usize;
+        for k in 1..=steps {
+            let f = k as f32 / steps as f32;
+            walked.push((x0 + (x1 - x0) * f, y0 + (y1 - y0) * f));
+            along.push(along.last().copied().unwrap_or(0.0) + l / steps as f32);
+        }
+    }
+    let wobble = |s: f32| {
+        let tri = |x: f32| (2.0 / std::f32::consts::PI) * x.sin().asin();
+        4.0 * (s * 0.04 + 0.7).sin() + 2.2 * tri(s * 0.17 + 1.9) + 1.0 * tri(s * 0.43 + 0.4) + 0.4 * tri(s * 0.97 + 2.6)
+    };
+    let mut shaped: Vec<(f32, f32)> = Vec::with_capacity(walked.len());
+    for i in 0..walked.len() {
+        let (a, b) = (walked[i.saturating_sub(1)], walked[(i + 1).min(walked.len() - 1)]);
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let l = (dx * dx + dy * dy).sqrt().max(1e-6);
+        // (none at the very top, so the line leaves the first marker cleanly)
+        let w = wobble(along[i]) * (along[i] / 12.0).min(1.0);
+        shaped.push((walked[i].0 - dy / l * w, walked[i].1 + dx / l * w));
+    }
+    let world: Vec<(f32, f32)> = shaped.iter().map(|&(x, y)| inh.xf.apply(x * 20.0, y * 20.0)).collect();
     let scale = {
         let (a, b) = (inh.xf.apply(0.0, 0.0), inh.xf.apply(20.0, 0.0));
         ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt().max(1e-3)
     };
     let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f32() % 1000.0);
-    let pulse = 0.65 + 0.35 * (t * 4.0).sin();
+    // (it flashes: brighter and paler, then deeper in its colour, about once a second)
+    let pulse = 0.5 + 0.5 * (t * 6.0).sin();
     let stroke = |half: f32| {
         let mut mesh = Mesh::default();
         for w in world.windows(2) {
@@ -1301,28 +1330,37 @@ fn test_peak_path(inst: &Instance, inh: &Inherited, out: &mut Vec<Command>) {
             mesh.vertices.extend([[x0 + nx, y0 + ny], [x1 + nx, y1 + ny], [x1 - nx, y1 - ny], [x0 - nx, y0 - ny]]);
             mesh.indices.extend([b, b + 1, b + 2, b, b + 2, b + 3]);
         }
-        // (round joins)
-        for &(x, y) in &world {
+        // (round joins, every few points (the points are close together))
+        for &(x, y) in world.iter().step_by(3).chain(world.last()) {
             let b = mesh.vertices.len() as u32;
             mesh.vertices.push([x, y]);
-            for k in 0..10 {
-                let a = k as f32 * std::f32::consts::TAU / 10.0;
+            for k in 0..8 {
+                let a = k as f32 * std::f32::consts::TAU / 8.0;
                 mesh.vertices.push([x + a.cos() * half, y + a.sin() * half]);
             }
-            for k in 0..10u32 {
-                mesh.indices.extend([b, b + 1 + k, b + 1 + (k + 1) % 10]);
+            for k in 0..8u32 {
+                mesh.indices.extend([b, b + 1 + k, b + 1 + (k + 1) % 8]);
             }
         }
         Arc::new(mesh)
     };
-    for (half, colour) in [
-        (5.0 * scale, [0.2, 0.75, 1.0, 0.22 * pulse]),
-        (2.6 * scale, [0.35, 0.9, 1.0, 0.45 * pulse]),
-        (1.1 * scale, [0.85, 1.0, 1.0, 0.95 * pulse]),
+    // (the colours of the game's lines, read off a recording: Race It blue, Trick It yellow; each a glow, a body and a
+    // pale core)
+    let race = ssx_assets::content::data::dev_peak::race_mode();
+    let (glow, body, core) = if race {
+        ([0.30, 0.50, 1.0], [0.42, 0.62, 1.0], [0.86, 0.93, 1.0])
+    } else {
+        ([1.0, 0.62, 0.12], [1.0, 0.74, 0.28], [1.0, 0.96, 0.72])
+    };
+    let mix = |c: [f32; 3], k: f32| [c[0] + (1.0 - c[0]) * k, c[1] + (1.0 - c[1]) * k, c[2] + (1.0 - c[2]) * k];
+    for (half, c, a) in [
+        (4.6 * scale, glow, 0.16 + 0.14 * pulse),
+        (2.6 * scale, mix(body, 0.25 * pulse), 0.85),
+        (1.3 * scale, mix(core, 0.5 * pulse), 1.0),
     ] {
         out.push(Command::Draw(DrawItem {
             mesh: stroke(half),
-            paint: Paint::Solid(colour),
+            paint: Paint::Solid([c[0], c[1], c[2], a]),
             transform: Mat2d::IDENTITY,
             cxform: inh.cx,
             blend: BlendMode::Normal,
