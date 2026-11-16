@@ -229,6 +229,10 @@ impl FileSource for Disc {
     }
 
     fn is_content_image(&self, path: &str) -> bool {
+        // (the test peak's picture is drawn, not read: the menus load it as an image, not a movie file)
+        if is_dev_peak_image(path) {
+            return true;
+        }
         ssx_assets::content::textures::ui_image_id(&normalise(path))
             .is_some_and(|id| ssx_assets::content::GameContent::of(&self.root).has(&id))
     }

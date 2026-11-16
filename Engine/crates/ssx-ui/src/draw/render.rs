@@ -1232,8 +1232,13 @@ mod tests {
 // Port mod: the menus' side dimmer (dimmer.gfx: `mcDimmer`'s dark sheet down the left of the stage, under the World
 // Tour and Explore panels, character 2) is not drawn: on a wide screen it shows as a strip of another shade down the
 // left (v0.4.0 draws it on out to the window's edge). The full-screen dimmer beside it (character 4) is kept.
+/// Whether the loading screen is up (set by the menus each frame).
+pub static LOADING_SCREEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn hidden_side_dimmer(lib: &Library, player: &Player, inst: &Instance) -> bool {
-    inst.character.as_ref().is_some_and(|c| c.id == 2)
+    // (not on the loading screen: there the sheet, drawn on out to the window's edges, is the black beside the picture)
+    !LOADING_SCREEN.load(std::sync::atomic::Ordering::Relaxed)
+        && inst.character.as_ref().is_some_and(|c| c.id == 2)
         && inst.parent.and_then(|p| player.get(p)).is_some_and(|p| p.name == "mcDimmer")
         && lib.movie(inst.movie).path.to_ascii_lowercase().rsplit(['/', '\\']).next() == Some("dimmer.gfx")
 }
