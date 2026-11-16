@@ -1330,7 +1330,10 @@ fn test_peak_path(inst: &Instance, inh: &Inherited, out: &mut Vec<Command>) {
             let end = ((total - s) / 70.0).clamp(0.0, 1.0);
             let start = (s / 14.0).clamp(0.0, 1.0);
             let ease = |x: f32| x * x * (3.0 - 2.0 * x);
-            swell * (0.08 + 0.92 * ease(end)) * (0.55 + 0.45 * ease(start))
+            // (and it all but stops at each marker, so the markers stand clear of it)
+            let near = marks.iter().map(|m| (s - m).abs()).fold(f32::MAX, f32::min);
+            let gap = ((near - 4.0) / 5.0).clamp(0.0, 1.0);
+            swell * (0.08 + 0.92 * ease(end)) * (0.55 + 0.45 * ease(start)) * (0.1 + 0.9 * ease(gap))
         })
         .collect();
     let scale = {
