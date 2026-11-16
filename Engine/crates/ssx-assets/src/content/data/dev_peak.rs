@@ -40,8 +40,9 @@ const F_PEAK_REF: u32 = 0x8296_DA5A;
 
 /// The peak's drops, one on each of the test tracks, from the top of the mountain down: the `ge_drop` (in
 /// `ge_attribdb`, on `test_peak`), the event's name and the title's string key. (The disc has twelve drops on the flat
-/// `test_plane`, the same track in different light and weather; the first of them stands for it.)
-pub const DROPS: [(u32, &str, &str); 9] = [
+/// `test_plane`, the same track in different light and weather; the first of them stands for it. After them, the drops
+/// of the unused `classic_peak`.)
+pub const DROPS: [(u32, &str, &str); 13] = [
     (0x7B8C_2A8E, "dev_test_plane", "TXT_NM_DRP_TESTPLANE_1_1"),
     (0xC627_0A13, "dev_test_slope", "Test Slope"),
     (0x23A1_AB80, "dev_test_rail", "Test Rail"),
@@ -51,6 +52,11 @@ pub const DROPS: [(u32, &str, &str); 9] = [
     (0x3A14_67B6, "dev_test_audio", "Test Audio"),
     (0x6C85_B3E7, "dev_test_online", "Test Online"),
     (0x8E20_696D, "dev_test_profile", "TXT_NM_DRP_TEST_1_1"),
+    // (the four drops of the disc's `classic_peak`, on their own tracks: no peak record and no event either)
+    (0xCE47_CAA1, "dev_test_stylemile", "TXT_NM_DRP_STYLEMILE_1_1"),
+    (0x9F3C_2FF0, "dev_test_snowjam", "TXT_NM_DRP_SNOWJAM_1_1"),
+    (0x2596_D667, "dev_test_intimidator", "TXT_NM_DRP_INTIMIDATOR_1_1"),
+    (0x7F11_465C, "dev_test_happiness", "TXT_NM_DRP_HAPPINESS_1_1"),
 ];
 
 /// The strings the peak and its drops show (none of them is in the game's text).
@@ -60,6 +66,10 @@ pub fn strings() -> Vec<(String, String)> {
         ("TXT_PEAK_INFO_TEST".to_string(), "The developers' test tracks, left unused in the game's files.".to_string()),
         ("TXT_NM_DRP_TEST_1_1".to_string(), "Test Profile".to_string()),
         ("TXT_NM_DRP_TESTPLANE_1_1".to_string(), "Test Plane".to_string()),
+        ("TXT_NM_DRP_STYLEMILE_1_1".to_string(), "Style Mile".to_string()),
+        ("TXT_NM_DRP_SNOWJAM_1_1".to_string(), "Snow Jam".to_string()),
+        ("TXT_NM_DRP_INTIMIDATOR_1_1".to_string(), "Intimidator".to_string()),
+        ("TXT_NM_DRP_HAPPINESS_1_1".to_string(), "Happiness".to_string()),
     ]
 }
 
@@ -78,7 +88,7 @@ pub fn add_drop_points(entries: &mut Vec<(String, f32, f32)>) {
     for (i, (_, name, _)) in DROPS.iter().enumerate() {
         // (a wave whose swing grows on the way down: a snaking line)
         let t = i as f32;
-        let (u, v) = (0.62 + (0.05 + 0.02 * t) * (0.9 * t).sin(), 0.10 + 0.09 * t);
+        let (u, v) = (0.62 + (0.05 + 0.012 * t) * (0.9 * t).sin(), 0.08 + 0.065 * t);
         entries.push(((*name).to_string(), x0 + w * u, y0 + h * v));
     }
 }
