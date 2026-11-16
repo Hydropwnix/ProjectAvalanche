@@ -1444,11 +1444,10 @@ fn test_peak_path(player: &Player, id: InstanceId, inst: &Instance, inh: &Inheri
     } else {
         ([1.0, 0.62, 0.12], [1.0, 0.74, 0.28], [1.0, 0.96, 0.72])
     };
-    let mix = |c: [f32; 3], k: f32| [c[0] + (1.0 - c[0]) * k, c[1] + (1.0 - c[1]) * k, c[2] + (1.0 - c[2]) * k];
     for (half, c, a) in [
-        ((4.6 + 1.2 * pulse) * scale, mix(glow, 0.35 * pulse), 0.16 + 0.22 * pulse),
-        ((2.6 + 0.5 * pulse) * scale, mix(body, 0.8 * pulse), 0.85 + 0.15 * pulse),
-        (1.3 * scale, mix(core, 0.3 + 0.7 * pulse), 1.0),
+        (4.6 * scale, glow, 0.2),
+        (2.6 * scale, body, 0.85),
+        (1.3 * scale, core, 1.0),
     ] {
         out.push(Command::Draw(DrawItem {
             mesh: stroke(half),
@@ -1457,6 +1456,22 @@ fn test_peak_path(player: &Player, id: InstanceId, inst: &Instance, inh: &Inheri
             cxform: inh.cx,
             blend: BlendMode::Normal,
         }));
+    }
+    // (the flash: a white glow added over it, wider than its own, and its body gone white, fading as it ends)
+    if pulse > 0.01 {
+        for (half, a, blend) in [
+            (6.0 * scale, 0.4 * pulse, BlendMode::Add),
+            (3.8 * scale, 0.5 * pulse, BlendMode::Add),
+            (2.9 * scale, 0.9 * pulse, BlendMode::Normal),
+        ] {
+            out.push(Command::Draw(DrawItem {
+                mesh: stroke(half),
+                paint: Paint::Solid([1.0, 1.0, 1.0, a]),
+                transform: Mat2d::IDENTITY,
+                cxform: inh.cx,
+                blend,
+            }));
+        }
     }
 }
 
