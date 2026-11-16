@@ -278,21 +278,34 @@ fn is_dev_peak_image(path: &str) -> bool {
     normalise(path).ends_with(ssx_assets::content::data::dev_peak::IMAGE)
 }
 
-/// A port mod: the test peak's picture, drawn here (no file has it): "</>" in white on black, the developers' sign.
+/// A port mod: the test peak's picture, drawn here (no file has it): "{ }" in white on black, the developers' sign.
 fn dev_peak_image(path: &str) -> ImageData {
     const W: u32 = 512;
     const H: u32 = 288;
     const HALF: f32 = 9.0;
-    let strokes: [((f32, f32), (f32, f32)); 5] = [
-        ((196.0, 92.0), (124.0, 144.0)),
-        ((124.0, 144.0), (196.0, 196.0)),
-        ((290.0, 80.0), (222.0, 208.0)),
-        ((316.0, 92.0), (388.0, 144.0)),
-        ((388.0, 144.0), (316.0, 196.0)),
+    // (the left brace as quadratic curves (start, control, end); the right one is it mirrored)
+    const LEFT: [[(f32, f32); 3]; 6] = [
+        [(218.0, 84.0), (190.0, 84.0), (190.0, 110.0)],
+        [(190.0, 110.0), (190.0, 119.0), (190.0, 128.0)],
+        [(190.0, 128.0), (190.0, 144.0), (164.0, 144.0)],
+        [(164.0, 144.0), (190.0, 144.0), (190.0, 160.0)],
+        [(190.0, 160.0), (190.0, 169.0), (190.0, 178.0)],
+        [(190.0, 178.0), (190.0, 204.0), (218.0, 204.0)],
     ];
+    let mirror = |q: [(f32, f32); 3]| q.map(|(x, y)| (W as f32 - x, y));
+    let mut strokes: Vec<((f32, f32), (f32, f32))> = Vec::new();
+    for q in LEFT.into_iter().chain(LEFT.map(mirror)) {
+        let at = |t: f32| {
+            let (u, [a, b, c]) = (1.0 - t, q);
+            (u * u * a.0 + 2.0 * u * t * b.0 + t * t * c.0, u * u * a.1 + 2.0 * u * t * b.1 + t * t * c.1)
+        };
+        for i in 0..12 {
+            strokes.push((at(i as f32 / 12.0), at((i + 1) as f32 / 12.0)));
+        }
+    }
     let distance = |p: (f32, f32), (a, b): ((f32, f32), (f32, f32))| {
         let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-        let t = (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+        let t = (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / (dx * dx + dy * dy).max(1e-9)).clamp(0.0, 1.0);
         ((p.0 - a.0 - t * dx).powi(2) + (p.1 - a.1 - t * dy).powi(2)).sqrt()
     };
     let mut rgba = Vec::with_capacity((W * H * 4) as usize);

@@ -12,7 +12,7 @@ use ssx_formats::attrib::{RefSpec, Value, fnv1};
 
 pub const PEAK_NAME: &str = "test_peak";
 pub const PEAK: u32 = fnv1(PEAK_NAME.as_bytes());
-/// The peak's picture: no file, the menus draw it (`ssx-ui`'s file source).
+/// The peak's picture ("{ }"): no file, the menus draw it (`ssx-ui`'s file source).
 pub const IMAGE: &str = "assets/peak/dev_test_peak.dds";
 
 const CLASS_PEAK: u32 = fnv1(b"peak");
