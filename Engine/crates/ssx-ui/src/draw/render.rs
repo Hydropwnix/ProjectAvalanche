@@ -1288,7 +1288,13 @@ fn test_peak_path(inst: &Instance, inh: &Inherited, out: &mut Vec<Command>) {
     // and short sharp ones, the same each frame)
     let mut walked: Vec<(f32, f32)> = vec![line[0]];
     let mut along = vec![0.0f32];
-    for w in line.windows(2) {
+    // (how far along each marker is: the line's points start a span of 12 at each of the path's points, the markers
+    // first (all but the 3 of the tail))
+    let mut marks = vec![0.0f32];
+    for (j, w) in line.windows(2).enumerate() {
+        if j % 12 == 0 && j / 12 < n.saturating_sub(3) {
+            marks.push(along.last().copied().unwrap_or(0.0));
+        }
         let ((x0, y0), (x1, y1)) = (w[0], w[1]);
         let l = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt();
         let steps = (l / 1.0).ceil().max(1.0) as usize;
@@ -1307,11 +1313,26 @@ fn test_peak_path(inst: &Instance, inh: &Inherited, out: &mut Vec<Command>) {
         let (a, b) = (walked[i.saturating_sub(1)], walked[(i + 1).min(walked.len() - 1)]);
         let (dx, dy) = (b.0 - a.0, b.1 - a.1);
         let l = (dx * dx + dy * dy).sqrt().max(1e-6);
-        // (none at the very top, so the line leaves the first marker cleanly)
-        let w = wobble(along[i]) * (along[i] / 12.0).min(1.0);
+        // (none at the markers, so the line goes through each, nor at the very top)
+        let near = marks.iter().map(|m| (along[i] - m).abs()).fold(f32::MAX, f32::min);
+        let k = (near / 16.0).min(1.0);
+        let w = wobble(along[i]) * k * k * (3.0 - 2.0 * k);
         shaped.push((walked[i].0 - dy / l * w, walked[i].1 + dx / l * w));
     }
     let world: Vec<(f32, f32)> = shaped.iter().map(|&(x, y)| inh.xf.apply(x * 20.0, y * 20.0)).collect();
+    // (a brush stroke: its width swells and thins along the way, and it narrows to a point at the bottom (and a little
+    // at the top, where the brush goes down))
+    let total = along.last().copied().unwrap_or(1.0).max(1.0);
+    let width: Vec<f32> = along
+        .iter()
+        .map(|&s| {
+            let swell = 0.82 + 0.22 * (s * 0.031 + 1.3).sin() + 0.12 * (s * 0.093 + 0.2).sin();
+            let end = ((total - s) / 70.0).clamp(0.0, 1.0);
+            let start = (s / 14.0).clamp(0.0, 1.0);
+            let ease = |x: f32| x * x * (3.0 - 2.0 * x);
+            swell * (0.08 + 0.92 * ease(end)) * (0.55 + 0.45 * ease(start))
+        })
+        .collect();
     let scale = {
         let (a, b) = (inh.xf.apply(0.0, 0.0), inh.xf.apply(20.0, 0.0));
         ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt().max(1e-3)
@@ -1321,22 +1342,29 @@ fn test_peak_path(inst: &Instance, inh: &Inherited, out: &mut Vec<Command>) {
     let pulse = 0.5 + 0.5 * (t * 6.0).sin();
     let stroke = |half: f32| {
         let mut mesh = Mesh::default();
-        for w in world.windows(2) {
+        for (i, w) in world.windows(2).enumerate() {
             let ((x0, y0), (x1, y1)) = (w[0], w[1]);
             let (dx, dy) = (x1 - x0, y1 - y0);
             let l = (dx * dx + dy * dy).sqrt().max(1e-6);
-            let (nx, ny) = (-dy / l * half, dx / l * half);
+            let (h0, h1) = (half * width[i], half * width[i + 1]);
+            let (nx, ny) = (-dy / l, dx / l);
             let b = mesh.vertices.len() as u32;
-            mesh.vertices.extend([[x0 + nx, y0 + ny], [x1 + nx, y1 + ny], [x1 - nx, y1 - ny], [x0 - nx, y0 - ny]]);
+            mesh.vertices.extend([
+                [x0 + nx * h0, y0 + ny * h0],
+                [x1 + nx * h1, y1 + ny * h1],
+                [x1 - nx * h1, y1 - ny * h1],
+                [x0 - nx * h0, y0 - ny * h0],
+            ]);
             mesh.indices.extend([b, b + 1, b + 2, b, b + 2, b + 3]);
         }
         // (round joins, every few points (the points are close together))
-        for &(x, y) in world.iter().step_by(3).chain(world.last()) {
+        for (i, &(x, y)) in world.iter().enumerate().filter(|(i, _)| i % 3 == 0) {
+            let h = half * width[i];
             let b = mesh.vertices.len() as u32;
             mesh.vertices.push([x, y]);
             for k in 0..8 {
                 let a = k as f32 * std::f32::consts::TAU / 8.0;
-                mesh.vertices.push([x + a.cos() * half, y + a.sin() * half]);
+                mesh.vertices.push([x + a.cos() * h, y + a.sin() * h]);
             }
             for k in 0..8u32 {
                 mesh.indices.extend([b, b + 1 + k, b + 1 + (k + 1) % 8]);
