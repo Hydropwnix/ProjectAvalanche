@@ -114,7 +114,7 @@ pub fn counterpart(key: u32) -> Option<u32> {
 pub fn strings() -> Vec<(String, String)> {
     vec![
         ("TXT_NM_PEA_TEST".to_string(), "Test Peak".to_string()),
-        ("TXT_PEAK_TYPE_TEST".to_string(), "Test".to_string()),
+        ("TXT_PEAK_TYPE_TEST".to_string(), "Hidden".to_string()),
         ("TXT_PEAK_INFO_TEST".to_string(), "The developers' test tracks, left unused in the game's files.".to_string()),
         ("TXT_NM_DRP_TEST_1_1".to_string(), "Test Profile".to_string()),
         ("TXT_NM_DRP_TESTPLANE_1_1".to_string(), "Test Plane".to_string()),
