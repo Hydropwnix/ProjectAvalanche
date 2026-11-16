@@ -270,7 +270,8 @@ impl FileSource for Disc {
 }
 
 fn is_dev_peak_image(path: &str) -> bool {
-    normalise(path) == ssx_assets::content::data::dev_peak::IMAGE
+    // (asked for by the menus with their folder in front: `data/common/fe/assets/peak/…`)
+    normalise(path).ends_with(ssx_assets::content::data::dev_peak::IMAGE)
 }
 
 /// A port mod: the test peak's picture, drawn here (no file has it): "</>" in white on black, the developers' sign.
