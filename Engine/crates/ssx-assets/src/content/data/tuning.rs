@@ -230,14 +230,6 @@ pub fn anim_all(big_root: &Path) -> Result<Stream> {
     Ok(stream)
 }
 
-pub fn routed_bundle(path: &Path) -> Option<&Path> {
-    let mut root = path;
-    for _ in 0..BUNDLE.split('/').count() {
-        root = root.parent()?;
-    }
-    (root.join(BUNDLE) == path).then_some(root)
-}
-
 impl GameContent {
     pub fn disc_tuning(&self) -> Option<Arc<DiscTuning>> {
         self.data

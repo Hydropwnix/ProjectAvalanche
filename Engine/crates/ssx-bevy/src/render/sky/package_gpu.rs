@@ -14,6 +14,7 @@ use bevy::shader::Shader;
 
 use super::SkySettings;
 use super::package::{Background, CubeSkyUniform, DomeMesh, DomeUniform};
+use crate::render::buffers::{filled_buffer, filled_uniform};
 
 const CUBE_SHADER: &str = "embedded://ssx_bevy/render/sky/sky_cube.wesl";
 const DOME_SHADER: &str = "embedded://ssx_bevy/render/sky/sky_dome.wesl";
@@ -195,14 +196,13 @@ pub(super) fn prepare(
     let (key_dome, hook, bind_group) = match &package.background {
         Background::Cube { cube, uniform } => {
             let Some(gpu) = images.get(cube) else { return };
-            let mut u = UniformBuffer::from(*uniform);
-            u.write_buffer(&device, &queue);
+            let u = filled_uniform(&device, &queue, "ssx_sky_cube", uniform);
             let bg = device.create_bind_group(
                 "ssx_sky_cube",
                 &cache.get_bind_group_layout(&pipeline.cube_layout),
                 &BindGroupEntries::sequential((
                     view.clone(),
-                    u.binding().expect("written"),
+                    u.as_entire_binding(),
                     &gpu.texture_view,
                     &pipeline.sampler,
                 )),
@@ -213,11 +213,7 @@ pub(super) fn prepare(
             let Some(gpu) = images.get(texture) else { return };
             if buffers.mesh.as_ref().is_none_or(|(m, ..)| !Arc::ptr_eq(m, mesh)) {
                 let vertex = |label: &'static str, contents: Vec<u8>| {
-                    device.create_buffer_with_data(&BufferInitDescriptor {
-                        label: Some(label),
-                        contents: &contents,
-                        usage: BufferUsages::VERTEX,
-                    })
+                    filled_buffer(&device, &queue, label, &contents, BufferUsages::VERTEX)
                 };
                 let streams = [
                     vertex(
@@ -230,21 +226,17 @@ pub(super) fn prepare(
                     ),
                     vertex("ssx_sky_dome_uvs", bytes(&mesh.uvs, |p| p.iter().flat_map(|f| f.to_le_bytes()).collect())),
                 ];
-                let indices = device.create_buffer_with_data(&BufferInitDescriptor {
-                    label: Some("ssx_sky_dome_indices"),
-                    contents: &bytes(&mesh.indices, |i| i.to_le_bytes().to_vec()),
-                    usage: BufferUsages::INDEX,
-                });
+                let index_bytes = bytes(&mesh.indices, |i| i.to_le_bytes().to_vec());
+                let indices = filled_buffer(&device, &queue, "ssx_sky_dome_indices", &index_bytes, BufferUsages::INDEX);
                 buffers.mesh = Some((mesh.clone(), streams, indices, mesh.indices.len() as u32));
             }
-            let mut u = UniformBuffer::from(*uniform);
-            u.write_buffer(&device, &queue);
+            let u = filled_uniform(&device, &queue, "ssx_sky_dome", uniform);
             let bg = device.create_bind_group(
                 "ssx_sky_dome",
                 &cache.get_bind_group_layout(&pipeline.dome_layout),
                 &BindGroupEntries::sequential((
                     view.clone(),
-                    u.binding().expect("written"),
+                    u.as_entire_binding(),
                     &gpu.texture_view,
                     &pipeline.sampler,
                 )),

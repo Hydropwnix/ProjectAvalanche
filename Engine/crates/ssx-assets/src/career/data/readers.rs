@@ -71,10 +71,13 @@ pub(crate) fn drops(v: &Vaults) -> Result<Vec<Drop>> {
     Ok(out)
 }
 
+pub(crate) fn ui_drop_records(v: &Vaults) -> Result<Vec<ssx_rules::events::UiDropRecord>> {
+    Ok(v.ui_drops()?.into_iter().map(|(key, r)| ssx_rules::events::ui_drop_record(key, &r.all_fields())).collect())
+}
+
 pub(crate) fn events(v: &Vaults) -> Result<Vec<Event>> {
     let mut out = Vec::new();
-    for key in v.keys_of(CLASS_UI_DROP) {
-        let r = v.rec(CLASS_UI_DROP, key)?;
+    for (key, r) in v.ui_drops()? {
         let text = |k: u32| r.text(k).unwrap_or_default();
         out.push(Event {
             key,
@@ -103,7 +106,7 @@ pub(crate) fn events(v: &Vaults) -> Result<Vec<Event>> {
             unk_b683b553: r.ints(0xB683_B553),
             rivals: r.refs(0xC211_FF58),
             forced: r.refs(0x7E5E_ED53),
-            unk_63180fcc: r.int(0x6318_0FCC) == Some(1),
+            ghost_drop: r.int(0x6318_0FCC) == Some(1),
             unk_89d02fa4: r.int(0x89D0_2FA4) == Some(1),
             unk_12bccfb5: r.int(0x12BC_CFB5).unwrap_or(0),
             unk_0b03fc19: r.int(0x0B03_FC19),
@@ -112,6 +115,7 @@ pub(crate) fn events(v: &Vaults) -> Result<Vec<Event>> {
             unk_links: [r.reference(0x6CA1_C684), r.reference(0xE8F3_D9AF), r.reference(0xEBFB_2039)],
             peak_ref: r.reference(0x8296_DA5A),
             helicopter: r.reference(0x2101_12EA),
+            map_point: r.vector(0x5A0B_DB1E).and_then(|v| Some([*v.first()?, *v.get(1)?])).unwrap_or([0.0; 2]),
         });
     }
     Ok(out)
@@ -175,17 +179,19 @@ fn item(v: &Vaults, key: u32, group: u32) -> Result<Item> {
 }
 
 pub(crate) fn items(v: &Vaults) -> Result<Vec<Item>> {
-    let keys = v.keys_of(CLASS_EQUIPMENT);
-    let groups: Vec<u32> =
-        keys.iter().copied().filter(|&k| v.parent(CLASS_EQUIPMENT, k) == CREATED_EQUIPMENT).collect();
     let mut out = Vec::new();
-    for &k in &keys {
-        let p = v.parent(CLASS_EQUIPMENT, k);
-        if groups.contains(&p) {
-            out.push(item(v, k, p)?);
+    for k in v.keys_of(CLASS_EQUIPMENT) {
+        let parent = v.parent(CLASS_EQUIPMENT, k);
+        let kind = v.rec(CLASS_EQUIPMENT, k)?.int(fnv1(b"type"));
+        if is_fixed_item(parent, kind) {
+            out.push(item(v, k, parent)?);
         }
     }
     Ok(out)
+}
+
+pub(crate) fn is_fixed_item(parent: u32, kind: Option<i64>) -> bool {
+    parent != CREATED_EQUIPMENT && kind.is_some_and(|k| k != -1)
 }
 
 pub(crate) fn templates(v: &Vaults) -> Result<Vec<StoreTemplate>> {

@@ -31,6 +31,7 @@ fn rule(name: &str, drop_type: DropType, event_type: i64, reward: i64) -> EventR
         cost: 0,
         peak: 0x10,
         range: 0x20,
+        ghost_drop: false,
     }
 }
 
@@ -80,7 +81,33 @@ fn a_new_profile_has_the_game_defaults() {
     assert!(g.owned_items.is_empty());
     assert_eq!(g.attribs[&ATTRIB_FLAGS], 8);
     assert_eq!(notes[0], Notice::Movie("mainintro".into()));
-    assert_eq!(g.peak_modes[&0x10], [0, 1, 0, 0, 0]);
+    assert_eq!(g.peak_modes[&0x10], [0x10, 0, 1, 0, 0]);
+}
+
+#[test]
+fn unlocking_a_drop_writes_the_games_mode_record() {
+    let r = rules();
+    let mut p = Profile::new();
+    p.unlock_drop(&r, key("x"));
+    assert_eq!(p.peak_modes[&0x10], [0x10, 1, 0, 0, 1]);
+    assert_eq!(p.range_modes[&0x20], [0x20, 1, 0, 0, 1]);
+    p.unlock_drop(&r, key("a"));
+    assert_eq!(p.range_modes[&0x20], [0x20, 1, 1, 0, 1]);
+    p.unlock_chapter(&r, 2);
+    p.unlock_drop(&r, key("b"));
+    assert_eq!(p.range_modes[&0x20], [0x20, 1, 2, 0, 1]);
+}
+
+#[test]
+fn the_range_word_is_the_records_word_of_the_mode() {
+    let r = rules();
+    let mut p = Profile::new();
+    p.unlock_drop(&r, key("x"));
+    assert_eq!((p.range_word(0, 0x20), p.range_word(1, 0x20), p.range_word(3, 0x20)), (1, 0, 1));
+    assert_eq!(p.range_word(-1, 0x20), 0x20, "mode −1 reads the key");
+    assert_eq!((p.range_word(4, 0x20), p.range_word(-2, 0x20), p.range_word(1, 0x21)), (0, 0, 0));
+    p.unlock_chapter(&r, 2);
+    assert_eq!(p.range_word(1, 0x20), 2, "the chapter's range");
 }
 
 #[test]
@@ -111,7 +138,7 @@ fn completing_drops_unlocks_children_whose_parents_are_complete() {
     let n = p.complete_campaign_drop(&r, key("c"));
     assert_eq!(n, vec![Notice::ChapterUnlocked(2)]);
     assert_eq!(p.chapter_drops.len(), 6);
-    assert_eq!(p.range_modes[&0x20][1], 2);
+    assert_eq!(p.range_word(1, 0x20), 2);
 }
 
 #[test]
@@ -391,4 +418,85 @@ fn a_modded_best_is_kept_only_with_its_sim_content_id() {
     assert_eq!(p.apply_result(&r, &EventOutcome { sim_content_id: None, ..y }).best_not_kept, None);
     assert_eq!(p.explore_scores[&key("t")].score, 90_000);
     assert_eq!(p.explore_scores[&key("x")].attempts, 6);
+}
+
+fn package_rider(name: &str) -> super::Rider {
+    super::Rider {
+        key: key(name),
+        name: name.into(),
+        title: String::new(),
+        display_name: name.into(),
+        cost: 1000,
+        locked: true,
+        default: true,
+        unk_940b9b22: 0,
+        stat_bonuses: Vec::new(),
+        portrait: String::new(),
+        description: String::new(),
+        round_icon: String::new(),
+        icon: String::new(),
+        content: None,
+    }
+}
+
+fn fixed_item(name: &str, kind: i64, rider: u32) -> super::Item {
+    super::Item {
+        key: key(name),
+        group: 0xF4BA_88A4,
+        title: String::new(),
+        kind,
+        slot: -1,
+        rider,
+        locked: false,
+        default: true,
+        level: 0,
+        quality: 0,
+        cost: 0,
+        attributes: Vec::new(),
+        unk_b6ef00c6: 0,
+        descriptions: Vec::new(),
+        content: None,
+    }
+}
+
+#[test]
+fn the_fixed_items_are_what_the_refresh_takes() {
+    use super::data::{CREATED_EQUIPMENT, is_fixed_item};
+    let suits = key("suits");
+    assert!(is_fixed_item(suits, Some(0)), "a group's child");
+    assert!(is_fixed_item(0xF4BA_88A4, Some(1)), "a package's own item");
+    assert!(!is_fixed_item(CREATED_EQUIPMENT, Some(0)), "a group itself");
+    assert!(!is_fixed_item(0, Some(-1)), "a package's parent: type −1");
+    assert!(!is_fixed_item(0x5013_A9CE, None), "a store template: no type");
+}
+
+#[test]
+fn a_packages_unlockables_apply_once() {
+    use super::{CareerDb, UnlockKind, Unlockable};
+    let eddie = key("eddie");
+    let mut db = CareerDb::default();
+    db.riders.push(package_rider("eddie"));
+    db.items.extend([fixed_item("suit_default_eddie", 0, eddie), fixed_item("board_eddie_default", 1, eddie)]);
+    let token = |t: &str, kind| Unlockable { token: t.into(), key: key(t), kind };
+    db.unlockables = vec![
+        token("eddie", UnlockKind::Rider),
+        token("geotag_presell", UnlockKind::Geotag),
+        token("board_mac_presell", UnlockKind::Item),
+        token("dbd3fce8", UnlockKind::Ignored),
+        token("nothing", UnlockKind::Unknown),
+    ];
+    let mut p = Profile::default();
+    let lines = p.apply_unlockables(&db);
+    assert_eq!(lines.iter().filter(|l| l.ends_with(") unlocked")).count(), 3, "{lines:?}");
+    let row = &p.riders[&eddie];
+    assert_eq!((row.last_suit, row.last_board), ((key("suit_default_eddie"), 0), (key("board_eddie_default"), 0)));
+    assert!(p.unlocked_riders.contains(&eddie) && p.unlocked_items.contains(&key("board_mac_presell")));
+    assert!(p.owned_items.contains(&key("geotag_presell")) && p.unlocked_items.contains(&key("geotag_presell")));
+    assert!(!p.unlocked_items.contains(&key("dbd3fce8")) && !p.owned_items.contains(&key("dbd3fce8")));
+    p.owned_items.remove(&key("geotag_presell"));
+    p.riders.get_mut(&eddie).unwrap().last_suit = (0x1234, 1);
+    let lines = p.apply_unlockables(&db);
+    assert_eq!(lines.iter().filter(|l| l.ends_with("already unlocked")).count(), 3, "{lines:?}");
+    assert!(!p.owned_items.contains(&key("geotag_presell")));
+    assert_eq!(p.riders[&eddie].last_suit, (0x1234, 1));
 }

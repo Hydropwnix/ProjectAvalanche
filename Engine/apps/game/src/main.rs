@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use bevy::prelude::AppExit;
 use clap::Parser;
-use ssx_assets::port_options::{BootMovie, MenuFocus, RangeMovies};
+use ssx_assets::port_options::{BootMovie, DiscordPresence, MenuFocus, RangeMovies};
 use ssx_bevy::{RenderArgs, game_mode, terrain_look};
 
 /// The game: the front end from the boot movie to a drop and back in one window, the profile loaded and saved. The
@@ -50,6 +50,12 @@ struct Cli {
     /// again: `first-item` (the game's) or `last-item` (the item last picked). The launcher passes its setting.
     #[arg(long, value_name = "WHERE", default_value_t = MenuFocus::FirstItem)]
     menu_focus: MenuFocus,
+
+    /// Whether the player's Discord profile shows what they are doing in the game (`on`, through the Discord app on
+    /// this computer) or not (`off`: no connection to Discord at all). The launcher passes its setting; without it,
+    /// off.
+    #[arg(long, value_name = "ON_OFF", default_value_t = DiscordPresence::Off)]
+    discord_presence: DiscordPresence,
 
     /// A test option: the window in pixels at scale factor 1 (e.g. `1280x720`), windowed; the launcher's display
     /// settings neither read nor kept.
@@ -235,6 +241,7 @@ fn game_args(cli: Cli) -> Result<game_mode::GameArgs> {
         range_movies: cli.range_movies,
         boot_movie: cli.boot_movie,
         menu_focus: cli.menu_focus,
+        discord_presence: cli.discord_presence,
         window,
         script: cli.script.unwrap_or_default(),
         movie_cap: cli.movie_cap,

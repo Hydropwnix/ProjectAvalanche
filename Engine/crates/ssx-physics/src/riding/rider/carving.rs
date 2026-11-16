@@ -1,4 +1,5 @@
 use super::*;
+use ssx_formats::vmx;
 
 pub fn should_stay_dead_once_tumbled(s: &RiderState) -> bool {
     let v = &s.survival;
@@ -29,24 +30,75 @@ pub fn scoring_wipeout(l: &LandingState, forward_sign: f32, in_air: bool) -> boo
     (l.tumbling && !safe) || (l.uber_crash && !in_air)
 }
 
+pub fn balance_inputs(lstick_y: f32, recovery: bool, force_stop: bool, upright: bool) -> (f32, bool) {
+    if force_stop && !upright { (0.0, false) } else { (lstick_y, recovery) }
+}
+
+pub fn first_contact_wiggle(curve: &crate::curve::Curve, wiggle: f32, initial_v: Vec3, v: Vec3, n: Vec3) -> Vec3 {
+    use crate::steering::{vmx_axis_angle, vmx_cross, vmx_rotate};
+    let v0 = initial_v.to_array();
+    let side = vmx::dot3(vmx_cross(vmx_cross(v0, [0.0, 1.0, 0.0]), v0), n.to_array());
+    let deg = if vmx::gt(side, 0.0) { curve.eval(wiggle) } else { 0.0 };
+    let q = vmx_axis_angle(n.to_array(), vmx::mul(deg, 0.017_453_292));
+    vmx_rotate(q, v)
+}
+
 pub(super) fn rock_riding_update(s: &mut RiderState, w: &World, effects: f32, dt: f32) {
+    use std::cmp::Ordering;
     let t = &w.tuning.survival;
-    if s.weights[crate::surface::ROCK] >= t.riding_on_rock_threshold {
+    if s.weights[crate::surface::ROCK].partial_cmp(&t.riding_on_rock_threshold) != Some(Ordering::Less) {
         s.carving.ticks_on_rock += dt;
     } else if s.carving.have_made_first_contact {
         s.carving.ticks_on_rock = 0.0;
-        s.landing.bailed_because_of_rock = false;
+        if s.landing.bailed_because_of_rock {
+            s.landing.bailed_because_of_rock = false;
+            s.landing.is_in_rock_slide = false;
+        }
     }
     let recently = s.carving.ride_ticks < t.uber_crash_landed_recently_threshold;
     if w.survival.rock_damage
-        && effects >= 1.0
-        && s.carving.ticks_on_rock > 0.0
+        && effects.partial_cmp(&1.0) != Some(Ordering::Less)
+        && !matches!(s.carving.ticks_on_rock.partial_cmp(&0.0), Some(Ordering::Less | Ordering::Equal))
         && s.carving.have_made_first_contact
         && !s.landing.bailed_because_of_rock
+        && !s.landing.is_in_rock_slide
         && (s.landing.stable || recently)
     {
         s.landing.bailed_because_of_rock = true;
         s.survival.carving_damage += 0.0625;
+    }
+}
+
+pub(super) fn rock_slide_tags(mut var: bool, tags: &[ssx_assets::anim_graph::GameTag]) -> bool {
+    use ssx_assets::tags::{BoolTag, TagTracker};
+    for t in tags.iter().filter(|t| t.name == "BLN_carving_state_is_in_rock_slide") {
+        let ssx_assets::anim_graph::GameTagValue::Bool(value) = t.value else { continue };
+        let tag = BoolTag { value, mode: t.mode, reset: t.reset_on_leave.then_some(t.default != 0.0) };
+        let mut tracker = TagTracker::new(&[t.window]);
+        tracker.update(0.0);
+        let mut saved = false;
+        for (_, ev) in tracker.process() {
+            tag.on(ev, &mut var, &mut saved);
+        }
+    }
+    var
+}
+
+pub(crate) fn read_subject_vars(s: &RiderState) -> SubjectVars {
+    let gc = &s.grind.carving;
+    SubjectVars {
+        ride_ticks: s.carving.ride_ticks,
+        is_dead: s.carving.is_dead,
+        bailed_because_of_rock: s.landing.bailed_because_of_rock,
+        stable: s.landing.stable,
+        backslide: s.landing.backslide,
+        bail_on_landing: s.landing.bail_on_landing,
+        request_stop: s.request_stop,
+        bounce_rotational_force: s.carving.bounce_rotational_force,
+        grind_veering_angle: gc.veering_angle,
+        grind_press_value: gc.press.value,
+        grind_or_press_blend: gc.grind_or_press_blend,
+        ice_axe_noise: s.ice_axe.noise,
     }
 }
 
@@ -70,6 +122,7 @@ pub(super) fn conduit_init(s: &mut RiderState, w: &World, dt: f32) -> bool {
 }
 
 pub(super) fn new_carving(s: &mut RiderState, w: &World, dt: f32) {
+    s.alignment_frame = Quat::IDENTITY;
     s.alignment = s.traj_orientation;
     let t = &w.tuning.balance;
     let gate_open = s.uber_gate_timer <= 0.0;
@@ -85,12 +138,29 @@ pub(super) fn new_carving(s: &mut RiderState, w: &World, dt: f32) {
     }
     let uber = (s.uber_trigger && gate_open) || board_particle;
     s.carving = CarvingState::default();
+    s.graph.bounce_rotational_force = Vec3::ZERO;
     s.carving.air_time = s.score.air_time;
+    let st = &w.tuning.survival;
+    let on_rock =
+        s.weights[crate::surface::ROCK].partial_cmp(&st.riding_on_rock_threshold) != Some(std::cmp::Ordering::Less);
+    if on_rock && s.carving.air_time > st.min_air_time_to_bail_on_rock_landing {
+        s.carving.ticks_on_rock = 16.0;
+    }
     s.avalanche.fresh_controller();
+    s.ice_axe.new_controller();
     grind::carving_ctor(&mut s.grind.carving, &w.collision, s.contact.map(|c| c.point), s.traj);
     s.press.ctor();
     (s.nested_stable, s.request_stop, s.stopped) = (false, false, false);
+    let gc = &s.grind.carving;
+    s.carving.subject_vars = SubjectVars {
+        grind_veering_angle: gc.veering_angle,
+        grind_press_value: gc.press.value,
+        grind_or_press_blend: gc.grind_or_press_blend,
+        ice_axe_noise: s.ice_axe.noise,
+        ..SubjectVars::default()
+    };
     s.velocity = s.traj_velocity;
+    s.carving.initial_velocity = s.velocity;
     let n = s.ground_normal;
     let (v, w_q) = (s.velocity, s.angular_velocity_q);
     let kick = crate::landing::ImpactKick {
@@ -99,7 +169,7 @@ pub(super) fn new_carving(s: &mut RiderState, w: &World, dt: f32) {
         velocity: s.impact.impact_velocity,
     };
     let c = &w.tuning.carving;
-    s.landing.touchdown(t, c, &mut s.alignment, &mut s.steering, v, n, w_q, uber, true, &kick, dt);
+    s.landing.touchdown(t, c, &mut s.alignment, &mut s.steering, v, n, w_q, uber, t.allow_bails, &kick, dt);
     if !uber {
         s.uber_trigger = false;
     }
@@ -195,26 +265,24 @@ pub(super) fn air(s: &mut RiderState, w: &World, input: &Input, before: RideStat
     let t = &w.tuning;
     let prediction = s.ballistic.landing();
     s.velocity = s.traj_velocity;
+    let corrected = matches!(s.landing.uber_recovery, UberRecovery::Hop(_));
     if let UberRecovery::Hop(h) = s.landing.uber_recovery {
         s.landing.uber_recovery = UberRecovery::Hop(h + dt);
-        s.velocity = Vec3::new(0.0, s.velocity.y, 0.0);
-        s.first_air_tick = false;
-        return integrate_air(s, w, dt);
+        if h < UBER_RECOVER_HOP_TICKS {
+            s.velocity = Vec3::new(0.0, s.velocity.y, 0.0);
+            s.first_air_tick = true;
+            return integrate_air(s, w, dt);
+        }
     }
-    let takeoff = |s: &mut RiderState, kind: Takeoff| {
-        s.alignment = s.traj_orientation;
-        s.air = AirRotation::takeoff(
-            &t.aerial,
-            &w.props,
-            kind,
-            s.traj_orientation,
-            s.filtered_angular_velocity,
-            s.velocity,
-            s.ground_normal,
-            input.air_stick(s.tricks.classic),
-            s.prewind,
-            prediction,
-        );
+    let takeoff_inputs = |s: &RiderState| TakeoffInputs {
+        board: s.traj_orientation,
+        wf: s.filtered_angular_velocity,
+        velocity: s.velocity,
+        ground_normal: s.ground_normal,
+        prewind: s.prewind,
+        trigger: s.jump.trigger,
+        prediction,
+        intercept: None,
     };
     if s.first_air_tick {
         if s.state == RideState::Jump {
@@ -222,9 +290,16 @@ pub(super) fn air(s: &mut RiderState, w: &World, input: &Input, before: RideStat
             s.last_launch = s.jump.launch;
             (s.jump_ticks, s.jump_airborne) = (0.0, false);
         }
+        if corrected {
+            s.filtered_angular_velocity = Quat::IDENTITY;
+        }
         let kind =
             if s.state == RideState::Jump && before == RideState::Riding { Takeoff::Jump } else { Takeoff::RollOff };
-        takeoff(s, kind);
+        s.alignment = s.traj_orientation;
+        let i =
+            TakeoffInputs { intercept: s.jump.intercept.filter(|_| s.state == RideState::Jump), ..takeoff_inputs(s) };
+        s.air = AirRotation::takeoff(&t.aerial, &w.props, kind, input.air_stick(s.tricks.classic), &i);
+        s.air.correction = corrected;
     }
     s.first_air_tick = false;
     let variant = if s.state == RideState::Jump { &t.aerial.jump } else { &t.aerial.airborne };
@@ -232,7 +307,9 @@ pub(super) fn air(s: &mut RiderState, w: &World, input: &Input, before: RideStat
     if s.jump.take_trigger() {
         s.velocity += s.jump.launch;
         s.last_launch = s.jump.launch;
-        takeoff(s, Takeoff::AirJump);
+        s.alignment = s.traj_orientation;
+        let i = TakeoffInputs { trigger: true, intercept: s.jump.intercept, ..takeoff_inputs(s) };
+        s.air.air_jump(&t.aerial, &w.props, &i);
         s.air_jumped = true;
     }
     if s.state == RideState::Jump {
@@ -243,6 +320,8 @@ pub(super) fn air(s: &mut RiderState, w: &World, input: &Input, before: RideStat
     let gs = &s.grind.steering;
     let inp = AirInputs {
         stick: input.air_stick(s.tricks.classic),
+        lstick: input.stick(),
+        classic: s.tricks.classic,
         velocity: s.velocity,
         allow_stance_switch: !(s.tricks.is_tricking || s.tricks.anticipating()),
         grind_steering: gs.active.then_some(gs.time_to_land),
@@ -277,16 +356,7 @@ pub(super) fn transition(s: &mut RiderState, w: &World, stick: Vec2, dt: f32, gr
                 (s.stopped, s.nested_stable) = (false, false);
             } else if !c.is_close
                 && !s.recovering_from_uber_bail()
-                && (if s.graph.driven {
-                    s.graph.allow_airborne
-                } else {
-                    // TODO(guess): the no-graph unit-test path stands in for the four `SEQ_bail_ground_*` actors'
-                    // `BLN_AllowAirborne` `BoolGameStateTag` (Time 0, Duration 20, Value false, Mode 1, ResetOnLeave)
-                    // with `landing.ticks > 20`; `TagTracker_WindowTest` 0x8319E1D0 keeps a tag active through
-                    // `Time + Duration`, and the leave is deferred to the next update (tick 22 in the `ride_sim`
-                    // trace). A ride's graph supplies that signal. Settle: a unit-test fixture with the tag set.
-                    !s.landing.is_bailing() || s.landing.ticks > crate::landing::BAIL_ALLOW_AIRBORNE_TICKS
-                })
+                && s.graph.allow_airborne
                 && can_go_airborne_from_grind_trick(s)
             {
                 s.state = RideState::Airborne;
@@ -353,10 +423,10 @@ pub fn stop_test(
     board_press: bool,
 ) -> bool {
     let c = &t.carving;
-    let mag = i.mag.max(i.slip_mag);
-    let ang = i.angle.max(i.slip_angle);
+    let mag = if i.mag - i.slip_mag >= 0.0 { i.mag } else { i.slip_mag };
+    let ang = if i.angle - i.slip_angle >= 0.0 { i.angle } else { i.slip_angle };
     let go = mag >= c.min_stick_magnitude_for_go;
-    let pulling_back = go && wrap_pi(ang + PI).abs() <= FRAC_PI_2 + 1e-5;
+    let pulling_back = go && crate::steering::vmx_wrap_pi(ang - (-PI)).abs() <= FRAC_PI_2;
     !vertical
         && !board_press
         && speed <= c.stop_speed_threshold

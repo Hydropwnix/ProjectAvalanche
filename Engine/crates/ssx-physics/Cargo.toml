@@ -19,5 +19,8 @@ ssx-gameplay.workspace = true
 ssx-net-proto.workspace = true
 ssx-core.workspace = true
 
+[dev-dependencies]
+ssx-formats = { workspace = true, features = ["test-fixtures"] }
+
 [lints]
 workspace = true

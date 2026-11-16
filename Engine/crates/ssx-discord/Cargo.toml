@@ -1,0 +1,22 @@
+[package]
+name = "ssx-discord"
+description = "Discord Rich Presence over the Discord client's local IPC (port feature): the frames, the activity, a client thread that never blocks the game. No Bevy, no Discord SDK."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+ssx-core.workspace = true
+tracing.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Pipes"] }
+
+[lints]
+workspace = true

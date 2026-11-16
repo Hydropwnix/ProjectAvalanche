@@ -265,7 +265,11 @@ fn load_song(
     if mb.song(song).is_none() {
         return Err(format!("{id}: the MusicBox has no song {song}"));
     }
-    Ok(ssx_assets::musicbox::LicensedMusic::song(mb, song))
+    // PORT(choice): a script's song (the port's client scripts, `playMusic`) plays while the level's own song is kept
+    // where it was, with its `Music` slot, so it reads through a slot of its own and the Tricky stinger and song find
+    // the pool as without the script; the console's MusicBox has one player (its songs one `Music` slot of three, the
+    // Tricky voices the other two) and no scripts.
+    Ok(ssx_assets::musicbox::LicensedMusic::song(mb, song).beside_the_music_pool())
 }
 
 pub(super) fn music(mut state: ResMut<OrderState>, music: Option<Res<crate::audio::music::Music>>) {

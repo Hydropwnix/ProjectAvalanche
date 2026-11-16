@@ -3,7 +3,7 @@ use std::f32::consts::{FRAC_PI_2, PI};
 use glam::{Quat, Vec2, Vec3};
 
 use crate::TICKS_PER_SECOND;
-use crate::air::{AirInputs, AirRotation, Takeoff};
+use crate::air::{AirInputs, AirRotation, Takeoff, TakeoffInputs};
 use crate::ballistic::BallisticRay;
 use crate::character::{ResolvedCharacterProperties, Tuning};
 use crate::collision::CollisionWorld;
@@ -11,7 +11,7 @@ use crate::correction::{CorrectionInputs, ImpactState};
 use crate::death::{DeathState, GameFlowFlags, RiderDead};
 use crate::graph::{Delta, GraphFeedback, RiderGraph, StepStart};
 use crate::ground::{
-    BalanceView, BoostThrust, BrakeInputs, CarvingState, GroundInputs, HeightBlends, Spray, SprayInputs,
+    BalanceView, BoostThrust, BrakeInputs, CarvingState, GroundInputs, HeightBlends, Spray, SprayInputs, SubjectVars,
     integrate_ground, riding_height_target, snow_compression, spray_filter, update_riding_height,
 };
 use crate::janked::JankedState;
@@ -33,7 +33,7 @@ use crate::steering::{
 };
 use crate::surface::{ChatterInputs, ICE, SNOW_COVERAGE, SurfaceProperties, Weights, no_contact_weights};
 use crate::tags::{BoolTag, TagTracker, TagWindow};
-use crate::tricks::{TrickContext, TrickPhase, TrickState};
+use crate::tricks::{TrickContext, TrickState};
 use crate::triggers::TriggerSet;
 
 pub use crate::ground::{brake_factor, clamp_not_reversing, friction_accel};
@@ -60,7 +60,7 @@ use ride::*;
 pub use spq::*;
 pub use step::*;
 
-pub const TINY: f32 = 1.525_88e-5;
+pub const TINY: f32 = 1.525_878_9e-5;
 pub const LOWEST_GROUND_HEIGHT_DEFAULT: f32 = 99_999.0;
 pub const TRAJECTORY_HEIGHT_DOF: f32 = 0.855_63;
 
@@ -91,17 +91,17 @@ impl Input {
     }
 
     pub fn carve_stick(&self, classic: bool) -> Vec2 {
-        let (x, y) = (self.steer, self.tuck.clamp(0.0, 1.0) - self.brake.clamp(0.0, 1.0));
+        let l = self.stick();
         if !classic {
-            return disc(x, y);
+            return l;
         }
         let d = self.dpad.clamp(Vec2::splat(-1.0), Vec2::splat(1.0));
-        disc((x + d.x).clamp(-1.0, 1.0), (y + d.y).clamp(-1.0, 1.0))
+        disc((l.x + d.x).clamp(-1.0, 1.0), (l.y + d.y).clamp(-1.0, 1.0))
     }
 
     pub fn carve_stick_y(&self, classic: bool) -> f32 {
-        let y = self.tuck.clamp(0.0, 1.0) - self.brake.clamp(0.0, 1.0);
-        if classic { (y + self.dpad.y.clamp(-1.0, 1.0)).clamp(-1.0, 1.0) } else { y.clamp(-1.0, 1.0) }
+        let y = self.stick().y;
+        if classic { (y + self.dpad.y.clamp(-1.0, 1.0)).clamp(-1.0, 1.0) } else { y }
     }
 
     pub fn air_stick(&self, classic: bool) -> Vec2 {
@@ -195,6 +195,7 @@ pub struct RiderState {
     pub collision_entity: u32,
     pub depth_below_snow: f32,
     pub alignment: Quat,
+    pub alignment_frame: Quat,
     pub traj_orientation: Quat,
     pub steering: SteeringState,
     pub kin: Kinematics,
@@ -239,13 +240,18 @@ pub struct RiderState {
     pub audio_tags: Vec<ssx_assets::anim_eval::AudioTagEvent>,
     pub get_going: Option<GetGoing>,
     pub heli_trick: Option<heli_trick::HeliTrick>,
+    pub attachment: Option<crate::driver::AttachmentDriver>,
+    pub target_animatable: Option<crate::query::Animatable>,
+    pub queued_queries: Vec<crate::query::QueryTask>,
     pub heli: crate::helicopter::interaction::RiderHeliStates,
     pub heli_interaction_allowed: bool,
+    pub ground_ray_query_enabled: bool,
     pub janked_pin: Option<(Vec3, Quat)>,
     pub grind: grind::GrindRider,
     pub death: DeathState,
     pub start: Option<LevelStart>,
     pub gameplay: Option<GameplayNode>,
+    pub game_state_in_air: bool,
     pub track_started: bool,
     pub trigger_go: bool,
     pub press: crate::press::CarvingPress,
@@ -265,6 +271,7 @@ pub struct RiderState {
     pub boundary: boundary::BoundaryWind,
     pub ghost_impact: Option<Vec3>,
     pub airborne_auto_upright: bool,
+    pub big_head: crate::graph::BigHeadScales,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -305,14 +312,16 @@ pub const JANKED_PIN_TICKS: f32 = 58.0;
 pub fn drag_accel(kh: f32, kv: f32, v: Vec3, wind: Vec3, t_ticks: f32) -> Vec3 {
     let rel = v - wind;
     let vh = Vec3::new(rel.x, 0.0, rel.z);
-    let s = vh.length();
     let t = t_ticks.max(1.0);
     let mut a = if vh.abs().max_element() <= TINY {
         Vec3::ZERO
     } else {
-        -vh * (1.0 / t).min(kh / (s * (kh * t + 1.0 / s).powi(2)))
+        let rs = 1.0 / vh.dot(vh).sqrt();
+        let d = kh.mul_add(t, rs);
+        let k = ((1.0 / (d * d)) * kh) * rs;
+        vh * -(1.0 / t).min(k.max(0.0))
     };
-    a.y = -kv * rel.y * rel.y.abs();
+    a.y = ((-kv * rel.y) * rel.y) * if rel.y >= 0.0 { 1.0 } else { -1.0 };
     a
 }
 
@@ -379,6 +388,7 @@ impl RiderState {
             collision_entity: 0,
             depth_below_snow: 0.0,
             alignment,
+            alignment_frame: Quat::IDENTITY,
             traj_orientation: alignment,
             steering: SteeringState::new(c),
             kin: Kinematics { fwd: 1.0, ..Kinematics::default() },
@@ -423,13 +433,18 @@ impl RiderState {
             audio_tags: Vec::new(),
             get_going: None,
             heli_trick: None,
+            attachment: None,
+            target_animatable: None,
+            queued_queries: Vec::new(),
             heli: crate::helicopter::interaction::RiderHeliStates::default(),
             heli_interaction_allowed: true,
+            ground_ray_query_enabled: true,
             janked_pin: None,
             grind: grind::GrindRider::default(),
             death: DeathState::default(),
             start: None,
             gameplay: Some(GameplayNode::new()),
+            game_state_in_air: true,
             track_started: true,
             trigger_go: true,
             press: crate::press::CarvingPress::default(),
@@ -449,6 +464,7 @@ impl RiderState {
             boundary: boundary::BoundaryWind::default(),
             ghost_impact: None,
             airborne_auto_upright: false,
+            big_head: crate::graph::BigHeadScales::default(),
         };
         s.grind.tail_pos = s.traj;
         spq(&mut s, world, crate::DT_TICKS, None);
@@ -489,16 +505,21 @@ impl RiderState {
     }
 
     pub fn carry_game_state(&mut self, from: &Self) {
+        self.game_state_in_air = from.bln_in_air();
         self.survival = from.survival;
         self.airborne_auto_upright = from.airborne_auto_upright;
+        self.big_head = from.big_head;
         self.wingsuit.effectiveness = from.wingsuit.effectiveness;
         self.death = from.death;
         self.boundary = from.boundary;
         self.avalanche.switches = from.avalanche.switches;
+        self.heli_interaction_allowed = from.heli_interaction_allowed;
+        self.ground_ray_query_enabled = from.ground_ray_query_enabled;
     }
 
     pub fn carry_controller_state(&mut self, from: &Self) {
         self.survival.low_oxygen = from.survival.low_oxygen;
+        self.big_head = from.big_head;
         self.survival.temperature_enabled = from.survival.temperature_enabled;
     }
 
@@ -510,6 +531,15 @@ impl RiderState {
         self.state != RideState::Riding
     }
 
+    pub fn bln_in_air(&self) -> bool {
+        if self.start.is_some() { self.game_state_in_air } else { self.in_air() }
+    }
+
+    pub fn uber_bail_sliding(&self) -> bool {
+        let gate_open = self.uber_gate_timer <= 0.0 || self.uber_gate_timer.is_nan();
+        (self.landing.uber_crash && gate_open) || self.board_particle.enabled
+    }
+
     pub fn recovering_from_uber_bail(&self) -> bool {
         match self.landing.uber_recovery {
             UberRecovery::GettingUp(_) => true,
@@ -519,7 +549,7 @@ impl RiderState {
     }
 
     pub fn board_point(&self) -> Vec3 {
-        if (self.in_air() || self.start.is_some()) && self.graph.driven {
+        if self.graph.driven {
             return self.traj + self.graph.ground_offset;
         }
         if let Some(ls) = &self.start {

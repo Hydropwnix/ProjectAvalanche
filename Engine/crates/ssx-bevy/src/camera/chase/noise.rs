@@ -177,21 +177,36 @@ impl CarvingNoise {
     }
 }
 
+const LAYER_EPS: f32 = 1.0 / 65536.0;
+
+const NOISE_LOOP: f32 = 90.0;
+
+fn update_mode_1(time: &mut f32, w: f32, dt: f32) -> Option<f32> {
+    *time = (*time + dt).rem_euclid(NOISE_LOOP);
+    (w > LAYER_EPS).then_some(*time)
+}
+
+fn update_mode_3(time: &mut f32, w: f32, dt: f32) -> Option<f32> {
+    if w > LAYER_EPS {
+        *time = (*time + dt).rem_euclid(NOISE_LOOP);
+        Some(*time)
+    } else {
+        if (*time - LAYER_EPS).abs() > LAYER_EPS {
+            *time = 0.0;
+        }
+        None
+    }
+}
+
 impl Chase {
     pub(super) fn shake(&mut self, clip: Option<&CameraNoise>, w: f32, dt: f32) {
-        const EPS: f32 = 1.5e-5;
         let Some(clip) = clip else { return };
-        if self.shake_time.is_none() && w > EPS {
-            self.shake_time = Some(0.0);
-        }
-        let Some(t) = self.shake_time.as_mut() else { return };
-        *t = (*t + dt).rem_euclid(90.0);
-        if w > EPS {
-            let (q, p) = clip.shake.sample(*t);
+        if let Some(t) = update_mode_3(&mut self.shake_time, w, dt) {
+            let (q, p) = clip.shake.sample(t);
             let (eq, et) = self.eye;
             let q = if eq.dot(q) < 0.0 { -q } else { q };
             self.eye = (eq.lerp(q, w).normalize(), et.lerp(p, w));
-            if crate::render::post::env_is("SSX_AVALANCHE_LOG", "on") {
+            if self.logs.avalanche {
                 let deg = 2.0 * self.eye.0.w.clamp(-1.0, 1.0).acos().to_degrees();
                 info!("avalanche shake: clip tick {t:.0}, CameraEye {:.3} m, {deg:.2} deg", self.eye.1);
             }
@@ -199,25 +214,23 @@ impl Chase {
     }
 
     pub(super) fn noise(&mut self, clips: Option<&CameraNoise>, sig: NoiseSignals, wipeout_layer: Wipeout, dt: f32) {
-        const EPS: f32 = 1.5e-5;
         let Some(clips) = clips.filter(|c| c.normal_layers) else { return };
         let (w1, carving_weight) = sig.carving;
         self.carving.update(carving_weight, dt);
-        if w1.abs() > EPS {
+        if w1 > LAYER_EPS {
             self.eye = blend_eye(self.eye, self.carving.pose(clips), w1);
         }
         let (w2, wipeout_weight) = if wipeout_layer == Wipeout::None { (0.0, 0.0) } else { sig.wipeout };
-        if self.wipeout_time.is_none() && (w2 > EPS || wipeout_layer == Wipeout::Always) {
-            self.wipeout_time = Some(0.0);
+        let drawn = match wipeout_layer {
+            Wipeout::None => None,
+            Wipeout::Always => update_mode_1(&mut self.wipeout_time, w2, dt),
+            Wipeout::OnWeight => update_mode_3(&mut self.wipeout_time, w2, dt),
+        };
+        if let Some(t) = drawn {
+            let pose = blend_eye(clips.wipeout.sample(1.0), clips.wipeout.sample(t), wipeout_weight);
+            self.eye = blend_eye(self.eye, pose, w2);
         }
-        if let Some(t) = self.wipeout_time.as_mut() {
-            *t = (*t + dt).rem_euclid(90.0);
-            if w2.abs() > EPS {
-                let pose = blend_eye(clips.wipeout.sample(1.0), clips.wipeout.sample(*t), wipeout_weight);
-                self.eye = blend_eye(self.eye, pose, w2);
-            }
-        }
-        if crate::render::post::env_is("SSX_CAMERA_NOISE_LOG", "on") {
+        if self.logs.noise {
             let (sel, n) = self.carving.active();
             let deg = 2.0 * self.eye.0.w.abs().clamp(-1.0, 1.0).acos().to_degrees();
             info!(
@@ -226,7 +239,7 @@ impl Chase {
                 self.carving.cur,
                 &sel[..n],
                 self.carving.phase,
-                self.wipeout_time.filter(|_| w2 > EPS),
+                drawn,
                 wipeout_weight,
                 self.eye.1.length()
             );
@@ -237,6 +250,35 @@ impl Chase {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn update_mode_3_restarts_the_clip_at_each_activation() {
+        let mut t = 0.0;
+        assert_eq!(update_mode_3(&mut t, 0.0, 2.0), None);
+        assert_eq!(t, 0.0);
+        assert_eq!(update_mode_3(&mut t, 0.86, 2.0), Some(2.0));
+        assert_eq!(update_mode_3(&mut t, 0.86, 2.0), Some(4.0));
+        for _ in 0..44 {
+            update_mode_3(&mut t, 1.0, 2.0);
+        }
+        assert_eq!(t, 2.0, "loops at 90 ticks");
+        assert_eq!(update_mode_3(&mut t, 1.0, 2.0), Some(4.0));
+        assert_eq!(update_mode_3(&mut t, LAYER_EPS, 2.0), None);
+        assert_eq!(t, 0.0);
+        assert_eq!(update_mode_3(&mut t, 0.5, 2.0), Some(2.0), "the next activation starts at the clip's start");
+        let mut t = 1.5 * LAYER_EPS;
+        assert_eq!(update_mode_3(&mut t, 0.0, 2.0), None);
+        assert_eq!(t, 1.5 * LAYER_EPS);
+    }
+
+    #[test]
+    fn update_mode_1_runs_on_while_off() {
+        let mut t = 0.0;
+        assert_eq!(update_mode_1(&mut t, 1.0, 2.0), Some(2.0));
+        assert_eq!(update_mode_1(&mut t, 0.0, 2.0), None);
+        assert_eq!(update_mode_1(&mut t, 0.0, 2.0), None);
+        assert_eq!(update_mode_1(&mut t, 1.0, 2.0), Some(8.0));
+    }
+
     #[test]
     fn carving_array_selects_and_loops() {
         assert_eq!(CarvingNoise::new(0.2).active(), ([(0, 1.0), (0, 0.0)], 1));

@@ -136,11 +136,16 @@ pub(super) fn live_read(
     classic: bool,
     nis: bool,
 ) -> LiveRead {
-    let rewind = keys.pressed(KeyCode::Backspace)
-        || gamepads.iter().any(|p| p.pressed(if classic { GamepadButton::East } else { GamepadButton::LeftTrigger }));
     let mut input = live_input(keys, gamepads, chase, classic);
     input.jump |= nis && enter_held(keys);
     let tricks = live_tricks(keys, gamepads, chase, input.jump, classic);
+    // PORT(choice): Backspace is the keyboard's rewind in both schemes, beside the scheme's own button and its stand-in
+    // (the standard scheme's L1; the classic scheme's B, whose key is L): the launcher's Controls page and the README
+    // list "Backspace = LB (rewind)" with no scheme, the ride overlay "hold Backspace" for a janked rider in both. The
+    // console reads the pad only: `RewindManagement_StateMachine` 0x82CF3428 takes `BLN_Pad_Classic_Rewind` (B) with
+    // `BLN_ClassicControls`, else `BLN_Pad_Rewind` (L1).
+    let scheme = if classic { tricks.b } else { gamepads.iter().any(|p| p.pressed(GamepadButton::LeftTrigger)) };
+    let rewind = keys.pressed(KeyCode::Backspace) || scheme;
     let (l2, r1) = (live_l2_travel(keys, gamepads, chase, classic), live_r1(keys, gamepads, chase));
     LiveRead { input, tricks, l2, r1, rewind }
 }
@@ -158,6 +163,18 @@ pub fn read_live_controls(ride: &mut Ride, keys: &ButtonInput<KeyCode>, gamepads
     ride.take_live_controls(live.input, live.tricks);
     let takeover = TakeoverPad::of(&ride.input, &ride.tricks, live.l2, live.r1, classic).takeover();
     ride.rewind_pad = RewindPad { rewind_held: live.rewind, takeover, ..RewindPad::default() };
+}
+
+pub(super) fn scheme_holds(
+    classic: bool,
+    input: &Input,
+    tricks: &TrickInput,
+    l2: bool,
+    r1: bool,
+    pad: &RewindPad,
+) -> (bool, bool, bool) {
+    let (grind, wingsuit) = if classic { (tricks.y, input.jump) } else { (l2, r1) };
+    (grind, wingsuit, pad.rewind_held)
 }
 
 pub(super) fn late_controls(
@@ -666,6 +683,16 @@ mod tests {
         buttons: &[(GamepadButton, f32)],
         axes: &[(GamepadAxis, f32)],
     ) -> bool {
+        let r = live_of(classic, keys, buttons, axes);
+        TakeoverPad::of(&r.input, &r.tricks, r.l2, r.r1, classic).takeover()
+    }
+
+    fn live_of(
+        classic: bool,
+        keys: &[KeyCode],
+        buttons: &[(GamepadButton, f32)],
+        axes: &[(GamepadAxis, f32)],
+    ) -> LiveRead {
         use bevy::ecs::system::RunSystemOnce;
         use bevy::input::gamepad::{
             GamepadConnection, GamepadConnectionEvent, RawGamepadAxisChangedEvent, RawGamepadButtonChangedEvent,
@@ -694,10 +721,39 @@ mod tests {
         app.world_mut().insert_resource(held);
         app.world_mut()
             .run_system_once(move |keys: Res<ButtonInput<KeyCode>>, pads: Query<&Gamepad>| {
-                let r = live_read(&keys, &pads, true, classic, false);
-                TakeoverPad::of(&r.input, &r.tricks, r.l2, r.r1, classic).takeover()
+                live_read(&keys, &pads, true, classic, false)
             })
             .expect("the live read")
+    }
+
+    #[test]
+    fn the_keyboard_rewinds_in_both_schemes() {
+        use GamepadButton as P;
+        use KeyCode as K;
+        let rewinds = |classic: bool, keys: &[K], buttons: &[(P, f32)]| {
+            let r = live_of(classic, keys, buttons, &[]);
+            let pad = RewindPad { rewind_held: r.rewind, ..RewindPad::default() };
+            scheme_holds(classic, &r.input, &r.tricks, r.l2 >= TRIGGER_THRESHOLD, r.r1, &pad).2
+        };
+        for classic in [false, true] {
+            assert!(rewinds(classic, &[K::Backspace], &[]), "classic={classic}: Backspace rewinds");
+            assert!(!rewinds(classic, &[], &[]), "classic={classic}: nothing held");
+            for key in [K::KeyQ, K::KeyI, K::KeyJ, K::KeyK, K::Space, K::KeyE, K::ShiftLeft, K::ControlLeft, K::KeyC] {
+                assert!(!rewinds(classic, &[key], &[]), "classic={classic}: {key:?} is not the rewind");
+            }
+        }
+        assert!(!rewinds(false, &[K::KeyL], &[]), "standard: L is B, not the rewind");
+        assert!(rewinds(true, &[K::KeyL], &[]), "classic: L is B, the rewind");
+        assert!(
+            rewinds(false, &[], &[(P::LeftTrigger, 1.0)]) && !rewinds(false, &[], &[(P::East, 1.0)]),
+            "standard: L1"
+        );
+        assert!(rewinds(true, &[], &[(P::East, 1.0)]) && !rewinds(true, &[], &[(P::LeftTrigger, 1.0)]), "classic: B");
+        for classic in [false, true] {
+            let pad = RewindPad { rewind_held: true, ..RewindPad::default() };
+            let held = scheme_holds(classic, &Input::default(), &TrickInput::default(), false, false, &pad).2;
+            assert!(held, "classic={classic}: the scripted players' rewind");
+        }
     }
 
     #[test]

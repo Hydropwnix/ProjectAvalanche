@@ -98,7 +98,7 @@ impl TrickState {
         if self.node() != Node::AirStates {
             self.trick_ticks += dt;
         }
-        let mut left = dt;
+        let (mut left, mut advanced) = (dt, false);
         for _ in 0..MAX_TRANSITIONS_PER_UPDATE {
             let node = self.node();
             self.rate = Self::node_rate(node, ctx, end);
@@ -107,12 +107,15 @@ impl TrickState {
             if left <= real {
                 break;
             }
-            self.advance(time);
+            if real > 0.0 {
+                self.advance(time, real);
+                advanced = true;
+            }
             left -= real;
             self.go(to, left, ctx, end);
         }
-        if left > MIN_NODE_UPDATE_TICKS && self.node() != Node::AirStates {
-            self.advance(left * self.rate);
+        if !advanced || left > MIN_NODE_UPDATE_TICKS {
+            self.advance(left * self.rate, left);
         }
     }
 
@@ -143,7 +146,15 @@ impl TrickState {
         best
     }
 
-    pub(super) fn advance(&mut self, d: f32) {
+    pub(super) fn advance(&mut self, d: f32, real: f32) {
+        self.first_update_tags();
+        self.node_tags.update(real, &mut self.scripts.now);
+        if let Some(entry) = self.node().chooser_entry(self.hand, self.trick_type)
+            && entry != self.node_choice
+        {
+            self.node_choice = entry;
+            self.phase_ticks = 0.0;
+        }
         self.phase_ticks += d;
         if self.node() == Node::Loop(TrickLevel::Signature) && self.signature.loop_len > 0.0 {
             self.phase_ticks = self.phase_ticks.rem_euclid(self.signature.loop_len);
@@ -151,19 +162,135 @@ impl TrickState {
     }
 
     pub(super) fn go(&mut self, to: Node, remaining: f32, ctx: &TrickContext, end: bool) {
-        if matches!(self.node(), Node::Exit(_) | Node::SigExit(_) | Node::TweakExit(_)) {
-            self.grab_reset();
+        let from = self.node();
+        if self.node_tags.updates == 0 {
+            self.first_update_tags();
+            self.node_tags.update(0.0, &mut self.scripts.now);
         }
-        match to {
-            Node::AirStates => self.grab_reset(),
-            Node::Anticipate => {
-                self.input_index_on_enter = self.input_index;
-                self.trick_ticks = remaining;
-            }
-            _ => {}
+        if let Some(v) = Node::uber_trigger_at_take(from, to) {
+            self.uber_trigger_tag = Some(v);
+        }
+        self.node_tags.exit(&mut self.scripts);
+        if from == Node::Anticipate && matches!(to, Node::Enter(_)) {
+            self.scripts.now.air_trick_enter = true;
+        }
+        if to == Node::Anticipate {
+            self.trick_ticks = remaining;
         }
         self.set_node(to);
+        self.node_signals = true;
+        self.node_choice = to.chooser_entry(self.hand, self.trick_type).unwrap_or(0);
+        self.node_tags = NodeTags::new(to.script());
         self.rate = Self::node_rate(to, ctx, end);
         self.phase_ticks = 0.0;
+    }
+}
+
+impl TrickState {
+    fn first_update_tags(&mut self) {
+        if self.node_tags.updates == 0
+            && let Some(v) = self.node().uber_trigger_at_first_update()
+        {
+            self.uber_trigger_tag = Some(v);
+        }
+    }
+
+    pub fn flow_node_name(&self) -> &'static str {
+        self.node().name()
+    }
+}
+
+impl Node {
+    pub(super) fn uber_trigger_at_take(from: Node, to: Node) -> Option<bool> {
+        use TrickLevel::*;
+        match (from, to) {
+            (Node::Anticipate, Node::Enter(_)) | (Node::Loop(Uber), Node::Enter(SuperUber)) => Some(true),
+            (Node::AirStates, Node::UberCrashRecover)
+            | (Node::Enter(Normal) | Node::Loop(Normal), Node::Exit(Normal))
+            | (Node::TweakEnter(Normal) | Node::TweakLoop(Normal), Node::TweakExit(Normal))
+            | (Node::Enter(Uber) | Node::Loop(Uber), Node::Exit(Uber))
+            | (Node::TweakLoop(Uber), Node::TweakExit(Uber)) => Some(false),
+            _ => Option::None,
+        }
+    }
+
+    pub(super) fn uber_trigger_at_first_update(self) -> Option<bool> {
+        use TrickLevel::*;
+        match self {
+            Node::Exit(Normal | SuperUber | Signature) | Node::SigExit(_) | Node::TweakExit(SuperUber) => Some(false),
+            _ => Option::None,
+        }
+    }
+
+    pub(super) fn chooser_entry(self, hand: TrickHand, ty: TrickType) -> Option<u8> {
+        use TrickType::*;
+        match self {
+            Node::Anticipate => Some(match hand {
+                TrickHand::Backhand => 0,
+                TrickHand::Forehand => 1,
+                TrickHand::Both | TrickHand::None => 2,
+            }),
+            Node::Enter(TrickLevel::Normal | TrickLevel::Uber) => Some(match ty {
+                Indy => 0,
+                Melon => 1,
+                Rocket => 2,
+                Tail => 3,
+                FlyingSquirrel => 4,
+                Truckdriver => 5,
+                Stiffy => 6,
+                Nose => 7,
+                Wheelman => 8,
+                Mute => 9,
+                Stalefish => 10,
+                _ => 11,
+            }),
+            _ => Option::None,
+        }
+    }
+
+    pub(super) fn name(self) -> &'static str {
+        use TrickLevel::*;
+        match self {
+            Node::AirStates => "state_air_states",
+            Node::UberCrashRecover => "uber_crash_recover",
+            Node::AirJump => "state_air_jump",
+            Node::Anticipate => "state_trick_air_anticipate",
+            Node::Enter(Normal) => "state_trick_air_enter",
+            Node::Enter(Uber) => "state_trick_air_uber_enter",
+            Node::Enter(SuperUber) => "state_trick_air_super_uber_enter",
+            Node::Enter(Signature) => "state_trick_air_sig_enter",
+            Node::Loop(Normal) => "state_trick_air_loop",
+            Node::Loop(Uber) => "state_trick_air_uber_loop",
+            Node::Loop(SuperUber) => "state_trick_air_super_uber_loop",
+            Node::Loop(Signature) => "state_trick_air_sig_loop",
+            Node::Exit(Normal) => "state_trick_air_exit",
+            Node::Exit(Uber) => "state_trick_air_uber_exit",
+            Node::Exit(SuperUber) => "state_trick_air_super_uber_exit",
+            Node::SigExit(1) => "state_trick_air_sig_exit1",
+            Node::SigExit(2) => "state_trick_air_sig_exit2",
+            Node::Exit(Signature) | Node::SigExit(_) => "state_trick_air_sig_exit",
+            Node::TweakEnter(Normal) => "state_trick_air_tweak_enter",
+            Node::TweakEnter(Uber) => "state_trick_air_uber_tweak_enter",
+            Node::TweakEnter(SuperUber) => "state_trick_air_super_uber_tweak_enter",
+            Node::TweakLoop(Normal) => "state_trick_air_tweak_loop",
+            Node::TweakLoop(Uber) => "state_trick_air_uber_tweak_loop",
+            Node::TweakLoop(SuperUber) => "state_trick_air_super_uber_tweak_loop",
+            Node::TweakExit(Normal) => "state_trick_air_tweak_exit",
+            Node::TweakExit(Uber) => "state_trick_air_uber_tweak_exit",
+            Node::TweakExit(SuperUber) => "state_trick_air_super_uber_tweak_exit",
+            Node::TweakEnter(Signature) | Node::TweakLoop(Signature) | Node::TweakExit(Signature) => "",
+        }
+    }
+
+    pub(super) fn script(self) -> NodeScript {
+        use TrickLevel::*;
+        match self {
+            Node::AirStates => NodeScript::OnEnter(Script::GrabReset),
+            Node::Exit(Normal | Uber | SuperUber) | Node::SigExit(_) | Node::TweakExit(Normal) => {
+                NodeScript::OnExit(Script::GrabReset)
+            }
+            Node::TweakExit(Uber | SuperUber) => NodeScript::OnExitAfterTick1(Script::GrabReset),
+            _ => NodeScript::None,
+        }
     }
 }

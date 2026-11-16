@@ -1,9 +1,10 @@
 use glam::{Quat, Vec3};
+use ssx_formats::vmx;
 
 use crate::character::{CarvingTuning, ResolvedCharacterProperties, Tuning};
 use crate::curve::Curve;
 use crate::rider::drag_accel;
-use crate::steering::{Kinematics, fsel_sign, wrap_pi};
+use crate::steering::{Kinematics, fsel_sign, vmx_wrap_pi};
 use crate::surface::SurfaceProperties;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -23,6 +24,40 @@ pub struct CarvingState {
     pub spray_derivative: f32,
     pub ticks_on_rock: f32,
     pub air_time: f32,
+    pub bounce_rotational_force: Vec3,
+    pub initial_velocity: Vec3,
+    pub reach: f32,
+    pub ride_frames: i32,
+    pub traj_delta: Quat,
+    pub scoring_vertical: bool,
+    pub subject_vars: SubjectVars,
+    pub subject_update: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SubjectVars {
+    pub ride_ticks: f32,
+    pub is_dead: bool,
+    pub bailed_because_of_rock: bool,
+    pub stable: bool,
+    pub backslide: bool,
+    pub bail_on_landing: bool,
+    pub request_stop: bool,
+    pub bounce_rotational_force: Vec3,
+    pub grind_veering_angle: f32,
+    pub grind_press_value: f32,
+    pub grind_or_press_blend: f32,
+    pub ice_axe_noise: [f32; 2],
+}
+
+pub fn vertical_surface(c: &CarvingTuning, n: Vec3) -> bool {
+    let up = ssx_formats::vmx::dot3(n.to_array(), [0.0, 1.0, 0.0]);
+    ssx_formats::vmx::gt(ssx_formats::vmx::cos(c.vertical_surface_angle_threshold), up)
+}
+
+pub fn scoring_vertical_surface(c: &CarvingTuning, n: Vec3, contact: bool) -> bool {
+    let up = ssx_formats::vmx::dot3(n.to_array(), [0.0, 1.0, 0.0]);
+    contact && ssx_formats::vmx::gt(ssx_formats::vmx::cos(c.scoring_vertical_surface_angle_threshold), up)
 }
 
 pub fn snow_compression(c: &CarvingTuning, sp: &SurfaceProperties, distance_carved: f32) -> f32 {
@@ -48,27 +83,35 @@ pub fn riding_height_target(
     traj_height: f32,
     forced: bool,
 ) -> f32 {
-    let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t.clamp(0.0, 1.0);
-    let mut h = lerp(
-        lerp(lerp(c.riding_height_neutral, c.riding_height_tucked, b.tuck), c.riding_height_boost, b.boost),
-        c.riding_height_pre_jump,
-        b.pre_jump,
-    );
+    let h = (c.riding_height_tucked - c.riding_height_neutral).mul_add(b.tuck, c.riding_height_neutral);
+    let h = (c.riding_height_boost - h).mul_add(b.boost, h);
+    let mut h = (c.riding_height_pre_jump - h).mul_add(b.pre_jump, h);
     if forced {
         return -traj_height;
     }
     if initialized {
-        h = lerp(-traj_height, h, c.riding_height_anim_blend_curve.eval(stable_ticks));
+        let a = -traj_height;
+        h = (h - a).mul_add(c.riding_height_anim_blend_curve.eval(stable_ticks), a);
     }
-    let cos = lean.abs().cos();
-    let rad = c.collision_radius_base + c.collision_radius_upright_offset * cos;
-    (cos * h).min(-rad)
+    let cos = f64::from(lean.abs()).cos() as f32;
+    let neg_rad = -c.collision_radius_upright_offset.mul_add(cos, c.collision_radius_base);
+    (cos * h).min(neg_rad)
 }
 
 pub fn update_riding_height(c: &CarvingTuning, rh: f32, kin30: f32, floor: Option<f32>, first: bool, dt: f32) -> f32 {
-    let step = c.max_riding_height_delta * dt;
-    let rh = if first { kin30 } else { rh + (kin30 - rh).clamp(-step, step) };
-    rh.max(floor.unwrap_or(-1.0)).clamp(-c.riding_height_max, -c.riding_height_min)
+    let d = kin30 - rh;
+    let d = if first {
+        d
+    } else {
+        let step = c.max_riding_height_delta * dt;
+        d.max(-step).min(step)
+    };
+    let mut rh = rh + d;
+    let floor = floor.unwrap_or(-c.riding_height_max);
+    if floor > rh {
+        rh = floor;
+    }
+    rh.max(-c.riding_height_max).min(-c.riding_height_min)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -108,10 +151,11 @@ pub fn friction_accel(
     lean: f32,
     slip_dig: f32,
     normal_y: f32,
+    rock: f32,
     brake: f32,
     uber: bool,
 ) -> Vec3 {
-    friction_accel_grind(t, sp, v, lean, slip_dig, normal_y, brake, uber, if uber { 0.0 } else { 1.0 }, None)
+    friction_accel_grind(t, sp, v, lean, slip_dig, (normal_y, rock), brake, uber, if uber { 0.0 } else { 1.0 }, None)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -121,25 +165,25 @@ pub fn friction_accel_grind(
     v: Vec3,
     lean: f32,
     slip_dig: f32,
-    normal_y: f32,
+    (normal_y, rock): (f32, f32),
     brake: f32,
     uber: bool,
     grind_scale: f32,
     ice_slip: Option<f32>,
 ) -> Vec3 {
-    if v.abs().max_element() <= 1.525_88e-5 {
+    if v.abs().max_element() <= 1.192_092_9e-7 {
         return Vec3::ZERO;
     }
     let mut slip = ice_slip.unwrap_or_else(|| slip_dig.abs().sin() + lean.abs().sin());
-    if v.z.signum() == lean.signum() && lean != 0.0 && v.z != 0.0 {
+    if (v.z >= 0.0) == (lean >= 0.0) {
         slip = 0.0;
     }
     let lateral = slip * sp.dig_lean * grind_scale;
     let brake_mu = if uber { sp.friction_uber_bail } else { sp.friction_brake };
-    let mu = sp.friction + (brake_mu - sp.friction) * brake;
-    let steep = (normal_y / t.carving.vertical_surface_angle_threshold.cos()).clamp(0.0, 1.0);
+    let mu = (brake_mu - sp.friction).mul_add(brake, sp.friction);
+    let steep = (1.0 - rock) * (normal_y / t.carving.vertical_surface_angle_threshold.cos()).clamp(0.0, 1.0);
     let c = Vec3::new(mu * steep, 0.0, if uber { mu } else { lateral });
-    -v.normalize() * c * t.carving.friction_force_multiplier
+    (c * t.carving.friction_force_multiplier) * -v.normalize()
 }
 
 pub fn clamp_not_reversing(a: Vec3, v: Vec3, dt: f32) -> Vec3 {
@@ -162,10 +206,11 @@ pub fn adhesion_accel(
     if bail || !have_made_first_contact {
         return 0.0;
     }
-    let t = (-kin34 / sp.adhesion_dist_above).clamp(0.0, 1.0);
-    let mut m = normal_y.max(0.0) * sp.adhesion_accel * adhesion_mod * (1.0 - t);
+    let t = ((1.0 / -sp.adhesion_dist_above) * kin34).clamp(0.0, 1.0);
+    let x = adhesion_mod * sp.adhesion_accel;
+    let mut m = normal_y.max(0.0) * (-x).mul_add(t, x);
     if !stable {
-        m *= c.balance_surface_adhesion_modifier_curve.eval(wrap_pi(pitch).abs());
+        m *= c.balance_surface_adhesion_modifier_curve.eval(vmx_wrap_pi(pitch).abs());
     }
     m
 }
@@ -240,14 +285,15 @@ pub fn landing_and_adhesion(i: &LandingInputs) -> (f32, f32, f32) {
             let k2 =
                 if b.bail_on_landing { 1.0 } else { c.landing_riding_height_spring_stiffness_curve.eval(st.uls_ticks) };
             if above || k2 <= 0.0 {
-                d = (v + a_adh) * t;
+                d = a_adh.mul_add(t, v * t);
             } else {
                 let k = k2.sqrt();
                 let ex = (-k * t).exp();
                 let e0 = e + i.kin30;
-                let cc = v + k * e0;
-                let vs = (v - k * cc * t) * ex;
-                e = (e0 + cc * t) * ex - i.kin30;
+                let e0k = e0 * k;
+                let cc = e0k + v;
+                let vs = (-(cc * k)).mul_add(t, cc - e0k) * ex;
+                e = cc.mul_add(t, e0).mul_add(ex, -i.kin30);
                 d = e + i.f210;
                 if vs >= v_free {
                     v = vs;
@@ -259,11 +305,11 @@ pub fn landing_and_adhesion(i: &LandingInputs) -> (f32, f32, f32) {
         }
         let now_above = rem - d < 0.0;
         if now_above != above0 && iter == 0 {
-            let f = if d.abs() > 0.0 { (rem / d).abs() } else { 0.0 };
+            let f = (rem / d).abs();
             d = rem;
             e += rem;
             rem = 0.0;
-            v = v_start + i.g_n * f * t;
+            v = (i.g_n * f).mul_add(t, v_start);
             t *= 1.0 - f;
             above = now_above;
             above0 = now_above;
@@ -276,7 +322,7 @@ pub fn landing_and_adhesion(i: &LandingInputs) -> (f32, f32, f32) {
         dn += d;
         break;
     }
-    let nf = ((v - v_start) * c.normal_force_multiplier / i.dt).max(0.0);
+    let nf = ((v - v_start) * (c.normal_force_multiplier / i.dt)).max(0.0);
     (dn, v, nf)
 }
 
@@ -308,6 +354,7 @@ pub struct GroundInputs<'a> {
     pub ice_axe: crate::ice_axe::IceAxeFrame,
     pub avalanche_drag: f32,
     pub avalanche_friction: f32,
+    pub rock_weight: f32,
     pub dt: f32,
 }
 
@@ -317,8 +364,8 @@ pub fn ice_axe_surface(sp: &SurfaceProperties, ice: &crate::ice_axe::IceAxeFrame
     }
     let (k, e) = (ice.dig_modifier, ice.effectiveness);
     let mix = |base: f32, lo: f32, hi: f32| {
-        let v = (hi - lo) * k + lo;
-        (v - base) * e + base
+        let v = (hi - lo).mul_add(k, lo);
+        (v - base).mul_add(e, base)
     };
     SurfaceProperties {
         adhesion_accel: mix(sp.adhesion_accel, sp.adhesion_accel_ice_axe_low, sp.adhesion_accel_ice_axe_high),
@@ -353,8 +400,8 @@ impl BoostThrust {
         }
         let hb = (1.0 - (h - c.height_to_allow_full_boost) / c.height_to_allow_partial_boost).clamp(0.0, 1.0);
         let r = (speed / self.max_speed).clamp(0.0, 1.0);
-        let k = (1.0 - r * r) * self.modifier.max(0.0);
-        (self.accel_low + (self.accel_high - self.accel_low) * k) * forward_sign * hb
+        let k = (-r).mul_add(r, 1.0) * self.modifier.max(0.0);
+        (self.accel_high - self.accel_low).mul_add(k, self.accel_low) * forward_sign * hb
     }
 }
 
@@ -381,25 +428,18 @@ pub fn integrate_ground(i: &GroundInputs) -> GroundOutput {
     let g_n_world = (q1 * r.g_ground).y;
     let v_local = q1 * i.v_world;
     let tuck = if i.board_press { i.stick_y } else { i.stick_y * (1.0 - i.grind.or_press_blend) };
-    let kh = (r.k_h_ground + (r.k_h_ground_tuck - r.k_h_ground) * tuck) * i.avalanche_drag;
-    let kv = r.k_v_ground + (r.k_v_ground_tuck - r.k_v_ground) * tuck;
+    let kh = (r.k_h_ground_tuck - r.k_h_ground).mul_add(tuck, r.k_h_ground) * i.avalanche_drag;
+    let kv = (r.k_v_ground_tuck - r.k_v_ground).mul_add(tuck, r.k_v_ground);
     let mut out = GroundOutput {
         pitch_balance_vel: i.balance.pitch_balance_vel,
         use_leg_spring: st.use_leg_spring || v_local.y > c.landing_absorption_threshold || i.balance.bail_on_landing,
         ..GroundOutput::default()
     };
-    if !i.contact {
-        let a = r.g_ground + drag_accel(kh, kv, i.v_world, i.wind, dt);
-        out.a = a;
-        out.v = if i.stopped { Vec3::ZERO } else { i.v_world + a * dt };
-        out.dp = out.v * dt;
-        return out;
-    }
-    out.grounded = i.kin34 >= i.f218;
+    out.grounded = i.contact && i.kin34 >= i.f218;
     let mut v_l = v_local;
     let mut g_l = q1 * r.g_ground;
     let (mut pos_off_n, mut landed, mut vn_final, mut nf) = (0.0, false, 0.0, 0.0);
-    if st.have_made_first_contact && -i.kin34 < sp.adhesion_dist_above {
+    if i.contact && st.have_made_first_contact && -i.kin34 < sp.adhesion_dist_above {
         let li = LandingInputs {
             c,
             sp,
@@ -413,7 +453,7 @@ pub fn integrate_ground(i: &GroundInputs) -> GroundOutput {
             f210: i.f210,
             uls: out.use_leg_spring,
             pitch_balance_vel: out.pitch_balance_vel,
-            adhesion_mod: if i.grind.state != 0 { 1.0 + 300.0 * i.grind.blend } else { 1.0 },
+            adhesion_mod: if i.grind.state != 0 { 300.0f32.mul_add(i.grind.blend, 1.0) } else { 1.0 },
             dt,
         };
         (pos_off_n, vn_final, nf) = landing_and_adhesion(&li);
@@ -431,8 +471,8 @@ pub fn integrate_ground(i: &GroundInputs) -> GroundOutput {
                 let hu = (1.0 - (h - c.height_to_allow_full_unstuck_assist) / c.height_to_allow_partial_unstuck_assist)
                     .clamp(0.1, 1.0);
                 let ratio = (speed / r.max_unstuck_speed).clamp(0.0, 1.0);
-                let k = (1.0 - ratio * ratio) * i.stick_y.max(0.0);
-                a.x += (r.unstuck_accel_low + (r.unstuck_accel_high - r.unstuck_accel_low) * k) * hu * kin.fwd;
+                let k = (-ratio).mul_add(ratio, 1.0) * i.stick_y.max(0.0);
+                a.x += (r.unstuck_accel_high - r.unstuck_accel_low).mul_add(k, r.unstuck_accel_low) * hu * kin.fwd;
             }
             let half = if i.board_press { 0.5 } else { 1.0 };
             a.x += i.boost.accel(c, speed, h, kin.fwd) * half;
@@ -446,11 +486,12 @@ pub fn integrate_ground(i: &GroundInputs) -> GroundOutput {
         a_drag.y = 0.0;
     }
     a += a_drag;
-    let v_new = v_l + a * dt;
+    let v_new = a.mul_add(Vec3::splat(dt), v_l);
     let raw_fric = if out.grounded {
         let grind_scale = if i.grind.state == 0 && !i.uber { 1.0 - i.grind.blend } else { 0.0 };
         let ice_slip = i.ice_axe.active.then(|| i.ice_axe.steering_value.sin());
-        friction_accel_grind(t, sp, v_new, kin.lean, i.slip_dig, i.n.y, i.brake, i.uber, grind_scale, ice_slip)
+        let ny = (i.n.y, i.rock_weight);
+        friction_accel_grind(t, sp, v_new, kin.lean, i.slip_dig, ny, i.brake, i.uber, grind_scale, ice_slip)
             * i.avalanche_friction
     } else {
         Vec3::ZERO
@@ -462,10 +503,12 @@ pub fn integrate_ground(i: &GroundInputs) -> GroundOutput {
         landed = false;
         Vec3::ZERO
     } else {
-        q * v_l + out.a * dt
+        out.a.mul_add(Vec3::splat(dt), q * v_l)
     };
-    out.dp = q * Vec3::new(0.0, pos_off_n, 0.0) + out.v * dt;
-    floor_and_arrival(i, &mut out, &mut landed, &mut vn_final, &mut nf, g_n_world, nfm);
+    out.dp = out.v.mul_add(Vec3::splat(dt), q * Vec3::new(0.0, pos_off_n, 0.0));
+    if i.contact {
+        floor_and_arrival(i, &mut out, &mut landed, &mut vn_final, &mut nf, g_n_world, nfm);
+    }
     out.normal_force = nf;
     out
 }
@@ -484,7 +527,8 @@ fn floor_and_arrival(
     let v_local_start = q1 * i.v_world;
     let dpl = q1 * out.dp;
     let upright = if i.uber { 0.0 } else { 1.0 };
-    let rad = c.collision_radius_base + c.collision_radius_upright_offset * upright * kin.lean.abs().cos();
+    let cos = (f64::from(kin.lean.abs())).cos() as f32;
+    let rad = (upright * c.collision_radius_upright_offset).mul_add(cos, c.collision_radius_base);
     let mut y_ref = dpl;
     if i.f210 - dpl.y > -rad {
         let corr = i.f210 - dpl.y + rad;
@@ -501,15 +545,15 @@ fn floor_and_arrival(
         *vn_final = 0.0;
         y_ref = Vec3::new(0.0, corr, 0.0);
     }
-    if !i.st.have_made_first_contact && i.kin34 - y_ref.y >= i.f218 && y_ref.y.abs() > 0.0 {
-        let t_rem = (y_ref.y - i.kin34) / y_ref.y * dt;
+    if !i.st.have_made_first_contact && i.kin34 - y_ref.y >= i.f218 {
+        let t_rem = ((1.0 / y_ref.y) * (y_ref.y - i.kin34)) * dt;
         let mut vn = v_local_start.y + g_n * dt;
         let mut extra = 0.0;
         if vn < 0.0 {
             vn *= c.landing_velocity_decay_curve.eval(i.st.on_ground_ticks);
             extra = t_rem * vn;
         }
-        *nf += ((vn - v_local_start.y) * nfm / dt).abs();
+        *nf += ((vn - v_local_start.y) * (nfm / dt)).abs();
         out.dp = q * Vec3::new(y_ref.x, i.kin34 + extra, y_ref.z);
         let vl = q1 * out.v;
         out.v = q * Vec3::new(vl.x, 0.0, vl.z);
@@ -599,34 +643,45 @@ pub fn spray_source(i: &SprayInputs) -> Vec3 {
 }
 
 pub fn critically_damped_step(omega: f32, x: f32, v: f32, target: f32, t: f32) -> (f32, f32) {
-    let e = (-omega * t).exp();
+    let e = crate::intercept::exp2(vmx::mul(-(omega * t), crate::intercept::LOG2_E));
     let d = x - target;
-    let c = v + omega * d;
-    (target + (d + c * t) * e, (v - omega * c * t) * e)
+    let dw = d * omega;
+    let c = v + dw;
+    (c.mul_add(t, d).mul_add(e, target), -((c * omega).mul_add(t, -(c - dw))) * e)
 }
 
 pub fn spray_filter(st: &mut CarvingState, i: &SprayInputs) -> Spray {
     if !i.contact {
         return Spray { normal_acceleration: i.normal_force, ..Spray::default() };
     }
-    let d = spray_source(i);
-    let mag = d.length();
-    let dir = if mag > 0.0 { d / mag } else { Vec3::ZERO };
-    if i.first_contact || mag <= SPRAY_EPS {
+    spray_filter_from(st, i, spray_source(i))
+}
+
+pub fn spray_filter_from(st: &mut CarvingState, i: &SprayInputs, d: Vec3) -> Spray {
+    let d = d.to_array();
+    let d2 = vmx::dot3(d, d);
+    let r = vmx::rsqrt(d2);
+    let mag = if vmx::eq(d2, 0.0) { 0.0 } else { vmx::mul(d2, r) };
+    let (dir, mag) = if vmx::gt(mag, 0.0) { (d.map(|x| vmx::mul(x, r)), mag) } else { ([0.0; 3], 0.0) };
+    if i.first_contact || !vmx::gt(vmx::abs(mag), SPRAY_EPS) {
         (st.spray_magnitude, st.spray_derivative) = (mag, 0.0);
     } else {
-        let omega = i.responsiveness.max(0.0).sqrt();
+        let omega = crate::intercept::sqrt(i.responsiveness);
         (st.spray_magnitude, st.spray_derivative) =
             critically_damped_step(omega, st.spray_magnitude, st.spray_derivative, mag, i.dt);
     }
-    let spray = dir * st.spray_magnitude;
-    let snow = i.snow_coverage.clamp(0.0, 1.0);
-    let v_ground = i.new_velocity - i.n * i.new_velocity.dot(i.n);
+    let spray = dir.map(|x| vmx::mul(x, st.spray_magnitude));
+    let clamp01 = |x: f32| vmx::min(1.0, vmx::max(0.0, x));
+    let (snow, ice) = (clamp01(i.snow_coverage), clamp01(i.ice_coverage));
+    let (n, v) = (i.n.to_array(), i.new_velocity.to_array());
+    let dot = vmx::dot3(v, n);
+    let times = |a: [f32; 3], k: f32| Vec3::from_array(a.map(|x| vmx::mul(x, k)));
+    let v_ground: [f32; 3] = std::array::from_fn(|k| vmx::sub(v[k], vmx::mul(n[k], dot)));
     Spray {
-        carving: spray * snow,
-        ice: spray * i.ice_coverage.clamp(0.0, 1.0),
-        velocity: -v_ground * snow,
-        impact: i.n * (i.normal_force * snow),
+        carving: times(spray, snow),
+        ice: times(spray, ice),
+        velocity: times(v_ground.map(vmx::negate), snow),
+        impact: times(n.map(|x| vmx::mul(x, i.normal_force)), snow),
         normal_acceleration: i.normal_force,
     }
 }

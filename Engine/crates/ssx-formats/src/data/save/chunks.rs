@@ -418,8 +418,8 @@ mod tests {
     #[test]
     fn chunks_round_trip() {
         let flow = FlowChunk {
-            peaks: vec![(7, [0, 1, 0, 1, 0])],
-            ranges: vec![(9, [0, 2, 0, 0, 0])],
+            peaks: vec![(7, [7, 1, 0, 0, 1])],
+            ranges: vec![(9, [0, 0, 2, 0, 0])],
             drops: vec![(1, 2), (5, 1)],
             chapter_drops: vec![1, 5],
             counts: vec![(1, 3, 1, 0)],

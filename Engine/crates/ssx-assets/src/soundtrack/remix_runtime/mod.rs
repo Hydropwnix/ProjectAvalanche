@@ -360,6 +360,24 @@ mod tests {
     }
 
     #[test]
+    fn the_sky_drops_presentation_closes_the_gate_but_for_the_event_type() {
+        let mut g = GameInputs { enabled: true, armed: true, skydrop: true, ..GameInputs::default() };
+        g.post("RaceEventType", 2.0);
+        g.post("Jump", 0.0);
+        g.post("UpdateCarve", 0.6);
+        let f = FrameInputs { ms_in_air: 4000, ms_to_land: 9000, rewinding: true, ..FrameInputs::default() };
+        g.frame(&f);
+        assert_eq!(g.race_event_type, 2);
+        assert!(g.events.is_empty(), "{:?}", g.events);
+        assert_eq!((g.carve, g.ms_in_air, g.ms_to_land), (0.01, 0, 0), "the wrapper's start values");
+        g.skydrop = false;
+        g.post("Jump", 0.0);
+        g.frame(&f);
+        assert_eq!(g.events, ["Jump", "Rewind Start"]);
+        assert_eq!((g.ms_in_air, g.ms_to_land), (4000, 9000));
+    }
+
+    #[test]
     fn posts_follow_the_controller_gate_and_rewind_latch() {
         let mut g = GameInputs::default();
         g.post("BoostStart", 0.0);
@@ -383,6 +401,26 @@ mod tests {
         g.frame(&f);
         g.events_frame(33.0);
         assert_eq!(g.events, ["Rewind Stop"], "the death post waits for the flag to clear");
+    }
+
+    #[test]
+    fn the_wrappers_reset_posts_every_stop() {
+        let mut g = GameInputs { enabled: true, armed: true, ..GameInputs::default() };
+        g.post("SuperAwesomeModeStart", 0.0);
+        g.post("UpdateCarve", 0.7);
+        g.music_ducker(true);
+        g.frame(&FrameInputs { ms_in_air: 900, oxygen: 0.3, ..FrameInputs::default() });
+        g.post("RaceEventType", 2.0);
+        g.reset_wrapper();
+        assert_eq!(g.events.len(), 13);
+        assert!(g.events.iter().all(|e| *e == "Land" || !e.ends_with(" Start")), "{:?}", g.events);
+        assert!(g.events.contains(&"Music Ducker Stop") && g.events.contains(&"Super Awesome Mode Stop"));
+        let order: Vec<_> = EVENT_ORDER.iter().filter(|e| g.events.contains(e)).collect();
+        assert!(order.iter().zip(&g.events).all(|(a, b)| *a == b), "in the update's order");
+        assert_eq!((g.carve, g.ms_in_air, g.oxygen, g.pitch, g.race_event_type), (0.01, 0, 1.0, 1.0, -1));
+        assert!(g.enabled && g.armed, "the controller's gate is not the wrapper's");
+        g.reset_messages();
+        assert!(!g.enabled && !g.armed);
     }
 
     #[test]

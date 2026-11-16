@@ -11,6 +11,40 @@ pub(super) fn avalanche_override() -> Option<(i32, f32)> {
     Some((set.trim().parse().ok()?, k.trim().parse().ok()?))
 }
 
+fn forced_tricky_times() -> &'static (Vec<f32>, Vec<f32>) {
+    static TIMES: std::sync::OnceLock<(Vec<f32>, Vec<f32>)> = std::sync::OnceLock::new();
+    TIMES.get_or_init(|| {
+        let read = |name: &str| -> Vec<f32> {
+            let Ok(v) = std::env::var(name) else { return Vec::new() };
+            let times: Option<Vec<f32>> =
+                v.split(',').map(|x| x.trim().parse::<f32>().ok().filter(|t| t.is_finite() && *t >= 0.0)).collect();
+            match times {
+                Some(t) if !t.is_empty() && t.len() <= 16 => t,
+                _ => {
+                    warn!("{name}={v:?}: 1 … 16 ride seconds expected; not used");
+                    Vec::new()
+                }
+            }
+        };
+        (read("SSX_RIDE_TRICKY_AT"), read("SSX_RIDE_SUPER_AT"))
+    })
+}
+
+// PORT(choice): test switches of the port, no game behaviour (as `sfx_ride --super-at`): at each named ride second the
+// scoring's Tricky timer is set to the tuning's full length (and for Super its Super Tricky timer and activation), so a
+// run reaches Tricky and Super Tricky without 10 000 points in Tricky; the console has no such switch.
+pub(super) fn forced_tricky(t: f32) -> Option<bool> {
+    let (tricky, sup) = forced_tricky_times();
+    let hit = |list: &[f32]| list.iter().any(|&s| s <= t && s > t - 1.0 / SIM_HZ);
+    if hit(sup) {
+        Some(true)
+    } else if hit(tricky) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 fn brake_window() -> Option<(f32, f32)> {
     let v = std::env::var("SSX_RIDE_BRAKE").ok()?;
     let (a, b) = v.split_once(',')?;
@@ -39,6 +73,18 @@ pub(super) fn back_script() -> Option<&'static [f32]> {
         .as_deref()
 }
 
+fn button_script() -> Option<&'static [(f32, Option<char>)]> {
+    static SCRIPT: std::sync::OnceLock<Option<ssx_physics::harness::buttons::Script>> = std::sync::OnceLock::new();
+    SCRIPT
+        .get_or_init(|| {
+            let v = std::env::var("SSX_RIDE_BUTTON_SCRIPT").ok()?;
+            ssx_physics::harness::buttons::parse_script(&v)
+                .map_err(|e| warn!("SSX_RIDE_BUTTON_SCRIPT {e}: not used"))
+                .ok()
+        })
+        .as_deref()
+}
+
 fn grab_buttons_script() -> Option<&'static [char]> {
     static SEQ: std::sync::OnceLock<Option<Vec<char>>> = std::sync::OnceLock::new();
     SEQ.get_or_init(|| {
@@ -59,6 +105,25 @@ pub(super) fn press_script() -> Option<(bool, f32, f32)> {
     let from = parts.next().and_then(|x| x.trim().parse().ok()).unwrap_or(0.0);
     let to = parts.next().and_then(|x| x.trim().parse().ok()).unwrap_or(f32::MAX);
     Some((nose, from, to))
+}
+
+// PORT(choice): a test switch of the port, no game behaviour: the scripted player uses the oxygen tank (R1,
+// `PlayerUpdate_Oxygen` 0x82CF8788) as a player watching the gauge would; the console has no scripted player.
+fn oxygen_script() -> Option<(f32, f32)> {
+    static LEVELS: std::sync::OnceLock<Option<(f32, f32)>> = std::sync::OnceLock::new();
+    *LEVELS.get_or_init(|| {
+        let v = std::env::var("SSX_RIDE_OXYGEN").ok()?;
+        let parsed = v.split_once(',').and_then(|(a, b)| Some((a.trim().parse::<f32>().ok()?, b.trim().parse().ok()?)));
+        match parsed {
+            Some((low, high)) if (0.0..=1.0).contains(&low) && (0.0..=1.0).contains(&high) && low < high => {
+                Some((low, high))
+            }
+            _ => {
+                warn!("SSX_RIDE_OXYGEN={v:?}: LOW,HIGH expected (0 … 1, LOW below HIGH); not used");
+                None
+            }
+        }
+    })
 }
 
 pub(super) fn wingsuit_script() -> Option<(f32, f32)> {
@@ -144,13 +209,29 @@ impl Ride {
             let step = self.steps + 1;
             self.rewind_pad = self.auto_rewind.pad(&self.state, idle, time, step);
             self.r2 = 0.0;
-            (self.l2, self.r1) = (false, self.scripted_r1());
+            let tank = oxygen_script().is_some_and(|(low, high)| {
+                let o = &self.state.survival;
+                !self.state.in_air() && o.oxygen_tank > 0.0 && (o.oxygen < low || self.r1 && o.oxygen < high)
+            });
+            if tank != self.oxygen_held {
+                let o = &self.state.survival;
+                let what = if tank { "held" } else { "let go" };
+                info!(
+                    "Ride step {step}: SSX_RIDE_OXYGEN R1 {what} (oxygen {:.3}, tank {:.3})",
+                    o.oxygen, o.oxygen_tank
+                );
+                self.oxygen_held = tank;
+            }
+            (self.l2, self.r1) = (false, self.scripted_r1() || tank);
             return;
         }
         let Some(fixed) = self.fixed_input else { return };
         let in_air = self.state.state != RideState::Riding;
         let release = self.jump_release.iter().any(|&n| self.steps == u64::from(n));
         let mut input = Input { jump: jump_held(&self.jump_release, self.steps), ..fixed };
+        if self.steer_from.is_some_and(|from| self.seconds() < from) {
+            input.steer = 0.0;
+        }
         if let Some(at) = intro_skip_at()
             && self.state.start.is_some()
             && (self.seconds() - at).abs() < 0.5 / ssx_physics::SIM_HZ
@@ -272,7 +353,18 @@ fn autoplay_input(ride: &Ride) -> (Input, TrickInput) {
             input.dpad_held = true;
         }
     }
-    if s.state != RideState::Riding && s.air.air_time < 0.5 * 60.0 {
+    if let Some(script) = button_script() {
+        let held = ssx_physics::harness::buttons::scripted(script, time);
+        ssx_physics::harness::buttons::press(&mut tricks, held);
+        if i == 0 || held != ssx_physics::harness::buttons::scripted(script, (i - 1) as f32 / SIM_HZ) {
+            let start = s.start.as_ref().map(|l| if l.idle() { "idle" } else { "go" });
+            info!(
+                "Ride step {}: SSX_RIDE_BUTTON_SCRIPT {held:?} from {time:.3} s ({:?}, level start {start:?})",
+                ride.steps + 1,
+                s.state
+            );
+        }
+    } else if s.state != RideState::Riding && s.air.air_time < 0.5 * 60.0 {
         match grab_buttons_script() {
             Some(seq) if !s.on_ground => ssx_physics::harness::buttons::press(
                 &mut tricks,

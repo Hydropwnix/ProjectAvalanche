@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 
 use anyhow::{Result, bail};
 
@@ -38,6 +38,20 @@ enum Found {
     Failed { tag: u64, error: String },
 }
 
+struct Queued {
+    tag: u64,
+    kind: BlockKind,
+    file: Arc<StreamFile>,
+    offset: u64,
+    frame: u64,
+}
+
+#[derive(Clone, Copy)]
+struct Waiting {
+    since: u64,
+    running: bool,
+}
+
 pub struct Slot {
     id: u64,
     io: &'static Sender<Msg>,
@@ -45,7 +59,7 @@ pub struct Slot {
     max_block: usize,
     epoch: u32,
     next_tag: u64,
-    queued: VecDeque<(u64, BlockKind)>,
+    queued: VecDeque<Queued>,
     chunks: VecDeque<Chunk>,
     at: usize,
     release_front: bool,
@@ -53,6 +67,10 @@ pub struct Slot {
     failed: Vec<(u64, String)>,
     complete: Vec<u64>,
     running: bool,
+    waiting: Option<Waiting>,
+    consumed: Arc<AtomicU64>,
+    given: Option<(u64, u64)>,
+    released: (u64, u64),
 }
 
 static NEXT_SLOT: AtomicU64 = AtomicU64::new(1);
@@ -67,7 +85,9 @@ impl Slot {
         let max_block = (chunks - 1) * chunk;
         let id = NEXT_SLOT.fetch_add(1, Relaxed);
         let (to, rx) = channel();
-        io.send(Msg::Open { slot: id, chunk, chunks, max_block, to }).map_err(|_| anyhow::anyhow!("no file thread"))?;
+        let consumed = Arc::new(AtomicU64::new(0));
+        let open = Msg::Open { slot: id, ring: ring.bytes, chunk, chunks, max_block, consumed: consumed.clone(), to };
+        io.send(open).map_err(|_| anyhow::anyhow!("no file thread"))?;
         Ok(Self {
             id,
             io,
@@ -83,13 +103,18 @@ impl Slot {
             failed: Vec::new(),
             complete: Vec::new(),
             running: false,
+            waiting: None,
+            consumed,
+            given: None,
+            released: (0, 0),
         })
     }
 
     pub fn queue(&mut self, file: Arc<StreamFile>, offset: u64, kind: BlockKind) -> u64 {
         let tag = self.next_tag;
         self.next_tag += 1;
-        self.queued.push_back((tag, kind));
+        let frame = super::frame().0;
+        self.queued.push_back(Queued { tag, kind, file: file.clone(), offset, frame });
         let req = Request { tag, file, offset, kind };
         let _ = self.io.send(Msg::Queue { slot: self.id, epoch: self.epoch, req });
         tag
@@ -100,10 +125,11 @@ impl Slot {
     }
 
     pub fn front(&self) -> Option<u64> {
-        self.queued.front().map(|q| q.0)
+        self.queued.front().map(|q| q.tag)
     }
 
     pub fn flush(&mut self) {
+        (self.given, self.released) = (None, (0, 0));
         self.epoch = self.epoch.wrapping_add(1);
         let _ = self.io.send(Msg::Flush { slot: self.id, epoch: self.epoch });
         self.queued.clear();
@@ -111,6 +137,7 @@ impl Slot {
         self.complete.clear();
         self.release_front = false;
         self.running = false;
+        self.waiting = None;
         self.at = 0;
         while let Some(c) = self.chunks.pop_front() {
             self.spend(c.buf);
@@ -118,9 +145,21 @@ impl Slot {
     }
 
     pub fn skip_front(&mut self) {
-        let Some((tag, _)) = self.queued.pop_front() else { return };
-        let _ = self.io.send(Msg::Cancel { slot: self.id, epoch: self.epoch, tag });
+        self.give_back();
+        let Some(Queued { tag, .. }) = self.queued.pop_front() else { return };
+        let released = if self.released.0 == tag { self.released.1 } else { 0 };
+        let _ = self.io.send(Msg::Cancel { slot: self.id, epoch: self.epoch, tag, released });
         self.drop_tag(tag);
+    }
+
+    fn give_back(&mut self) {
+        let Some((tag, n)) = self.given.take() else { return };
+        self.consumed.fetch_add(n, std::sync::atomic::Ordering::Release);
+        if self.released.0 == tag {
+            self.released.1 += n;
+        } else {
+            self.released = (tag, n);
+        }
     }
 
     fn spend(&self, buf: Vec<u8>) {
@@ -151,7 +190,7 @@ impl Slot {
     fn accept(&mut self, d: Delivery) {
         match d {
             Delivery::Data { epoch, tag, buf, last } => {
-                if epoch != self.epoch || !self.queued.iter().any(|q| q.0 == tag) {
+                if epoch != self.epoch || !self.queued.iter().any(|q| q.tag == tag) {
                     self.spend(buf);
                     return;
                 }
@@ -172,33 +211,52 @@ impl Slot {
 impl Slot {
     pub fn next_block(&mut self) -> Next<'_> {
         let wait = !super::live_thread();
+        self.give_back();
+        if self.queued_this_frame() {
+            return Next::Pending;
+        }
         let found = loop {
             self.release();
             while let Ok(d) = self.rx.try_recv() {
                 self.accept(d);
             }
-            match self.find() {
-                Found::Pending if wait => match self.rx.recv() {
-                    Ok(d) => self.accept(d),
-                    Err(_) => {
-                        let tag = self.front().unwrap_or(0);
-                        break Found::Failed { tag, error: "the stream file thread is gone".into() };
-                    }
+            let got = match self.find() {
+                Found::Pending if wait => self.rx.recv().map_err(|_| ()),
+                Found::Pending => match self.frame_due() {
+                    Some(left) => match self.rx.recv_timeout(left) {
+                        Ok(d) => Ok(d),
+                        Err(RecvTimeoutError::Timeout) => break Found::Pending,
+                        Err(RecvTimeoutError::Disconnected) => Err(()),
+                    },
+                    None => break Found::Pending,
                 },
                 f => break f,
+            };
+            match got {
+                Ok(d) => self.accept(d),
+                Err(()) => {
+                    let tag = self.front().unwrap_or(0);
+                    break Found::Failed { tag, error: "the stream file thread is gone".into() };
+                }
             }
         };
         match found {
             Found::Ready { tag, size, ty, last } => self.take(tag, size, ty, last),
             Found::Pending => {
                 super::count_late(self.running);
+                if self.waiting.is_none() {
+                    let since = crate::sfx::output::stats::RENDERED.load(std::sync::atomic::Ordering::Relaxed);
+                    self.waiting = Some(Waiting { since, running: self.running });
+                }
                 Next::Pending
             }
             Found::Idle => {
                 self.running = false;
+                self.waiting = None;
                 Next::Idle
             }
             Found::Failed { tag, error } => {
+                self.waiting = None;
                 if self.front() == Some(tag) {
                     self.queued.pop_front();
                 }
@@ -233,7 +291,7 @@ impl Slot {
     }
 
     fn find(&mut self) -> Found {
-        let Some(&(tag, kind)) = self.queued.front() else { return Found::Idle };
+        let Some(&Queued { tag, kind, .. }) = self.queued.front() else { return Found::Idle };
         while self.chunks.front().is_some_and(|c| c.tag < tag) {
             if let Some(c) = self.chunks.pop_front() {
                 self.spend(c.buf);
@@ -267,8 +325,30 @@ impl Slot {
         Found::Ready { tag, size: head.size, ty: head.ty, last: head.last }
     }
 
+    fn queued_this_frame(&self) -> bool {
+        let n = super::frame().0;
+        n != 0 && self.queued.front().is_some_and(|q| q.frame == n)
+    }
+
+    fn frame_due(&self) -> Option<std::time::Duration> {
+        let step = super::frame().1?;
+        step.checked_duration_since(std::time::Instant::now()).filter(|d| !d.is_zero())
+    }
+
     fn take(&mut self, tag: u64, size: usize, ty: BlockType, last: bool) -> Next<'_> {
+        if let Some(w) = self.waiting.take()
+            && let Some(q) = self.queued.front()
+        {
+            let now = crate::sfx::output::stats::RENDERED.load(std::sync::atomic::Ordering::Relaxed);
+            super::wait::record(super::wait::WaitRecord::new(
+                now.saturating_sub(w.since),
+                w.running,
+                q.file.name(),
+                q.offset,
+            ));
+        }
         self.running = true;
+        self.given = Some((tag, size as u64));
         if last {
             self.queued.pop_front();
             self.complete.retain(|&t| t != tag);
@@ -347,5 +427,24 @@ mod tests {
         assert!(matches!(slot.next_block(), Next::Block(_)));
         slot.flush();
         assert!(!slot.running);
+    }
+
+    #[test]
+    fn the_live_mixer_has_a_new_stream_from_the_next_frame_on() {
+        let mut b = ((8 + 64) as u32 | 0x8000_0000).to_be_bytes().to_vec();
+        b.extend(1u32.to_be_bytes());
+        b.extend([7u8; 64]);
+        let file = StreamFile::memory("live", b);
+        crate::sfx_stream::mark_live_thread();
+        let step = || Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
+        let mut slot = Slot::new(Ring::SPEECH).unwrap();
+        crate::sfx_stream::live_frame(4, None);
+        slot.queue(file, 0, BlockKind::V0);
+        crate::sfx_stream::live_frame(4, step());
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(matches!(slot.next_block(), Next::Pending), "the queueing frame");
+        crate::sfx_stream::live_frame(5, step());
+        assert!(matches!(slot.next_block(), Next::Block(b) if b.last && b.payload == [7u8; 64]));
+        assert!(matches!(slot.next_block(), Next::Idle));
     }
 }

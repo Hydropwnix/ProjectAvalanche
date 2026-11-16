@@ -232,12 +232,19 @@ pub fn quit_return(fe: &mut FrontEnd, env: &mut FeEnv) {
     }
     let drop = fe.current_drop;
     fe.profile.globe_last_drop = drop;
+    let wt = fe.career.event(drop).is_some_and(|e| e.drop_type == DropType::Campaign);
+    if !wt && let Some(c) = fe.recommend.chosen.take() {
+        fe.note(format!("the quit's return: the suggestion taken → message 0xCC4A7421 {{{:#010x}, 1}}", c.drop));
+        super::recommend::accept(fe, env, &c);
+        fe.note("the quit's return: message 0xD65D46E4");
+        super::recommend::clear(fe);
+        return;
+    }
     if std::mem::take(&mut fe.change_gear) {
         fe.note("the quit's return: FE manager +0x2E (change gear) → +0x7C(0), screen 0x30");
         env.values.set_int(PENDING_NAVIGATION, super::screens::id::EQUIPMENT as i32);
         return;
     }
-    let wt = fe.career.event(drop).is_some_and(|e| e.drop_type == DropType::Campaign);
     let screen = if wt {
         let node = fe.profile.globe_last_drop;
         let (level, screen) = focus::node_screen(

@@ -1,28 +1,17 @@
+use std::cmp::Ordering;
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 use anyhow::Result;
 use glam::{Quat, Vec3};
 
-use crate::actuator::crit_damped;
 use crate::character::CarvingTuning;
 use crate::curve::Curve;
-use crate::steering::{SteeringState, ground_frame, slip_angle, wrap_pi};
+use crate::steering::{SteeringState, ground_frame, slip_angle, vmx_wrap_pi, wrap_pi_f64};
 use crate::tuning::Bundle;
 
 pub const BAIL_ON_LANDING_PITCH: f32 = 2.356_194;
 pub const PITCH_BALANCE_STIFFNESS: f32 = 0.01;
 pub const PITCH_BALANCE_STABLE: f32 = 0.05;
-pub const BAIL_ALLOW_AIRBORNE_TICKS: f32 = 20.0;
-// TODO(guess): a landing bail ends after 90 riding ticks; the retail build has no such end. `BailOnLanding` (+0x19B,
-// BLN_carving_state_bail_on_landing) is written only by the touchdown 0x82CCF6D4, BalanceUpdate's level complete
-// 0x82CC7A88 and avalanche branch 0x82CC7B40 / 0x82CC7BF8 and the construction 0x82CC2EB8; ReadStateVars 0x82CC4228
-// and WriteStateVars 0x82CC3824 sync it with the graph, but anim_all.cba has no tag or Lua write of it
-// (state_riding_bail's entry and state_bail_cycle's exits only read it), no other disc file names it, and the
-// title update's BalanceUpdate (0x82CA2E28) is the same body. So a pitch bail on smooth ground lasted until an
-// air phase (issue #5, PR #18 by chryzsh). 90 is at least the longest SEQ_bail_ground_* landing sequence (62 to 71
-// ticks; the cycles are 48 / 54), so the landing plays out first. Settle: a retail writer of the variable on the
-// ground and its delay.
-pub const BAIL_ON_LANDING_MAX_TICKS: f32 = 90.0;
 pub const UBER_RECOVER_TRIGGER_CLEAR_TICKS: f32 = 110.0;
 pub const UBER_RECOVER_HOP_TICKS: f32 = 4.0;
 pub const UBER_CRASH_GATE_TICKS: f32 = 30.0;
@@ -60,6 +49,7 @@ pub struct BalanceTuning {
     pub uber_crash_ticks_to_full_friction: f32,
     pub max_pitch_angle_vel_to_prevent_braking: f32,
     pub min_landing_impact_velocity_ticks: f32,
+    pub allow_bails: bool,
     pub tumble_friction_curve: Curve,
     pub spin_impact: Curve,
     pub pitch_impact: Curve,
@@ -96,6 +86,10 @@ impl BalanceTuning {
             uber_crash_ticks_to_full_friction: a.f32("UberCrashTicksToFullFriction")?,
             max_pitch_angle_vel_to_prevent_braking: a.f32("MaxPitchAngleVelToPreventBraking")?,
             min_landing_impact_velocity_ticks: a.f32("MinLandingImpactVelocityTicks")?,
+            allow_bails: match a.asset_opt("AllowBailsAsset")? {
+                Some(b) => b.int("Default")? != 0,
+                None => true,
+            },
             tumble_friction_curve: a.curve("TumbleFrictionCurve")?,
             spin_impact: a.curve("SpinImpactCurve")?,
             pitch_impact: a.curve("PitchImpactCurve")?,
@@ -127,6 +121,7 @@ pub struct LandingState {
     pub pitch_balance_vel: f32,
     pub bail_on_landing: bool,
     pub bailed_because_of_rock: bool,
+    pub is_in_rock_slide: bool,
     pub uber_crash: bool,
     pub landing_score: f32,
     pub stable: bool,
@@ -137,7 +132,6 @@ pub struct LandingState {
     pub auto_recover_backslide: bool,
     pub landed_switch: bool,
     pub ticks: f32,
-    pub landing_bail_ticks: f32,
     pub uber_recovery: UberRecovery,
     pub quality: LandingQuality,
     pub touchdown_pitch: f32,
@@ -183,13 +177,16 @@ impl ImpactKick {
 }
 
 fn sgn(x: f32) -> f32 {
-    if x > 0.0 {
-        1.0
-    } else if x < 0.0 {
-        -1.0
-    } else {
-        0.0
-    }
+    if x == 0.0 { 0.0 } else { fsel_sign(x) }
+}
+
+fn pitch_balance_step(x: f32, v: f32, dt: f32) -> (f32, f32) {
+    let w = crate::intercept::sqrt(PITCH_BALANCE_STIFFNESS);
+    let e = crate::intercept::exp2(ssx_formats::vmx::mul(-(dt * w), crate::intercept::LOG2_E));
+    let dw = x * w;
+    let c = dw + v;
+    let ct = dt * c;
+    ((ct + x) * e, -(ct.mul_add(w, -(c - dw))) * e)
 }
 
 fn fsel_sign(x: f32) -> f32 {
@@ -247,14 +244,14 @@ impl LandingState {
         let mut a = *alignment;
         let use_impact_tuning = impact.use_impact_tuning();
         let spin_kick = impact.spin_kick(&t.spin_impact, a, c.speed_threshold);
-        let spin = slip_angle(c, ground_frame(a, n).conjugate() * v, steering.cached_slip);
+        let spin = slip_angle(c, ground_frame(a, n).conjugate() * v, crate::steering::CACHED_SPIN_ANGLE);
         let spin_vel = twist(a.conjugate() * w * a, Vec3::Y) + spin_kick;
-        a = (a * Quat::from_rotation_y(-spin)).normalize();
+        a = crate::steering::vmx_quat_mul(a, crate::steering::vmx_axis_angle([0.0, 1.0, 0.0], -spin));
         let pitch_kick = impact.pitch_kick(&t.pitch_impact, ground_frame(a, n));
         let pitch_vel = twist(a.conjugate() * w * a, Vec3::Z);
         let pitch = twist(ground_frame(a, n).conjugate() * a, Vec3::Z);
         let bail = allow_bails && pitch.abs() > BAIL_ON_LANDING_PITCH;
-        a = (a * Quat::from_rotation_z(-pitch)).normalize();
+        a = crate::steering::vmx_quat_mul(a, crate::steering::vmx_axis_angle([0.0, 0.0, 1.0], -pitch));
         *alignment = a;
         let g = ground_frame(a, n);
         let vg = a.conjugate() * (v - n * v.dot(n));
@@ -299,26 +296,16 @@ impl LandingState {
 }
 
 impl LandingState {
-    pub fn landing_bail_limit(&mut self, spared: bool, dt: f32) {
-        if !self.bail_on_landing || spared {
-            self.landing_bail_ticks = 0.0;
-            return;
-        }
-        self.landing_bail_ticks += dt;
-        if self.landing_bail_ticks >= BAIL_ON_LANDING_MAX_TICKS {
-            (self.bail_on_landing, self.landing_bail_ticks) = (false, 0.0);
-        }
-    }
-
     pub fn recovery_input(&self, t: &BalanceTuning, fwd: f32, stick_y: f32) -> bool {
         stick_y.abs() > t.input_dead_zone && fsel_sign(stick_y) == fsel_sign(fwd * self.pitch)
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[must_use = "true: `TicksRidingOnRock` (+0x150) is cleared"]
     pub fn balance_update(
         &mut self,
         t: &BalanceTuning,
-        fwd: f32,
+        (fwd, forward_sign): (f32, f32),
         stick_y: f32,
         speed: f32,
         recovery_input: bool,
@@ -328,17 +315,18 @@ impl LandingState {
         is_dead: bool,
         level_complete: bool,
         board_press: bool,
+        bounce: (f32, bool),
         dt: f32,
-    ) {
+    ) -> bool {
         self.ticks += dt;
         if level_complete {
             self.bail_on_landing = false;
         }
         let input_active = stick_y.abs() > t.input_dead_zone;
         let helping_input = input_active && fsel_sign(stick_y) == fsel_sign(fwd * self.pitch);
-        let bail_angle = t.bail_angle_curve.eval(wrap_pi(self.spin).abs());
-        let wp = wrap_pi(self.pitch);
-        let backslide = (fwd < 0.0 && wp < -t.back_slide_threshold) || (fwd > 0.0 && wp > t.back_slide_threshold);
+        let bail_angle = t.bail_angle_curve.eval(vmx_wrap_pi(self.spin).abs());
+        let wp = vmx_wrap_pi(self.pitch);
+        let backslide = (fwd < 0.0 && -t.back_slide_threshold > wp) || (fwd > 0.0 && wp > t.back_slide_threshold);
         if input_active {
             self.backslide_ticks = 0.0;
             self.auto_recover_backslide = false;
@@ -351,9 +339,10 @@ impl LandingState {
         let restore = lpv != fsel_sign(self.pitch_vel);
         let same_side = lpv == fsel_sign(self.pitch);
         let mut backslide_target = false;
-        if self.pitch.abs() >= PI && !self.bail_on_landing && !rock_or_dead {
+        if !matches!(self.pitch.abs().partial_cmp(&PI), Some(Ordering::Less)) && !self.bail_on_landing && !rock_or_dead
+        {
             self.pitch_vel = -(t.bail_tumble_angular_velocity_curve.eval(speed) * fwd);
-            self.pitch += dt * self.pitch_vel;
+            self.pitch = dt.mul_add(self.pitch_vel, self.pitch);
         } else {
             let p = self.pitch.abs();
             let helping = helping_input || level_complete || self.auto_recover_backslide || grinding;
@@ -384,43 +373,51 @@ impl LandingState {
             if self.bail_on_landing {
                 target = fsel_sign(self.pitch) * PI;
             }
-            let stiffness = if self.use_impact_tuning { stiffness * t.impact_stiffness_multiplier } else { stiffness };
-            let (e, r) = crit_damped(self.pitch - target, self.pitch_vel, stiffness.max(0.0).sqrt(), dt);
-            (self.pitch, self.pitch_vel) = (e + target, r);
+            let multiplier = if self.use_impact_tuning { t.impact_stiffness_multiplier } else { 1.0 };
+            let stiffness = multiplier * stiffness;
+            let (bounce_x, rock_bail) = bounce;
+            if bounce_x.abs() > 0.0 && (self.bail_on_landing || rock_bail) {
+                self.pitch_vel = bounce_x * fwd;
+                self.pitch = self.pitch_vel.mul_add(dt, self.pitch);
+            } else {
+                let w = crate::intercept::sqrt(stiffness);
+                (self.pitch, self.pitch_vel) =
+                    crate::ground::critically_damped_step(w, self.pitch, self.pitch_vel, target, dt);
+            }
         }
         if !self.bail_on_landing && ((fwd < 0.0 && self.pitch > bail_angle) || (fwd > 0.0 && self.pitch < -bail_angle))
         {
             self.landing_score = 0.0;
-            self.pitch += fwd * TAU;
+            self.pitch = fwd.mul_add(TAU, self.pitch);
         }
-        let (e, r) = crit_damped(self.pitch_balance, self.pitch_balance_vel, PITCH_BALANCE_STIFFNESS.sqrt(), dt);
-        (self.pitch_balance, self.pitch_balance_vel) = (e, r);
-        let k = t.spin_stiffness(self.use_impact_tuning).max(0.0).sqrt();
-        let mut target = if backslide_target { fwd * FRAC_PI_2 } else { self.spin_target };
+        (self.pitch_balance, self.pitch_balance_vel) =
+            pitch_balance_step(self.pitch_balance, self.pitch_balance_vel, dt);
+        let w = crate::intercept::sqrt(t.spin_stiffness(self.use_impact_tuning));
+        let mut target = if backslide_target { forward_sign * FRAC_PI_2 } else { self.spin_target };
         if self.bail_on_landing {
             target = self.spin;
         }
-        let (e, r) = crit_damped(self.spin - target, self.spin_vel, k, dt);
-        (self.spin, self.spin_vel) = (e + target, r);
-        let leg_spring = use_leg_spring;
+        (self.spin, self.spin_vel) = crate::ground::critically_damped_step(w, self.spin, self.spin_vel, target, dt);
         self.stable = grinding
             || self.pitch_vel.abs() < t.stabilized_pitch_vel
                 && self.pitch.abs() < t.stabilized_pitch_angle
                 && self.spin_vel.abs() < t.stabilized_spin_vel
-                && wrap_pi(target - self.spin).abs() < t.stabilized_spin_angle
+                && wrap_pi_f64(target - self.spin).abs() < t.stabilized_spin_angle
                 && (self.pitch_balance.abs() < PITCH_BALANCE_STABLE || board_press)
-                && (leg_spring || board_press);
+                && (use_leg_spring || board_press);
         self.stable_ticks = if self.is_upright(t) { self.stable_ticks + dt } else { 0.0 };
-        let wp = wrap_pi(self.pitch);
-        let over = (fwd < 0.0 && wp > bail_angle) || (fwd > 0.0 && wp < -bail_angle);
+        let wp = vmx_wrap_pi(self.pitch);
+        let over = (fwd < 0.0 && wp > bail_angle) || (fwd > 0.0 && -bail_angle > wp);
         self.backslide = backslide_target;
         self.tumbling = self.bail_on_landing || backslide || uber_sliding || over;
         self.backslide_ticks = if backslide_target { self.backslide_ticks + dt } else { 0.0 };
-        if recovery_input || self.backslide_ticks > t.max_ticks_in_auto_backslide {
+        let clear_rock_ticks = recovery_input || self.backslide_ticks > t.max_ticks_in_auto_backslide;
+        if clear_rock_ticks {
             self.auto_recover_backslide = true;
         }
         self.use_impact_tuning = self.use_impact_tuning && !self.stable;
         self.update_quality();
+        clear_rock_ticks
     }
 
     fn update_quality(&mut self) {
@@ -445,7 +442,7 @@ impl LandingState {
         if self.bail_on_landing {
             0.0
         } else if !self.stable {
-            curve.eval(wrap_pi(self.pitch).abs())
+            curve.eval(crate::steering::vmx_wrap_pi(self.pitch).abs())
         } else {
             1.0
         }

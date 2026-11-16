@@ -1,14 +1,13 @@
 use bevy::prelude::*;
 
-use crate::camera::graph;
-use crate::ride::Ride;
+use ssx_physics::collision::{Hit, SegmentQuery};
 
 pub(super) const TICKS_SINCE_COLLISION: f32 = 200.0;
 
 const MAX_DEGREES_FOR_COLLISION_TEST: f32 = 10.0;
 const MAX_DISTANCE_FOR_COLLISION_TEST: f32 = 1.0;
 
-const QUERY_RADIUS: f32 = 0.25;
+const QUERY_RADII: [f32; 9] = [0.25, 0.25, 0.25, 0.25, 0.25, 0.0, 0.0, 0.0, 0.0];
 const QUERY_CLASS_MASK: u32 = 0x1C00;
 
 const RAY_GRID: [Vec2; 9] = [
@@ -32,25 +31,53 @@ pub(super) struct Queries {
     pub(super) was_colliding_all: bool,
 }
 
-pub(super) fn physics_queries(ride: &Ride, q: &mut Queries, cam: Vec3, p: Vec3, up: Vec3, dt: f32) -> Vec3 {
+fn segments(cam: Vec3, p: Vec3, up: Vec3, ideal: Option<f32>) -> (f32, Vec3, Vec3, [SegmentQuery; 9]) {
     let to_player = p - cam;
     let len = to_player.length();
     let f = if len > 0.0 { to_player / len } else { Vec3::ZERO };
     let dist = len.max(2.0);
-    let d = if q.collided_all { graph::DISTANCE } else { dist };
+    let d = ideal.unwrap_or(dist);
     let side = up.cross(f).try_normalize().unwrap_or(Vec3::ZERO);
     let up2 = f.cross(side).try_normalize().unwrap_or(Vec3::ZERO);
     let a = (MAX_DISTANCE_FOR_COLLISION_TEST / dist).atan().min(0.5 * MAX_DEGREES_FOR_COLLISION_TEST.to_radians());
     let ray = -f * d * 1.1;
     let turns = [(side, 0.0), (side, -a), (side, a), (up2, a), (up2, -a), (side, -2.0 * a), (side, 2.0 * a)];
     let turns = turns.into_iter().chain([(up2, 2.0 * a), (up2, -2.0 * a)]);
-    let collision = &ride.world().collision;
+    let mut out = [SegmentQuery::line(p, p, QUERY_CLASS_MASK); 9];
+    for (i, (axis, angle)) in turns.enumerate() {
+        let end = p + Quat::from_axis_angle(axis, angle) * ray;
+        out[i] = SegmentQuery { start: p, end, radius: QUERY_RADII[i], two_sided: false, class_mask: QUERY_CLASS_MASK };
+    }
+    (dist, side, up2, out)
+}
+
+pub(super) fn sweep_hits(
+    collision: &ssx_physics::collision::CollisionWorld,
+    cam: Vec3,
+    p: Vec3,
+    up: Vec3,
+    ideal: Option<f32>,
+) -> ([Option<Hit>; 9], f32) {
+    let segs = segments(cam, p, up, ideal).3;
+    (
+        segs.map(|s| (s.end != s.start).then(|| collision.segment_query(&s)).flatten()),
+        segs[0].start.distance(segs[0].end),
+    )
+}
+
+pub(super) fn physics_queries(
+    collision: &ssx_physics::collision::CollisionWorld,
+    q: &mut Queries,
+    (cam, p, up): (Vec3, Vec3, Vec3),
+    ideal: f32,
+    dt: f32,
+) -> Vec3 {
+    let (dist, side, up2, segs) = segments(cam, p, up, q.collided_all.then_some(ideal));
     let mut hit = [false; 9];
     let (mut free, mut best, mut best_fraction) = (None, 0, -1.0);
-    for (i, (axis, angle)) in turns.enumerate() {
-        let r = Quat::from_axis_angle(axis, angle) * ray;
-        let l = r.length();
-        let h = (l > 0.0).then(|| collision.sphere_cast_masked(p, r / l, l, QUERY_RADIUS, QUERY_CLASS_MASK)).flatten();
+    for (i, s) in segs.iter().enumerate() {
+        let l = s.start.distance(s.end);
+        let h = (l > 0.0).then(|| collision.segment_query(s)).flatten();
         hit[i] = h.is_some();
         let fraction = h.map_or(1.0, |h| (h.t / l).clamp(0.0, 1.0));
         if !hit[i] && free.is_none() {
@@ -105,7 +132,7 @@ pub(super) fn post_update_near(
         .into_iter()
         .filter_map(|end| {
             let len = (end - position).length();
-            let q = ssx_physics::collision::SegmentQuery::line(position, end, QUERY_CLASS_MASK);
+            let q = SegmentQuery::line(position, end, QUERY_CLASS_MASK);
             collision.segment_query(&q).map(|h| (h.t / len).clamp(0.0, 1.0))
         })
         .fold(1.0_f32, f32::min);

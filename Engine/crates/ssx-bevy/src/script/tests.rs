@@ -250,3 +250,38 @@ fn a_play_music_flood_loads_one_song_at_a_time() {
     assert_eq!(got.map(|(i, r)| (i.to_string(), r.ok())), Some(("ssx:music/licensed/59".into(), Some(59))));
     assert!(!loads.in_flight());
 }
+
+#[test]
+fn the_exit_stops_the_host_across_frames() {
+    use crate::shell::game_mode::ExitWait;
+    use bevy::ecs::system::RunSystemOnce;
+    let (tx, jobs) = std::sync::mpsc::sync_channel(worker::QUEUE);
+    let (_outs, rx) = std::sync::mpsc::sync_channel(1);
+    let (ended, done) = std::sync::mpsc::sync_channel(1);
+    let dir = std::env::temp_dir().join(format!("ssx-script-exit-{}", std::process::id()));
+    let content = ssx_assets::content::GameContent::of(&dir.join("no-disc"));
+    let mut world = World::new();
+    world.insert_resource(bridge_of(tx.clone(), rx, done, content, None));
+    world.insert_resource(ExitWait::default());
+    let held = |world: &World| world.resource::<ExitWait>().holding().collect::<Vec<_>>();
+    world.run_system_once(stop_for_exit).unwrap();
+    assert!(held(&world).is_empty(), "no exit asked: nothing held");
+    assert!(world.resource_mut::<ExitWait>().ask());
+    for _ in 0..worker::QUEUE {
+        tx.send(worker::Job::EndLocal("a full queue".into())).unwrap();
+    }
+    world.run_system_once(stop_for_exit).unwrap();
+    assert_eq!(held(&world), [EXIT_HOLD], "the stop waits for room: the exit is held");
+    assert_eq!(jobs.try_iter().count(), worker::QUEUE);
+    world.run_system_once(stop_for_exit).unwrap();
+    assert!(matches!(jobs.try_iter().collect::<Vec<_>>()[..], [worker::Job::Shutdown]));
+    assert_eq!(held(&world), [EXIT_HOLD], "the host writes its storage: the exit is held");
+    assert!(!world.resource_mut::<ScriptBridge>().send(worker::Job::EndLocal("late".into())), "nothing after it");
+    world.run_system_once(stop_for_exit).unwrap();
+    assert_eq!(held(&world), [EXIT_HOLD]);
+    ended.send(()).unwrap();
+    world.run_system_once(stop_for_exit).unwrap();
+    assert!(held(&world).is_empty(), "the host has ended: the exit goes on");
+    assert!(matches!(world.resource::<ScriptBridge>().exit, Some(ExitStop::Done)));
+    assert!(jobs.try_iter().next().is_none());
+}

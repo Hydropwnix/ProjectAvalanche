@@ -396,6 +396,10 @@ pub fn ghost_db_text(big_root: &Path) -> std::io::Result<String> {
 
 pub type AttribDb = (Vec<Collection>, Vec<DecodedCollection>, std::collections::HashMap<(u32, u32), usize>);
 
+// PORT(choice): these records (the dedicated server's validation, the simulation content ids, a map's base drop) leave
+// the player's tuner pack out, so every peer and the server, which loads no tuner, read the same `ui_drop`s; the
+// console had one runtime database with the tuner registered first (0x82400468), as the career's events and the
+// ride's (`crate::career::event_records`) have it.
 pub fn read_attribdb(big_root: &Path) -> Result<AttribDb> {
     let read = |rel: &str| -> Result<(Vec<u8>, Vec<u8>)> {
         let p = big_root.join(rel);

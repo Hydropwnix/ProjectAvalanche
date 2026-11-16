@@ -65,12 +65,11 @@ impl Binding {
     }
 
     fn load_full(big_root: &Path, binding: &str, character: &str, heli: Option<&str>, extra: &[&str]) -> Result<Self> {
-        let dir = big_root.join(ANIM_DIR);
         let mut bundles = intro_bundles(big_root, binding, character);
         for (i, e) in extra.iter().enumerate() {
             bundles.insert(1 + i, e.to_string());
         }
-        let load = |b: &[String]| AssetDb::load(&dir, &b.iter().map(String::as_str).collect::<Vec<_>>());
+        let load = |b: &[String]| AssetDb::load(big_root, &b.iter().map(String::as_str).collect::<Vec<_>>());
         let mut db = load(&bundles)?;
         let bank = |db: &AssetDb, pointer: &str| {
             let b = db.by_name(binding)?;
@@ -86,7 +85,7 @@ impl Binding {
         let pilot_bank = heli.and_then(|_| bank(&db, PILOT_BANK));
         let mut reload = false;
         for p in [&player_bank, &pilot_bank].into_iter().flatten() {
-            if dir.join(format!("{p}.cba")).exists() {
+            if crate::rig_anim::has_bundle(big_root, &format!("{p}.cba")) {
                 bundles.insert(1, format!("{p}.cba"));
                 reload = true;
             }

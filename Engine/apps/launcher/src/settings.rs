@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as Json};
-use ssx_assets::port_options::{BootMovie, MenuFocus, RangeMovies};
+use ssx_assets::port_options::{BootMovie, DiscordPresence, MenuFocus, RangeMovies};
 use ssx_assets::settings_file::{self, UpdateError};
 
 const MERGE_LEVELS: u32 = 2;
@@ -69,6 +69,8 @@ pub struct Settings {
     pub boot_movie: BootMovie,
     #[serde(deserialize_with = "menu_focus_in", serialize_with = "menu_focus_out")]
     pub menu_focus: MenuFocus,
+    #[serde(deserialize_with = "discord_presence_in", serialize_with = "discord_presence_out")]
+    pub discord_presence: DiscordPresence,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub player_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -123,6 +125,15 @@ fn menu_focus_out<S: serde::Serializer>(m: &MenuFocus, out: S) -> Result<S::Ok, 
     out.serialize_str(m.name())
 }
 
+fn discord_presence_in<'de, D: serde::Deserializer<'de>>(d: D) -> Result<DiscordPresence, D::Error> {
+    let name = String::deserialize(d)?;
+    DiscordPresence::from_name(&name).ok_or_else(|| serde::de::Error::custom("not a Discord presence choice"))
+}
+
+fn discord_presence_out<S: serde::Serializer>(p: &DiscordPresence, out: S) -> Result<S::Ok, S::Error> {
+    out.serialize_str(p.name())
+}
+
 fn host_is_default(h: &crate::host::HostSettings) -> bool {
     *h == crate::host::HostSettings::default()
 }
@@ -161,6 +172,10 @@ impl Default for Settings {
             range_movies: RangeMovies::EveryTime,
             boot_movie: BootMovie::EveryStart,
             menu_focus: MenuFocus::FirstItem,
+            // PORT(choice): Discord Rich Presence is on by default in the launcher (the user's decision, 2026-11-15:
+            // on, and the player can turn it off); the game without the launcher's flag shows none. The console had
+            // no Discord.
+            discord_presence: DiscordPresence::On,
             player_name: None,
             language: None,
             old_masters: false,
@@ -218,6 +233,11 @@ impl Settings {
         };
         (s.display, s.display_notes) =
             ssx_assets::display::DisplaySettings::from_json(m.get(ssx_assets::display::MEMBER));
+        // PORT(choice): a Discord presence member the launcher cannot read turns the presence off (it is noted with
+        // the others): a switch the player may have turned off is not taken as on. The console had no Discord.
+        if m.get(DiscordPresence::MEMBER).is_some_and(|v| v.as_str().and_then(DiscordPresence::from_name).is_none()) {
+            s.discord_presence = DiscordPresence::Off;
+        }
         s.notes = notes;
         s
     }
@@ -324,6 +344,24 @@ mod tests {
             let s = Settings::from_object(&m);
             assert_eq!((s.range_movies, s.vsync), (RangeMovies::EveryTime, false), "{bad}: the rest read");
             assert!(s.notes.len() == 1 && s.notes[0].contains("range_movies"), "{bad}: {:?}", s.notes);
+        }
+    }
+
+    #[test]
+    fn the_discord_presence_switch_is_kept_and_an_unreadable_one_is_off() {
+        assert_eq!(Settings::default().discord_presence, DiscordPresence::On);
+        let none: Map<String, Json> = serde_json::from_str(r#"{"vsync": false}"#).unwrap();
+        assert_eq!(Settings::from_object(&none).discord_presence, DiscordPresence::On, "a file of before: on");
+        let off: Map<String, Json> = serde_json::from_str(r#"{"discord_presence": "Off"}"#).unwrap();
+        let s = Settings::from_object(&off);
+        assert_eq!((s.discord_presence, s.notes.len()), (DiscordPresence::Off, 0));
+        assert!(serde_json::to_string(&s).unwrap().contains(r#""discord_presence":"Off""#));
+        for bad in [r#""off""#, r#""Aus""#, "false", "0", "null", r#"["On"]"#, r#"{"On": true}"#] {
+            let m: Map<String, Json> =
+                serde_json::from_str(&format!(r#"{{"discord_presence": {bad}, "vsync": false}}"#)).unwrap();
+            let s = Settings::from_object(&m);
+            assert_eq!((s.discord_presence, s.vsync), (DiscordPresence::Off, false), "{bad}: off, the rest read");
+            assert!(s.notes.len() == 1 && s.notes[0].contains("discord_presence"), "{bad}: {:?}", s.notes);
         }
     }
 

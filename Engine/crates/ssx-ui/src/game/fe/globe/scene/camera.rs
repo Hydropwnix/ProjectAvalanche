@@ -100,18 +100,18 @@ impl GlobeScene {
         }
         self.pitch.omega = 6.0;
         self.yaw.omega = 6.0;
+        self.camera_targets(dt, targets);
         if allow {
-            picked = self.pick().filter(|&k| flow.range_valid(k));
+            picked = self.pick(flow).filter(|&k| flow.range_valid(k));
             if let Some(p) = picked {
                 self.focus = p;
                 self.repeat = 0.225;
             }
         }
-        self.camera_targets(dt, targets);
         picked
     }
 
-    pub(crate) fn pick(&self) -> Option<u32> {
+    pub(crate) fn pick(&self, flow: &dyn GlobeFlow) -> Option<u32> {
         let stage = crate::game::fe::globe::STAGE;
         let aspect = stage.0 / stage.1;
         let cam = Camera::from_shot(&self.shots.current);
@@ -136,6 +136,9 @@ impl GlobeScene {
         let dir = [sx / sl, -sy / sl];
         let (mut best, mut best_cos, mut nearest, mut nearest_d) = (None, 0.7f32, None, reach);
         for range in &self.data.ranges {
+            if !flow.range_valid(range.key) {
+                continue;
+            }
             let p = scale(node_direction(range.lon_lat[1].to_radians(), range.lon_lat[0].to_radians()), r);
             let (s, z) = screen(p);
             if centre_z <= z || z.is_nan() {

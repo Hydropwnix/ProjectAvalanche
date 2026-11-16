@@ -1,13 +1,13 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ssx_formats::ant::{Guid, Object, Schema, Stream, Value};
 
 pub struct AssetDb {
     pub streams: Vec<(String, Stream)>,
     index: HashMap<Guid, (usize, usize)>,
-    root: Option<std::path::PathBuf>,
+    root: PathBuf,
 }
 
 impl std::fmt::Debug for AssetDb {
@@ -27,18 +27,15 @@ pub struct Asset<'a> {
 }
 
 impl AssetDb {
-    pub fn load(anim_dir: &Path, bundles: &[&str]) -> Result<Self> {
-        let root = crate::content::data::tuning::routed_bundle(&anim_dir.join(crate::rig_anim::RIG_BUNDLE))
-            .map(Path::to_path_buf);
+    pub fn load(big_root: &Path, bundles: &[&str]) -> Result<Self> {
         let mut streams = Vec::new();
         for b in bundles {
-            let p = anim_dir.join(b);
-            if let Some(root) = crate::content::data::tuning::routed_bundle(&p) {
-                streams.push((b.to_string(), crate::content::data::tuning::anim_all(root)?));
-                continue;
-            }
-            let data = std::fs::read(&p).with_context(|| format!("reading {}", p.display()))?;
-            streams.push((b.to_string(), Stream::parse(&data).with_context(|| format!("parsing {}", p.display()))?));
+            let stream = if *b == crate::rig_anim::RIG_BUNDLE {
+                crate::content::data::tuning::anim_all(big_root)?
+            } else {
+                crate::rig_anim::read_bundle(big_root, b)?
+            };
+            streams.push((b.to_string(), stream));
         }
         let mut index = HashMap::new();
         for (si, (_, s)) in streams.iter().enumerate() {
@@ -48,11 +45,11 @@ impl AssetDb {
                 }
             }
         }
-        Ok(Self { streams, index, root })
+        Ok(Self { streams, index, root: big_root.to_path_buf() })
     }
 
-    pub fn data_root(&self) -> Option<&Path> {
-        self.root.as_deref()
+    pub fn data_root(&self) -> &Path {
+        &self.root
     }
 
     pub fn get(&self, g: Guid) -> Option<Asset<'_>> {

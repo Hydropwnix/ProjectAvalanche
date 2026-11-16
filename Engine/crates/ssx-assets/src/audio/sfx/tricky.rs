@@ -17,6 +17,7 @@ pub struct TrickySong {
     pub race_event_type: i32,
     handle: Option<CsisHandle>,
     pub enabled: bool,
+    pub skydrop: bool,
     paused: bool,
     countdown: u32,
     ducking: bool,
@@ -44,6 +45,7 @@ impl TrickySong {
             race_event_type: -1,
             handle: None,
             enabled: false,
+            skydrop: false,
             paused: false,
             countdown: 0,
             ducking: false,
@@ -83,7 +85,7 @@ impl TrickySong {
             self.race_event_type = value as i32;
             return;
         }
-        if !self.enabled {
+        if !self.enabled || self.skydrop {
             return;
         }
         let survive = self.race_event_type == SURVIVE_IT;
@@ -109,7 +111,7 @@ impl TrickySong {
     }
 
     pub fn rewind(&mut self, aems: &mut Aems, rewinding: bool) {
-        if !self.enabled {
+        if !self.enabled || self.skydrop {
             return;
         }
         if rewinding && !self.rewinding {
@@ -136,6 +138,13 @@ impl TrickySong {
 
     pub fn reset(&mut self, aems: &mut Aems) {
         self.stop(aems);
+    }
+
+    pub fn level_end(&mut self, aems: &mut Aems) {
+        self.stop(aems);
+        self.race_event_type = -1;
+        (self.enabled, self.paused, self.ducking, self.super_tricky, self.rewinding) =
+            (false, false, false, false, false);
     }
 
     pub fn sample_end(&mut self, value: i32) {
@@ -227,6 +236,31 @@ mod tests {
     }
 
     #[test]
+    fn posts_in_the_update_order_leave_the_song() {
+        let (mut a, mut t) = race(TRICKY_STANDARD);
+        t.post(&mut a, "AwesomeModeStart", 0.0, TRICKY_STANDARD);
+        t.post(&mut a, "SuperAwesomeModeStart", 0.0, TRICKY_STANDARD);
+        assert_eq!(t.playing, 1);
+        let (mut a, mut t) = race(TRICKY_STANDARD);
+        t.post(&mut a, "SuperAwesomeModeStart", 0.0, TRICKY_STANDARD);
+        t.post(&mut a, "AwesomeModeStart", 0.0, TRICKY_STANDARD);
+        assert_eq!(t.playing, 0, "the stinger in place of the song");
+    }
+
+    #[test]
+    fn the_sky_drops_presentation_starts_no_song() {
+        let (mut a, mut t) = race(TRICKY_STANDARD);
+        t.skydrop = true;
+        t.post(&mut a, "SuperAwesomeModeStart", 0.0, TRICKY_STANDARD);
+        assert_eq!(t.playing, -1);
+        t.post(&mut a, "RaceEventType", 2.0, TRICKY_STANDARD);
+        assert_eq!(t.race_event_type, 2, "the event type passes");
+        t.skydrop = false;
+        t.post(&mut a, "SuperAwesomeModeStart", 0.0, TRICKY_STANDARD);
+        assert_eq!(t.playing, 3, "Survive It's song once the gate opens");
+    }
+
+    #[test]
     fn always_restarts_the_loop_and_settings_switch_the_song() {
         let (mut a, mut t) = race(TRICKY_ALWAYS);
         t.post(&mut a, "SuperAwesomeModeStart", 0.0, TRICKY_ALWAYS);
@@ -275,6 +309,23 @@ mod tests {
         t.rewind(&mut a, false);
         t.frame(&mut a, TRICKY_ALWAYS, 10);
         assert_eq!(t.playing, 5);
+    }
+
+    #[test]
+    fn the_level_end_clears_the_song() {
+        let (mut a, mut t) = race(TRICKY_ALWAYS);
+        t.post(&mut a, "SuperAwesomeModeStart", 0.0, TRICKY_ALWAYS);
+        assert_eq!(t.frame(&mut a, TRICKY_ALWAYS, 10), Some(true));
+        t.rewind(&mut a, true);
+        t.level_end(&mut a);
+        assert_eq!((t.playing, t.race_event_type, t.enabled), (-1, -1, false));
+        assert!(!t.ducking && !t.super_tricky && !t.rewinding && !t.paused);
+        assert_eq!(t.frame(&mut a, TRICKY_ALWAYS, 10), None, "the latch cleared directly, no edge");
+        assert_eq!(t.playing, -1, "no Super Tricky left to restart the loop");
+        t.post(&mut a, "RaceEventType", 1.0, TRICKY_ALWAYS);
+        t.enabled = true;
+        t.post(&mut a, "AwesomeModeStart", 0.0, TRICKY_ALWAYS);
+        assert_eq!(t.playing, 0, "not refused by a rewind latch of the run before");
     }
 
     #[test]

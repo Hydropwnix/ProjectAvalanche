@@ -150,6 +150,7 @@ pub fn career_results_with_splits(
         medal: report.medal,
         notices: report.notices,
         best_not_kept: report.best_not_kept,
+        keep_ghost: report.keep_ghost,
     }
 }
 
@@ -180,6 +181,7 @@ pub struct Posted {
     pub won: bool,
     pub best_not_kept: Option<ssx_assets::career::profile::BestNotKept>,
     pub medal: Option<ssx_assets::career::profile::Medal>,
+    pub keep_ghost: bool,
 }
 
 pub fn own_tombstone(
@@ -230,8 +232,12 @@ pub fn post_event_results_with_splits(
         tutorial: super::fe::globe::TUTORIAL_DROPS.contains(&ctx.drop_key),
         character_pic: ui.fe.as_ref().map_or_else(String::new, |f| results_portrait(&f.career, rules, &ctx.character)),
     };
-    let posted =
-        Posted { won: input.career.success, best_not_kept: input.career.best_not_kept, medal: input.career.medal };
+    let posted = Posted {
+        won: input.career.success,
+        best_not_kept: input.career.best_not_kept,
+        medal: input.career.medal,
+        keep_ghost: input.career.keep_ghost,
+    };
     if !r.failed && r.geotag_credits > 0 {
         ui.values.set_int(0x228, (input.career.money_previous - r.geotag_credits) as i32);
     }
@@ -290,7 +296,8 @@ impl RideDriver {
     }
 
     pub fn load(big_root: &Path, opts: RideOptions) -> Result<Self> {
-        let track_dir = big_root.join("data0/data/xenon/gameexplorer").join(&opts.track);
+        let track_dir = ssx_assets::data_roots::track_dir(big_root, &opts.track)
+            .with_context(|| format!("track {}: in no mounted package or disc archive", opts.track))?;
         let mut world = track_world_for_drop(big_root, &track_dir, &opts.track, DEFAULT_GEAR_MIX, true, opts.drop)?;
         let (start_pos, start_q) = level_start_pose(&world, opts.drop, None, None)?;
         let start_y = world.starts[opts.drop].slot(0).map_or(start_pos.y, |(p, _)| p.y);

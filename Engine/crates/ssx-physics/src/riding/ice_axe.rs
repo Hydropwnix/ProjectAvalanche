@@ -316,6 +316,10 @@ pub struct IceAxeState {
 }
 
 impl IceAxeState {
+    pub fn new_controller(&mut self) {
+        (self.steering_value, self.noise, self.effects_timer, self.chopped) = (0.0, [0.0; 2], 0.0, false);
+    }
+
     pub fn enter_gameplay(&mut self) {
         (self.deploy, self.deploy_tags, self.deploy_saved) = (DeployNode::Holstered, None, [0.0; 3]);
         self.layers = Default::default();
@@ -345,14 +349,14 @@ impl IceAxeState {
         let target =
             lo + (t.steering_transform_full.eval(a) - lo) * t.steering_transform_blend.eval(self.effects_timer);
         self.effects_timer = if active { self.effects_timer + dt } else { 0.0 };
-        let e = (-(t.steering_filter_gain * dt)).exp();
-        self.steering_value = e * (self.steering_value - target) + target;
+        let e = f64::from(-(t.steering_filter_gain * dt)).exp() as f32;
+        self.steering_value = e.mul_add(self.steering_value - target, target);
         let f = self.steering_value.abs() / t.noise_angle_normalization;
         let r = if -f >= 0.0 { 0.0 } else { f };
         let r = if 1.0 - r >= 0.0 { r } else { 1.0 };
         let targets = [if lean_prev >= 0.0 { 0.0 } else { r }, if lean_prev > 0.0 { r } else { 0.0 }];
         for (n, target) in self.noise.iter_mut().zip(targets) {
-            *n = e * (*n - target) + target;
+            *n = e.mul_add(*n - target, target);
         }
         self.frame = IceAxeFrame { blend, effectiveness, active, steering_value: self.steering_value, dig_modifier };
         self.frame

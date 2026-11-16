@@ -55,6 +55,7 @@ pub struct EventRule {
     pub cost: i64,
     pub peak: u32,
     pub range: u32,
+    pub ghost_drop: bool,
 }
 
 impl EventRule {
@@ -236,9 +237,13 @@ pub struct ExploreScore {
     pub attempts: u32,
     pub deaths: u32,
     pub rewinds: u32,
-    pub unk_score_modified: u32,
+    pub score_modified: u32,
     pub unk_attempts_remaining: u32,
 }
+
+pub const SCORE_MODIFIED_OFFLINE: u32 = u32::MAX;
+pub const UNWRITTEN: u32 = 0x8000_0000;
+pub const COUNT_CAP: u32 = 0x7FFF_FFFE;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Notice {
@@ -370,28 +375,37 @@ impl Profile {
     pub fn apply_unlockables(&mut self, db: &CareerDb) -> Vec<String> {
         let mut lines = Vec::new();
         for u in &db.unlockables {
+            let what = match u.kind {
+                UnlockKind::Rider => "rider",
+                UnlockKind::Geotag => "geotag",
+                UnlockKind::Item => "item",
+                UnlockKind::Ignored => {
+                    lines.push(format!("dlc: {} ({:#010x}) is left alone by the unlock", u.token, u.key));
+                    continue;
+                }
+                UnlockKind::Unknown => continue,
+            };
+            let new = !self.unlocked_riders.contains(&u.key) && !self.unlocked_items.contains(&u.key);
+            if !new {
+                lines.push(format!("dlc: {what} {} ({:#010x}) already unlocked", u.token, u.key));
+                continue;
+            }
             match u.kind {
                 UnlockKind::Rider => {
                     self.unlocked_riders.insert(u.key);
-                    if !self.riders.contains_key(&u.key) {
-                        let created = {
-                            let riders = &self.riders;
-                            RiderStats::created_for(db, u.key, |k| riders.contains_key(&k))
-                        };
-                        self.riders.insert(u.key, created);
-                    }
-                    lines.push(format!("dlc: unlocked rider {} ({:#010x})", u.token, u.key));
+                    self.riders
+                        .entry(u.key)
+                        .or_insert_with(|| RiderStats::created_for(db, u.key, |k| db.items.iter().any(|i| i.key == k)));
                 }
                 UnlockKind::Geotag => {
-                    self.owned_items.insert(u.key);
-                    lines.push(format!("dlc: geotag {} ({:#010x}) in the inventory", u.token, u.key));
-                }
-                UnlockKind::Item => {
                     self.unlocked_items.insert(u.key);
-                    lines.push(format!("dlc: item {} ({:#010x}) unlocked", u.token, u.key));
+                    self.owned_items.insert(u.key);
                 }
-                UnlockKind::Unknown => {}
+                _ => {
+                    self.unlocked_items.insert(u.key);
+                }
             }
+            lines.push(format!("dlc: {what} {} ({:#010x}) unlocked", u.token, u.key));
         }
         lines
     }
@@ -438,6 +452,13 @@ impl Profile {
 
     pub fn drop_state(&self, drop: u32) -> DropState {
         self.drop_states.get(&drop).copied().unwrap_or_default()
+    }
+
+    pub fn range_word(&self, mode: i64, range: u32) -> u32 {
+        let Some(record) = self.range_modes.get(&range) else { return 0 };
+        // PORT(choice): a mode outside −1…3 reads 0; the game has no such mode (0x8258DE58 takes 0…3, the flow's mode
+        // is −1…3) and its lookup would read past the node's five-word record (the EASTL node ends at +0x28).
+        usize::try_from(mode + 1).ok().and_then(|i| record.get(i)).copied().unwrap_or(0)
     }
 
     pub fn add_credits(&mut self, amount: i64, earned: bool) {
@@ -495,16 +516,18 @@ impl Profile {
             return;
         }
         let peak = self.peak_modes.entry(e.peak).or_default();
-        peak[mode] = 1;
+        peak[0] = e.peak;
+        peak[mode + 1] = 1;
         if mode == 0 {
-            peak[3] = 1;
+            peak[4] = 1;
         }
         let range = self.range_modes.entry(e.range).or_default();
-        if range[mode] == 0 {
-            range[mode] = 1;
+        range[0] = e.range;
+        if range[mode + 1] == 0 {
+            range[mode + 1] = 1;
         }
         if mode == 0 {
-            range[3] = 1;
+            range[4] = 1;
         } else if mode == 3 {
             return;
         }

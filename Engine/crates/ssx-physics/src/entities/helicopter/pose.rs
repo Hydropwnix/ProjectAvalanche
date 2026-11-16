@@ -40,7 +40,8 @@ impl Helicopter {
             };
             let Some(a) = sc.actor(ROLE_HELICOPTER1) else { continue };
             let mut p = HeliPose::defaults(&self.assets.nis.heli);
-            p.write_nis(&a.clip, time.max(0.0));
+            let (clip, at) = a.clip_at(time);
+            p.write_nis(clip, at.max(0.0));
             acc = Some(match acc {
                 Some(mut old) => {
                     old.blend_from(&p, |j, _| if accel && j == "AITrajectory" { 1.0 } else { w });
@@ -51,7 +52,8 @@ impl Helicopter {
         }
         acc.or_else(|| {
             let mut p = HeliPose::defaults(&self.assets.nis.heli);
-            p.write_nis(&actor.clip, t.max(0.0));
+            let (clip, at) = actor.clip_at(t);
+            p.write_nis(clip, at.max(0.0));
             Some(p)
         })
     }
@@ -66,7 +68,8 @@ impl Helicopter {
         {
             let w = 1.0 - ssx_assets::anim_eval::curve_weight(ticks / HANDOVER_TICKS, 1);
             let mut blended = HeliPose::defaults(&self.assets.nis.heli);
-            blended.write_nis(&actor.clip, last.ticks);
+            let (clip, at) = actor.clip_at(last.ticks);
+            blended.write_nis(clip, at);
             blended.blend_from(&pose, |_, _| w);
             pose = blended;
         }

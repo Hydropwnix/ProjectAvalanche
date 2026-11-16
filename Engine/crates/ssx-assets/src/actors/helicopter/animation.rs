@@ -278,8 +278,7 @@ pub struct HoverNoise {
 
 impl HoverNoise {
     pub fn load_disc(big_root: &Path) -> Result<Self> {
-        let dir = big_root.join(crate::rig_anim::ANIM_DIR);
-        let db = AssetDb::load(&dir, &[crate::rig_anim::RIG_BUNDLE])?;
+        let db = AssetDb::load(big_root, &[crate::rig_anim::RIG_BUNDLE])?;
         let all = &db.streams.iter().find(|(n, _)| n == crate::rig_anim::RIG_BUNDLE).context("no anim_all.cba")?.1;
         Self::load(&db, all)
     }
@@ -340,14 +339,13 @@ impl HoverNoise {
 
 impl HeliAnimator {
     pub fn load(big_root: &Path, name: &str) -> Result<Self> {
-        let dir = big_root.join(crate::rig_anim::ANIM_DIR);
         let own = format!("{name}.cba");
-        let bundles: Vec<&str> = if dir.join(&own).exists() {
+        let bundles: Vec<&str> = if crate::rig_anim::has_bundle(big_root, &own) {
             vec![&own, crate::rig_anim::RIG_BUNDLE]
         } else {
             vec![crate::rig_anim::RIG_BUNDLE]
         };
-        let db = AssetDb::load(&dir, &bundles)?;
+        let db = AssetDb::load(big_root, &bundles)?;
         let all = &db.streams.iter().find(|(n, _)| n == crate::rig_anim::RIG_BUNDLE).context("no anim_all.cba")?.1;
         let rig = Rig::load(all, HELI_RIG)?;
         let mut problems = Vec::new();
@@ -484,8 +482,7 @@ impl HeliModel {
 }
 
 pub fn end_level_clip(big_root: &Path) -> Result<NisClip> {
-    let dir = big_root.join(crate::rig_anim::ANIM_DIR);
-    let db = AssetDb::load(&dir, &[crate::rig_anim::RIG_BUNDLE])?;
+    let db = AssetDb::load(big_root, &[crate::rig_anim::RIG_BUNDLE])?;
     let all = &db.streams.iter().find(|(n, _)| n == crate::rig_anim::RIG_BUNDLE).context("no anim_all.cba")?.1;
     let ctrl = db.by_name("nis_default_helicopter_end_level").context("no nis_default_helicopter_end_level")?;
     NisClip::load(&db, all, &ctrl, HELI_RIG)
@@ -508,8 +505,7 @@ pub fn heli_trick_sequences(big_root: &Path) -> Result<Vec<HeliTrickSeq>> {
 
 pub fn trick_sequences(big_root: &Path, chooser: &str, rig: &str) -> Result<Vec<HeliTrickSeq>> {
     use ssx_formats::ant::Value as AntValue;
-    let dir = big_root.join(crate::rig_anim::ANIM_DIR);
-    let db = AssetDb::load(&dir, &[crate::rig_anim::RIG_BUNDLE])?;
+    let db = AssetDb::load(big_root, &[crate::rig_anim::RIG_BUNDLE])?;
     let all = &db.streams.iter().find(|(n, _)| n == crate::rig_anim::RIG_BUNDLE).context("no anim_all.cba")?.1;
     let chooser = db.by_name(chooser).with_context(|| format!("no {chooser}"))?;
     let names = |e: &Asset, f: &str| -> Vec<String> {

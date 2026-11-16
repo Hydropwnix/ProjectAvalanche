@@ -43,13 +43,38 @@ fn ticks_order_and_epochs() {
 fn values_no_ride_produces_are_violations() {
     let unit = [0.0, 0.0, 0.0, 1.0];
     let mut t = RiderTrack::default();
-    let far = NetPose::new(10, PoseFlags::default(), block(unit, [0.0, 20_001.0, 0.0], 0.5)).unwrap();
-    assert_eq!(check(&mut t, 10, TickWindow::both(300), &far), Err(Violation::Coordinate(20_001.0)));
+    let beyond = f32::from_bits(MAX_COORDINATE_M.to_bits() + 1);
+    for c in [beyond, -beyond] {
+        let far = NetPose::new(10, PoseFlags::default(), block(unit, [0.0, c, 0.0], 0.5)).unwrap();
+        assert_eq!(check(&mut t, 10, TickWindow::both(300), &far), Err(Violation::Coordinate(c)));
+    }
+    let edge = NetPose::new(10, PoseFlags::default(), block(unit, [-MAX_COORDINATE_M, 0.0, 0.0], 0.5)).unwrap();
+    assert_eq!(plausible(&edge), Ok(()), "the bound itself is within");
     let long = NetPose::new(10, PoseFlags::default(), block([0.0, 0.0, 0.0, 1.01], [0.0; 3], 0.5)).unwrap();
     assert!(matches!(check(&mut t, 10, TickWindow::both(300), &long), Err(Violation::RotationLength(_))));
     let fast = NetPose::new(10, PoseFlags::default(), block(unit, [0.0; 3], 9.0)).unwrap();
     assert_eq!(check(&mut t, 10, TickWindow::both(300), &fast), Err(Violation::Speed(9.0)));
     assert_eq!(t, RiderTrack::default(), "nothing refused becomes the newest");
+}
+
+#[test]
+fn the_intro_at_its_far_locator_is_a_ride() {
+    let q = [0.180, -0.6838, -0.1506, 0.6909];
+    let q = q.map(|c| c / q.iter().map(|v| v * v).sum::<f32>().sqrt());
+    let at = |tick, epoch, p, flags: PoseFlags| {
+        NetPose::new(tick, flags.with_warp_epoch(epoch), block(q, p, 0.017)).unwrap().with_execution(0).unwrap()
+    };
+    let mut t = RiderTrack::default();
+    let none = PoseFlags::default();
+    for (tick, p) in [(300, [-60_292.176, -3_173.494, -6_726.396]), (302, [-60_292.348, -3_175.333, -6_720.677])] {
+        assert_eq!(plausible(&at(tick, 0, p, none)), Ok(()), "{p:?}");
+        assert_eq!(check(&mut t, tick, TickWindow::both(300), &at(tick, 0, p, none)), Ok(Verdict::Relay), "{p:?}");
+    }
+    let cut = at(722, 1, [545.750, 839.301, -411.203], none.with(PoseFlag::Teleport));
+    assert_eq!(check(&mut t, 722, TickWindow::both(300), &cut), Ok(Verdict::Relay), "the cut to scene 2a");
+    assert_eq!(t.position(), Some([545.750, 839.301, -411.203]));
+    let farthest = at(10, 0, [-36_069.395, 917.739, -73_129.766], none);
+    assert_eq!(check(&mut RiderTrack::default(), 10, TickWindow::both(300), &farthest), Ok(Verdict::Relay));
 }
 
 #[test]

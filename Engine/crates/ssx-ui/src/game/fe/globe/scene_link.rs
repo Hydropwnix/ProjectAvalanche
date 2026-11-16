@@ -33,7 +33,11 @@ pub(super) fn scene_range(fe: &FrontEnd) -> u32 {
 }
 
 pub(super) fn range_valid(fe: &FrontEnd, key: u32) -> bool {
-    fe.game_mode != 1 || fe.profile.range_modes.get(&key).is_some_and(|w| w[1] != 0)
+    fe.game_mode == 2 || fe.profile.range_word(fe.game_mode, key) != 0
+}
+
+pub fn entries(fe: &FrontEnd) -> Vec<super::scene::GlobeEntry> {
+    fe.globe_scene.as_ref().map(|s| s.entries(STAGE, STAGE.0 / STAGE.1, &Flow(fe))).unwrap_or_default()
 }
 
 pub(super) struct Flow<'a>(&'a FrontEnd);
@@ -73,43 +77,42 @@ impl super::scene::GlobeFlow for Flow<'_> {
     }
 
     fn recommended(&self) -> u32 {
-        0
+        self.0.recommend.flow_drop
     }
 
     fn is_new(&self, key: u32) -> bool {
-        let fe = self.0;
-        if fe.game_mode != 1 {
-            return false;
-        }
-        let open = |e: &&ssx_assets::career::Event| {
-            e.drop_type == DropType::Campaign && fe.profile.drop_state(e.key) != DropState::Locked
-        };
-        let drops: Vec<u32> = if fe.career.range(key).is_some() {
-            fe.career
-                .events
-                .iter()
-                .filter(open)
-                .filter(|e| fe.career.peak_and_range(e).1 == key)
-                .map(|e| e.key)
-                .collect()
-        } else if fe.career.peak(key).is_some() {
-            fe.career
-                .events
-                .iter()
-                .filter(open)
-                .filter(|e| fe.career.peak_and_range(e).0 == key)
-                .map(|e| e.key)
-                .collect()
-        } else if fe.career.event(key).is_some() {
-            vec![key]
-        } else {
-            Vec::new()
-        };
-        drops.iter().any(|&d| fe.profile.drop_state(d) != DropState::Completed)
+        node_is_new(&self.0.career, &self.0.profile, self.0.game_mode, key)
     }
 
     fn drop_point(&self, drop: u32) -> (f32, f32) {
         drop_point(self.0, drop)
+    }
+}
+
+fn node_is_new(
+    career: &ssx_assets::career::CareerDb,
+    profile: &ssx_assets::career::Profile,
+    mode: i64,
+    key: u32,
+) -> bool {
+    if mode != 1 {
+        return false;
+    }
+    let incomplete = |drop: u32| profile.drop_state(drop) != DropState::Completed;
+    let under = |side: fn((u32, u32)) -> u32| {
+        career.events.iter().any(|e| {
+            e.drop_type == DropType::Campaign
+                && profile.drop_state(e.key) != DropState::Locked
+                && side(career.peak_and_range(e)) == key
+                && incomplete(e.key)
+        })
+    };
+    if career.range(key).is_some() {
+        under(|(_, range)| range)
+    } else if career.peak(key).is_some() {
+        under(|(peak, _)| peak)
+    } else {
+        career.event(key).is_some() && incomplete(key)
     }
 }
 
@@ -201,5 +204,123 @@ impl FrontEnd {
 
     pub fn globe_frame(&self, aspect: f32) -> Option<super::scene::GlobeFrame> {
         self.globe_scene.as_ref().map(|s| super::scene::GlobeFrame { fade: self.screen_fade(), ..s.frame(aspect) })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::node_is_new;
+    use ssx_assets::career::profile::DropState;
+    use ssx_assets::career::{CareerDb, DropType, Event, Peak, Profile, Range};
+
+    const RANGE: u32 = 0x10;
+    const OTHER_RANGE: u32 = 0x11;
+    const PEAK: u32 = 0x20;
+    const PEAK_2: u32 = 0x21;
+    const OTHER_PEAK: u32 = 0x22;
+    const WON: u32 = 0x100;
+    const LOCKED: u32 = 0x101;
+    const OPEN: u32 = 0x102;
+    const ELSEWHERE: u32 = 0x103;
+    const EXPLORE: u32 = 0x104;
+
+    fn range(key: u32) -> Range {
+        Range { key, name: String::new(), title: String::new(), movie: String::new(), unk_index: 0, selectable: true }
+    }
+
+    fn peak(key: u32, range: u32) -> Peak {
+        Peak {
+            key,
+            name: String::new(),
+            range,
+            title: String::new(),
+            info: String::new(),
+            image: String::new(),
+            selectable: true,
+            campaign_type: 1,
+            unk_flag: false,
+            unk_floats: [0.0; 3],
+        }
+    }
+
+    fn event(key: u32, drop_type: DropType, peak_ref: u32) -> Event {
+        Event {
+            key,
+            name: String::new(),
+            drop: 0,
+            event_type: 0,
+            drop_type,
+            mode: String::new(),
+            slot: String::new(),
+            peak_short: String::new(),
+            hud_title: String::new(),
+            hud_body: String::new(),
+            goal_body: String::new(),
+            results_title: String::new(),
+            results_body: String::new(),
+            unlock_text: String::new(),
+            deadly_descent: false,
+            warning: 0,
+            time_of_day: 0,
+            cost: 0,
+            difficulty: 0,
+            reward: 0,
+            places: None,
+            targets: Vec::new(),
+            required: Vec::new(),
+            unk_b683b553: Vec::new(),
+            rivals: Vec::new(),
+            forced: Vec::new(),
+            ghost_drop: false,
+            unk_89d02fa4: false,
+            unk_12bccfb5: 0,
+            unk_0b03fc19: None,
+            unk_98e9ebcc: Vec::new(),
+            custom_status: 0,
+            unk_links: [0; 3],
+            peak_ref,
+            helicopter: 0,
+            map_point: [0.0; 2],
+        }
+    }
+
+    fn career() -> CareerDb {
+        CareerDb {
+            ranges: vec![range(RANGE), range(OTHER_RANGE)],
+            peaks: vec![peak(PEAK, RANGE), peak(PEAK_2, RANGE), peak(OTHER_PEAK, OTHER_RANGE)],
+            events: vec![
+                event(WON, DropType::Campaign, PEAK),
+                event(LOCKED, DropType::Campaign, PEAK),
+                event(OPEN, DropType::Campaign, PEAK_2),
+                event(ELSEWHERE, DropType::Campaign, OTHER_PEAK),
+                event(EXPLORE, DropType::Explore, PEAK),
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_node_is_new_while_an_open_world_tour_drop_under_it_is_not_complete() {
+        let db = career();
+        let mut profile = Profile::new();
+        profile.drop_states.insert(WON, DropState::Completed);
+        profile.drop_states.insert(OPEN, DropState::Unlocked);
+        profile.drop_states.insert(ELSEWHERE, DropState::Completed);
+        profile.drop_states.insert(EXPLORE, DropState::Unlocked);
+        let new = |p: &Profile, key| node_is_new(&db, p, 1, key);
+        assert!(new(&profile, RANGE), "the open drop on its second peak");
+        assert!(new(&profile, PEAK_2));
+        assert!(!new(&profile, PEAK));
+        assert!(!new(&profile, OTHER_RANGE));
+        assert!(!new(&profile, OTHER_PEAK));
+        assert!(new(&profile, OPEN) && new(&profile, LOCKED) && !new(&profile, WON));
+        assert!(!new(&profile, 0x999));
+        profile.drop_states.insert(OPEN, DropState::Completed);
+        assert!(!new(&profile, RANGE) && !new(&profile, PEAK_2));
+        profile.drop_states.insert(LOCKED, DropState::Unlocked);
+        assert!(new(&profile, RANGE) && new(&profile, PEAK));
+        for mode in [0, 2, 3] {
+            assert!(!node_is_new(&db, &profile, mode, RANGE) && !node_is_new(&db, &profile, mode, LOCKED));
+        }
     }
 }

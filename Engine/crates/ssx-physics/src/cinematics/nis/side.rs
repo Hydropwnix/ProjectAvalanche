@@ -1,7 +1,25 @@
 use ssx_assets::anim_graph::Blend;
-use ssx_assets::nis::{NisActor, NisScene, ROLE_CAMERA1, ROLE_CHARACTER1};
+use ssx_assets::nis::{ElementClock, NisActor, NisClip, NisPiece, NisScene, ROLE_CAMERA1, ROLE_CHARACTER1};
 
 use super::{IntroState, Scene};
+
+#[derive(Clone, Copy, Debug)]
+pub struct Element<'a> {
+    pub clip: &'a NisClip,
+    pub offset: Option<&'a (String, String)>,
+    pub clock: ElementClock,
+    pub piece: Option<(usize, &'a NisPiece)>,
+}
+
+impl Element<'_> {
+    pub fn clip_time(&self, t: f32) -> f32 {
+        self.clock.clip_time(t)
+    }
+
+    pub fn next_begin(&self, a: &NisActor) -> Option<f32> {
+        a.pieces.get(self.piece.map_or(0, |(i, _)| i + 1)).map(|p| p.clock.begin)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SceneRef {
@@ -86,16 +104,39 @@ impl IntroState {
         }
     }
 
-    pub fn side_clip<'a>(&self, s: &Side, a: &'a NisActor) -> &'a ssx_assets::nis::NisClip {
+    pub fn side_clip<'a>(&self, s: &Side, a: &'a NisActor) -> &'a NisClip {
+        self.side_element(s, a).clip
+    }
+
+    pub fn side_element<'a>(&self, s: &Side, a: &'a NisActor) -> Element<'a> {
+        self.element_at(s, a, self.side_time(s))
+    }
+
+    pub fn element_at<'a>(&self, s: &Side, a: &'a NisActor, t: f32) -> Element<'a> {
+        match a.piece_at(t) {
+            Some((i, p)) => Element { clip: &p.clip, offset: p.offset.as_ref(), clock: p.clock, piece: Some((i, p)) },
+            None => self.first_element(s, a),
+        }
+    }
+
+    pub fn element_before<'a>(&self, s: &Side, a: &'a NisActor, i: usize) -> Element<'a> {
+        match i.checked_sub(1).and_then(|j| Some((j, a.pieces.get(j)?))) {
+            Some((j, p)) => Element { clip: &p.clip, offset: p.offset.as_ref(), clock: p.clock, piece: Some((j, p)) },
+            None => self.first_element(s, a),
+        }
+    }
+
+    fn first_element<'a>(&self, s: &Side, a: &'a NisActor) -> Element<'a> {
         let pick = match a.role {
             ROLE_CHARACTER1 if s.scene != SceneRef::Ready || self.ready_chooser().is_some() => Some(s.rider_pick),
             ROLE_CAMERA1 => Some(s.camera_pick),
             _ => None,
         };
-        match pick.and_then(|k| a.choices.get(k)) {
-            Some((c, _)) if a.choices.len() > 1 => c,
-            _ => &a.clip,
-        }
+        let (clip, clock) = match pick.and_then(|k| a.choices.get(k)) {
+            Some((c, _, clock)) if a.choices.len() > 1 => (c, *clock),
+            _ => (&a.clip, a.clock),
+        };
+        Element { clip, offset: a.offset.as_ref(), clock, piece: None }
     }
 
     pub fn chain(&self) -> Vec<(SceneRef, f32, f32, bool)> {
@@ -167,12 +208,25 @@ impl IntroState {
         self.rider_pick = random_pick(&mut self.rider_random, &weights);
     }
 
+    pub fn go_span(&self, dt: f32) -> (f32, f32) {
+        let side = self.side();
+        let t = self.side_time(&side);
+        match self.assets.nis.jump.actor(ROLE_CHARACTER1) {
+            Some(a) if side.scene == SceneRef::Jump => {
+                let e = self.element_at(&side, a, t);
+                (e.clip_time((t - dt).max(e.clock.begin)), e.clip_time(t))
+            }
+            _ => ((t - dt).max(0.0), t),
+        }
+    }
+
     pub fn jump_clip(&self) -> usize {
-        let pick = if self.assets.nis.jump.actor(ROLE_CHARACTER1).is_some_and(|a| a.choices.len() > 1) {
-            self.rider_pick
-        } else {
-            0
-        };
+        let rider = self.assets.nis.jump.actor(ROLE_CHARACTER1);
+        let side = Some(self.side()).filter(|s| s.scene == SceneRef::Jump);
+        if let Some((i, _)) = rider.zip(side).and_then(|(a, s)| self.side_element(&s, a).piece) {
+            return self.assets.piece_clips.get(i).copied().unwrap_or(usize::MAX);
+        }
+        let pick = if rider.is_some_and(|a| a.choices.len() > 1) { self.rider_pick } else { 0 };
         self.assets.jump_clips.get(pick).copied().unwrap_or(self.assets.jump_clip)
     }
 }

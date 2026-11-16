@@ -21,6 +21,9 @@ impl Controller for MirroredInst {
         self.sub.update(env, &mut m, dt);
         gs.merge_from(&m, &self.list);
         gs.audio_tags.append(&mut m.audio_tags);
+        gs.drivers.append(&mut m.drivers);
+        gs.queries.append(&mut m.queries);
+        gs.updated_nodes.append(&mut m.updated_nodes);
     }
     fn pose(&self, env: &Env, gs: &GameState, out: &mut AnimPose) {
         let m = mirrored_state(gs, &self.list, env);
@@ -49,7 +52,7 @@ impl Controller for MirroredInst {
         self.sub.label(env, weight, &mut l);
         out.extend(l.into_iter().map(|(n, w)| (format!("{n} (mirrored)"), w)));
     }
-    fn path(&self, env: &Env, out: &mut Vec<(String, f32)>) {
+    fn path(&self, env: &Env, out: &mut Vec<PathNode>) {
         self.sub.path(env, out);
     }
     fn exit(&mut self, env: &Env, gs: &GameState) {
@@ -184,7 +187,7 @@ impl Controller for AutoMirrorInst {
             s.label(env, weight, out);
         }
     }
-    fn path(&self, env: &Env, out: &mut Vec<(String, f32)>) {
+    fn path(&self, env: &Env, out: &mut Vec<PathNode>) {
         if let Some(s) = &self.sub {
             s.path(env, out);
         }
@@ -227,6 +230,8 @@ mod tests {
             start_tick: 0.0,
             audio_tags: vec![tag],
             game_tags: Vec::new(),
+            drivers: Vec::new(),
+            queries: Vec::new(),
         };
         g.ctrls.push(("seq".into(), seq));
         let rig = crate::anim_pose::PoseRig::new(&ssx_formats::crsf::SceneGraph { nodes: Vec::new() }, &[], &[]);

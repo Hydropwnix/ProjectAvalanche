@@ -5,6 +5,7 @@ use ssx_assets::ghosts::GhostRig;
 
 use super::{BotVisual, record_transform};
 use crate::rider::anim::JointRecord;
+use crate::rider::ghosts::GhostMaterial;
 use crate::rider::material::CharacterMaterial;
 
 pub(in crate::ride::bots) fn board_transform(rig: &GhostRig, board: usize, w: &JointRecord) -> Transform {
@@ -19,6 +20,7 @@ pub(in crate::ride::bots) struct RacerDraw<'w, 's> {
     transforms: Query<'w, 's, &'static mut Transform>,
     visibility: Query<'w, 's, &'static mut Visibility>,
     characters: ResMut<'w, Assets<CharacterMaterial>>,
+    ghosts: ResMut<'w, Assets<GhostMaterial>>,
 }
 
 #[derive(Clone, Copy)]
@@ -43,12 +45,34 @@ impl RacerDraw<'_, '_> {
         racers: usize,
         rng: &mut dyn GameRandom,
     ) {
-        let holo = v.fade.update(dt_s, d2, racers, |max| rng.range_f(0.0, max));
+        let holo = v.fade.update(v.racer_type, dt_s, d2, racers, |max| rng.range_f(0.0, max));
         for m in &v.materials {
             if let Some(mut m) = self.characters.get_mut(m)
                 && m.extension.params.holo != holo
             {
                 m.extension.params.holo = holo;
+            }
+        }
+        for m in &v.ghost_materials {
+            if let Some(mut m) = self.ghosts.get_mut(m)
+                && m.params.hologlitch != holo
+            {
+                m.params.hologlitch = holo;
+            }
+        }
+    }
+
+    pub(in crate::ride::bots) fn tint(&mut self, v: &BotVisual) {
+        if v.ghost_materials.is_empty() {
+            return;
+        }
+        let a = (v.alpha.clamp(0.0, 1.0) * 255.0) as u32;
+        let tint = bevy::prelude::Vec4::from_array(ssx_assets::ghosts::tint_rgba((v.tint & 0x00FF_FFFF) | (a << 24)));
+        for m in &v.ghost_materials {
+            if let Some(mut m) = self.ghosts.get_mut(m)
+                && m.params.tint != tint
+            {
+                m.params.tint = tint;
             }
         }
     }

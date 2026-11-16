@@ -13,6 +13,7 @@ use crate::landing::twist;
 
 pub mod rewind_pack;
 
+mod big_head;
 mod intro;
 mod live_blocks;
 mod pose_block;
@@ -23,6 +24,7 @@ mod update;
 use crate::rider::{Input, RideState, RiderState, TrickInput};
 use crate::steering::ground_frame;
 use crate::tricks::{SignatureTiming, TrickHand};
+pub use big_head::{BigHeadOp, BigHeadScales};
 pub use intro::*;
 pub use live_blocks::{BlockSample, LiveBlocks, TELEPORT_M};
 pub use pose_block::{BlockPose, LandingRumble, PoseRecorder, pose_source};
@@ -43,7 +45,6 @@ const SRT_IDENTITY: Srt = Srt { scale: [1.0; 3], rotation: [0.0, 0.0, 0.0, 1.0],
 
 #[derive(Clone, Copy, Debug)]
 pub struct CarveAnimTuning {
-    pub uber_traj_max: f32,
     pub depth_lean_distance: f32,
     pub ground_angle_gain: f32,
 }
@@ -54,14 +55,13 @@ impl CarveAnimTuning {
             db.by_name("carve_riding").and_then(|a| a.f32(name)).with_context(|| format!("carve_riding has no {name}"))
         };
         Ok(Self {
-            uber_traj_max: f("UberCrashTrajAngleMaxDelta")?,
             depth_lean_distance: f("SurfaceDepthLeanAngleModifierDistance")?,
             ground_angle_gain: f("NormalizedGroundAngleGain")?,
         })
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GraphFeedback {
     pub driven: bool,
     pub traj_height_dof: f32,
@@ -76,17 +76,30 @@ pub struct GraphFeedback {
     pub recover_ticks: f32,
     pub jump_start: bool,
     pub in_rock_bail: bool,
+    pub bounce_rotational_force: Vec3,
     pub traj_rotation: Quat,
 }
 
-pub fn uber_tilt(q: Quat, n: Vec3, max: f32) -> Quat {
-    let nl = q.conjugate() * n;
-    if (nl.x.abs() - 1.0).abs() <= 1.525_879e-5 {
-        return q;
+impl Default for GraphFeedback {
+    fn default() -> Self {
+        GraphFeedback {
+            driven: false,
+            traj_height_dof: 0.0,
+            ground_offset: Vec3::ZERO,
+            board_x: Vec3::ZERO,
+            board_z: Vec3::ZERO,
+            board_offset: Vec3::ZERO,
+            carving_stopped: false,
+            allow_airborne: true,
+            uber_bail_sliding: false,
+            uber_recover: false,
+            recover_ticks: 0.0,
+            jump_start: false,
+            in_rock_bail: false,
+            bounce_rotational_force: Vec3::ZERO,
+            traj_rotation: Quat::IDENTITY,
+        }
     }
-    let Some(axis) = Vec3::X.cross(nl).try_normalize() else { return q };
-    let angle = nl.x.clamp(-1.0, 1.0).acos().clamp(-max, max);
-    (q * Quat::from_axis_angle(axis, angle)).normalize()
 }
 
 pub const STICK_MIN_MAGNITUDE: f32 = 0.25;
@@ -102,12 +115,6 @@ pub fn stick_axes(s: Vec2) -> Vec2 {
 fn wrap_pi(x: f32) -> f32 {
     let y = (x + PI).rem_euclid(TAU) - PI;
     if y <= -PI { y + TAU } else { y }
-}
-
-fn wrap_4pi(x: f32) -> f32 {
-    let t = 2.0 * TAU;
-    let y = (x + TAU).rem_euclid(t) - TAU;
-    if y <= -TAU { y + t } else { y }
 }
 
 fn hand_value(h: TrickHand) -> f32 {
@@ -134,8 +141,6 @@ struct Producers {
     in_loop: bool,
     last_state: Option<RideState>,
     in_air_tag: bool,
-    uber_traj: Option<Quat>,
-    uber_frames: u32,
 }
 
 impl Producers {
@@ -393,15 +398,14 @@ impl RiderGraph {
     }
 
     fn of_character(big_root: &Path, name: &str, character: &ssx_assets::character::Character) -> Result<Self> {
-        use ssx_assets::rig_anim::{ANIM_DIR, RIG_BUNDLE, float_dofs};
+        use ssx_assets::rig_anim::{RIG_BUNDLE, float_dofs, has_bundle};
         let (rig, bind, _) =
             ssx_assets::anim_rigops::extend_character_rig(big_root, &character.rig, &character.bind_pose())?;
         let floats = float_dofs(big_root)?;
         let own = format!("{name}.cba");
-        let dir = big_root.join(ANIM_DIR);
         let bundles: Vec<&str> =
-            if dir.join(&own).exists() { vec![RIG_BUNDLE, own.as_str()] } else { vec![RIG_BUNDLE] };
-        let db = ssx_assets::anim_db::AssetDb::load(&dir, &bundles)?;
+            if has_bundle(big_root, &own) { vec![RIG_BUNDLE, own.as_str()] } else { vec![RIG_BUNDLE] };
+        let db = ssx_assets::anim_db::AssetDb::load(big_root, &bundles)?;
         let carve = CarveAnimTuning::load(&db)?;
         let start = LevelStartGraph::load(&db, &rig, bind.clone(), &floats)?;
         let rewind = RewindAssets::load(&db, &rig, bind.clone(), &floats)?;
@@ -443,6 +447,10 @@ impl RiderGraph {
         &self.rig
     }
 
+    pub fn ground_joint(&self) -> Option<usize> {
+        self.ground
+    }
+
     pub fn pose(&self) -> &RigPose {
         &self.pose
     }
@@ -482,6 +490,11 @@ impl RiderGraph {
         self.animator.set(name, v);
     }
 
+    fn put_vector(&mut self, name: &str, v: Vec3) {
+        let w = self.animator.vector(name)[3];
+        self.animator.set_vector(name, [v.x, v.y, v.z, w]);
+    }
+
     fn put_bool(&mut self, name: &str, v: bool) {
         self.put(name, f32::from(u8::from(v)));
     }
@@ -498,21 +511,6 @@ impl RiderGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn uber_tilt_steps_towards_normal() {
-        let n = Vec3::Y;
-        let q = Quat::IDENTITY;
-        let t = uber_tilt(q, n, 0.1);
-        assert!(((t * Vec3::X).angle_between(n) - (FRAC_PI_2 - 0.1)).abs() < 1e-4);
-        let aligned = Quat::from_rotation_z(FRAC_PI_2);
-        assert_eq!(uber_tilt(aligned, n, 0.1), aligned);
-        let mut q = q;
-        for _ in 0..20 {
-            q = uber_tilt(q, n, 0.1);
-        }
-        assert!((q * Vec3::X).angle_between(n) < 1e-3);
-    }
 
     #[test]
     fn stick_axes_window() {

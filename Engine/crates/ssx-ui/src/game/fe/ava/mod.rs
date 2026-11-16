@@ -13,6 +13,7 @@ pub mod port_settings;
 pub mod resource_settings;
 #[cfg(feature = "net")]
 pub mod session;
+pub mod settings_writer;
 
 #[derive(Default)]
 pub struct Ava {

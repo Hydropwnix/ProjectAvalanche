@@ -26,7 +26,10 @@ impl Default for ExploreLeaderboard {
 }
 
 pub(crate) fn ghost_name(loc: &mut Localization, key: &str) -> String {
-    let mut t = loc.text(key);
+    cut_16(loc.text(key))
+}
+
+fn cut_16(mut t: String) -> String {
     if t.len() > 16 {
         let mut end = 16;
         while !t.is_char_boundary(end) {
@@ -62,15 +65,18 @@ pub(crate) fn value_text(loc: &mut Localization, kind: u8, value: i32, with_unit
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ExploreFrame<'a> {
+    pub event_type: EventType,
+    pub player: &'a str,
+    pub picture: &'a str,
+    pub value: f32,
+    pub own_best: Option<u32>,
+}
+
 impl ExploreLeaderboard {
-    pub fn update(
-        &mut self,
-        v: &mut UiValues,
-        loc: &mut Localization,
-        event_type: EventType,
-        player: &str,
-        value: f32,
-    ) {
+    pub fn update(&mut self, v: &mut UiValues, loc: &mut Localization, f: ExploreFrame) {
+        let ExploreFrame { event_type, player, picture, value, own_best } = f;
         let mut list: Vec<Entry> = self
             .rivals
             .iter()
@@ -81,11 +87,21 @@ impl ExploreLeaderboard {
                 picture: self.pictures.get(n).cloned().unwrap_or_default(),
             })
             .collect();
-        list.push(Entry { kind: 2, value: value.max(0.0) as i32, name: player.to_string(), picture: String::new() });
-        sort_entries(&mut list, event_type.ranks_ascending(), false);
+        list.push(Entry {
+            kind: 2,
+            value: value.max(0.0) as i32,
+            name: player.to_string(),
+            picture: picture.to_string(),
+        });
+        let ascending = event_type.ranks_ascending();
+        sort_entries(&mut list, ascending, false);
         let place = list.iter().position(|e| e.kind == 2).map_or(-1, |p| p as i32);
         if self.rank < 0 {
             self.rank = list.len() as i32 - 1;
+        }
+        if let Some(best) = own_best {
+            list.push(Entry { kind: 1, value: best as i32, name: cut_16(player.to_string()), picture: picture.into() });
+            sort_entries(&mut list, ascending, false);
         }
         if place < self.rank && place < 3 {
             let medal_key =
@@ -409,5 +425,48 @@ mod tests {
         let names: Vec<_> = rows.iter().map(|x| x.name.as_str()).collect();
         assert_eq!(names, ["gold", "silver", "me", "odd"]);
         assert_eq!(rows.iter().map(|x| x.value).collect::<Vec<_>>(), [13_000, 15_000, 900, -1]);
+    }
+
+    #[test]
+    fn the_own_best_joins_the_explore_board_after_the_player_s_place() {
+        let mut v = UiValues::new();
+        let mut loc = Localization::empty(Language::English);
+        let mut b = ExploreLeaderboard {
+            rivals: vec![("gold".into(), 900), ("silver".into(), 600), ("bronze".into(), 300)],
+            ..Default::default()
+        };
+        let pic = "img://gamerpic://0_ARiderWithALongTag_0@local.dds";
+        let frame = |value| ExploreFrame {
+            event_type: EventType::TrickGhosts,
+            player: "ARiderWithALongTag",
+            picture: pic,
+            value,
+            own_best: Some(500),
+        };
+        b.update(&mut v, &mut loc, frame(100.0));
+        let rows = v.rows(id::LEADERBOARD);
+        let names: Vec<_> = rows.iter().map(|r| (r.name.as_str(), r.value, r.is_player)).collect();
+        assert_eq!(
+            names,
+            [
+                ("gold", 900, false),
+                ("silver", 600, false),
+                ("ARiderWithALongT", 500, false),
+                ("bronze", 300, false),
+                ("ARiderWithALongTag", 100, true)
+            ]
+        );
+        assert_eq!((rows[2].icon.as_str(), rows[4].icon.as_str()), (pic, pic));
+        assert_eq!(rows.iter().map(|r| r.medal).collect::<Vec<_>>(), [2, 1, -1, 0, -1]);
+        assert!(!v.bool(id::SPLITS_CALLOUT_ENABLED), "last of four: no medal");
+        b.update(&mut v, &mut loc, frame(400.0));
+        assert!(v.bool(id::SPLITS_CALLOUT_ENABLED));
+        match v.get(id::SPLITS_CALLOUT) {
+            Some(UiValue::Splits(c)) => assert_eq!((c.medal, c.name.as_str()), (2, "ARiderWithALongT")),
+            other => panic!("{other:?}"),
+        }
+        let mut b = ExploreLeaderboard { rivals: vec![("gold".into(), 900)], ..Default::default() };
+        b.update(&mut v, &mut loc, ExploreFrame { player: "me", own_best: None, ..frame(100.0) });
+        assert_eq!(v.rows(id::LEADERBOARD).len(), 2);
     }
 }

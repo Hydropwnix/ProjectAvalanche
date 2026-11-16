@@ -22,7 +22,9 @@ use ssx_formats::sbr::{SampleBank, SoundRef};
 use ssx_formats::speech::{evt::EventSystem, grf::Graffiti, rep::RepetitionPools};
 
 use crate::music::find_file;
-use crate::sfx_stream::{BlockKind, BlockType, Next, Ring, Slot, StreamFile};
+use crate::sfx_stream::{
+    BlockKind, BlockType, Lease, Next, Pool, Ring, Slot, StreamFile, UNSTEALABLE, music_pool, new_owner,
+};
 
 #[derive(Clone, Debug)]
 pub struct Song {
@@ -388,6 +390,33 @@ pub fn set_paused(on: bool) {
     PAUSED.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+static STOPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static STOPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+pub fn stopping() -> bool {
+    STOPPING.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn stops() -> u32 {
+    STOPS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn note_stop_music() {
+    STOPPING.store(false, std::sync::atomic::Ordering::Relaxed);
+    PLAYING.store(false, std::sync::atomic::Ordering::Relaxed);
+    STOPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) mod test_state {
+    pub fn set_playing(on: bool) {
+        super::PLAYING.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+    pub fn stop_music() {
+        super::note_stop_music();
+    }
+}
+
 struct SongStream {
     id: u32,
     source: SongSource,
@@ -398,13 +427,14 @@ struct SongStream {
 
 enum SongSource {
     Disc(Box<DiscSong>),
-    Package(Box<crate::content::audio::stream::MusicStream>),
+    Package { stream: Box<crate::content::audio::stream::MusicStream>, _hold: Lease },
+    Refused,
 }
 
 const MAX_SONG_BYTES: u64 = 64 << 20;
 
 struct DiscSong {
-    slot: Slot,
+    lease: Lease,
     channels: usize,
     dec: Option<SectionDecoder>,
 }
@@ -426,18 +456,47 @@ pub struct LicensedMusic {
     once: bool,
     game: Option<RacePosts>,
     fade: Option<(f32, f32, u64)>,
+    owner: u64,
+    pool: Pool,
+}
+
+impl Drop for LicensedMusic {
+    fn drop(&mut self) {
+        if self.fade.is_some() {
+            STOPPING.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
 }
 
 impl LicensedMusic {
     pub fn new(mb: MusicBox, playlist: Playlist) -> Self {
-        Self { mb, playlist, cur: None, tmp: Vec::new(), played: Vec::new(), once: false, game: None, fade: None }
+        let owner = new_owner();
+        Self {
+            mb,
+            playlist,
+            cur: None,
+            tmp: Vec::new(),
+            played: Vec::new(),
+            once: false,
+            game: None,
+            fade: None,
+            owner,
+            pool: music_pool().clone(),
+        }
+    }
+
+    pub fn beside_the_music_pool(mut self) -> Self {
+        self.pool = Pool::new(Ring::MUSIC, 1);
+        self
     }
 
     // TODO(guess): a post's song starts at the check's frame (the game checks on its 60 Hz audio-manager update, then the MusicBox opens the stream with disc latency); settle: the MusicBox's stream start (0x83111DE0 → 0x8310BF18) timed on a console.
     pub fn game(mut mb: MusicBox, race: RaceType) -> Self {
         mb.set_event_class(Some(race));
         let posts = RacePosts::new(RaceEvent::new(race), session(), remix());
-        Self { game: Some(posts), ..Self::new(mb, Playlist { ids: Vec::new(), next: 0 }) }
+        let mut player = Self::new(mb, Playlist { ids: Vec::new(), next: 0 });
+        player.game = Some(posts);
+        player
     }
 
     pub fn menu(mb: MusicBox) -> Self {
@@ -452,7 +511,9 @@ impl LicensedMusic {
         mb.set_event_class(None);
         let mut posts = RacePosts::new(RaceEvent::new(RaceType::Menu), session, remix);
         posts.next = posts::first_menu_check(remix.lock().ok().and_then(|r| r.take_over(std::time::Instant::now())));
-        Self { game: Some(posts), ..Self::new(mb, Playlist { ids: Vec::new(), next: 0 }) }
+        let mut player = Self::new(mb, Playlist { ids: Vec::new(), next: 0 });
+        player.game = Some(posts);
+        player
     }
 
     pub fn hold_posts(&mut self, held: bool) {
@@ -470,7 +531,7 @@ impl LicensedMusic {
     }
 
     pub fn replace_packages(&mut self, plan: &crate::content::audio::MusicPlan, race: Option<RaceType>) {
-        let playing_package = self.cur.as_ref().is_some_and(|s| matches!(s.source, SongSource::Package(_)));
+        let playing_package = self.cur.as_ref().is_some_and(|s| matches!(s.source, SongSource::Package { .. }));
         self.mb.clear_packages();
         self.mb.add_packages(plan);
         self.mb.set_event_class(race);
@@ -497,7 +558,9 @@ impl LicensedMusic {
     }
 
     pub fn song(mb: MusicBox, id: u32) -> Self {
-        Self { once: true, ..Self::new(mb, Playlist { ids: vec![id], next: 0 }) }
+        let mut player = Self::new(mb, Playlist { ids: vec![id], next: 0 });
+        player.once = true;
+        player
     }
 
     pub fn playing(&self) -> bool {
@@ -508,29 +571,54 @@ impl LicensedMusic {
     }
 
     fn open_song(&mut self, id: u32) -> Option<SongStream> {
+        let label = self.mb.song(id).map_or_else(|| format!("song {id:#x}"), Song::label);
+        let lease = match self.pool.acquire(self.owner, UNSTEALABLE, &format!("musicbox {label}")) {
+            Ok(Some(lease)) => lease,
+            Ok(None) => {
+                let pool = &self.pool;
+                ssx_core::eprintln!(
+                    "musicbox: {label}: no Music slot free ({} held: {}), the song stays silent until stopped",
+                    pool.held(),
+                    pool.holders().join(", ")
+                );
+                self.played.push((id, label));
+                // TODO(guess): a song whose stream got no slot stays silent and counts as playing until stopped —
+                // decoded: SndPlayer1 clears a request that gets no slot (0x82A4FB58: +0x2E = 0, +0x14 = 0) and its
+                // process (0x82A39778) then writes none of +0x1A8…+0x1B8 and returns 0; guessed: the MusicBox's
+                // status (0x8310C3A8: playing while read-back 1 < read-back 2 (0x82A2CD28, the doubles at the voice's
+                // +0x10) or SndPlayer1's attribute 0 (0x82A48DA8; descriptor `SndPlayer1` 0x83830B10, attribute
+                // records 0x83831310) < the player's +0x1C) keeps reporting the song; tried: no reader of
+                // +0x1AC…+0x1B8 outside the process in 0x82A38800…0x82A3A400; settle: which SndPlayer1 fields feed
+                // that attribute and those read-backs.
+                return Some(SongStream { id, source: SongSource::Refused, buf: Vec::new(), pos: 0, gain: 1.0 });
+            }
+            Err(e) => {
+                ssx_core::eprintln!("musicbox: {label}: {e:#}");
+                return None;
+            }
+        };
         if let Some(a) = self.mb.package_audio(id).cloned() {
-            let label = self.mb.song(id).map_or_else(|| format!("song {id:#x}"), Song::label);
             ssx_core::eprintln!("musicbox: {label}: {} from {}", a.file.rel, a.label);
             self.played.push((id, label));
             let stream = crate::content::audio::stream::MusicStream::open(a.file, a.looping);
-            let source = SongSource::Package(Box::new(stream));
+            // PORT(choice): a package's song (read by the port's worker, not through a pool slot) holds the MusicBox
+            // player's `Music` slot for its length, as the disc's song it plays in place of does, so the Tricky voices
+            // and Pathfinder find the pool as with the disc's songs; the console's songs are all the disc's.
+            let source = SongSource::Package { stream: Box::new(stream), _hold: lease };
             return Some(SongStream { id, source, buf: Vec::new(), pos: 0, gain: a.gain });
         }
         let opened = self.mb.sps_offset(id).and_then(|(bank, o)| {
             let b = self.mb.banks.get(bank).context("bank gone")?;
-            let mut slot = Slot::new(Ring::MUSIC)?;
-            slot.queue(b.sbs.clone(), o as u64, BlockKind::Sps);
-            Ok(slot)
+            lease.with(|slot| slot.queue(b.sbs.clone(), o as u64, BlockKind::Sps)).context("the slot was taken over")
         });
         match opened {
-            Ok(slot) => {
-                let label = self.mb.song(id).map_or_else(|| format!("sound {id:#x}"), Song::label);
+            Ok(_) => {
                 self.played.push((id, label));
-                let source = SongSource::Disc(Box::new(DiscSong { slot, channels: 0, dec: None }));
+                let source = SongSource::Disc(Box::new(DiscSong { lease, channels: 0, dec: None }));
                 Some(SongStream { id, source, buf: Vec::new(), pos: 0, gain: 1.0 })
             }
             Err(e) => {
-                ssx_core::eprintln!("musicbox: sound {id:#x}: {e:#}");
+                ssx_core::eprintln!("musicbox: {label}: {e:#}");
                 None
             }
         }
@@ -591,6 +679,7 @@ impl LicensedMusic {
         }
         let frames = (f64::from(secs) * f64::from(crate::pathfinder::SAMPLE_RATE)).round().max(1.0) as u64;
         self.fade = Some((1.0, 1.0 / frames as f32, frames));
+        STOPPING.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn stop_music(&mut self) {
@@ -599,6 +688,13 @@ impl LicensedMusic {
             ssx_core::eprintln!("musicbox: StopMusic ({label})");
         }
         self.fade = None;
+        note_stop_music();
+    }
+
+    pub fn restart(&mut self) {
+        let secs = if paused() { 0.0 } else { crate::sfx_game::tuning::MUSIC_LEVEL_END_FADE };
+        self.stop(secs);
+        self.event_setup();
     }
 
     pub fn level_end(&mut self) {
@@ -696,7 +792,8 @@ impl LicensedMusic {
         let id = s.id;
         match &mut s.source {
             SongSource::Disc(d) => d.decode_block(id, &mut s.buf, tmp),
-            SongSource::Package(stream) => {
+            SongSource::Refused => Refill::Behind,
+            SongSource::Package { stream, .. } => {
                 s.buf.resize(PACKAGE_CHUNK * 2, 0.0);
                 let n = stream.render(&mut s.buf);
                 s.buf.truncate(n * 2);
@@ -718,8 +815,20 @@ impl LicensedMusic {
 
 impl DiscSong {
     fn decode_block(&mut self, id: u32, buf: &mut Vec<f32>, tmp: &mut Vec<f32>) -> Refill {
+        let (channels, dec) = (&mut self.channels, &mut self.dec);
+        self.lease.with(|slot| Self::decode_from(slot, channels, dec, id, buf, tmp)).unwrap_or(Refill::End)
+    }
+
+    fn decode_from(
+        slot: &mut Slot,
+        channels: &mut usize,
+        song_dec: &mut Option<SectionDecoder>,
+        id: u32,
+        buf: &mut Vec<f32>,
+        tmp: &mut Vec<f32>,
+    ) -> Refill {
         loop {
-            let block = match self.slot.next_block() {
+            let block = match slot.next_block() {
                 Next::Block(b) => b,
                 Next::Pending => return Refill::Behind,
                 Next::Idle => return Refill::End,
@@ -741,9 +850,9 @@ impl DiscSong {
                             return Refill::End;
                         }
                     };
-                    self.channels = usize::from(header.channels);
+                    *channels = usize::from(header.channels);
                     match SectionDecoder::new(header.channels) {
-                        Ok(d) => self.dec = Some(d),
+                        Ok(d) => *song_dec = Some(d),
                         Err(e) => {
                             ssx_core::eprintln!("musicbox: sound {id:#x}: {e:#}");
                             return Refill::End;
@@ -751,7 +860,7 @@ impl DiscSong {
                     }
                 }
                 BlockType::Data => {
-                    let Some(dec) = self.dec.as_mut() else {
+                    let Some(dec) = song_dec.as_mut() else {
                         ssx_core::eprintln!("musicbox: sound {id:#x}: a data block before the H block");
                         return Refill::End;
                     };
@@ -760,7 +869,7 @@ impl DiscSong {
                         ssx_core::eprintln!("musicbox: sound {id:#x}: an undecodable block");
                         return Refill::End;
                     };
-                    let ch = self.channels;
+                    let ch = *channels;
                     for k in 0..n.min(block.samples as usize) {
                         if ch == 1 {
                             buf.extend_from_slice(&[tmp[k], tmp[k]]);

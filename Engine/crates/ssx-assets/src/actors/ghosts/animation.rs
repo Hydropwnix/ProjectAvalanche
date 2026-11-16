@@ -122,7 +122,14 @@ pub fn config_rigamates_in(streams: &[&ssx_formats::ant::Stream], config: &str) 
     let name_of = |g: &ssx_formats::ant::Guid| find(g).and_then(|(s, o)| o.name(&s.schema));
     let mut out: [Option<String>; 2] = [None, None];
     let mut next = Some(config.to_string());
+    let mut depth = 0;
     while let Some(name) = next.take() {
+        depth += 1;
+        anyhow::ensure!(
+            depth <= crate::rigamate::MAX_CONFIG_CHAIN,
+            "AnimatableConfigAsset {config}: a parent chain of more than {}",
+            crate::rigamate::MAX_CONFIG_CHAIN
+        );
         let (all, a) = streams
             .iter()
             .find_map(|s| {
@@ -163,16 +170,23 @@ pub fn config_rigamates_in(streams: &[&ssx_formats::ant::Stream], config: &str) 
 }
 
 fn ghost_rigamate(big_root: &Path, rig: &GhostRig, bot: Option<&str>) -> Result<(RigamateRig, Vec<String>)> {
-    let stream = |name: &str| -> Result<ssx_formats::ant::Stream> {
-        let path = big_root.join(crate::rig_anim::ANIM_DIR).join(name);
-        ssx_formats::ant::Stream::parse(&std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?)
-            .with_context(|| format!("parsing {}", path.display()))
-    };
+    let stream = |name: &str| crate::rig_anim::read_bundle(big_root, name);
     let all = crate::content::data::tuning::anim_all(big_root)?;
     let names = GhostSchemas::load(big_root)?;
     let own = bot.map(|c| stream(&format!("{}.cba", names.bot_actor(c)))).transpose()?;
-    let config = bot.map_or(names.ghost_config(), |c| format!("{}_config", names.bot_actor(c)));
     let streams: Vec<&ssx_formats::ant::Stream> = own.iter().chain(std::iter::once(&all)).collect();
+    let config = match (&own, bot) {
+        (Some(s), Some(c)) => {
+            let actor = names.bot_actor(c);
+            let g = crate::rigamate::actor_config(s, &actor)?;
+            streams
+                .iter()
+                .find_map(|s| s.guid_index().get(&g).and_then(|&i| s.assets[i].object.name(&s.schema)))
+                .with_context(|| format!("ActorAsset {actor}: its ConfigAsset {g} is in no loaded bundle"))?
+                .to_string()
+        }
+        _ => names.ghost_config(),
+    };
     let [bodytype, character] = config_rigamates_in(&streams, &config)?;
     let (mut rm, problems) = RigamateRig::load(big_root, &rig.rig, &rig.bind, &names.ghost_animatable)?;
     let mut problems: Vec<String> = problems

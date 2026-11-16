@@ -18,6 +18,7 @@ pub mod movie;
 pub mod music_pause;
 pub mod nis;
 pub mod output;
+pub mod presentation;
 pub mod settings;
 pub mod speech;
 pub mod store;
@@ -73,6 +74,7 @@ pub struct SfxEngine {
     pub game_state: i32,
     pub game_result: u8,
     pub tutorial: bool,
+    presentation: i32,
     speech_overrides: std::collections::HashMap<(String, String), std::sync::Arc<crate::sfx_override::OverrideSound>>,
 }
 
@@ -86,8 +88,8 @@ impl SfxEngine {
         let mut aems = Aems::new();
         aems.load_interfaces(big_root)?;
         let set = std::sync::Arc::new(crate::sfx_bus::PatchSet::load(big_root)?);
-        let table = crate::sfx_mixer::voice_patch_table(big_root)?;
-        let mut mixer = Mixer::new(set, table);
+        let patches = crate::sfx_mixer::voice_patches(big_root)?;
+        let mut mixer = Mixer::new(set, patches);
         for name in banks {
             let bank = Bank::load(big_root, name)?;
             mixer.add_bank(&bank);
@@ -152,6 +154,7 @@ impl SfxEngine {
             game_state: 0,
             game_result: 0,
             tutorial: false,
+            presentation: 0,
             speech_overrides: std::collections::HashMap::new(),
         })
     }
@@ -182,6 +185,22 @@ impl SfxEngine {
     pub fn set_game_state(&mut self, state: i32) {
         self.game_state = state;
         self.tricky.game_state(state);
+    }
+
+    pub fn set_presentation(&mut self, t: i32) {
+        self.presentation = t;
+        let skydrop = t == presentation::SKYDROP;
+        if let Some(r) = self.remix.as_mut() {
+            r.inputs.skydrop = skydrop;
+        }
+        self.tricky.skydrop = skydrop;
+        if let Some(sp) = self.speech.as_mut() {
+            sp.game.tutorial = t;
+        }
+    }
+
+    pub fn presentation(&self) -> i32 {
+        self.presentation
     }
 
     pub fn game_pause(&mut self, paused: bool) {
@@ -225,6 +244,7 @@ impl SfxEngine {
 
     pub fn set_speech(&mut self, mut speech: speech::Speech) {
         speech.game.goals = self.ui_goals;
+        speech.game.tutorial = self.presentation;
         if let Some(b) = &self.launch_block {
             speech.set_launch(b);
         }
@@ -405,6 +425,30 @@ impl SfxEngine {
         self.tricky.enabled = on;
     }
 
+    fn remix_reset(&mut self) {
+        self.tricky.reset(&mut self.aems);
+        if let Some(r) = self.remix.as_mut() {
+            r.inputs.reset_wrapper();
+        }
+    }
+
+    pub fn remix_restart(&mut self) {
+        if let Some(r) = self.remix.as_mut() {
+            r.inputs.reset_messages();
+        }
+        self.remix_reset();
+        self.tricky.level_end(&mut self.aems);
+        if let Some(r) = self.remix.as_mut() {
+            r.inputs.level_end();
+        }
+    }
+
+    pub fn remix_race_start(&mut self) {
+        self.remix_run(true);
+        let t = if self.presentation == presentation::GROUND { 0 } else { self.tricky.race_event_type };
+        self.remix_post("RaceEventType", t as f32);
+    }
+
     pub fn render(&mut self, out: &mut [f32]) {
         self.render_layout(out, 2);
     }
@@ -488,10 +532,11 @@ impl SfxEngine {
     fn audio_manager_update(&mut self) {
         if let Some(r) = self.remix.as_mut() {
             r.inputs.events_frame(self.audio_ms);
-            if std::mem::take(&mut r.inputs.reset) {
-                self.tricky.reset(&mut self.aems);
-            }
+            let reset = std::mem::take(&mut r.inputs.reset);
             self.tricky.enabled = r.inputs.enabled;
+            if reset {
+                self.remix_reset();
+            }
         }
         for (id, v) in self.aems.take_global_changes() {
             if Some(id) == self.tricky_sample_end {
@@ -537,6 +582,8 @@ impl SfxEngine {
             for (k, s) in [(1, 0xB), (2, 0xC), (3, 0xD)] {
                 g.selectors[1].set(k, on(st == s));
             }
+            g.selectors[1].set(6, on(game && self.presentation == presentation::GROUND));
+            g.selectors[1].set(7, on(game && self.presentation == presentation::SKYDROP));
             g.selectors[2].set(1, on(st == 0xB));
             g.selectors[2].set(2, on(st == 0xC || (st == 0xD && self.tutorial)));
             g.selectors[2].set(3, on(st == 0xD && !self.tutorial));

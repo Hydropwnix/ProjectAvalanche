@@ -14,13 +14,14 @@ fn rows_are_the_newest_lines_of_players_not_muted_while_young() {
     }
     lines.push_back(line("Server", "restart soon", None, 8.0));
     let none = BTreeSet::new();
-    let names = |rows: &[(String, String)]| rows.iter().map(|r| r.0.clone()).collect::<Vec<_>>();
+    let names = |rows: &[Row]| rows.iter().map(|r| r.name.clone()).collect::<Vec<_>>();
     let rows = visible_rows(&lines, &none, false, 9.0);
     assert_eq!(names(&rows), ["P3", "P4", "P5", "P6", "P7", "Server"], "the newest six, oldest first");
     let muted: BTreeSet<[u8; 8]> = [[1u8; 8]].into();
     assert_eq!(names(&visible_rows(&lines, &muted, false, 9.0)), ["P0", "P2", "P3", "P5", "P6", "Server"]);
     let rows = visible_rows(&lines, &none, false, 15.5);
-    assert_eq!(rows.iter().map(|r| r.1.as_str()).collect::<Vec<_>>(), vec!["line 6", "line 7", "restart soon"]);
+    assert_eq!(rows.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(), vec!["line 6", "line 7", "restart soon"]);
+    assert!(rows.iter().all(|r| !r.notice), "the players' and the server's lines are no notices");
     assert!(visible_rows(&lines, &none, false, 100.0).is_empty());
     assert_eq!(visible_rows(&lines, &none, true, 100.0).len(), ROWS);
 }
@@ -63,4 +64,23 @@ fn the_chat_layer_is_on_its_own_layer() {
     )
     .expect("the layout");
     assert_eq!(layout.layer, LAYER);
+}
+
+#[test]
+fn the_launchs_notice_is_said_once_when_the_level_shows_the_layer() {
+    let mut s = crate::game::fe::ava::session::Session::default();
+    s.begin("loopback", Some(4));
+    s.launch_notice = Some("a 4% chance of survival".into());
+    let open = false;
+    assert!(visible_rows(&s.chat.lines, &s.muted, open, 12.0).is_empty(), "nothing before the level shows it");
+    level_shown(&mut s, 30.0);
+    let rows = visible_rows(&s.chat.lines, &s.muted, open, 39.5);
+    let notice = Row { name: String::new(), text: "a 4% chance of survival".into(), notice: true };
+    assert_eq!(rows, [notice], "a notice row, no sender");
+    assert!(visible_rows(&s.chat.lines, &s.muted, open, 40.5).is_empty(), "gone after its ten seconds");
+    level_shown(&mut s, 60.0);
+    assert_eq!(s.chat.lines.len(), 1, "said once");
+    s.launch_notice = Some("again".into());
+    s.end();
+    assert_eq!(s.launch_notice, None, "a session's end drops it");
 }

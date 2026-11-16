@@ -1,5 +1,7 @@
 mod intro;
 mod outro;
+#[cfg(test)]
+mod tests;
 mod walk;
 
 use std::collections::HashMap;
@@ -11,7 +13,7 @@ use ssx_formats::ant_anim::{Animation, ChannelToDof, Pose, Skeleton, dof_list};
 
 use crate::anim_db::{Asset, AssetDb, field};
 pub use crate::anim_graph::Blend;
-use crate::rig_anim::{ANIM_DIR, RIG_BUNDLE};
+use crate::rig_anim::{RIG_BUNDLE, has_bundle};
 use crate::rigamate::{Sqt, rig_defaults};
 
 pub use intro::*;
@@ -55,7 +57,7 @@ impl NisClip {
         let anim = Animation::from_object(a.schema, a.obj)?.with_context(|| format!("{name}: Anim is no animation"))?;
         let t = db.get(anim.info().channel_to_dof).with_context(|| format!("{name}: no ChannelToDof"))?;
         let table = ChannelToDof::parse(t.schema, t.obj)?;
-        let (anim, indices) = crate::content::anims::clip_for(db.data_root(), anim_g, anim, table.indices);
+        let (anim, indices) = crate::content::anims::clip_for(Some(db.data_root()), anim_g, anim, table.indices);
         let target = ctrl.guid("Target").and_then(|g| db.get(g)).map_or("AnimRig", |t| t.name());
         let dofs = dof_list(all, rig, target)?;
         let c = anim.counts();
@@ -84,7 +86,7 @@ impl NisClip {
     }
 
     pub fn sample(&self, tick: f32) -> Result<Pose> {
-        Ok(self.anim.sample(tick.clamp(0.0, self.num_ticks) * self.fps_scale)?)
+        Ok(self.anim.sample(self.anim.frame(tick.clamp(0.0, self.num_ticks) * self.fps_scale))?)
     }
 
     pub fn quat(&self, p: &Pose, dof: &str) -> Option<[f32; 4]> {
@@ -161,9 +163,10 @@ pub fn template_joint(db: &AssetDb, rig: &Rig, id: &Asset) -> Option<String> {
 }
 
 pub fn intro_bundles(big_root: &Path, binding: &str, character: &str) -> Vec<String> {
-    let dir = big_root.join(ANIM_DIR);
-    let mut out: Vec<String> =
-        [format!("{binding}.cba"), format!("{character}.cba")].into_iter().filter(|b| dir.join(b).exists()).collect();
+    let mut out: Vec<String> = [format!("{binding}.cba"), format!("{character}.cba")]
+        .into_iter()
+        .filter(|b| has_bundle(big_root, b))
+        .collect();
     out.push(RIG_BUNDLE.to_string());
     out
 }
@@ -206,12 +209,61 @@ pub struct NisActor {
     pub length: f32,
     pub clip: NisClip,
     pub offset: Option<(String, String)>,
-    pub choices: Vec<(NisClip, f32)>,
+    pub choices: Vec<(NisClip, f32, ElementClock)>,
     pub seed: Option<u32>,
     pub chooser: Option<NisChooser>,
     pub sequences: Vec<(String, f32)>,
     pub root: Option<(String, Option<f32>)>,
     pub tags: Tags,
+    pub clock: ElementClock,
+    pub pieces: Vec<NisPiece>,
+}
+
+impl NisActor {
+    pub fn piece_at(&self, t: f32) -> Option<(usize, &NisPiece)> {
+        self.pieces.iter().enumerate().rev().find(|(_, p)| p.clock.begin <= t + PIECE_START_EPSILON)
+    }
+
+    pub fn clip_at(&self, t: f32) -> (&NisClip, f32) {
+        match self.piece_at(t) {
+            Some((_, p)) => (&p.clip, p.clock.clip_time(t)),
+            None => (&self.clip, self.clock.clip_time(t)),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ElementClock {
+    pub begin: f32,
+    pub start_in: f32,
+    pub scale: f32,
+    pub end: f32,
+}
+
+impl ElementClock {
+    pub const SEQUENCE: Self = Self { begin: 0.0, start_in: 0.0, scale: 1.0, end: f32::INFINITY };
+
+    pub fn clip_time(&self, t: f32) -> f32 {
+        (self.start_in + (t.min(self.end) - self.begin)) * self.scale
+    }
+
+    pub fn then(&self, inner: &Self) -> Self {
+        Self {
+            begin: self.begin,
+            start_in: self.start_in + (inner.start_in - inner.begin) / self.scale,
+            scale: self.scale * inner.scale,
+            end: self.end.min(inner.end / self.scale - self.start_in + self.begin),
+        }
+    }
+}
+
+const PIECE_START_EPSILON: f32 = 1e-4;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct NisPiece {
+    pub clock: ElementClock,
+    pub clip: NisClip,
+    pub offset: Option<(String, String)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

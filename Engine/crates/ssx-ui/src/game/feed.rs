@@ -157,7 +157,16 @@ impl HudFeed {
                     ui.values.float(id::PLAYER_DESCENT_WITH_LAPS) * 1000.0
                 };
                 let player = self.player_name(ui);
-                self.explore.update(&mut ui.values, &mut ui.loc, t, &player, value);
+                let picture = ui.values.str(USER_GAMERPIC).to_string();
+                let own_best = ui.fe.as_ref().and_then(|f| f.explore_list.own_best(ui.nav.drop_key));
+                let frame = super::leaderboard::ExploreFrame {
+                    event_type: t,
+                    player: &player,
+                    picture: &picture,
+                    value,
+                    own_best,
+                };
+                self.explore.update(&mut ui.values, &mut ui.loc, frame);
             }
         }
         let lb = matches!(x.event.state, EventState::Running | EventState::Finished) && !x.event.waiting;
@@ -274,6 +283,14 @@ impl HudFeed {
         out
     }
 
+    fn player_racer_picture(values: &UiValues, name: &str) -> String {
+        if values.rival(crate::game::fe::globe::RIVAL_PANEL).is_some_and(|p| p.personal_best) {
+            values.str(USER_GAMERPIC).to_string()
+        } else {
+            format!("img://gamerpic://{}_{name}_0.dds", values.int(crate::game::fe::pads::USER_CONTROLLER_ID))
+        }
+    }
+
     fn racers(&self, ui: &mut GameUi, x: &Session, world: &World) -> Vec<RaceEntrant> {
         let Some(b) = x.bots.as_ref() else { return self.ghost_racers.clone() };
         let inputs = b.racers(world);
@@ -281,10 +298,22 @@ impl HudFeed {
             .iter()
             .enumerate()
             .map(|(k, bot)| {
-                let key = self.rider_titles.get(&bot.request.character).cloned().unwrap_or_default();
-                let name = ui.loc.text(&key);
+                let (name, picture) = if bot.request.identity_kind() == 1 {
+                    let key = self.rider_titles.get(&bot.request.character).cloned().unwrap_or_default();
+                    let name = ui.loc.text(&key);
+                    (name.clone(), format!("assets\\gamertagIcons\\{}.dds", name.to_ascii_lowercase()))
+                } else {
+                    let name = match bot.request.name {
+                        ssx_physics::session::bots::RacerName::Text(key) => ui.loc.text(key),
+                        ssx_physics::session::bots::RacerName::Character => {
+                            ui.loc.text(self.rider_titles.get(&bot.request.character).map_or("", String::as_str))
+                        }
+                    };
+                    let picture = Self::player_racer_picture(&ui.values, &name);
+                    (name, picture)
+                };
                 RaceEntrant {
-                    picture: format!("assets\\gamertagIcons\\{}.dds", name.to_ascii_lowercase()),
+                    picture,
                     name,
                     active: RACER_PRESENT,
                     finish_ms: x.event.racers.get(k).and_then(|r| r.finish_ms),
@@ -313,7 +342,7 @@ impl HudFeed {
         v.set_bool(id::IS_REWINDING, sc.is_rewinding_backwards);
         let count = x.manager.count;
         v.set_int(id::REWIND_COUNT, count.rewinds_left);
-        v.set_int(id::REWIND_COUNT_INITIAL, x.manager.tuning.max_rewind_count);
+        v.set_int(id::REWIND_COUNT_INITIAL, count.initial);
         v.set_bool(id::REWIND_COUNT_INFINITE, count.infinite);
         v.set_bool(id::REWIND_COUNT_ENABLED, count.enabled);
         v.set_float(id::REWIND_SCORE, if sc.is_rewinding_backwards { sc.rewind_bank } else { 0.0 });
@@ -345,7 +374,7 @@ impl HudFeed {
     }
 
     pub fn project(&self, ui: &mut GameUi, s: &RiderState, x: &Session) {
-        let in_air = s.in_air().then_some([s.position.x, s.position.y, s.position.z]);
+        let in_air = s.bln_in_air().then_some([s.position.x, s.position.y, s.position.z]);
         self.project_into(&mut ui.values, &mut ui.loc, in_air, x.tombstones.as_ref());
     }
 
@@ -692,6 +721,18 @@ mod tests {
     }
 
     #[test]
+    fn the_own_ghosts_row_shows_the_players_picture() {
+        use crate::game::values::{RivalPanel, UiValue};
+        let mut v = UiValues::new();
+        v.set_str(USER_GAMERPIC, "assets/gamertagIcons/player.dds");
+        v.set_int(crate::game::fe::pads::USER_CONTROLLER_ID, 2);
+        assert_eq!(HudFeed::player_racer_picture(&v, "Personal Best"), "img://gamerpic://2_Personal Best_0.dds");
+        let panel = RivalPanel { personal_best: true, ..Default::default() };
+        v.set(crate::game::fe::globe::RIVAL_PANEL, UiValue::Rival(Box::new(panel)));
+        assert_eq!(HudFeed::player_racer_picture(&v, "Personal Best"), "assets/gamertagIcons/player.dds");
+    }
+
+    #[test]
     fn a_trick_bots_recorded_score_is_its_rows() {
         use ssx_physics::Vec3;
         use ssx_physics::session::bots::{Bot, BotClock, BotRace, BotRequest, RacerName};
@@ -708,10 +749,12 @@ mod tests {
         };
         let request = BotRequest {
             ghost_id: 967_363_868,
+            ghost_type: ssx_physics::session::bots::GHOST_TYPE_DISC,
             start_slot: 3,
             character: 0x405D_C1D5,
             catchup: 0,
             racer_type: 1,
+            racer_kind: 1,
             collision: true,
             tint: 0,
             score: 2_500_000,

@@ -150,6 +150,9 @@ impl Inventory {
                 if u.sort <= 0 || u.has(flag::EMPTY) {
                     continue;
                 }
+                if kind == 2 && !super::order::meets_requirement(drop, u.slot) {
+                    continue;
+                }
                 let group = match kind {
                     2 => Some(u.slot),
                     3 => u.stats.iter().find_map(|s| ssx_assets::career::store::stat_gear_type(s.0)),

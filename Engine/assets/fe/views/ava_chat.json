@@ -186,6 +186,90 @@
           }
         },
         {
+          "instance": "txtNotice0",
+          "x": 44,
+          "y": 388,
+          "text": {
+            "font": "DIN Mittelschrift Std",
+            "size": 15,
+            "color": "#ffffff",
+            "width": 456,
+            "height": 34,
+            "multiline": true,
+            "wrap": true
+          }
+        },
+        {
+          "instance": "txtNotice1",
+          "x": 44,
+          "y": 422,
+          "text": {
+            "font": "DIN Mittelschrift Std",
+            "size": 15,
+            "color": "#ffffff",
+            "width": 456,
+            "height": 34,
+            "multiline": true,
+            "wrap": true
+          }
+        },
+        {
+          "instance": "txtNotice2",
+          "x": 44,
+          "y": 456,
+          "text": {
+            "font": "DIN Mittelschrift Std",
+            "size": 15,
+            "color": "#ffffff",
+            "width": 456,
+            "height": 34,
+            "multiline": true,
+            "wrap": true
+          }
+        },
+        {
+          "instance": "txtNotice3",
+          "x": 44,
+          "y": 490,
+          "text": {
+            "font": "DIN Mittelschrift Std",
+            "size": 15,
+            "color": "#ffffff",
+            "width": 456,
+            "height": 34,
+            "multiline": true,
+            "wrap": true
+          }
+        },
+        {
+          "instance": "txtNotice4",
+          "x": 44,
+          "y": 524,
+          "text": {
+            "font": "DIN Mittelschrift Std",
+            "size": 15,
+            "color": "#ffffff",
+            "width": 456,
+            "height": 34,
+            "multiline": true,
+            "wrap": true
+          }
+        },
+        {
+          "instance": "txtNotice5",
+          "x": 44,
+          "y": 558,
+          "text": {
+            "font": "DIN Mittelschrift Std",
+            "size": 15,
+            "color": "#ffffff",
+            "width": 456,
+            "height": 34,
+            "multiline": true,
+            "wrap": true
+          }
+        },
+        {
           "instance": "mcBanner",
           "x": 320,
           "y": 226,
@@ -229,7 +313,13 @@
         "txtName4",
         "txtText4",
         "txtName5",
-        "txtText5"
+        "txtText5",
+        "txtNotice0",
+        "txtNotice1",
+        "txtNotice2",
+        "txtNotice3",
+        "txtNotice4",
+        "txtNotice5"
       ]
     },
     "data": [
@@ -306,6 +396,42 @@
         "target": "txtText5",
         "data": "ava_chat",
         "field": "text5",
+        "fit": "shrink"
+      },
+      {
+        "target": "txtNotice0",
+        "data": "ava_chat",
+        "field": "notice0",
+        "fit": "shrink"
+      },
+      {
+        "target": "txtNotice1",
+        "data": "ava_chat",
+        "field": "notice1",
+        "fit": "shrink"
+      },
+      {
+        "target": "txtNotice2",
+        "data": "ava_chat",
+        "field": "notice2",
+        "fit": "shrink"
+      },
+      {
+        "target": "txtNotice3",
+        "data": "ava_chat",
+        "field": "notice3",
+        "fit": "shrink"
+      },
+      {
+        "target": "txtNotice4",
+        "data": "ava_chat",
+        "field": "notice4",
+        "fit": "shrink"
+      },
+      {
+        "target": "txtNotice5",
+        "data": "ava_chat",
+        "field": "notice5",
         "fit": "shrink"
       },
       {

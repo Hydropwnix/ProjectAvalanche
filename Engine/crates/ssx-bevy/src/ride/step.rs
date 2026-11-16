@@ -8,8 +8,8 @@ use ssx_physics::rider::{RideState, RiderState};
 use ssx_physics::session::Execution;
 
 use super::clock::{lerp_pose, pose_of};
-use super::controls::PadLock;
-use super::scripted::{AutoRewind, avalanche_override, back_script};
+use super::controls::{PadLock, scheme_holds};
+use super::scripted::{AutoRewind, avalanche_override, back_script, forced_tricky};
 use super::start::level_start;
 use super::{Clock, OutroRun, Ride};
 use crate::rider::anim::RiderAnimation;
@@ -130,6 +130,7 @@ impl Ride {
             if let Some(pb) = self.pose_blocks.as_mut() {
                 pb.respawned();
             }
+            self.ghost_rumble = ssx_physics::graph::LandingRumble::default();
             if let Some(data) = self.session.heli_jump.as_ref().map(|h| h.data.clone())
                 && let Some(mut s) = super::start::ride_from_ghost(
                     &self.world,
@@ -208,11 +209,8 @@ impl Ride {
         }
         let (input, tricks) = self.locked_controls();
         let at_start = self.state.start.is_some();
-        let (grind_held, wingsuit_held, rewind_held) = if self.classic {
-            (tricks.y, input.jump, tricks.b)
-        } else {
-            (self.l2, self.r1, self.rewind_pad.rewind_held)
-        };
+        let (grind_held, wingsuit_held, rewind_held) =
+            scheme_holds(self.classic, &input, &tricks, self.l2, self.r1, &self.rewind_pad);
         self.state.tricks.classic = self.classic;
         self.state.grind.pad_l2 = grind_held;
         self.state.grind.pad_l2_hold = self.l2_hold;
@@ -289,18 +287,20 @@ impl Ride {
         }
         let (heli, world, steps) = (&mut self.heli, &self.world, self.steps);
         let mut actors = |session: &mut ssx_physics::session::Session, state: &mut RiderState, dt: f32| {
-            let Some(h) = heli.as_mut() else { return };
-            let course = session.event.setup.course;
-            h.step(&ssx_physics::helicopter::HeliStep {
-                intro: state.start.as_ref().and_then(|l| l.intro.as_ref()),
-                dt,
-                time: (steps + 1) as f32 / SIM_HZ,
-                race_proper_started: session.flow.race_proper_started,
-                track_finished: session.flow.track_finished,
-                remaining: course.map(|c| (1.0 - session.event.progress) * (c.start_y - c.end_y)),
-                target: (state.traj, state.traj_velocity),
-            });
-            session.heli_physics_queries(h, world);
+            if let Some(h) = heli.as_mut() {
+                let course = session.event.setup.course;
+                h.step(&ssx_physics::helicopter::HeliStep {
+                    intro: state.start.as_ref().and_then(|l| l.intro.as_ref()),
+                    dt,
+                    time: (steps + 1) as f32 / SIM_HZ,
+                    race_proper_started: session.flow.race_proper_started,
+                    track_finished: session.flow.track_finished,
+                    remaining: course.map(|c| (1.0 - session.event.progress) * (c.start_y - c.end_y)),
+                    target: (state.traj, state.traj_velocity),
+                });
+                session.heli_physics_queries(h, world);
+            }
+            session.interaction_toolkit(heli.as_ref(), state, dt);
         };
         let held = self.pads_held || self.chat_held || gate != super::live::StartGate::Free;
         let r2 = if held { 0.0 } else { self.r2 };
@@ -482,6 +482,15 @@ impl Ride {
             let w = &mut self.state.avalanche.switches;
             (w.tuning_set, w.carving_sensitivity, w.impact_sensitivity) = (set, k, k);
         }
+        if let Some(sup) = forced_tricky(self.seconds()) {
+            let k = &self.world.tuning.scoring;
+            let sc = &mut self.state.score;
+            sc.awesome_timer = sc.awesome_timer.max(k.awesome_time);
+            if sup {
+                (sc.super_activation, sc.super_timer) = (1.0, k.super_awesome_time);
+            }
+            info!("Ride step {}: test switch: {} forced", self.steps, if sup { "Super Tricky" } else { "Tricky" });
+        }
         if self.session.heli_jump.is_some() {
             let nodes = anim.as_deref().map(|a| a.graph().path());
             match self.session.heli_jump_update(&mut self.state, &self.world, self.heli.as_mut(), nodes.as_deref()) {
@@ -571,12 +580,29 @@ impl Ride {
         self.step_ticks = e.dt;
         if let Some(a) = anim {
             a.after_step(&self.state);
+            let landing = self.ghost_rumble.step(&self.state);
+            match e.recorded.map(|_| ssx_physics::graph::pose_source(&self.state, a.graph(), a.posed().0, landing)) {
+                Some(Ok(src)) => {
+                    self.session.recorder.after_execution(Some(ssx_formats::ghost::PoseBlock::record(&src)))
+                }
+                Some(Err(err)) => {
+                    if self.session.recorder.wants_block() && !self.session.recorder.incomplete() {
+                        warn!(
+                            "ghost recorder: the pose block was not packed ({err:#}): the run is not kept as a ghost"
+                        );
+                    }
+                    self.session.recorder.block_lost();
+                }
+                None => self.session.recorder.after_execution(None),
+            }
             if let Some(pb) = self.pose_blocks.as_mut()
                 && let Err(err) = pb.record(self.steps + 1, &self.state, a.graph(), a.posed().0, &e, r.active)
                 && pb.failures == 1
             {
                 warn!("live: the pose block was not recorded: {err:#}");
             }
+        } else {
+            self.session.recorder.after_execution(None);
         }
         self.rewinding = r.active;
         if self.state.score.grind_capture > 0.0 {

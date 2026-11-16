@@ -20,7 +20,7 @@ pub enum SignalKind {
     Float(f32),
     Int(i64),
     Enum(i64),
-    Vector,
+    Vector([f32; 4]),
     Script { script: String, ordinal: i64, float: bool, function: String },
     Other(String),
 }
@@ -158,6 +158,7 @@ pub struct Transition {
     pub branch_in_phase: u8,
     pub destination_phase: f32,
     pub branch_in_any: bool,
+    pub game_tags: Vec<GameTag>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -214,12 +215,37 @@ pub struct GameTag {
     pub name: String,
     pub signal: SigId,
     pub window: crate::tags::TagWindow,
-    pub value: f32,
-    pub boolean: bool,
+    pub value: GameTagValue,
     pub mode: u32,
     pub reset_on_leave: bool,
     pub default: f32,
-    pub spline: Vec<f32>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum GameTagValue {
+    Bool(bool),
+    Float { value: f32, spline: Vec<f32> },
+    Int(i32),
+    Vector3 { value: [f32; 3], splines: Vec<[f32; 3]> },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DriverTag {
+    pub window: crate::tags::TagWindow,
+    pub target: String,
+    pub source_template: String,
+    pub source_joint: Option<String>,
+    pub target_template: String,
+    pub target_joints: Vec<(String, String)>,
+    pub offset_t: [f32; 3],
+    pub offset_q: [f32; 4],
+    pub blend_in: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct QueryTag {
+    pub window: crate::tags::TagWindow,
+    pub task: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -312,6 +338,8 @@ pub enum Ctrl {
         start_tick: f32,
         audio_tags: Vec<AudioTag>,
         game_tags: Vec<GameTag>,
+        drivers: Vec<DriverTag>,
+        queries: Vec<QueryTag>,
     },
     Looping {
         subject: Option<CtrlId>,
@@ -450,12 +478,12 @@ impl Graph {
     pub fn load(db: &AssetDb, root: &str) -> Result<(Graph, CtrlId)> {
         let a = db.by_name(root).ok_or_else(|| anyhow::anyhow!("no asset {root}"))?;
         let overrides = db.character_config().map(|c| db.config_overrides(c)).unwrap_or_default();
-        let mut b = Builder { db, g: Graph::default(), overrides, banks: HashMap::new() };
+        let mut b = Builder { db, g: Graph::default(), overrides, banks: HashMap::new(), rigs: HashMap::new() };
         let id = b.ctrl(Some(a.guid)).ok_or_else(|| anyhow::anyhow!("{root} is not a controller"))?;
         let mut g = b.g;
-        if let Some(tricks) = crate::content::tricks::tricks_for(db.data_root()) {
+        if let Some(tricks) = crate::content::tricks::tricks_for(Some(db.data_root())) {
             for p in added::add_tricks(&mut g, &tricks, db) {
-                crate::content::tricks::notice(db.data_root(), p);
+                crate::content::tricks::notice(Some(db.data_root()), p);
             }
         }
         Ok((g, id))
@@ -465,7 +493,7 @@ impl Graph {
         let t = db.by_name(transition).ok_or_else(|| anyhow::anyhow!("no transition {transition}"))?;
         let Some(over) = t.guid("OverrideBlend") else { return Ok(Blend::default_transition()) };
         let overrides = db.character_config().map(|c| db.config_overrides(c)).unwrap_or_default();
-        let mut b = Builder { db, g: Graph::default(), overrides, banks };
+        let mut b = Builder { db, g: Graph::default(), overrides, banks, rigs: HashMap::new() };
         let id = b.blend(Some(over)).ok_or_else(|| anyhow::anyhow!("{transition}'s OverrideBlend is not a blend"))?;
         b.g.blends.get(id).cloned().ok_or_else(|| anyhow::anyhow!("{transition}: no blend {id}"))
     }

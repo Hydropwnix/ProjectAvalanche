@@ -221,10 +221,10 @@ impl GameUi {
         }
         // PORT(choice): a window crossing the 1.55 bound gets the new display at once in `_global`, the UI values
         // `FE_Display*` and `ViewUtil.mIsWidescreen` (the per-update readers), the kept `RepositionIfSD` clips (205
-        // calls in 54 movies) moved by 136, the hint panel's places and the globe's peak shots for it, and every loaded
-        // view unloaded and loaded again at the front end's next rest (35 `IsWidescreen` reads in 27 movies, most at a
-        // view's initialisation); the port's window; the console's display never changed while the game ran
-        // (`XGetVideoMode` once, 0x82FB57A0).
+        // calls in 54 movies) moved by 136, the hint panel's places and the globe's shots for it (the scene's and the
+        // peaks'), and every loaded view unloaded and loaded again at the front end's next rest (35 `IsWidescreen`
+        // reads in 27 movies, most at a view's initialisation); the port's window; the console's display never changed
+        // while the game ran (`XGetVideoMode` once, 0x82FB57A0).
         let moved = move_kept(&mut cx, class.widescreen);
         self.hud.hint.set_wide(&mut cx, class.widescreen);
         if let Some(fe) = self.fe.as_mut() {

@@ -170,13 +170,21 @@ impl RiderAvalanche {
         if f.enabled && alive { t.drag_modifier.eval(f.mass) } else { 1.0 }
     }
 
-    pub fn wind(&self, t: &CarvingAvalancheTuning, f: &AvalancheFrame, alive: bool, air_time: f32, n: Vec3) -> Vec3 {
+    pub fn wind(
+        &self,
+        t: &CarvingAvalancheTuning,
+        f: &AvalancheFrame,
+        alive: bool,
+        air_time: f32,
+        n: Vec3,
+        base: Vec3,
+    ) -> Vec3 {
         let mut k =
             if f.enabled && alive { t.wind_decay.eval(self.ride_in_ticks) * t.wind_modifier.eval(f.mass) } else { 0.0 };
         if air_time > t.min_air_time_for_ramp_up {
             k *= f.ramp;
         }
-        (f.vel - n * f.vel.dot(n)) * k
+        (f.vel - n * f.vel.dot(n)).mul_add(Vec3::splat(k), base)
     }
 
     pub fn friction_factor(&self, t: &CarvingAvalancheTuning, f: &AvalancheFrame, alive: bool, air_time: f32) -> f32 {

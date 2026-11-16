@@ -19,7 +19,7 @@ pub const RSTICK_UP_MAGNITUDE: f32 = 0.54;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Phase {
     Idle { ticks: f32 },
-    Go { ticks: f32, clip: usize },
+    Go { from: f32, ticks: f32, clip: usize },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -98,7 +98,10 @@ impl LevelStart {
             intro.advance(dt);
             let ticks = intro.ticks();
             self.phase = match intro.root_motion() {
-                true => Phase::Go { ticks: intro.sequence_time(ticks), clip: intro.jump_clip() },
+                true => {
+                    let (from, ticks) = intro.go_span(dt);
+                    Phase::Go { from, ticks, clip: intro.jump_clip() }
+                }
                 false => Phase::Idle { ticks },
             };
             if intro.attached
@@ -111,11 +114,12 @@ impl LevelStart {
         if let Phase::Idle { .. } = self.phase
             && self.trigger_transition
         {
-            self.phase = Phase::Go { ticks: 0.0, clip: pick() };
+            self.phase = Phase::Go { from: 0.0, ticks: 0.0, clip: pick() };
             self.stop_tag = TagTracker::new(&[GO_STOP_WINDOW]);
         }
         match &mut self.phase {
-            Phase::Idle { ticks } | Phase::Go { ticks, .. } => *ticks += dt,
+            Phase::Idle { ticks } => *ticks += dt,
+            Phase::Go { from, ticks, .. } => (*from, *ticks) = (*ticks, *ticks + dt),
         }
     }
 
@@ -141,14 +145,26 @@ impl LevelStart {
         }
     }
 
+    pub fn attached_step(&self) -> Option<(Quat, Vec3)> {
+        let intro = self.intro.as_ref()?;
+        if !intro.driver_places() {
+            return None;
+        }
+        intro.rider_step()
+    }
+
     pub fn idle(&self) -> bool {
         matches!(self.phase, Phase::Idle { .. })
     }
 
+    pub fn go_pose(&self) -> Option<(Vec3, Quat)> {
+        let Phase::Go { .. } = self.phase else { return None };
+        let (q, p) = self.intro.as_ref()?.pose_root()?;
+        Some((p, (q * Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)).normalize()))
+    }
+
     pub fn idle_pose(&self, rm: &RootMotion) -> Option<(Vec3, Quat)> {
         if let Some(intro) = &self.intro {
-            // TODO(guess): `VEC_Velocity` of these updates is 0 (the game's while the driver 0x82D02BA8 holds the root is not traced; 0x82DA8590 writes it from the clip's step; the hand-over is unaffected); settle: trace the two against each other.
-            crate::guess_hit!();
             let (q, p) = intro.placed_root()?;
             return Some((p, (q * Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)).normalize()));
         }
@@ -214,7 +230,7 @@ mod tests {
         assert!(ls.idle() && ls.request_transition && !ls.trigger_transition);
         ls.nis_scene_op();
         ls.controller_update(2.0, || 1);
-        assert_eq!(ls.phase, Phase::Go { ticks: 2.0, clip: 1 });
+        assert_eq!(ls.phase, Phase::Go { from: 0.0, ticks: 2.0, clip: 1 });
         let mut stop_at = None;
         for i in 0..30 {
             ls.tags(&GoInputs::default());

@@ -77,7 +77,7 @@ impl GlobeScene {
         })
     }
 
-    pub fn entries(&self, stage: (f32, f32), aspect: f32) -> Vec<GlobeEntry> {
+    pub fn entries(&self, stage: (f32, f32), aspect: f32, flow: &dyn GlobeFlow) -> Vec<GlobeEntry> {
         match self.level {
             Some(4 | 5) => return self.list.clone(),
             None => return Vec::new(),
@@ -95,6 +95,9 @@ impl GlobeScene {
             if self.level == Some(2) && !focused {
                 continue;
             }
+            if self.level == Some(3) && !flow.range_valid(range.key) {
+                continue;
+            }
             let (lat, lon) = (range.lon_lat[1].to_radians(), range.lon_lat[0].to_radians());
             let p = scale(node_direction(lat, lon), r);
             let c = transform(p, &wvp);
@@ -102,6 +105,7 @@ impl GlobeScene {
             let y = (1.0 - c[1] / c[3]) * stage.1 * 0.5;
             let rz = p[0] * world_view[0][2] + p[1] * world_view[1][2] + p[2] * world_view[2][2];
             let scale_v = (rz / r).min(0.5);
+            let is_new = self.level == Some(3) && flow.is_new(range.key);
             out.push(GlobeEntry {
                 key: range.key,
                 kind: 1,
@@ -113,6 +117,7 @@ impl GlobeScene {
                 win_condition: 7,
                 selectable: true,
                 selected: focused,
+                is_new,
                 ..Default::default()
             });
         }

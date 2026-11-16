@@ -5,7 +5,7 @@ mod mirror;
 mod seq;
 mod timeline;
 
-use crate::anim_eval::{Controller, Env, GameState, Window, blend_new_weight, instantiate};
+use crate::anim_eval::{Controller, Env, GameState, PathNode, Window, blend_new_weight, instantiate};
 use crate::anim_graph::{Blend, BlendId, ChooserEntry, Ctrl, CtrlId, Selector, SigId};
 use crate::anim_pose::{AnimPose, Delta};
 

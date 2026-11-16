@@ -7,36 +7,29 @@ use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerB
 use bevy::render::render_resource::{CompareFunction, Face};
 use ssx_formats::fxo::{Effect, Pass, RegisterSet, state};
 
-const SHADER_DIRS: [&str; 2] = ["cache1/data/xenon/shaders", "bootcache/data/xenon/shaders"];
-
 struct Library {
-    dirs: Vec<PathBuf>,
-    effects: Mutex<HashMap<String, Arc<Effect>>>,
+    big_root: PathBuf,
+    effects: Mutex<HashMap<PathBuf, Arc<Effect>>>,
 }
 
 static LIBRARY: OnceLock<Library> = OnceLock::new();
 
 pub fn init(big_root: &Path) {
-    let dirs = SHADER_DIRS.iter().map(|d| big_root.join(d)).filter(|d| d.is_dir()).collect();
-    let _ = LIBRARY.set(Library { dirs, effects: Mutex::new(HashMap::new()) });
+    let _ = LIBRARY.set(Library { big_root: big_root.to_path_buf(), effects: Mutex::new(HashMap::new()) });
 }
 
 pub fn effect(name: &str) -> Result<Arc<Effect>> {
     let lib = LIBRARY.get().context("effect states unavailable: no extracted archive root")?;
-    let stem = name.trim_end_matches(".fxo").trim_end_matches(".fx").to_string();
+    let path = ssx_assets::shaders::effect_file(&lib.big_root, name).with_context(|| {
+        format!("{}.fxo: in no mounted package, title update or disc archive", ssx_assets::shaders::effect_stem(name))
+    })?;
     let mut cache = lib.effects.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(fx) = cache.get(&stem) {
+    if let Some(fx) = cache.get(&path) {
         return Ok(fx.clone());
     }
-    let path = lib
-        .dirs
-        .iter()
-        .map(|d| d.join(format!("{stem}.fxo")))
-        .find(|p| p.is_file())
-        .with_context(|| format!("{stem}.fxo not found in the shader folders"))?;
-    let data = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+    let (path, data) = ssx_assets::shaders::read_effect(&lib.big_root, name)?;
     let fx = Arc::new(Effect::parse(&data).with_context(|| format!("parsing {}", path.display()))?);
-    cache.insert(stem, fx.clone());
+    cache.insert(path, fx.clone());
     Ok(fx)
 }
 
@@ -48,14 +41,8 @@ pub fn param_default(name: &str, param: &str) -> Result<[f32; 4]> {
         .find(|p| p.name.as_deref() == Some(param))
         .with_context(|| format!("{name}: no parameter {param}"))?;
     let lib = LIBRARY.get().context("effect states unavailable: no extracted archive root")?;
-    let stem = name.trim_end_matches(".fxo").trim_end_matches(".fx");
-    let path = lib
-        .dirs
-        .iter()
-        .map(|d| d.join(format!("{stem}.fxo")))
-        .find(|p| p.is_file())
-        .with_context(|| format!("{stem}.fxo not found in the shader folders"))?;
-    let data = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+    let stem = ssx_assets::shaders::effect_stem(name);
+    let (_, data) = ssx_assets::shaders::read_effect(&lib.big_root, name)?;
     let img = data.get(ssx_formats::fxo::IMAGE_BASE..).context("effect file too short")?;
     let word = |at: usize| -> Result<u32> {
         let b = img.get(at..at + 4).with_context(|| format!("{stem}.fxo: value buffer out of range"))?;

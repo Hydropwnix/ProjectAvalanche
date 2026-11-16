@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use ssx_assets::port_options::{BootMovie, MenuFocus, RangeMovies};
+use ssx_assets::port_options::{BootMovie, DiscordPresence, MenuFocus, RangeMovies};
 
 use crate::catalog;
 use crate::settings::{Mode, Music, Settings, Shading};
@@ -147,6 +147,9 @@ pub fn game(s: &Settings, big_root: &Path) -> Invocation {
     if s.menu_focus != MenuFocus::FirstItem {
         push(&[MenuFocus::FLAG, s.menu_focus.arg()]);
     }
+    if s.discord_presence == DiscordPresence::On {
+        push(&[DiscordPresence::FLAG, DiscordPresence::On.arg()]);
+    }
     args.extend(s.display.args().into_iter().map(OsString::from));
     Invocation { program: game_exe(), args, env: env(s) }
 }
@@ -260,6 +263,24 @@ mod tests {
         assert!(args(&last).windows(2).any(|w| w[0] == "--menu-focus" && w[1] == "last-item"));
         assert!(!args(&Settings::default()).iter().any(|a| a == "--menu-focus"));
         assert!(!viewer(&last, big).args.iter().any(|a| a == "--menu-focus"));
+    }
+
+    #[test]
+    fn the_discord_switch_on_is_passed_and_off_is_nothing() {
+        let big = Path::new("data/big");
+        let args = |s: &Settings| -> Vec<String> {
+            game(s, big).args.iter().map(|a| a.to_string_lossy().into_owned()).collect()
+        };
+        let on = Settings::default();
+        assert!(args(&on).windows(2).any(|w| w[0] == "--discord-presence" && w[1] == "on"));
+        let off = Settings { discord_presence: DiscordPresence::Off, ..Settings::default() };
+        assert!(!args(&off).iter().any(|a| a.starts_with("--discord")));
+        assert!(!viewer(&on, big).args.iter().any(|a| a.to_string_lossy().starts_with("--discord")));
+        let has = |inv: &Invocation| inv.args.windows(2).any(|w| w[0] == "--discord-presence" && w[1] == "on");
+        assert!(has(&game_with_link(&on, big, "avalanche://connect/127.0.0.1:27450")));
+        assert!(!has(&game_with_link(&off, big, "avalanche://connect/127.0.0.1:27450")));
+        let server = std::net::SocketAddr::from(([127, 0, 0, 1], 27450));
+        assert!(has(&game_joining(&on, big, server)) && !has(&game_joining(&off, big, server)));
     }
 
     #[test]

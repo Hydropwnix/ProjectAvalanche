@@ -221,18 +221,19 @@ fn land_pitched(pitch: f32) -> RiderState {
 }
 
 #[test]
-fn flipped_late_bails_and_loses_the_bank() {
+fn flipped_late_wipes_out_and_loses_the_bank() {
     let s = land_pitched(160f32.to_radians());
-    assert!(s.landing.touchdown_pitch > 135f32.to_radians(), "{}°", s.landing.touchdown_pitch.to_degrees());
-    assert_eq!(s.landing.quality, crate::landing::LandingQuality::Bail);
+    let l = &s.landing;
+    assert!(l.touchdown_pitch > 135f32.to_radians(), "{}°", l.touchdown_pitch.to_degrees());
+    assert!(!l.bail_on_landing && l.quality != crate::landing::LandingQuality::Bail && l.tumbling, "{l:?}");
     let sc = &s.score;
     assert!(sc.last_lost && sc.last_capture >= 500.0 && sc.score == 0.0, "{sc:?}");
     assert!((s.score.boost - 20.0).abs() < 1e-3, "boost {}", s.score.boost);
     let s = land_pitched(-160f32.to_radians());
-    assert!(
-        s.landing.touchdown_pitch < -135f32.to_radians() && s.landing.quality == crate::landing::LandingQuality::Bail
-    );
-    assert!(!s.score.last_lost && s.score.last_capture >= 500.0, "{:?}", s.score);
+    let l = &s.landing;
+    assert!(l.touchdown_pitch < -135f32.to_radians() && !l.bail_on_landing, "{l:?}");
+    assert_eq!(l.quality, crate::landing::LandingQuality::Tumble);
+    assert!(s.score.score >= 500.0, "{:?}", s.score);
 }
 
 #[test]
@@ -350,7 +351,7 @@ fn no_jump_while_wiping_out_and_an_air_phase_ends_the_bail() {
         step(&mut s, &w, &Input { jump: i < 8, ..Input::default() }, DT_TICKS);
         assert_eq!(s.state, RideState::Riding, "step {i}");
     }
-    assert!(s.landing.bail_on_landing && s.landing.landing_bail_ticks < crate::landing::BAIL_ON_LANDING_MAX_TICKS);
+    assert!(s.landing.bail_on_landing);
     s.tricks.ticks_since_sig_held = f32::MAX;
     s.traj.y += 5.0;
     let (mut was_air, mut landed) = (false, false);
@@ -365,52 +366,49 @@ fn no_jump_while_wiping_out_and_an_air_phase_ends_the_bail() {
     assert!(landed && !s.landing.bail_on_landing && !s.landing.is_bailing(), "{:?}", s.landing.quality);
 }
 
-fn bailing_on(slope: f32) -> (World, RiderState) {
-    let w = world(plane(20000.0, slope));
-    let down = Vec3::new(0.0, -slope.sin(), slope.cos());
-    let mut s = moving(&w, down * -15000.0 + Vec3::Y, down, 60.0 / KMH_PER_M_PER_TICK);
-    (s.landing.bail_on_landing, s.landing.tumbling, s.landing.stable) = (true, true, false);
-    s.landing.pitch = 150f32.to_radians();
-    s.nested_stable = false;
-    (w, s)
-}
-
 #[test]
-fn a_landing_bail_on_smooth_ground_ends_at_the_bail_limit() {
-    for degrees in [0.0f32, 35.0] {
-        let (w, mut s) = bailing_on(degrees.to_radians());
-        let (mut bail_steps, mut airborne) = (0, false);
-        for _ in 0..900 {
-            step(&mut s, &w, &Input::default(), DT_TICKS);
-            airborne |= s.state != RideState::Riding;
-            bail_steps += usize::from(s.landing.bail_on_landing);
-        }
-        assert!(!airborne, "{degrees}°: the slide stays on the ground");
-        assert_eq!((bail_steps + 1) as f32 * DT_TICKS, crate::landing::BAIL_ON_LANDING_MAX_TICKS, "{degrees}°");
+fn a_touchdown_on_its_back_raises_no_landing_bail() {
+    for degrees in [150.0f32, -150.0] {
+        let w = world(plane(2000.0, 0.0));
+        let mut s = moving(&w, Vec3::new(0.0, 1.0, -1500.0), Vec3::Z, kmh(60.0));
+        s.traj_orientation = Quat::from_rotation_x(degrees.to_radians()) * s.traj_orientation;
+        s.tricks.ticks_since_sig_held = f32::MAX;
+        super::super::carving::new_carving(&mut s, &w, DT_TICKS);
+        let l = &s.landing;
+        assert!(l.pitch.abs() > crate::landing::BAIL_ON_LANDING_PITCH, "{degrees}°: pitch {}°", l.pitch.to_degrees());
+        assert!(!l.bail_on_landing && l.quality != crate::landing::LandingQuality::Bail, "{degrees}°: {l:?}");
+        let mut wiped = 0;
+        ride(&w, &mut s, &Input::default(), 300, |s| wiped += usize::from(s.landing.tumbling));
         let l = &s.landing;
         assert!(!l.is_bailing() && !l.tumbling && l.pitch.abs() < 25f32.to_radians(), "{degrees}°: {l:?}");
+        eprintln!("{degrees}°: {wiped} wiping-out steps, then upright");
     }
-}
-
-#[test]
-fn a_dead_riders_landing_bail_is_not_lifted() {
-    let (w, mut s) = bailing_on(0.0);
-    s.carving.is_dead = true;
-    ride(&w, &mut s, &Input::default(), 200, |_| {});
-    assert!(s.landing.bail_on_landing && s.landing.landing_bail_ticks == 0.0);
 }
 
 #[test]
 fn the_nested_flow_chains_offbalance_stable_stop_in_one_update() {
     let w = world(plane(500.0, 0.0));
     let mut s = moving(&w, Vec3::new(0.0, 1.0, 0.0), Vec3::Z, 0.0);
-    (s.nested_stable, s.request_stop, s.stopped) = (false, true, false);
+    (s.nested_stable, s.stopped, s.carving.subject_vars.request_stop) = (false, false, true);
     step(&mut s, &w, &Input::default(), DT_TICKS);
     assert!(s.stopped && s.nested_stable);
     let mut s = moving(&w, Vec3::new(0.0, 1.0, 0.0), Vec3::Z, 0.0);
-    (s.nested_stable, s.request_stop, s.landing.bail_on_landing) = (false, true, true);
+    s.nested_stable = false;
+    (s.carving.subject_vars.request_stop, s.carving.subject_vars.bail_on_landing) = (true, true);
     step(&mut s, &w, &Input::default(), DT_TICKS);
     assert!(!s.stopped && !s.nested_stable);
+}
+
+#[test]
+fn the_nested_flow_sees_a_stop_request_one_update_later() {
+    let w = world(plane(500.0, 0.0));
+    let mut s = moving(&w, Vec3::new(0.0, 1.0, 0.0), Vec3::Z, 3.0 / KMH_PER_M_PER_TICK);
+    step(&mut s, &w, &Input::default(), DT_TICKS);
+    assert!(s.request_stop && !s.stopped, "update 1 requests the stop");
+    step(&mut s, &w, &Input::default(), DT_TICKS);
+    assert!(s.request_stop && !s.stopped, "update 1's subject read RequestStop false");
+    step(&mut s, &w, &Input::default(), DT_TICKS);
+    assert!(s.stopped && s.speed() == 0.0, "update 2's subject took state_riding_stop");
 }
 
 #[test]

@@ -40,7 +40,7 @@ fn snow() -> SurfaceProperties {
     }
 }
 
-pub const AIR_CP_MAX: [(&str, f32); 24] = [
+pub const AIR_CP_MAX: [(&str, f32); 25] = [
     ("FlipActuatorStrength", 0.015),
     ("FlipMaxVelocity", 6.0),
     ("FlipMaxPrewindVelocity", 13.0),
@@ -65,6 +65,7 @@ pub const AIR_CP_MAX: [(&str, f32); 24] = [
     ("TrickPointBonus", 1.03),
     ("BoostBonus", 1.5),
     ("TrickyBonus", 1.25),
+    ("MaxRewindCount", 3.0),
 ];
 
 pub fn tuning() -> Tuning {
@@ -183,6 +184,7 @@ pub fn tuning() -> Tuning {
             [2.388_015_3, 1.706_628_2],
             [PI, PI],
         ]),
+        wiggle_offset_angle_curve: Curve::new(vec![[-1.0, 30.0], [-0.5, 25.0], [0.5, -25.0], [1.0, -30.0]]),
         pitch_vs_normal_curve: Curve::new(vec![[0.0, 0.2], [0.004, 0.65], [0.008, 0.9], [0.011, 1.0], [0.015, 1.0]]),
         balance_surface_adhesion_modifier_curve: Curve::new(vec![[0.0, 1.0], [1.570_794_9, 0.0]]),
         bias: 1.0,
@@ -223,6 +225,8 @@ pub fn tuning() -> Tuning {
         collision_steering_angular_vel: 0.011_623_893,
         scoring_vertical_surface_angle_threshold: 90.0,
         uber_crash_ticks_to_full_friction: 30.0,
+        stance_angle_sideways_value: std::f32::consts::FRAC_PI_2,
+        uber_crash_traj_angle_max_delta: 0.1,
         carving_spray_filter_responsiveness: 0.2,
         ice_axe: crate::ice_axe::IceAxeTuning::default(),
     };
@@ -507,6 +511,7 @@ pub fn balance() -> BalanceTuning {
         uber_crash_ticks_to_full_friction: 30.0,
         max_pitch_angle_vel_to_prevent_braking: 0.02,
         min_landing_impact_velocity_ticks: 8.0,
+        allow_bails: false,
         tumble_friction_curve: c(&[
             [-PI, 0.583_569_05],
             [-1.255_619_4, 0.362_605_8],
@@ -690,6 +695,40 @@ pub fn wingsuit() -> crate::wingsuit::WingsuitTuning {
         maximum_y_velocity: 0.0,
         handle_decay_ticks: 8.0,
         base_damage_rate: 0.000_138_333_33,
+        flow: wingsuit_flow(),
+    }
+}
+
+pub fn wingsuit_flow() -> crate::wingsuit::WingsuitFlow {
+    use crate::tags::TagWindow;
+    use crate::wingsuit::{BlendCurve, FlowTransition, HandleTag};
+    let tr =
+        |time: f32, uber_trigger: Option<bool>| FlowTransition { blend: BlendCurve { time, curve: 0 }, uber_trigger };
+    crate::wingsuit::WingsuitFlow {
+        deploy_end: 17.0,
+        retract_end: 20.0,
+        airborne_to_enter: tr(8.0, Some(true)),
+        jump_to_enter: tr(12.0, Some(true)),
+        airborne_to_fly: tr(8.0, Some(true)),
+        enter_to_fly: tr(30.0, None),
+        fly_to_exit: tr(15.0, Some(false)),
+        fly_to_exit_board_particle: tr(8.0, None),
+        exit_to_airborne: tr(15.0, None),
+        handle_deploy: HandleTag {
+            window: TagWindow::new(4.0, 6.0, false),
+            value: 1.0,
+            mode: 3,
+            reset: None,
+            spline: vec![0.0, 0.137_995_81, 0.316_406_25, 0.5, 0.683_593_75, 0.862_004_16, 1.0],
+        },
+        handle_retract: HandleTag {
+            window: TagWindow::new(10.0, 5.0, false),
+            value: 0.0,
+            mode: 3,
+            reset: None,
+            spline: vec![0.0, 0.172_361_37, 0.389_489_53, 0.610_510_47, 0.827_638_6, 1.0],
+        },
+        retract_rotation: None,
     }
 }
 
@@ -743,5 +782,6 @@ pub fn survival() -> crate::survival::SurvivalTuning {
         riding_on_rock_curve: Curve::new(vec![[0.0, 0.0], [0.999_984_74, 1.0], [1.0, 1.0]]),
         riding_on_rock_threshold: 0.7,
         uber_crash_landed_recently_threshold: 10.0,
+        min_air_time_to_bail_on_rock_landing: 20.0,
     }
 }

@@ -6,6 +6,7 @@ use bevy::render::view::ExtractedView;
 use bevy::render::{Render, RenderApp, RenderStartup, RenderSystems};
 
 use crate::particles::ParticleFrame;
+use crate::render::buffers::{QueuedUniform, filled_buffer};
 use crate::render::post::GamePostCamera;
 
 mod passes;
@@ -107,8 +108,8 @@ struct DrawCmd {
 struct ParticleGpu {
     textures: Option<(usize, Vec<TextureView>)>,
     targets: Option<Targets>,
-    globals: UniformBuffer<Globals>,
-    pass_globals: UniformBuffer<PassGlobals>,
+    globals: QueuedUniform<Globals>,
+    pass_globals: QueuedUniform<PassGlobals>,
     draws: DynamicUniformBuffer<DrawUniform>,
     records: Option<Buffer>,
     cmds: Vec<DrawCmd>,
@@ -272,31 +273,36 @@ fn prepare(
     let near = a * far / (1.0 + a);
     let game_proj = Vec4::new(far / (near - far), near * far / (near - far), 0.0, 0.0);
     let l = &frame.light;
-    gpu.globals.set(Globals {
-        view_from_world,
-        clip_from_view: v.clip_from_view,
-        view_from_clip: v.clip_from_view.inverse(),
-        world_from_view,
-        view_prev,
-        camera_pos: v.world_from_view.translation().extend(1.0),
-        ramp0: l.ramp_lit,
-        ramp1: l.ramp_shade.truncate().extend(0.0),
-        atten: Vec4::new(l.rim_shadow.z, l.specular.w, l.misc.z, l.misc.y),
-        fog_data: l.fog_data,
-        fog_color: l.fog_color,
-        sizes,
-        game_proj,
-    });
-    gpu.globals.write_buffer(&device, &queue);
-    gpu.pass_globals.set(PassGlobals { view_from_clip: v.clip_from_view.inverse(), sizes });
-    gpu.pass_globals.write_buffer(&device, &queue);
+    gpu.globals.write(
+        &device,
+        &queue,
+        "ssx_particle_globals",
+        &Globals {
+            view_from_world,
+            clip_from_view: v.clip_from_view,
+            view_from_clip: v.clip_from_view.inverse(),
+            world_from_view,
+            view_prev,
+            camera_pos: v.world_from_view.translation().extend(1.0),
+            ramp0: l.ramp_lit,
+            ramp1: l.ramp_shade.truncate().extend(0.0),
+            atten: Vec4::new(l.rim_shadow.z, l.specular.w, l.misc.z, l.misc.y),
+            fog_data: l.fog_data,
+            fog_color: l.fog_color,
+            sizes,
+            game_proj,
+        },
+    );
+    let pass_globals = PassGlobals { view_from_clip: v.clip_from_view.inverse(), sizes };
+    gpu.pass_globals.write(&device, &queue, "ssx_particle_pass_globals", &pass_globals);
     if gpu.serial == frame.serial {
         return;
     }
     gpu.serial = frame.serial;
+    let gpu = &mut *gpu;
     gpu.cmds.clear();
-    gpu.draws.clear();
     let mut records: Vec<Vec4> = Vec::new();
+    let mut uniforms: Vec<DrawUniform> = Vec::new();
     for d in frame.draws.iter() {
         let Some(texture) = frame.textures.iter().position(|t| t.name == d.texture) else { continue };
         let Some(tech) = Tech::of(&d.shader, &d.technique) else {
@@ -325,17 +331,22 @@ fn prepare(
         };
         let first = records.len() as u32;
         records.extend(d.vertices.iter().flatten());
-        let offset = gpu.draws.push(&draw_uniform(d, first, &frame.global_light, bin == Bin::FullRes));
-        gpu.cmds.push(DrawCmd { tech, bin, texture, offset, vertices });
+        uniforms.push(draw_uniform(d, first, &frame.global_light, bin == Bin::FullRes));
+        gpu.cmds.push(DrawCmd { tech, bin, texture, offset: 0, vertices });
     }
-    gpu.draws.write_buffer(&device, &queue);
+    if !uniforms.is_empty() {
+        match gpu.draws.get_writer(uniforms.len(), &device, &queue) {
+            Some(mut writer) => {
+                for (cmd, u) in gpu.cmds.iter_mut().zip(&uniforms) {
+                    cmd.offset = writer.write(u);
+                }
+            }
+            None => gpu.cmds.clear(),
+        }
+    }
     if records.is_empty() {
         records.push(Vec4::ZERO);
     }
     let bytes: Vec<u8> = records.iter().flat_map(|v| v.to_array()).flat_map(f32::to_le_bytes).collect();
-    gpu.records = Some(device.create_buffer_with_data(&BufferInitDescriptor {
-        label: Some("ssx_particle_records"),
-        contents: &bytes,
-        usage: BufferUsages::STORAGE,
-    }));
+    gpu.records = Some(filled_buffer(&device, &queue, "ssx_particle_records", &bytes, BufferUsages::STORAGE));
 }

@@ -135,28 +135,29 @@ fn the_wear_follows_durability_and_the_handles_decay() {
 #[test]
 fn the_sequences_raise_and_lower_the_handles() {
     use crate::wingsuit::WingsuitNode::{Enter, Exit, Fly};
+    let f = crate::testutil::wingsuit_flow();
     let mut s = WingsuitState::default();
     let seen: Vec<f32> = (1..=17)
         .map(|k| {
-            s.handle_tags(Some(Enter), k as f32);
+            s.handle_tags(&f, Some(Enter), k as f32);
             s.handle_weight
         })
         .collect();
     assert_eq!(&seen[..4], &[0.0; 4]);
     assert!((seen[5] - 0.316_406_25).abs() < 1e-6, "t 6 = w ⅓: {seen:?}");
     assert!(seen[6] > seen[5] && seen[9] == 1.0 && seen[16] == 1.0, "{seen:?}");
-    s.handle_tags(Some(Fly), 1.0);
+    s.handle_tags(&f, Some(Fly), 1.0);
     assert!(s.handle_tags.is_none() && s.handle_weight == 1.0);
     let seen: Vec<f32> = (1..=20)
         .map(|k| {
-            s.handle_tags(Some(Exit), k as f32);
+            s.handle_tags(&f, Some(Exit), k as f32);
             s.handle_weight
         })
         .collect();
     assert_eq!(seen[9], 1.0, "t 10: w 0");
     assert!((seen[11] - (1.0 - 0.389_489_53)).abs() < 1e-6, "{seen:?}");
     assert!(seen[14] == 0.0 && seen[19] == 0.0, "{seen:?}");
-    s.handle_tags(None, 0.0);
+    s.handle_tags(&f, None, 0.0);
     assert!(s.handle_tags.is_none());
 }
 
@@ -306,4 +307,317 @@ fn closing_the_wingsuit_after_a_flight_keeps_the_speed() {
     let (speeds, fall) = open_and_close(45);
     let min = speeds.iter().copied().fold(f32::MAX, f32::min);
     assert!(min > 0.8 * fall, "{min} vs {fall} m/tick without the wingsuit");
+}
+
+#[test]
+fn the_exited_aerial_keeps_its_outputs_off_the_entity() {
+    use crate::death::GameFlowFlags;
+    use crate::rider::{Input, RideState, StepContext, TrickInput, step_full};
+    let w = crate::testutil::world(crate::testutil::plane(3000.0, 0.3));
+    let started = GameFlowFlags { race_proper_started: true, ..GameFlowFlags::default() };
+    let mut s = airborne(&w);
+    step_ws(&mut s, &w, false, started);
+    let before = s.air.outputs;
+    let stick = Input { steer: 1.0, ..Input::default() };
+    let x = || StepContext { flow: started, ..StepContext::default() };
+    s.wingsuit.pad_r1 = true;
+    step_full(&mut s, &w, &stick, &TrickInput::default(), crate::DT_TICKS, x());
+    assert_eq!(s.state, RideState::WingsuitEnter);
+    assert_eq!(s.air.outputs, before, "the deploy's update: the aerial already exited");
+    let spring0 = s.air.spin_wiggle;
+    for _ in 0..2 {
+        step_full(&mut s, &w, &stick, &TrickInput::default(), crate::DT_TICKS, x());
+        assert!(s.wingsuit.blend.is_some(), "within the 8-tick blend");
+        assert_eq!(s.air.outputs, before, "the entity's outputs stay as the aerial left them");
+        assert!(s.wingsuit.aerial_layer.is_none(), "the layer goes to the graph in the step");
+    }
+    assert_ne!(s.air.spin_wiggle, spring0, "the slave kept updating its spring on the stick");
+}
+
+#[test]
+fn the_deploy_raises_the_uber_trigger_and_the_close_lowers_it() {
+    use crate::death::GameFlowFlags;
+    use crate::rider::RideState;
+    let w = crate::testutil::world(crate::testutil::plane(3000.0, 0.3));
+    let started = GameFlowFlags { race_proper_started: true, ..GameFlowFlags::default() };
+    let mut s = airborne(&w);
+    step_ws(&mut s, &w, false, started);
+    assert!(!s.uber_trigger);
+    step_ws(&mut s, &w, true, started);
+    assert!(s.state == RideState::WingsuitEnter && s.uber_trigger, "airborne → wingsuit_enter writes true");
+    for _ in 0..40 {
+        step_ws(&mut s, &w, true, started);
+    }
+    assert!(s.state == RideState::WingsuitFly && s.uber_trigger, "kept through the deploy's End and the flight");
+    step_ws(&mut s, &w, false, started);
+    assert!(s.state == RideState::WingsuitExit && !s.uber_trigger, "fly → exit writes false");
+    let mut s = airborne(&w);
+    (s.wingsuit.signal, s.wingsuit.hold) = (true, true);
+    step_ws(&mut s, &w, true, started);
+    assert!(s.state == RideState::WingsuitFly && s.uber_trigger, "airborne → wingsuit_fly writes true");
+}
+
+#[test]
+fn landing_in_the_suit_is_an_uber_crash_and_closing_first_is_not() {
+    use crate::death::GameFlowFlags;
+    use crate::rider::RideState;
+    let w = crate::testutil::world(crate::testutil::plane(3000.0, 0.3));
+    let started = GameFlowFlags { race_proper_started: true, ..GameFlowFlags::default() };
+    let fly = |close_after: Option<usize>| {
+        let mut s = airborne(&w);
+        s.traj -= Vec3::Y * 125.0;
+        (s.traj_cached, s.traj_cached_prev) = (s.traj, s.traj);
+        step_ws(&mut s, &w, false, started);
+        let mut flown = 0;
+        while s.state != RideState::Riding && flown < 900 {
+            let r1 = close_after.is_none_or(|n| flown < n);
+            step_ws(&mut s, &w, r1, started);
+            flown += 1;
+        }
+        assert_eq!(s.state, RideState::Riding, "landed within {flown} updates");
+        s
+    };
+    let held = fly(None);
+    assert!(held.landing.uber_crash, "landed from a wingsuit node with the trigger up");
+    let closed = fly(Some(20));
+    assert!(!closed.landing.uber_crash && !closed.uber_trigger, "closed before the ground");
+}
+
+#[test]
+fn a_node_blend_runs_its_curve() {
+    let old = OldNode { side: OldSide::Ballistic { ticks: 0.0 }, blend: None };
+    let mut linear = NodeBlend::new(old.clone(), BlendCurve { time: 8.0, curve: 3 });
+    let mut cosine = NodeBlend::new(old, BlendCurve { time: 8.0, curve: 0 });
+    assert_eq!(linear.advance(2.0), Some(0.75));
+    let w = cosine.advance(2.0).expect("blending");
+    assert!((w - std::f32::consts::FRAC_PI_8.cos()).abs() < 1e-6, "{w}");
+    assert_eq!(linear.advance(6.0), None);
+    assert_eq!(cosine.advance(6.0), None);
+}
+
+#[test]
+fn the_flow_runs_on_the_graphs_windows_blends_and_tags() {
+    use crate::death::GameFlowFlags;
+    use crate::rider::RideState;
+    let started = GameFlowFlags { race_proper_started: true, ..GameFlowFlags::default() };
+    let mut w = crate::testutil::world(crate::testutil::plane(3000.0, 0.3));
+    let fly_after = |w: &crate::rider::World| {
+        let mut s = airborne(w);
+        step_ws(&mut s, w, false, started);
+        let mut updates = 0;
+        while s.state != RideState::WingsuitFly && updates < 60 {
+            step_ws(&mut s, w, true, started);
+            updates += 1;
+        }
+        (updates, s)
+    };
+    let (disc, s) = fly_after(&w);
+    assert_eq!(disc, 9, "the entry's update and eight more (End 17, 2-tick updates)");
+    assert_eq!(s.wingsuit.blend.as_ref().map(|b| b.blend), Some(BlendCurve { time: 30.0, curve: 0 }));
+    w.tuning.wingsuit.flow.deploy_end = 9.0;
+    w.tuning.wingsuit.flow.enter_to_fly.blend = BlendCurve { time: 20.0, curve: 3 };
+    let (short, s) = fly_after(&w);
+    assert_eq!(short, 5, "End 9");
+    assert_eq!(s.wingsuit.blend.as_ref().map(|b| b.blend), Some(BlendCurve { time: 20.0, curve: 3 }));
+    for (particle, tag, blend) in [(false, false, 15.0), (true, true, 8.0)] {
+        let (_, mut s) = fly_after(&w);
+        s.board_particle.enabled = particle;
+        step_ws(&mut s, &w, false, started);
+        assert_eq!(s.state, RideState::WingsuitExit);
+        assert_eq!(s.uber_trigger, tag, "board particle {particle}");
+        assert_eq!(s.wingsuit.blend.as_ref().map(|b| b.blend.time), Some(blend), "board particle {particle}");
+    }
+}
+
+#[test]
+fn the_flight_keeps_the_carvings_alignment_frame() {
+    use crate::death::GameFlowFlags;
+    use crate::rider::{Input, RideState, RiderState, StepContext, TrickInput, reverse_camera_stick, step_full};
+    let w = crate::testutil::world(crate::testutil::plane(3000.0, 0.3));
+    let started = GameFlowFlags { race_proper_started: true, ..GameFlowFlags::default() };
+    let mut s = RiderState::spawn(&w, Vec3::ZERO, Vec3::Z).expect("ground");
+    assert_eq!(s.alignment_frame, Quat::IDENTITY, "the asset default before any carving");
+    for _ in 0..20 {
+        step_ws(&mut s, &w, false, started);
+    }
+    assert_eq!(s.state, RideState::Riding);
+    let frame = s.alignment_frame;
+    assert_eq!(frame, s.alignment, "the carving's update writes its AlignmentFrame");
+    s.traj += Vec3::Y * 150.0;
+    (s.traj_cached, s.traj_cached_prev) = (s.traj, s.traj);
+    (s.state, s.on_ground, s.first_air_tick) = (RideState::Airborne, false, true);
+    s.close = crate::probe::CloseToGround::default();
+    step_ws(&mut s, &w, false, started);
+    for _ in 0..40 {
+        step_ws(&mut s, &w, true, started);
+    }
+    assert_eq!(s.state, RideState::WingsuitFly);
+    assert_eq!(s.alignment_frame, frame, "no air or wingsuit node writes it");
+    assert!(s.alignment.angle_between(frame) > 0.1, "the flight's orientation moved on");
+    let camera = Quat::from_rotation_y(2.5);
+    (s.velocity, s.traj_velocity, s.reverse_camera) = (Vec3::splat(0.01), Vec3::splat(0.01), Some(camera));
+    let input = Input { steer: 0.8, ..Input::default() };
+    let matched = crate::graph::stick_axes(input.stick());
+    let want = reverse_camera_stick(matched, camera, frame, s.kin.fwd, s.traj_velocity);
+    let flight = reverse_camera_stick(matched, camera, s.alignment, s.kin.fwd, s.traj_velocity);
+    assert!(want.distance(flight) > 1e-3, "the two frames turn the stick apart: {want} vs {flight}");
+    s.wingsuit.pad_r1 = true;
+    let x = StepContext { flow: started, ..StepContext::default() };
+    step_full(&mut s, &w, &input, &TrickInput::default(), crate::DT_TICKS, x);
+    assert_eq!(s.pad_stick, want);
+}
+
+#[test]
+fn a_press_in_the_retracts_last_update_deploys_again() {
+    use crate::death::GameFlowFlags;
+    use crate::rider::RideState;
+    let w = crate::testutil::world(crate::testutil::plane(3000.0, 0.3));
+    let started = GameFlowFlags { race_proper_started: true, ..GameFlowFlags::default() };
+    let mut s = airborne(&w);
+    step_ws(&mut s, &w, false, started);
+    for _ in 0..30 {
+        step_ws(&mut s, &w, true, started);
+    }
+    assert_eq!(s.state, RideState::WingsuitFly);
+    step_ws(&mut s, &w, false, started);
+    assert!(s.state == RideState::WingsuitExit && !s.uber_trigger);
+    let mut probe = s.clone();
+    let mut k = 0;
+    while probe.state == RideState::WingsuitExit {
+        step_ws(&mut probe, &w, false, started);
+        k += 1;
+    }
+    assert_eq!((k, probe.state), (10, RideState::Airborne));
+    for _ in 1..k {
+        step_ws(&mut s, &w, false, started);
+    }
+    step_ws(&mut s, &w, true, started);
+    assert_eq!(s.state, RideState::WingsuitEnter, "airborne → wingsuit_enter in the window's update");
+    assert!(s.wingsuit.signal && s.uber_trigger, "the deploy's tag");
+    assert_eq!(s.wingsuit.ticks, 2.0, "the window due at the update's start (20 − 20): the deploy runs all of it");
+}
+
+#[test]
+fn an_uber_crash_that_slides_off_an_edge_deploys_again() {
+    use crate::collision::CollisionWorld;
+    use crate::death::GameFlowFlags;
+    use crate::landing::UberRecovery;
+    use crate::rider::RideState;
+    let started = GameFlowFlags { race_proper_started: true, ..GameFlowFlags::default() };
+    let (sin, cos) = 0.3f32.sin_cos();
+    let ledge = |edge: f32| {
+        let p = |x: f32, z: f32| Vec3::new(x, -z * sin, z * cos);
+        let mut c = CollisionWorld::default();
+        let v = [p(-3000.0, -3000.0), p(-3000.0, edge), p(3000.0, edge), p(3000.0, -3000.0)];
+        c.push_cluster(&v, None, None, &[[0, 1, 2], [0, 2, 3]], 0, 0);
+        c.finish();
+        c
+    };
+    let land = |w: &crate::rider::World| {
+        let mut s = airborne(w);
+        s.traj -= Vec3::Y * 125.0;
+        (s.traj_cached, s.traj_cached_prev) = (s.traj, s.traj);
+        step_ws(&mut s, w, false, started);
+        let mut flown = 0;
+        while s.state != RideState::Riding && flown < 900 {
+            step_ws(&mut s, w, true, started);
+            flown += 1;
+        }
+        assert!(s.state == RideState::Riding && s.landing.uber_crash, "an uber crash within {flown} updates");
+        s
+    };
+    let open = land(&crate::testutil::world(ledge(3000.0)));
+    let w = crate::testutil::world(ledge(open.traj.z / cos + 10.0));
+    let mut s = land(&w);
+    assert!(s.traj.distance(open.traj) < 0.01, "the same touchdown (the shorter slope's plane rounds apart)");
+    let mut slid = 0;
+    while s.state == RideState::Riding && slid < 120 {
+        step_ws(&mut s, &w, false, started);
+        slid += 1;
+    }
+    assert_eq!(s.state, RideState::Airborne, "off the edge within {slid} updates");
+    assert!(s.board_particle.enabled && s.landing.uber_recovery == UberRecovery::Sliding, "still the crash's slide");
+    step_ws(&mut s, &w, true, started);
+    assert_eq!(s.state, RideState::WingsuitEnter, "R1 deploys {slid} updates after the touchdown");
+}
+
+fn retract_clip() -> RetractRotation {
+    use std::f32::consts::FRAC_PI_2;
+    let (prone, upright) = (Quat::from_rotation_z(-FRAC_PI_2), Quat::from_rotation_y(-FRAC_PI_2));
+    let keys = [(0, prone, Vec3::Y), (10, prone, Vec3::Y), (21, upright, Vec3::Y), (40, upright, Vec3::Y)];
+    RetractRotation {
+        clip_name: "retract".into(),
+        clip: crate::rootmotion::RootClip::from_keys(&keys, 40.0),
+        start_tick: 0.0,
+        length: 35.0,
+        start_time: -5.0,
+        begin: 0.0,
+        scale: 1.0,
+        mirror: false,
+    }
+}
+
+#[test]
+fn the_retract_clip_plays_at_the_sequences_time() {
+    use std::f32::consts::FRAC_PI_2;
+    let r = retract_clip();
+    let still = r.rotation(0.0, 2.0).expect("begun at the node's entry");
+    assert!(still.angle_between(Quat::IDENTITY) < 1e-5, "clip 5 → 7 holds: {still}");
+    let mut turned = Quat::IDENTITY;
+    let mut n = 0.0;
+    while n < 35.0 {
+        turned *= r.rotation(n, 2.0).expect("playing");
+        n += 2.0;
+    }
+    let want = Quat::from_rotation_z(-FRAC_PI_2).conjugate() * Quat::from_rotation_y(-FRAC_PI_2);
+    assert!(turned.angle_between(want) < 1e-4, "{turned} vs {want} (120°)");
+    assert!((want.angle_between(Quat::IDENTITY).to_degrees() - 120.0).abs() < 1e-3);
+    let mid = r.rotation(10.0, 2.0).expect("playing");
+    assert!(mid.angle_between(Quat::IDENTITY) > 0.05, "clip 15 → 17 turns");
+    let end = r.rotation(36.0, 2.0).expect("playing");
+    assert_eq!(end, Quat::IDENTITY, "the actor's time stops at its Length");
+    let mirrored = RetractRotation { mirror: true, ..retract_clip() }.rotation(10.0, 2.0).expect("playing");
+    assert!(mirrored.abs_diff_eq(Quat::from_xyzw(-mid.x, -mid.y, mid.z, mid.w), 1e-6));
+    let late = RetractRotation { begin: 3.0, ..retract_clip() };
+    assert_eq!(late.rotation(0.0, 2.0), None, "the element begins at 3");
+    let part = late.rotation(2.0, 2.0).expect("begun within the update");
+    let rest = late.clip.joint_delta(8.0, 9.0).expect("sampled").1;
+    assert!(part.angle_between(rest) < 1e-6, "clip 8 → 9 only");
+}
+
+#[test]
+fn the_retract_turns_the_rider_by_its_clip() {
+    use crate::death::GameFlowFlags;
+    use crate::rider::RideState;
+    let started = GameFlowFlags { race_proper_started: true, ..GameFlowFlags::default() };
+    let mut w = crate::testutil::world(crate::testutil::plane(3000.0, 0.3));
+    let close = |w: &crate::rider::World| {
+        let mut s = airborne(w);
+        step_ws(&mut s, w, false, started);
+        for _ in 0..60 {
+            step_ws(&mut s, w, true, started);
+        }
+        assert_eq!(s.state, RideState::WingsuitFly);
+        step_ws(&mut s, w, false, started);
+        assert_eq!(s.state, RideState::WingsuitExit);
+        let mut checked = 0;
+        while s.state == RideState::WingsuitExit {
+            let (j0, n0, blending) = (joint_of(s.traj_orientation), s.wingsuit.ticks, s.wingsuit.blend.is_some());
+            step_ws(&mut s, w, false, started);
+            let r = w.tuning.wingsuit.flow.retract_rotation.as_ref().and_then(|c| c.rotation(n0, 2.0));
+            if !blending && s.state == RideState::WingsuitExit {
+                let turn = j0.conjugate() * joint_of(s.traj_orientation);
+                let want = r.unwrap_or(Quat::IDENTITY);
+                assert!(turn.angle_between(want) < 1e-4, "tick {n0}: {turn} vs {want}");
+                checked += 1;
+            }
+        }
+        assert_eq!(s.state, RideState::Airborne);
+        (checked, (s.traj_orientation * Vec3::Y).angle_between(Vec3::Y).to_degrees())
+    };
+    let (checked, prone) = close(&w);
+    assert!(checked >= 2 && prone > 60.0, "{checked} updates; tilt {prone}° without the clip's turn");
+    w.tuning.wingsuit.flow.retract_rotation = Some(retract_clip());
+    let (checked, upright) = close(&w);
+    assert!(checked >= 2 && upright < 0.6 * prone, "{checked} updates; tilt {upright}° with it (prone {prone}°)");
 }

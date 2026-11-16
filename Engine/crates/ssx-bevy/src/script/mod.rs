@@ -65,10 +65,21 @@ pub(crate) struct ScriptBridge {
     pub(crate) monitor: String,
     pub(crate) skipped: u64,
     content: Arc<ssx_assets::content::GameContent>,
+    exit: Option<ExitStop>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ExitStop {
+    Sending(std::time::Instant),
+    Sent(std::time::Instant),
+    Done,
 }
 
 impl ScriptBridge {
     fn send(&mut self, job: worker::Job) -> bool {
+        if matches!(self.exit, Some(ExitStop::Sent(_) | ExitStop::Done)) {
+            return false;
+        }
         match self.tx.try_send(job) {
             Ok(()) => true,
             Err(std::sync::mpsc::TrySendError::Full(_)) => false,
@@ -81,6 +92,9 @@ impl ScriptBridge {
 
     #[cfg(feature = "net")]
     fn send_or_return(&mut self, job: worker::Job) -> Result<(), worker::Job> {
+        if matches!(self.exit, Some(ExitStop::Sent(_) | ExitStop::Done)) {
+            return Err(job);
+        }
         match self.tx.try_send(job) {
             Ok(()) => Ok(()),
             Err(std::sync::mpsc::TrySendError::Full(job)) => Err(job),
@@ -158,6 +172,7 @@ fn bridge_of(
         monitor: String::new(),
         skipped: 0,
         content,
+        exit: None,
     }
 }
 
@@ -267,7 +282,8 @@ impl Plugin for ScriptPlugin {
         app.add_systems(FixedUpdate, local::apply.before(RideStepSet).run_if(riding).run_if(up))
             .add_systems(FixedUpdate, local::observe.after(RideStepSet).run_if(riding).run_if(up))
             .add_systems(Update, local::decide.before(ScriptFrameSet).after(RideStepSet).run_if(up));
-        app.add_systems(Last, shutdown_on_exit.run_if(up));
+        app.add_systems(PreUpdate, stop_for_exit.after(bevy::input::InputSystems).run_if(up))
+            .add_systems(Last, shutdown_on_exit.run_if(up));
         #[cfg(feature = "net")]
         app.add_systems(
             Update,
@@ -388,6 +404,9 @@ fn frame(
     mut r: Routes,
     mut local: ResMut<local::LocalScripts>,
 ) {
+    if bridge.exit.is_some() {
+        return;
+    }
     if bridge.gone.is_some() && !bridge.gone_handled {
         let why = bridge.gone.clone().unwrap_or_default();
         error!("scripts: {why}; no script runs from now on");
@@ -475,12 +494,73 @@ fn frame(
 
 const EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(7);
 
+const EXIT_HOLD: &str = "the scripts' storage";
+
+// PORT(choice): the game's exit (`shell::game_mode::exit`) asks the host to stop its packages, which write their
+// storage on the host's thread, and holds the exit until it has (at most `EXIT_WAIT`, 7 s: a package's storage takes
+// at most 5 s for its last writes) while the frames go on with the Saving icon; before (main 407047ec) the exit's last
+// frame waited for it on the frame's thread. The console has no script host (a port feature).
+fn stop_for_exit(mut bridge: ResMut<ScriptBridge>, wait: Option<ResMut<crate::shell::game_mode::ExitWait>>) {
+    let Some(mut wait) = wait else { return };
+    if !wait.asked() {
+        return;
+    }
+    let b = &mut *bridge;
+    let now = std::time::Instant::now();
+    let state = match b.exit {
+        Some(ExitStop::Done) => return,
+        None => {
+            wait.hold(EXIT_HOLD);
+            ExitStop::Sending(now)
+        }
+        Some(s) => s,
+    };
+    let next = match state {
+        _ if b.gone.is_some() => ExitStop::Done,
+        ExitStop::Sending(at) => {
+            b.exit = Some(state);
+            if b.send(worker::Job::Shutdown) {
+                ExitStop::Sent(at)
+            } else {
+                let _ = b.take();
+                state
+            }
+        }
+        s => s,
+    };
+    let next = match next {
+        ExitStop::Sent(at) => match b.done.lock().map(|d| d.try_recv()) {
+            Ok(Ok(())) | Ok(Err(TryRecvError::Disconnected)) => {
+                info!(
+                    "scripts: the script host stopped its packages ({} ms, the frames going on)",
+                    at.elapsed().as_millis()
+                );
+                ExitStop::Done
+            }
+            _ => next,
+        },
+        s => s,
+    };
+    let next = match next {
+        ExitStop::Sending(at) | ExitStop::Sent(at) if at.elapsed() >= EXIT_WAIT => {
+            warn!("scripts: the script host did not stop within {} s: the game exits without it", EXIT_WAIT.as_secs());
+            ExitStop::Done
+        }
+        s => s,
+    };
+    if matches!(next, ExitStop::Done) {
+        wait.release(EXIT_HOLD);
+    }
+    b.exit = Some(next);
+}
+
 fn shutdown_on_exit(mut bridge: ResMut<ScriptBridge>, mut exits: MessageReader<AppExit>) {
-    if exits.read().next().is_none() {
+    if exits.read().next().is_none() || matches!(bridge.exit, Some(ExitStop::Done)) {
         return;
     }
     let start = std::time::Instant::now();
-    while !bridge.send(worker::Job::Shutdown) && bridge.gone.is_none() && start.elapsed() < EXIT_WAIT {
+    let sent = matches!(bridge.exit, Some(ExitStop::Sent(_)));
+    while !sent && !bridge.send(worker::Job::Shutdown) && bridge.gone.is_none() && start.elapsed() < EXIT_WAIT {
         let _ = bridge.take();
         std::thread::sleep(std::time::Duration::from_millis(5));
     }

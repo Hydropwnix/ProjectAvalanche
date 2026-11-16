@@ -42,8 +42,7 @@ impl HeliJumpData {
             .context("nis_end_heli_grab binds no helicopter")?;
         let (p, q) = end_location;
         let heli_start = (p + q * Vec3::from_array(sp), (q * Quat::from_array(sq)).normalize());
-        let dir = big_root.join(ssx_assets::rig_anim::ANIM_DIR);
-        let db = ssx_assets::anim_db::AssetDb::load(&dir, &[ssx_assets::rig_anim::RIG_BUNDLE])?;
+        let db = ssx_assets::anim_db::AssetDb::load(big_root, &[ssx_assets::rig_anim::RIG_BUNDLE])?;
         let all = &db.streams.first().context("no anim_all.cba")?.1;
         let rig = Rig::load(all, HELI_RIG)?;
         let chain = rig.chain(RAIL_JOINT, "AITrajectory").with_context(|| format!("{HELI_RIG}: no {RAIL_JOINT}"))?;
@@ -173,13 +172,13 @@ impl HeliJump {
             None
         };
         match assisted {
-            Some((v, _)) => {
+            Some((v, time)) => {
                 let written = v - s.traj_velocity;
-                s.jump.launch = written;
+                (s.jump.launch, s.jump.intercept) = (written, Some(time));
                 self.launch = Some((orig, written));
             }
             None => {
-                s.jump.launch = orig;
+                (s.jump.launch, s.jump.intercept) = (orig, None);
                 self.launch = None;
             }
         }

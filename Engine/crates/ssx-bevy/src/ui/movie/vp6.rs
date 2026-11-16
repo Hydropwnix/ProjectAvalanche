@@ -130,6 +130,10 @@ impl Vp6Movie {
         self.audio.clone()
     }
 
+    // PORT(choice): the stopwatch (the time since the movie began, each frame's in full) bounds the voice's time: the
+    // port's voice counts what the mixer has taken, and the mixer runs ahead of the device by its lead, far ahead
+    // after a stall (a 3.7 s movie over in 0.5 s, 2026-10-12). The console's timer read the audio renderer's own
+    // played frames (0x82A4B178: consumed frames / source rate), which no output runs ahead of.
     fn clock(&mut self, dt: f64) -> (f64, bool) {
         self.stopwatch += dt;
         match &self.audio {

@@ -12,7 +12,7 @@ mod score;
 mod testutil;
 mod world;
 
-pub use anim::{anim_lua, graph, rootmotion, tags};
+pub use anim::{anim_lua, driver, graph, query, rootmotion, tags};
 pub use cinematics::{nis, nis_events, outro};
 pub use consts::*;
 pub use entities::{avalanche, controllers, helicopter, rigid};

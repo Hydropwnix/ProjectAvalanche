@@ -5,6 +5,7 @@ pub mod filters;
 pub mod icons;
 pub mod pointer;
 pub mod rows;
+pub mod saver;
 pub mod sources;
 
 use std::path::PathBuf;
@@ -81,6 +82,7 @@ pub struct Browser {
     pub lan: Option<ssx_net_join::browse::lan::LanSearch>,
     pub icons: icons::Icons,
     pub blocklists: Option<ssx_net_join::blocklist::Refresh>,
+    pub saver: Option<saver::ServersWriter>,
 }
 
 impl Browser {
@@ -165,6 +167,10 @@ pub fn deactivate(fe: &mut FrontEnd) {
 }
 
 pub fn update(fe: &mut FrontEnd, env: &mut FeEnv) {
+    let notes = fe.ava.browser.saver.as_ref().map(saver::ServersWriter::take_notes).unwrap_or_default();
+    for n in notes {
+        connect::message(fe, n);
+    }
     if !fe.ava.browser.active {
         return;
     }

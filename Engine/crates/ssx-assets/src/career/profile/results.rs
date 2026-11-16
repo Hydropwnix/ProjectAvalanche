@@ -31,6 +31,7 @@ pub struct ResultReport {
     pub level: (i64, i64),
     pub notices: Vec<Notice>,
     pub best_not_kept: Option<BestNotKept>,
+    pub keep_ghost: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,7 +134,9 @@ impl Profile {
         if r.level.0 > before {
             r.notices.push(Notice::LevelUp { rider: o.rider, level: r.level.0 });
         }
-        r.best_not_kept = self.record_score(&rule, o);
+        let (kept, refused) = self.record_score(&rule, o);
+        r.best_not_kept = refused;
+        r.keep_ghost = rule.ghost_drop && kept;
         r
     }
 
@@ -161,22 +164,46 @@ impl Profile {
         }
     }
 
-    fn record_score(&mut self, rule: &EventRule, o: &EventOutcome) -> Option<BestNotKept> {
+    fn record_score(&mut self, rule: &EventRule, o: &EventOutcome) -> (bool, Option<BestNotKept>) {
+        use std::collections::btree_map::Entry;
         let best = self.explore_scores.get(&o.event).map_or(u32::MAX, |r| r.score);
         let survive = matches!(rule.event_type, 3 | 4);
         let better = is_better(rule.ascending(), o.value, best) && (survive || !o.failed);
         let refused = if better { self.record_sim_id(o).err() } else { None };
         let kept = better && refused.is_none();
-        let row = self.explore_scores.entry(o.event).or_insert(ExploreScore { score: u32::MAX, ..Default::default() });
         if kept {
+            let row = self.explore_scores.entry(o.event).or_default();
             row.score = o.value;
             row.splits = o.splits;
+            // PORT(choice): a kept best's SCOREMODIFIED is −1: the port has no Xbox Live sign-in. 0x8251D858 passes
+            // −1 unless its second argument is 0 and 0x824ACBD8 (XamUserGetSigninInfo, flag 1: signed in to Live)
+            // holds; the console signed in to Live passed FUN_82BEDA70's Live time in Unix seconds (the level-15
+            // console save: 103 of 117 rows 2022–2024, 14 rows −1), read only by its Live friend notification
+            // (0x8246DF98) and Live feed (0x8245BF60 case 8).
+            row.score_modified = SCORE_MODIFIED_OFFLINE;
         }
-        if row.attempts == 0 || o.rewinds < row.rewinds {
-            row.rewinds = o.rewinds;
+        let row = match self.explore_scores.entry(o.event) {
+            Entry::Vacant(v) => v.insert(ExploreScore {
+                score: u32::MAX,
+                splits: [u32::MAX, UNWRITTEN, UNWRITTEN, UNWRITTEN],
+                attempts: 1,
+                score_modified: UNWRITTEN,
+                ..Default::default()
+            }),
+            Entry::Occupied(e) => {
+                let row = e.into_mut();
+                if o.rewinds < row.rewinds {
+                    row.rewinds = o.rewinds;
+                }
+                row
+            }
+        };
+        if row.attempts != COUNT_CAP {
+            row.attempts = row.attempts.wrapping_add(1);
         }
-        row.attempts += 1;
-        row.deaths += u32::from(o.failed);
-        refused
+        if o.failed && row.deaths != COUNT_CAP {
+            row.deaths = row.deaths.wrapping_add(1);
+        }
+        (kept, refused)
     }
 }

@@ -1,13 +1,13 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde_json::Value as Json;
 use ssx_assets::display::DisplaySettings;
 
 #[cfg(feature = "net")]
 use super::keyboard::{self, Outcome, Requester, TextRequest};
-use super::port_settings::{
-    Item, Page, PortSettings, SaveError, WindowChoice, read_file, replace_unreadable, save_file,
-};
+use super::port_settings::{Item, Page, PortSettings, WindowChoice, read_file};
+use super::settings_writer::{Ask, Done, SettingsWriter};
 use crate::avm1::Ctx;
 use crate::avm1::value::Value;
 use crate::game::fe::{ActionParam, FeEnv, FrontEnd, settings};
@@ -60,6 +60,9 @@ pub struct Options {
     pub file: Option<PathBuf>,
     pub settings: PortSettings,
     pub kept: PortSettings,
+    pub asked: Option<PortSettings>,
+    pub reads: u64,
+    pub writer: Option<Arc<SettingsWriter>>,
     pub host_window: Option<WindowChoice>,
     pub window_request: Option<DisplaySettings>,
     pub originals: PortSettings,
@@ -74,6 +77,15 @@ pub fn open(fe: &mut FrontEnd, env: &mut FeEnv) {
 }
 
 pub fn reload(fe: &mut FrontEnd) {
+    if fe.ava.options.writer.as_ref().is_some_and(|w| w.writing())
+        && let Some(asked) = fe.ava.options.asked.clone()
+    {
+        fe.note("options: the settings being written are shown");
+        fe.ava.options.settings = asked;
+        take_window(fe);
+        return;
+    }
+    fe.ava.options.reads += 1;
     let Some(path) = fe.ava.options.file.clone() else {
         fe.note("options: no settings file named; the launcher's defaults shown");
         fe.ava.options.settings = PortSettings::default();
@@ -166,7 +178,7 @@ pub fn data_action(fe: &mut FrontEnd, env: &mut FeEnv, dp: &str, action: &str, _
         match action {
             "A_GameAdvanceScreen" => {
                 if fe.ava.options.changed {
-                    save(fe, env, BROKEN_POPUP);
+                    save(fe, BROKEN_POPUP);
                 }
                 env.nav_events.push("ava_options_menu".into());
             }
@@ -209,13 +221,11 @@ pub fn nav_action(fe: &mut FrontEnd, env: &mut FeEnv, name: &str) -> bool {
             env.nav_events.push("ava_options_menu".into());
         }
         "do_ava_settings_replace" => match fe.ava.options.file.clone() {
-            Some(path) => match replace_unreadable(&path, &fe.ava.options.settings) {
-                Ok(aside) => {
-                    fe.ava.options.kept = fe.ava.options.settings.clone();
-                    fe.note(format!("options: the old file kept as {}; saved to {}", aside.display(), path.display()))
-                }
-                Err(e) => fe.note(format!("options: ERROR {e:#}")),
-            },
+            Some(path) => {
+                let o = &fe.ava.options;
+                let ask = Ask::Replace { base: o.kept.clone(), settings: o.settings.clone(), read: o.reads };
+                ask_writer(fe, &path, ask);
+            }
             None => fe.note("options: ERROR no settings file named"),
         },
         "do_ava_settings_keep" => fe.note("options: the unreadable file is left as it is; the changes are not saved"),
@@ -236,7 +246,7 @@ pub fn nav_action(fe: &mut FrontEnd, env: &mut FeEnv, name: &str) -> bool {
     true
 }
 
-pub(super) fn save(fe: &mut FrontEnd, env: &mut FeEnv, broken_popup: &str) {
+pub(super) fn save(fe: &mut FrontEnd, broken_popup: &str) {
     if fe.ava.options.settings.range_movies != fe.ava.options.kept.range_movies {
         fe.range_movies = fe.ava.options.settings.range_movies;
         fe.note(format!("options: range movies {} from now on", fe.range_movies));
@@ -261,19 +271,64 @@ pub(super) fn save(fe: &mut FrontEnd, env: &mut FeEnv, broken_popup: &str) {
         fe.note("options: ERROR no settings file named: the changes are not saved");
         return;
     };
-    match save_file(&path, &fe.ava.options.kept, &fe.ava.options.settings) {
-        Ok(()) => {
-            fe.ava.options.kept = fe.ava.options.settings.clone();
-            fe.note(format!("options: saved to {}", path.display()))
+    let o = &fe.ava.options;
+    let ask =
+        Ask::Save { base: o.kept.clone(), settings: o.settings.clone(), read: o.reads, popup: broken_popup.into() };
+    ask_writer(fe, &path, ask);
+}
+
+// PORT(choice): `settings.json` (the launcher's file, the port's own settings) is written on a thread of its own
+// (`settings_writer`) and the frame goes on; the console has no such file — its settings are the profile's, saved by
+// the save library over frames with the "Saving" icon up.
+fn ask_writer(fe: &mut FrontEnd, path: &Path, ask: Ask) {
+    if fe.ava.options.writer.is_none() {
+        match SettingsWriter::start(path.to_path_buf()) {
+            Ok(w) => fe.ava.options.writer = Some(Arc::new(w)),
+            Err(e) => {
+                fe.note(format!("options: ERROR the settings' writer (a thread) did not start ({e}): not saved"));
+                return;
+            }
         }
-        Err(SaveError::Unreadable(why)) => {
-            fe.note(format!("options: {} could not be read ({why}): asking before it is replaced", path.display()));
-            let body = env.loc.format("TXT_AVA_SETTINGS_BROKEN_BODY", &[&path.display().to_string(), &why]);
-            let glyphs = fe.ava.glyphs.clone();
-            env.values.set_str(crate::game::fe::popup::POPUP_BODY, super::shown(&body, glyphs.as_ref()));
-            env.nav_events.push(broken_popup.into());
+    }
+    let settings = match &ask {
+        Ask::Save { settings, .. } | Ask::Replace { settings, .. } => settings.clone(),
+    };
+    if fe.ava.options.writer.as_ref().is_some_and(|w| w.ask(ask)) {
+        fe.ava.options.asked = Some(settings);
+        fe.note(format!("options: saving to {}", path.display()));
+    } else {
+        fe.note("options: ERROR the settings' writer has ended: the changes are not saved");
+    }
+}
+
+pub fn saved(fe: &mut FrontEnd, env: &mut FeEnv) {
+    let Some(w) = fe.ava.options.writer.clone() else { return };
+    for done in w.take_done() {
+        match done {
+            Done::Saved { path, settings, read } => {
+                if read == fe.ava.options.reads {
+                    fe.ava.options.kept = settings;
+                }
+                fe.note(format!("options: saved to {}", path.display()));
+            }
+            Done::Replaced { path, aside, settings, read } => {
+                if read == fe.ava.options.reads {
+                    fe.ava.options.kept = settings;
+                }
+                fe.note(format!("options: the old file kept as {}; saved to {}", aside.display(), path.display()));
+            }
+            Done::Unreadable { path, why, popup } => {
+                fe.note(format!("options: {} could not be read ({why}): asking before it is replaced", path.display()));
+                let body = env.loc.format("TXT_AVA_SETTINGS_BROKEN_BODY", &[&path.display().to_string(), &why]);
+                let glyphs = fe.ava.glyphs.clone();
+                env.values.set_str(crate::game::fe::popup::POPUP_BODY, super::shown(&body, glyphs.as_ref()));
+                env.nav_events.push(popup);
+            }
+            Done::Failed(e) => fe.note(format!("options: ERROR {e}")),
         }
-        Err(SaveError::Io(e)) => fe.note(format!("options: ERROR {e:#}")),
+    }
+    if !w.writing() {
+        fe.ava.options.asked = None;
     }
 }
 
@@ -284,7 +339,7 @@ pub fn update(fe: &mut FrontEnd, env: &mut FeEnv) {
         Ok(name) => {
             fe.note(format!("options: player name {name:?}"));
             super::name_prompt::confirm(fe, name);
-            save(fe, env, BROKEN_POPUP);
+            save(fe, BROKEN_POPUP);
             fe.publish.push(DP_MENU.into());
         }
         Err(e) => {

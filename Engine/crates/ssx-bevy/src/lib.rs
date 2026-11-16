@@ -12,6 +12,7 @@ mod shell;
 pub mod ui;
 
 pub use audio::{music, sfx, sfx_input};
+pub use camera::chase::replay as camera_replay;
 pub use render::terrain::look as terrain_look;
 pub use render::{hooks, lighting};
 pub use rider::anim as rider_anim;

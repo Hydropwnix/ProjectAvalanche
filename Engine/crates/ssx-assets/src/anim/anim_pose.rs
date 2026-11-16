@@ -354,6 +354,9 @@ pub struct StepPhysics {
     pub q: [f32; 4],
     pub t: [f32; 3],
     pub controllers: Vec<String>,
+    pub aerial_layer: Vec<(String, f32)>,
+    pub aerial_scripts: Vec<(String, f32)>,
+    pub ground: Option<(usize, [f32; 3])>,
 }
 
 impl Delta {
@@ -508,7 +511,14 @@ mod tests {
         let Delta::Value { t, .. } = Delta::blend(a, b, 0.5, None) else { panic!() };
         assert_eq!(t, [0.5, 0.0, 1.0]);
         assert_eq!(Delta::blend(a, Delta::Physics, 0.5, None), Delta::Untraced);
-        let p = StepPhysics { q: [0.0, 0.0, 0.0, 1.0], t: [0.0, 1.0, 0.0], controllers: Vec::new() };
+        let p = StepPhysics {
+            q: [0.0, 0.0, 0.0, 1.0],
+            t: [0.0, 1.0, 0.0],
+            controllers: Vec::new(),
+            aerial_layer: Vec::new(),
+            aerial_scripts: Vec::new(),
+            ground: None,
+        };
         let Delta::Value { t, .. } = Delta::blend(a, Delta::Physics, 0.5, Some(&p)) else { panic!() };
         assert_eq!(t, [0.5, 0.5, 0.0]);
         let Delta::Value { q, t } = Delta::accumulate(b, a, None) else { panic!() };

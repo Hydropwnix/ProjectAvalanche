@@ -190,7 +190,7 @@ debug | Tab chase/fly | F wireframe | H overlay";
 
 const RIDE_CONTROLS_CLASSIC: &str = "Classic: D-pad or A/D carve (air: spin) | S/Down brake, W/Up tuck (air: flip) | Space A jump \
 (on release; air: A held wingsuit) | Q/E/Z/X = LB/RB/LT/RT grabs (exact shoulder sets; right stick (Num8/4/6/2) up/down = nose/tail) | J X \
-(boost / tweak) | Ctrl Y grind | L B rewind | Ctrl+Shift signature | pad: D-pad, shoulders, right \
+(boost / tweak) | Ctrl Y grind | hold L (B) or Backspace rewind | Ctrl+Shift signature | pad: D-pad, shoulders, right \
 stick up/down nose/tail | R respawn | N rail debug | Tab chase/fly | F wireframe | H overlay";
 
 fn death_hud(ride: &Ride) -> String {
@@ -214,7 +214,11 @@ fn death_hud(ride: &Ride) -> String {
         };
         return format!("EVENT OVER: {why} ({outro}) | R respawns\n");
     }
-    let hint = if t.hint { " | REWIND HINT: hold L1 / Backspace to rewind out of death" } else { "" };
+    let hint = match (t.hint, ride.classic) {
+        (false, _) => "",
+        (true, false) => " | REWIND HINT: hold L1 / Backspace to rewind out of death",
+        (true, true) => " | REWIND HINT: hold B (L) / Backspace to rewind out of death",
+    };
     if !d.is_alive() {
         format!(
             "DEAD (death volume) {:.1} s{} | event ends in {:.1} s{hint}\n",

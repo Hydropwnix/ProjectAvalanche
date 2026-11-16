@@ -45,8 +45,12 @@ impl Shell {
                 if menu && !ui.views_loading() {
                     match live.launch.take() {
                         Some(SessionLevel::Drop(drop)) => {
-                            info!("shell: the network session's drop {drop}: launched as --launch launches one");
+                            info!(
+                                "shell: the network session's drop {drop}: launched as --launch launches one, its \
+                                 rider equipped first"
+                            );
                             self.test_launch = Some((drop, self.host.time));
+                            self.session_launch = true;
                         }
                         Some(SessionLevel::Map { id, event_type, mode }) => {
                             if let Err(why) = self.launch_session_map(ui, &id, &mode, event_type) {
@@ -97,6 +101,7 @@ impl Shell {
             }
             Stage::Menus => {
                 self.test_launch = None;
+                self.session_launch = false;
                 let (there, open, name) = match live.origin {
                     #[cfg(feature = "net")]
                     LiveOrigin::Browser => (ui.browser_active(), ssx_ui::game::fe::ava::browser::OPEN, "the browser"),
@@ -177,7 +182,7 @@ impl Shell {
                 info!(
                     "shell: the player backed out of the equipment (screen {screen:#x}): to the server's drop {drop}"
                 );
-                ui.fe_call(|fe, env| ssx_ui::game::fe::flow::launch(fe, env, key, true));
+                ui.fe_call(|fe, env| ssx_ui::game::fe::flow::launch_session(fe, env, key));
             }
             None => error!("shell: the server's drop {drop} is gone from the career data"),
         }
@@ -240,7 +245,7 @@ impl Shell {
                     Some(key) => {
                         info!("shell: the next round's drop {drop}: launched");
                         live.ridden = Some(SessionLevel::Drop(drop));
-                        ui.fe_call(|fe, env| ssx_ui::game::fe::flow::launch(fe, env, key, true));
+                        ui.fe_call(|fe, env| ssx_ui::game::fe::flow::launch_session(fe, env, key));
                     }
                     None => {
                         let why = format!("the server's next drop {drop} is not on this game's disc");

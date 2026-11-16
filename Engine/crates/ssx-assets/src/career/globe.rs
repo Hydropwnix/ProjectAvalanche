@@ -114,6 +114,13 @@ fn v3(v: Option<Vec<f32>>) -> [f32; 3] {
     [0, 1, 2].map(|i| v.get(i).copied().unwrap_or(0.0))
 }
 
+impl Globe {
+    pub fn scene_shot(&self, index: usize, hd: bool) -> Option<Shot> {
+        let shot = *self.shots.get(index)?;
+        Some(if hd { shot } else { Shot { target: add(shot.target, self.up), ..shot } })
+    }
+}
+
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
@@ -131,7 +138,7 @@ impl GlobeData {
         let up = v3(g.vector(0x4571_CCE8));
         let shot = |a: u32, b: u32, fov: u32| {
             let (a, b) = (v3(g.vector(a)), v3(g.vector(b)));
-            Shot { offset: sub(b, a), look: [0.0; 3], target: add(a, up), fov: g.float(fov).unwrap_or(0.0) * DEG }
+            Shot { offset: sub(b, a), look: [0.0; 3], target: a, fov: g.float(fov).unwrap_or(0.0) * DEG }
         };
         let globe = Globe {
             radius: g.float(0x2B8B_D88D).unwrap_or(0.0),

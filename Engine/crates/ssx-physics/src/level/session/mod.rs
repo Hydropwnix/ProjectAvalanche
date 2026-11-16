@@ -12,6 +12,7 @@ pub mod geotags;
 
 pub const LOOP_STEP_S: f32 = DT_TICKS / TICKS_PER_SECOND;
 pub mod heli_jump;
+pub mod recorder;
 pub mod survive;
 pub mod tombstones;
 pub mod tutorial;
@@ -37,6 +38,8 @@ pub struct Session {
     pub survive: Option<survive::SurviveLoop>,
     pub bots: Option<bots::BotRace>,
     pub ghost_manager: bots::GhostLatches,
+    pub recorder: recorder::GhostRecorder,
+    pub ui_ghost_clock_ms: u32,
     pub heli_jump: Option<heli_jump::HeliJump>,
     pub tutorial: Option<tutorial::Tutorial>,
     pub nis_events: crate::nis_events::NisEvents,
@@ -62,6 +65,7 @@ pub struct Session {
     pub effects_from: usize,
     pub last_sim_dt_s: f32,
     pub downwash: Option<crate::helicopter::downwash::Downwash>,
+    pub presentation: i32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -102,6 +106,8 @@ impl Session {
             survive: None,
             bots: None,
             ghost_manager: bots::GhostLatches::default(),
+            recorder: recorder::GhostRecorder::default(),
+            ui_ghost_clock_ms: 0,
             heli_jump: None,
             tutorial: None,
             nis_events: crate::nis_events::NisEvents::default(),
@@ -127,6 +133,7 @@ impl Session {
             effects_from: 0,
             last_sim_dt_s: 0.0,
             downwash: None,
+            presentation: 0,
         }
     }
 
@@ -162,7 +169,8 @@ impl Session {
             o.runner.restart_set(crate::objectives::SetId::Level, &mut load);
             o.effects.extend(load.effects);
         }
-        self.manager.reset(&mut self.buffer);
+        self.manager.restart(&mut self.buffer);
+        self.recorder.rewind_node_rebuilt();
         (self.dilation, self.time_dilation) = (1.0, dilation::TimeDilation::default());
         self.tracker = TriggerTracker::default();
         self.timer = DeathTimer::default();
@@ -171,9 +179,6 @@ impl Session {
         if let Some(c) = self.controllers.as_mut() {
             c.reset_bodies();
         }
-        if let Some(enabled) = self.event.saved_rewind_enabled.take() {
-            self.manager.count.enabled = enabled;
-        }
         self.event.reset();
         self.flow.track_finished = false;
         self.avalanche.warp();
@@ -181,6 +186,7 @@ impl Session {
             b.reset();
         }
         self.ghost_manager = bots::GhostLatches::default();
+        self.recorder.on_restart();
         if let Some(t) = self.tombstones.as_mut() {
             t.reset();
         }
@@ -193,14 +199,18 @@ impl Session {
 
     pub fn pause_begin(&mut self) {
         self.event.waiting = true;
+        self.recorder.pause(true);
     }
 
     pub fn pause_end(&mut self) {
         self.event.waiting = false;
+        self.recorder.pause(false);
     }
 
     pub fn paused_frame(&mut self, s: &mut RiderState, w: &World) -> EventUpdate {
         let rewinding = self.rewind_backwards;
+        self.recorder.sample(s.traj, s.score.score);
+        self.recorder.after_execution(None);
         self.score_manager(s, w, self.last_sim_dt_s, rewinding, true)
     }
 

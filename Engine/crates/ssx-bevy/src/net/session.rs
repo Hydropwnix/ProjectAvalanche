@@ -34,6 +34,7 @@ pub struct NetSession {
     state: State,
     pub hologram: bool,
     joining: Option<Joining>,
+    pinned: Option<std::sync::Mutex<std::sync::mpsc::Receiver<ssx_net_join::browse::Pinned>>>,
 }
 
 struct Joining {
@@ -107,11 +108,11 @@ impl NetSession {
         let task = JoinTask::spawn(req, spec.key, with).map_err(|e| format!("the join's thread: {e}"))?;
         info!("network: joining {server}");
         let joining = Some(Joining { slot, progress, options, shown: None });
-        Ok(Self { server, state: State::Joining(task), hologram: false, joining })
+        Ok(Self { server, state: State::Joining(task), hologram: false, joining, pinned: None })
     }
 
     pub fn ended(server: String) -> Self {
-        Self { server, state: State::Ended, hologram: false, joining: None }
+        Self { server, state: State::Ended, hologram: false, joining: None, pinned: None }
     }
 
     pub fn client(&self) -> Option<Entity> {
@@ -247,6 +248,24 @@ pub fn drive(
     mut commands: Commands,
 ) {
     let s = &mut *session;
+    if let Some(rx) = &s.pinned {
+        let got = rx.lock().unwrap_or_else(std::sync::PoisonError::into_inner).try_recv();
+        match got {
+            Ok(p) => {
+                s.pinned = None;
+                match p.result {
+                    Ok(()) => info!(
+                        "network: the server's key kept in {} ({} ms after the join's token was handed on)",
+                        p.path.display(),
+                        p.after.as_millis()
+                    ),
+                    Err(e) => warn!("network: the server's key was not kept ({e}): the next join to it pins it anew"),
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => s.pinned = None,
+        }
+    }
     if s.is_ended() {
         return;
     }
@@ -300,6 +319,7 @@ pub fn drive(
                     };
                     commands.insert_resource(content);
                 }
+                s.pinned = joined.pinned.map(std::sync::Mutex::new);
                 let granted = joined.granted;
                 if joined.identity_created {
                     info!("network: made this install's player identity");

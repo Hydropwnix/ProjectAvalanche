@@ -29,6 +29,7 @@ pub struct RiderSounds {
     axe_latch: bool,
     axe_prev_blend: f32,
     pub remix: Vec<RemixEvent>,
+    remix_latch: u32,
     pub mode: u8,
     pub snapshots: crate::sfx_bus::SnapshotDirector,
     eog: bool,
@@ -58,7 +59,7 @@ impl RiderSounds {
     }
 
     pub fn race_start(&mut self, sfx: &mut SfxEngine) {
-        sfx.remix_run(true);
+        sfx.remix_race_start();
     }
 
     pub fn shutdown(&mut self, sfx: &mut SfxEngine) {
@@ -106,6 +107,7 @@ impl RiderSounds {
             wingsuit_audio: wingsuit_audio(sfx),
             script_song: sfx.script_song,
             tricky_clip: sfx.tricky.clip_playing(),
+            presentation: sfx.presentation(),
         };
         self.snapshots.frame(&mut sfx.mixer.graph, &inputs);
         if r.eog && !self.eog {
@@ -180,7 +182,7 @@ impl RiderSounds {
     fn board_and_grind(&mut self, sfx: &mut SfxEngine, r: &RideAudio, f: u32, s: &SurfaceSummary, spd: i32) {
         let cls = s.class(material_class(r.ground_material)).clamp(1, 8);
         let spray = norm(r.spray, tuning::SPRAY, 1000.0);
-        let angle = (r.board_velocity_angle * 63.661_976).min(100.0) as i32;
+        let angle = board_angle_param(r.board_velocity_angle);
         let lean = (if bit(f, 6) { 1 } else { -1 }) * (r.lean * 100.0) as i32;
         let nose_tail = (r.nose_tail * 100.0) as i32;
         let in_air = i32::from(!(bit(f, 0) && !bit(f, 14)));
@@ -238,7 +240,8 @@ impl RiderSounds {
     fn gear(&mut self, sfx: &mut SfxEngine, r: &RideAudio, f: u32, spd: i32, cls4: i32) {
         if bit(f, 3) {
             if !bit(self.prev, 3) && self.wingsuit.is_none() {
-                self.wingsuit = call(sfx, "SFX_Wingsuit", &wingsuit_params(spd, r));
+                let p = wingsuit_params(spd, r, sfx.presentation());
+                self.wingsuit = call(sfx, "SFX_Wingsuit", &p);
             }
         } else if bit(self.prev, 3) {
             stop(sfx, &mut self.wingsuit);
@@ -269,7 +272,8 @@ impl RiderSounds {
             sfx.update(h, &[spd, cls4, 1]);
         }
         if let Some(h) = self.wingsuit {
-            sfx.update(h, &wingsuit_params(spd, r));
+            let p = wingsuit_params(spd, r, sfx.presentation());
+            sfx.update(h, &p);
         }
         if let Some(h) = self.ice_scrape {
             sfx.update(h, &[spd, cls4]);
@@ -336,7 +340,7 @@ impl RiderSounds {
             sfx.fire_event("trigger_Stop_SFX_Boost", &p);
             self.boost_latch = false;
         }
-        if bit(f, 28) {
+        if bit(f, 28) && sfx.presentation() != crate::sfx::presentation::SKYDROP {
             sfx.fire_event("trigger_SFX_Awesome_Landing", &p);
         }
         // PORT(choice): for music mods — with a client script's song `Tricky_State` is 2 only while "It's Tricky" plays
@@ -384,7 +388,8 @@ impl RiderSounds {
     fn big_air_sound(&mut self, sfx: &mut SfxEngine, f: u32) {
         use crate::sfx::speech::vars::id;
         let race_active = sfx.speech.as_ref().is_some_and(|sp| sp.vars.get(id::RACE_IS_ACTIVE) == 1);
-        let Some((air, land)) = big_air_times(sfx).filter(|_| race_active && !bit(f, 19)) else {
+        let skydrop = sfx.presentation() == crate::sfx::presentation::SKYDROP;
+        let Some((air, land)) = big_air_times(sfx).filter(|_| race_active && !bit(f, 19) && !skydrop) else {
             stop(sfx, &mut self.big_air);
             return;
         };
@@ -432,7 +437,7 @@ impl RiderSounds {
         } else if r.tricking && bit(self.prev, 1) {
             self.trick_latch = true;
         }
-        let (flip, spin) = if self.trick_latch {
+        let (flip, spin) = if self.trick_latch || sfx.presentation() == crate::sfx::presentation::SKYDROP {
             (norm(r.flip_speed.abs(), tuning::FLIP, 100.0), norm(r.spin_speed.abs(), tuning::SPIN, 100.0))
         } else {
             (0, 0)
@@ -442,34 +447,19 @@ impl RiderSounds {
     }
 
     fn remix_events(&mut self, r: &RideAudio, f: u32) {
-        let edge = |b: u32| (bit(f, b), bit(self.prev, b));
-        let mut ev = |name: &'static str, value: f32| self.remix.push(RemixEvent { name, value });
+        let latch = self.remix_latch;
+        let out = &mut self.remix;
+        let mut ev = |name: &'static str, value: f32| out.push(RemixEvent { name, value });
         ev("UpdateCarve", if bit(f, 0) { r.lean } else { 0.0 });
-        for (b, on, off) in [
-            (3, "WingsuitDeployed", "WingsuitRetracted"),
-            (7, "TimeDilationStart", "TimeDilationStop"),
-            (5, "BoostStart", "BoostStop"),
-            (12, "TumbleStart", "TumbleStop"),
-            (18, "SuperAwesomeModeStart", "SuperAwesomeModeStop"),
-            (28, "AwesomeLandStart", "AwesomeLandStop"),
-            (14, "GrindingStart", "GrindingStop"),
-        ] {
-            match edge(b) {
+        for &(b, on, off) in &REMIX_EDGES {
+            match (bit(f, b), bit(latch, b)) {
                 (true, false) => ev(on, 0.0),
                 (false, true) => ev(off, 0.0),
-                _ => {}
+                _ => continue,
             }
-        }
-        match edge(4) {
-            (true, false) => {
-                ev("AwesomeModeStart", 0.0);
+            if b == 4 {
                 ev("UpdatePitch", 1.0);
             }
-            (false, true) => {
-                ev("AwesomeModeStop", 0.0);
-                ev("UpdatePitch", 1.0);
-            }
-            _ => {}
         }
         let tunnel = |x: u32| {
             if bit(x, 17) {
@@ -480,13 +470,29 @@ impl RiderSounds {
                 0
             }
         };
-        match (tunnel(f), tunnel(self.prev)) {
+        match (tunnel(f), tunnel(latch)) {
             (t, 0) if t != 0 => ev("TunnelStart", t as f32),
             (0, t) if t != 0 => ev("TunnelStop", 0.0),
             _ => {}
         }
+        self.remix_latch = f;
+    }
+
+    pub fn remix_events_reset(&mut self) {
+        self.remix_latch = 0;
     }
 }
+
+const REMIX_EDGES: [(u32, &str, &str); 8] = [
+    (3, "WingsuitDeployed", "WingsuitRetracted"),
+    (7, "TimeDilationStart", "TimeDilationStop"),
+    (5, "BoostStart", "BoostStop"),
+    (12, "TumbleStart", "TumbleStop"),
+    (4, "AwesomeModeStart", "AwesomeModeStop"),
+    (18, "SuperAwesomeModeStart", "SuperAwesomeModeStop"),
+    (28, "AwesomeLandStart", "AwesomeLandStop"),
+    (14, "GrindingStart", "GrindingStop"),
+];
 
 fn wingsuit_audio(sfx: &SfxEngine) -> bool {
     match &sfx.launch_block {
@@ -495,5 +501,56 @@ fn wingsuit_audio(sfx: &SfxEngine) -> bool {
         // game info block exists, so the wingsuit word counts as set and `WingSuit_1` follows bit 3 alone; the game
         // always builds the block (0x823F7788).
         None => true,
+    }
+}
+
+fn board_angle_param(angle: f32) -> i32 {
+    let x = angle * 63.661_976;
+    (if x - 100.0 >= 0.0 { 100.0 } else { x } as i32).clamp(0, 100)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_board_angle_parameter_takes_a_nan_as_0() {
+        assert_eq!(super::board_angle_param(f32::NAN), 0);
+        assert_eq!(super::board_angle_param(std::f32::consts::FRAC_PI_2), 100);
+        assert_eq!(super::board_angle_param(std::f32::consts::FRAC_PI_4), 50);
+        assert_eq!(super::board_angle_param(0.0), 0);
+    }
+
+    #[test]
+    fn the_wingsuit_flag_posts_the_remixs_open_and_close_once() {
+        let mut s = super::RiderSounds::default();
+        let mut frame = |wingsuit: bool| {
+            let r = super::RideAudio { wingsuit, ..Default::default() };
+            let f = super::flags(&r);
+            s.remix.clear();
+            s.remix_events(&r, f);
+            s.remix.iter().map(|e| e.name).filter(|n| n.starts_with("Wingsuit")).collect::<Vec<_>>()
+        };
+        assert!(frame(false).is_empty());
+        assert_eq!(frame(true), ["WingsuitDeployed"]);
+        assert!(frame(true).is_empty());
+        assert_eq!(frame(false), ["WingsuitRetracted"]);
+        assert!(frame(false).is_empty());
+    }
+
+    #[test]
+    fn tricky_and_super_tricky_in_one_update_post_the_stinger_before_the_song() {
+        let mut s = super::RiderSounds::default();
+        let r = super::RideAudio::default();
+        let frame = |s: &mut super::RiderSounds, f: u32| {
+            s.remix.clear();
+            s.remix_events(&r, f);
+            s.remix.iter().map(|e| e.name).filter(|n| *n != "UpdateCarve").collect::<Vec<_>>()
+        };
+        let both = 1 << 4 | 1 << 18;
+        assert_eq!(frame(&mut s, both), ["AwesomeModeStart", "UpdatePitch", "SuperAwesomeModeStart"]);
+        assert!(frame(&mut s, both).is_empty());
+        assert_eq!(frame(&mut s, 0), ["AwesomeModeStop", "UpdatePitch", "SuperAwesomeModeStop"]);
+        frame(&mut s, both);
+        s.remix_events_reset();
+        assert_eq!(frame(&mut s, both), ["AwesomeModeStart", "UpdatePitch", "SuperAwesomeModeStart"]);
     }
 }

@@ -13,6 +13,12 @@ const RTKIT_PATH: &str = "/org/freedesktop/RealtimeKit1";
 // the compositor's threads at RR 1 (below), and rtkit grants up to 20. The console runs its Dac thread at EA::Thread
 // priority 15 (THREAD_PRIORITY_TIME_CRITICAL, 0x82A49A58) on a hardware thread of its own; Linux has neither.
 const PRIORITY: u32 = 10;
+// PORT(choice): nice −11, the level the desktop's sound servers ask rtkit for their own threads beside their real-time
+// loops (`/usr/share/pipewire/pipewire.conf` and `pipewire-pulse.conf`, module-rt `nice.level = -11`); rtkit grants down
+// to its MinNiceLevel (−15 on the development machine). The console runs "rwfilesys" at EA::Thread priority 2
+// (THREAD_PRIORITY_HIGHEST: ahead of every thread of a lower priority, behind the Dac's 15), and Linux's normal
+// scheduler has no strict priorities, only weights by nice level; the mixer thread's SCHED_RR stays above it.
+const FILE_THREAD_NICE: i32 = -11;
 const TIMEOUT: Duration = Duration::from_secs(5);
 const REST: Duration = Duration::from_micros(100);
 
@@ -66,6 +72,56 @@ pub(super) fn promote() -> Option<Grant> {
     Some(Grant { tid, slice_ns, awake: Instant::now() })
 }
 
+pub(super) fn raise_file_thread() {
+    let tid = unsafe { libc::gettid() };
+    let normal = libc::sched_param { sched_priority: 0 };
+    if unsafe { libc::sched_setscheduler(0, libc::SCHED_OTHER | libc::SCHED_RESET_ON_FORK, &normal) } != 0 {
+        let e = std::io::Error::last_os_error();
+        ssx_core::eprintln!("audio: the stream file thread keeps its normal priority (SCHED_RESET_ON_FORK: {e})");
+        return;
+    }
+    let spawned = std::thread::Builder::new().name("ssx_stream_io_nice".into()).spawn(move || match nice(tid) {
+        Ok(level) => ssx_core::eprintln!(
+            "audio: the stream file thread runs at nice {level} (rtkit; the console's EA::Thread priority 2)"
+        ),
+        Err(why) => ssx_core::eprintln!("audio: the stream file thread keeps its normal priority ({why})"),
+    });
+    if let Err(e) = spawned {
+        ssx_core::eprintln!("audio: the stream file thread keeps its normal priority (no thread for the request: {e})");
+    }
+}
+
+fn nice(tid: i32) -> Result<i32, String> {
+    let mut bus = Bus::system(TIMEOUT).map_err(|e| format!("the system bus: {e}"))?;
+    let level = nice_level(property(&mut bus, "MinNiceLevel")?)?;
+    bus.call(RTKIT, RTKIT_PATH, RTKIT, "MakeThreadHighPriority", &[Arg::U64(tid as u64), Arg::I32(level)])
+        .map_err(|e| format!("rtkit refused: {e}"))?;
+    let got = unsafe {
+        *libc::__errno_location() = 0;
+        let got = libc::getpriority(libc::PRIO_PROCESS, tid as libc::id_t);
+        (*libc::__errno_location() == 0).then_some(got)
+    };
+    match got {
+        Some(got) if got == level => Ok(level),
+        Some(got) => Err(format!("rtkit answered, but the thread's nice level is {got}")),
+        None => Err(format!("rtkit answered; the thread's nice level: {}", std::io::Error::last_os_error())),
+    }
+}
+
+fn nice_level(min: i64) -> Result<i32, String> {
+    let level = i64::from(FILE_THREAD_NICE).max(min);
+    if level >= 0 {
+        return Err(format!("rtkit grants no nice level below 0 (MinNiceLevel {min})"));
+    }
+    i32::try_from(level).map_err(|_| format!("rtkit's MinNiceLevel {min}"))
+}
+
+fn property(bus: &mut Bus, name: &str) -> Result<i64, String> {
+    bus.call(RTKIT, RTKIT_PATH, "org.freedesktop.DBus.Properties", "Get", &[Arg::Str(RTKIT), Arg::Str(name)])
+        .and_then(|r| r.variant_int())
+        .map_err(|e| format!("rtkit's {name}: {e}"))
+}
+
 struct Granted {
     priority: i32,
     max: i64,
@@ -90,13 +146,8 @@ impl std::fmt::Display for Granted {
 
 fn request(tid: i32, slice_ns: &AtomicU64) -> Result<Granted, String> {
     let mut bus = Bus::system(TIMEOUT).map_err(|e| format!("the system bus: {e}"))?;
-    let mut property = |name: &str| {
-        bus.call(RTKIT, RTKIT_PATH, "org.freedesktop.DBus.Properties", "Get", &[Arg::Str(RTKIT), Arg::Str(name)])
-            .and_then(|r| r.variant_int())
-            .map_err(|e| format!("rtkit's {name}: {e}"))
-    };
-    let max = property("MaxRealtimePriority")?;
-    let rttime = property("RTTimeUSecMax")?;
+    let max = property(&mut bus, "MaxRealtimePriority")?;
+    let rttime = property(&mut bus, "RTTimeUSecMax")?;
     if max < 1 {
         return Err(format!("rtkit grants no real-time priority (MaxRealtimePriority {max})"));
     }
@@ -185,5 +236,19 @@ fn remove_handler() {
     };
     if failed {
         ssx_core::eprintln!("audio: SIGXCPU's handler stays: {}", std::io::Error::last_os_error());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_file_threads_level_stays_within_rtkits() {
+        assert_eq!(nice_level(-15), Ok(FILE_THREAD_NICE));
+        assert_eq!(nice_level(-20), Ok(FILE_THREAD_NICE));
+        assert_eq!(nice_level(-5), Ok(-5));
+        assert!(nice_level(0).is_err());
+        assert!(nice_level(i64::MAX).is_err());
     }
 }

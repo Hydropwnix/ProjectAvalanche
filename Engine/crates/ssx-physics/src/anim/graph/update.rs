@@ -6,6 +6,31 @@ impl RiderGraph {
         self.animator.take_audio_tags()
     }
 
+    pub fn take_driver_events(&mut self) -> Vec<ssx_assets::anim_eval::DriverEvent> {
+        self.animator.take_driver_events()
+    }
+
+    pub fn take_queued_queries(&mut self) -> Vec<String> {
+        self.animator.take_queued_queries()
+    }
+
+    pub fn take_transition_tags(&mut self) -> Vec<ssx_assets::anim_graph::GameTag> {
+        self.animator.take_transition_tags()
+    }
+
+    pub fn joint_below_trajectory(&self, joint: &str) -> Option<(Quat, Vec3)> {
+        let t = self.trajectory?;
+        let mut i = self.rig.find(joint)?;
+        let (mut q, mut p) = (Quat::IDENTITY, Vec3::ZERO);
+        while i != t {
+            let n = self.pose.nodes.get(i)?;
+            let (lq, lt) = (Quat::from_array(n.rotation).normalize(), Vec3::from_array(n.translation));
+            (q, p) = ((lq * q).normalize(), lq * p + lt);
+            i = self.rig.nodes.get(i)?.parent?;
+        }
+        Some((q, p))
+    }
+
     pub fn update(
         &mut self,
         s: &RiderState,
@@ -87,6 +112,12 @@ impl RiderGraph {
             (self.producers.carving_init, self.producers.last_state) = (false, None);
         }
         self.write_signals(s, input, tricks, start, dt);
+        let physics = physics.map(|mut p| {
+            if !p.aerial_layer.is_empty() {
+                p.aerial_scripts = self.layered_scripts(&p.aerial_layer);
+            }
+            p
+        });
         self.animator.set_physics(physics);
         self.animator.update(dt);
         self.gameplay = true;
@@ -137,6 +168,14 @@ impl RiderGraph {
 
     pub fn running_nodes(&self, dt: f32) -> Vec<String> {
         self.animator().running_nodes(dt)
+    }
+
+    pub fn path_nodes(&self) -> Vec<ssx_assets::anim_eval::PathNode> {
+        self.animator().path_nodes()
+    }
+
+    pub fn updated_nodes(&self) -> &[u64] {
+        self.animator().updated_nodes()
     }
 
     pub fn finish(&mut self, s: &RiderState) -> GraphFeedback {
@@ -211,6 +250,10 @@ impl RiderGraph {
             recover_ticks: recover.unwrap_or(0.0),
             jump_start: path.first().is_some_and(|n| n.0 == "state_jump_start"),
             in_rock_bail: path.iter().any(|n| n.0 == "state_riding_rock_bail"),
+            bounce_rotational_force: {
+                let [x, y, z, _] = self.animator().vector("VEC_carving_bounce_rotational_force");
+                Vec3::new(x, y, z)
+            },
             traj_rotation: rotation,
         }
     }

@@ -54,7 +54,7 @@ impl Profile {
         }
         let h2h = fnv1(format!("chapter_{chapter}_drop_h2h").as_bytes());
         if let Some(range) = rules.event(h2h).map(|e| e.range).filter(|&r| r != 0) {
-            self.range_modes.entry(range).or_default()[1] = 2;
+            self.range_modes.entry(range).or_default()[2] = 2;
         }
     }
 

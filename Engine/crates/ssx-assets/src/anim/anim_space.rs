@@ -287,6 +287,31 @@ mod tests {
     }
 
     #[test]
+    fn the_wingsuit_flies_its_forward_pose_at_the_stick_rest() {
+        const ITEMS: [[f32; 2]; 5] = [[0.0, 0.9], [0.0, -0.9], [0.9, 0.0], [0.0, 0.0], [-0.9, 0.0]];
+        const TRIS: [[usize; 3]; 4] = [[3, 1, 4], [0, 2, 3], [1, 3, 2], [4, 0, 3]];
+        const HULL: [([f32; 2], [f32; 2], usize); 4] = [
+            ([0.0, -0.9], [-0.9, 0.0], 0),
+            ([-0.9, 0.0], [0.0, 0.9], 3),
+            ([0.0, 0.9], [0.9, 0.0], 1),
+            ([0.9, 0.0], [0.0, -0.9], 2),
+        ];
+        let d = Diagram {
+            items: &ITEMS,
+            triangles: &TRIS,
+            inverse_area: &[2.469_136; 4],
+            hull: &HULL,
+            snap: &[false; 5],
+            snap_tolerance: 0.03,
+        };
+        let near = |w: Vec<f32>, e: [f32; 5]| w.iter().zip(e).all(|(a, b)| (a - b).abs() < 1e-5);
+        assert!(near(item_weights([0.0, 0.0], &d), [0.0, 0.0, 0.0, 1.0, 0.0]));
+        assert!(near(item_weights([0.0, -0.9], &d), [0.0, 1.0, 0.0, 0.0, 0.0]));
+        assert!(near(item_weights([0.0, 0.45], &d), [0.5, 0.0, 0.0, 0.5, 0.0]));
+        assert!(near(item_weights([1.0, 0.0], &d), [0.0, 0.0, 1.0, 0.0, 0.0]));
+    }
+
+    #[test]
     fn a_degenerate_triangle_interpolates_its_first_edge() {
         let items = [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]];
         let d = Diagram {

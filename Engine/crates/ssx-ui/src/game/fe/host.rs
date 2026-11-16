@@ -372,23 +372,33 @@ impl Host {
     }
 
     pub fn press_from(&mut self, ui: &mut GameUi, b: Button, device: u8) {
+        if self.press_input(ui, b, device) {
+            if matches!(b, Button::DpadLeft | Button::DpadRight) {
+                let x = if b == Button::DpadRight { 1.0 } else { -1.0 };
+                ui.fe_call(|fe, _| super::globe::dpad(fe, x));
+            }
+        }
+    }
+
+    pub fn press_from_stick(&mut self, ui: &mut GameUi, b: Button, device: u8) {
+        self.press_input(ui, b, device);
+    }
+
+    fn press_input(&mut self, ui: &mut GameUi, b: Button, device: u8) -> bool {
         if ui.fe.as_ref().is_some_and(super::FrontEnd::movie_queued) {
             if matches!(b, Button::DigitalOne | Button::Start) {
                 let frame = self.movie_frame();
                 self.note(format!("press {b:?} under a movie (frame {frame}): the movie manager's skip"));
                 ui.fe_call(|fe, _| fe.skip_movie(frame));
             }
-        } else {
-            ui.input.push_from(Input::Button { button: b, down: true }, device);
-            self.release.push((b, device));
-            if b == Button::Start && self.phase == Phase::Riding {
-                ui.game_input(true);
-            }
-            if matches!(b, Button::DpadLeft | Button::DpadRight) {
-                let x = if b == Button::DpadRight { 1.0 } else { -1.0 };
-                ui.fe_call(|fe, _| super::globe::dpad(fe, x));
-            }
+            return false;
         }
+        ui.input.push_from(Input::Button { button: b, down: true }, device);
+        self.release.push((b, device));
+        if b == Button::Start && self.phase == Phase::Riding {
+            ui.game_input(true);
+        }
+        true
     }
 
     fn movies(&mut self, ui: &mut GameUi, dt: f64) {
@@ -649,6 +659,7 @@ mod tests {
             cost: 0,
             peak: 0,
             range: 0,
+            ghost_drop: false,
         };
         let o = ssx_assets::career::profile::EventOutcome {
             value: t.value,

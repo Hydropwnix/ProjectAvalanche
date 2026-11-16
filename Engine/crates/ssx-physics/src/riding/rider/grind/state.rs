@@ -80,7 +80,6 @@ pub struct GrindCarving {
     pub spin: f32,
     pub spin_vel: f32,
     pub board_angle: f32,
-    pub board_angle_init: bool,
 }
 
 pub struct MachineInputs<'a> {

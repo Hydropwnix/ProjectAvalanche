@@ -20,6 +20,14 @@ fn package(root: &Path, name: &str, file: &[u8]) {
     std::fs::write(dir.join("data/file.bin"), file).unwrap();
 }
 
+fn kept_lists(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .filter(|name| ssx_files::partial_target(&name.to_string_lossy()).is_none())
+        .count()
+}
+
 fn master(list: Arc<Mutex<Vec<ContentHash>>>) -> String {
     counting_master(list).0
 }
@@ -206,7 +214,7 @@ fn a_resource_a_master_names_does_not_start_on_a_first_start() {
     for part in ["[resources] start", "\"pack\"", url.as_str(), "data/file.bin"] {
         assert!(error.contains(part), "{part} in: {error}");
     }
-    assert_eq!(std::fs::read_dir(data.join("Blocklists")).unwrap().count(), 1, "the list kept");
+    assert_eq!(kept_lists(&data.join("Blocklists")), 1, "the list kept");
 }
 
 #[test]
@@ -230,7 +238,7 @@ fn a_running_resource_a_master_comes_to_name_is_stopped_at_the_next_fetch() {
     std::thread::sleep(Duration::from_secs(1));
     assert_eq!(names(addr), ["other"]);
     let kept = data.join("Blocklists");
-    assert_eq!(std::fs::read_dir(&kept).unwrap().count(), 1, "one kept list");
+    assert_eq!(kept_lists(&kept), 1, "one kept list");
     list.lock().unwrap().clear();
     std::thread::sleep(Duration::from_millis(800));
     writeln!(console, "start pack").unwrap();

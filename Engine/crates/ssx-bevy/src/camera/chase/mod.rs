@@ -10,6 +10,7 @@ mod collision;
 mod follow;
 mod meta;
 mod noise;
+pub mod replay;
 mod spectate;
 mod update;
 
@@ -175,11 +176,45 @@ struct CamSnapshot {
     ticks_since_collision: f32,
     previous: Option<Vec3>,
     camera_pos: Option<Vec3>,
+    target: Option<Vec3>,
     pose: Channels,
     eye: (Quat, Vec3),
     start: StartState,
     camera_orientation: Quat,
     near: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct Logs {
+    update: bool,
+    noise: bool,
+    avalanche: bool,
+}
+
+impl Logs {
+    fn from_env() -> Self {
+        let on = |key| crate::render::post::env_is(key, "on");
+        Self { update: on("SSX_CAMERA_LOG"), noise: on("SSX_CAMERA_NOISE_LOG"), avalanche: on("SSX_AVALANCHE_LOG") }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct StepContext<'a> {
+    collision: &'a ssx_physics::collision::CollisionWorld,
+    steps: u64,
+    exec: Option<ssx_physics::session::Execution>,
+    playback: Option<usize>,
+}
+
+impl<'a> StepContext<'a> {
+    fn of(ride: &'a Ride) -> Self {
+        Self {
+            collision: &ride.world().collision,
+            steps: ride.steps,
+            exec: ride.last_exec,
+            playback: ride.session.buffer.playback_slots().map(|(cur, _, _)| cur),
+        }
+    }
 }
 
 pub struct Chase {
@@ -196,6 +231,7 @@ pub struct Chase {
     ticks_since_collision: f32,
     previous: Option<Vec3>,
     camera_pos: Option<Vec3>,
+    target: Option<Vec3>,
     queries: Queries,
     snapshots: Vec<Option<CamSnapshot>>,
     rewinding: bool,
@@ -208,11 +244,12 @@ pub struct Chase {
     meta15: MetaFilters,
     nis_rig: Option<NisRig>,
     eye: (Quat, Vec3),
-    shake_time: Option<f32>,
+    shake_time: f32,
     carving: CarvingNoise,
-    wipeout_time: Option<f32>,
+    wipeout_time: f32,
     nis: bool,
     spectating: Option<u16>,
+    logs: Logs,
 }
 
 #[derive(Resource, Default)]
@@ -293,6 +330,7 @@ impl Chase {
             ticks_since_collision: TICKS_SINCE_COLLISION,
             previous: None,
             camera_pos: None,
+            target: None,
             queries: Queries::default(),
             snapshots: Vec::new(),
             rewinding: false,
@@ -313,16 +351,30 @@ impl Chase {
             meta15: MetaFilters::default(),
             nis_rig: None,
             eye,
-            shake_time: None,
+            shake_time: 0.0,
             carving,
-            wipeout_time: None,
+            wipeout_time: 0.0,
             nis: false,
             spectating: None,
+            logs: Logs::from_env(),
         }
     }
 
     fn new(ride: &Ride, i: &Inputs, view: Snapshot, clip: Option<&CameraNoise>) -> Self {
-        let hinge = ride.state.level_start + WARP_HINGE_OFFSET;
+        let dt = if ride.steps == 0 { 0.0 } else { ride.step().1 };
+        Self::without_nis(StepContext::of(ride), ride.state.level_start, initial_type(ride), i, view, dt, clip)
+    }
+
+    fn without_nis(
+        ctx: StepContext,
+        level_start: Vec3,
+        ty: i32,
+        i: &Inputs,
+        view: Snapshot,
+        dt: f32,
+        clip: Option<&CameraNoise>,
+    ) -> Self {
+        let hinge = level_start + WARP_HINGE_OFFSET;
         let rig = Channels {
             position: view.position,
             rotation: view.rotation,
@@ -331,7 +383,6 @@ impl Chase {
         };
         // TODO(guess): a camera without a NIS before it (viewer-only: every `ui_drop` starts with an intro NIS) starts as one long past its start — the camera's default level start (`toc_snow_start_ready_loop_camera`: a TrajectoryOffsetController by `VEC_LevelStartPosition` / `QUAT_LevelStartOrientation` over the 100-tick clip `snow_start_ready_loop_camera`) is not ported,
         // its `VEC_LevelStartPosition` writer not found (the image's id 0x61 setters are player 0's — 0x82398FF0, 0x824832FC, 0x82482A70 — and the racers', 0x824B72DC; the asset defaults would put the clip at the world origin; a relay in `anim_all.cba` was not checked); settle: the camera's level-start values, then port that clip with [`Chase::after_nis`]'s hand-over.
-        let ty = initial_type(ride);
         let meta = MetaState {
             filtered_speed: 1.0,
             filtered_desired_speed: 1.0,
@@ -346,9 +397,8 @@ impl Chase {
             ..MetaState::default()
         };
         let node = camera_node(ty).unwrap_or(CamNode::Normal);
-        let mut c = Self::base(ride.steps, Shared::new(hinge), meta, node, rig, (Quat::IDENTITY, Vec3::ZERO));
-        let dt = if ride.steps == 0 { 0.0 } else { ride.step().1 };
-        c.curr = c.update(ride, i, dt, clip);
+        let mut c = Self::base(ctx.steps, Shared::new(hinge), meta, node, rig, (Quat::IDENTITY, Vec3::ZERO));
+        c.curr = c.update(ctx, i, dt, clip);
         c.prev = c.curr;
         c.meta.trigger_blend_reset = false;
         c
@@ -368,9 +418,10 @@ impl Chase {
         let meta = MetaState { camera_type: ty, camera_type_last: ty, fallback_type: ty, ..MetaState::default() };
         let mut c = Self::base(ride.steps, shared, meta, CamNode::Start, rig, nis.eye);
         (c.previous, c.camera_pos, c.camera_orientation) = (Some(p), Some(p), q);
+        c.target = Some(ride.previous_step().traj);
         (c.start.in_nis, c.start.nis_active) = (true, true);
         let dt = if ride.steps == 0 { 0.0 } else { ride.step().1 };
-        c.curr = c.update(ride, i, dt, clip);
+        c.curr = c.update(StepContext::of(ride), i, dt, clip);
         c.prev = last;
         c
     }

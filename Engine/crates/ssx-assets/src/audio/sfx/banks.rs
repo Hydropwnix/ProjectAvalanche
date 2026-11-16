@@ -106,12 +106,13 @@ pub struct RiderAudioInfo {
     pub signature: String,
     pub foley: String,
     pub speech_id: i32,
+    pub speech_name: String,
     pub key: u32,
 }
 
 impl RiderAudioInfo {
     pub fn generic() -> Self {
-        Self { signature: "Generic".into(), foley: "big".into(), speech_id: 0, key: 0 }
+        Self { signature: "Generic".into(), foley: "big".into(), speech_id: 0, speech_name: "NoBody".into(), key: 0 }
     }
 }
 
@@ -149,7 +150,13 @@ pub fn rider_audio_info(big_root: &Path, character: &str) -> Result<RiderAudioIn
                 _ => None,
             })
             .unwrap_or(0);
-        Ok(RiderAudioInfo { signature: text(0xC7A9_471C)?, foley: text(0x5D70_3FE2)?, speech_id, key: info })
+        Ok(RiderAudioInfo {
+            signature: text(0xC7A9_471C)?,
+            foley: text(0x5D70_3FE2)?,
+            speech_id,
+            speech_name: text(0xB939_B740)?,
+            key: info,
+        })
     })
 }
 

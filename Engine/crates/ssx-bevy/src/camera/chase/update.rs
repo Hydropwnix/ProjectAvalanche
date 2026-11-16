@@ -6,11 +6,10 @@ use super::noise::{CarvingNoise, blend_eye};
 use super::{
     CAMERA_DISTANCE_FAR, CAMERA_TYPE_15P, CAMERA_TYPE_FAR, CAMERA_TYPE_NORMAL, CAMERA_TYPE_REVERSE, CamNode,
     CamSnapshot, CameraNoise, Chase, HANDBACK_CURVE, HANDBACK_TICKS, MetaFilters, NoiseSignals, Snapshot, StartState,
-    Wipeout, camera_node,
+    StepContext, Wipeout, camera_node,
 };
 use crate::camera::GAME_NEAR;
 use crate::camera::graph::{self as graph, Channels, Flow, Inputs};
-use crate::ride::Ride;
 
 fn fade_weight(elapsed: &mut Option<f32>, ticks: f32, curve: i64, dt: f32) -> Option<f32> {
     let e = elapsed.as_mut()?;
@@ -28,13 +27,14 @@ fn fade_weight(elapsed: &mut Option<f32>, ticks: f32, curve: i64, dt: f32) -> Op
 }
 
 impl Chase {
-    pub(super) fn update(&mut self, ride: &Ride, i: &Inputs, dt: f32, clip: Option<&CameraNoise>) -> Snapshot {
-        let exec = ride.last_exec;
-        if let Some((cur, _, _)) = ride.session.buffer.playback_slots() {
+    pub(super) fn update(&mut self, ctx: StepContext, i: &Inputs, dt: f32, clip: Option<&CameraNoise>) -> Snapshot {
+        let exec = ctx.exec;
+        if let Some(cur) = ctx.playback {
             if let Some(sn) = self.snapshots.get(cur).copied().flatten() {
                 self.restore(&sn);
             }
             self.rewinding = true;
+            self.target = Some(i.target_pos);
             return self.view();
         }
         if self.rewinding && exec.is_some_and(|e| e.rewind.terminating) {
@@ -48,8 +48,12 @@ impl Chase {
         let from_game = (self.rig.position, self.rig.rotation);
         self.nis_and_start_state();
         self.shared.update_skews(i.lean, dt);
-        let safe =
-            self.camera_pos.map(|cam| physics_queries(ride, &mut self.queries, cam, i.target_pos, self.shared.up, dt));
+        let (up, ideal) = (self.shared.up, self.meta.ideal_distance);
+        let safe = self
+            .camera_pos
+            .zip(self.target)
+            .map(|(cam, target)| physics_queries(ctx.collision, &mut self.queries, (cam, target, up), ideal, dt));
+        self.target = Some(i.target_pos);
         let shake_weight = self.shared.avalanche_shake;
         let sh = &self.shared;
         let layers = NoiseSignals {
@@ -109,14 +113,14 @@ impl Chase {
             fin = graph::blend(&fin, &old, w);
         }
         self.handback = handback.zip(self.handback.map(|h| h.1));
-        self.near = post_update_near(&ride.world().collision, fin.position, fin.rotation, fin.fov_deg, GAME_NEAR);
-        if crate::render::post::env_is("SSX_CAMERA_LOG", "on") {
+        self.near = post_update_near(ctx.collision, fin.position, fin.rotation, fin.fov_deg, GAME_NEAR);
+        if self.logs.update {
             let v = Snapshot { position: fin.position, rotation: fin.rotation, fov_deg: fin.fov_deg, near: self.near };
             let eye = v.position + v.rotation * self.eye.1;
             info!(
                 "chase camera: step {} {:?}/{:?}, type {} (intro ticks {}), speeds meta {:.3} flow {:.3}, fade {:?}, \
                  eye {:.2} ({:.2} m from the target), view {:.2}, FOV {:.1}, near {:.3}",
-                ride.steps,
+                ctx.steps,
                 self.node,
                 self.flow.current.node,
                 self.meta.camera_type,
@@ -129,6 +133,49 @@ impl Chase {
                 v.rotation * Vec3::X,
                 fin.fov_deg,
                 v.near
+            );
+            let (t, u, vel, p, q) = (i.target_pos, i.target_up, i.velocity, fin.position, fin.rotation);
+            let qs = &self.queries;
+            info!(
+                "chase camera row\t{}\t{dt}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\
+                 \t{:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                ctx.steps,
+                t.x,
+                t.y,
+                t.z,
+                u.x,
+                u.y,
+                u.z,
+                vel.x,
+                vel.y,
+                vel.z,
+                i.speed,
+                u8::from(i.airborne),
+                p.x,
+                p.y,
+                p.z,
+                q.x,
+                q.y,
+                q.z,
+                q.w,
+                fin.fov_deg,
+                self.near,
+                u8::from(qs.collided),
+                u8::from(qs.collided_all),
+                self.ticks_since_collision,
+                self.flow.current.node,
+                u8::from(i.grinding),
+                u8::from(i.wipeout),
+                i.ground_normal.x,
+                i.ground_normal.y,
+                i.ground_normal.z,
+                self.eye.0.x,
+                self.eye.0.y,
+                self.eye.0.z,
+                self.eye.0.w,
+                self.eye.1.x,
+                self.eye.1.y,
+                self.eye.1.z
             );
         }
         self.rig = fin;
@@ -151,8 +198,8 @@ impl Chase {
         (self.meta3p, self.meta15) = (MetaFilters::default(), MetaFilters::default());
         self.camera_fade = (node != CamNode::Reverse).then_some(0.0);
         self.camera_fade_ticks = if node == CamNode::Far { 6.0 } else { 8.0 };
-        self.shake_time = None;
-        (self.carving, self.wipeout_time) = (CarvingNoise::new(self.shared.carving_weight), None);
+        self.shake_time = 0.0;
+        (self.carving, self.wipeout_time) = (CarvingNoise::new(self.shared.carving_weight), 0.0);
     }
 
     fn nis_and_start_state(&mut self) {
@@ -229,6 +276,7 @@ impl Chase {
             ticks_since_collision: self.ticks_since_collision,
             previous: self.previous,
             camera_pos: self.camera_pos,
+            target: self.target,
             pose: self.rig,
             eye: self.eye,
             start: self.start,
@@ -239,8 +287,8 @@ impl Chase {
 
     fn restore(&mut self, sn: &CamSnapshot) {
         (self.shared, self.meta, self.queries) = (sn.shared, sn.meta, sn.queries);
-        (self.ticks_since_collision, self.previous, self.camera_pos) =
-            (sn.ticks_since_collision, sn.previous, sn.camera_pos);
+        (self.ticks_since_collision, self.previous, self.camera_pos, self.target) =
+            (sn.ticks_since_collision, sn.previous, sn.camera_pos, sn.target);
         self.rig = sn.pose;
         self.near = sn.near;
         self.eye = sn.eye;

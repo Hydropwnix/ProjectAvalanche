@@ -110,6 +110,71 @@ pub fn flow_equip(fe: &mut FrontEnd, key: u32, slot: i64) {
     fe.note(format!("equip {key:#010x} in slot {slot} (0x82577AB0){}", if taken { "" } else { ": not taken" }));
 }
 
+pub fn launch_loadout(fe: &mut FrontEnd, env: &mut FeEnv, drop: u32) {
+    fe.current_drop = drop;
+    fe.messages.push(crate::game::fe::FeMessage::LoadoutRefresh);
+    let mut inv = inv(fe);
+    inv.now_ms = (fe.time * 1000.0) as i64;
+    let rider = inv.equip_for_launch(&fe.career, &mut fe.profile, drop);
+    let info = DropInfo::of(&fe.career, &fe.profile, drop);
+    let before = inv.survival;
+    let gear = inv.equip_required_for_launch(&fe.career, &fe.profile, env.loc, drop);
+    let after = inv.survival;
+    if let Some(score) = inv.survival_on(&fe.career, &fe.profile, drop) {
+        env.values.set_int(SURVIVAL_SCORE, score);
+    }
+    fe.equipment.inv = Some(inv);
+    fe.note(match rider {
+        Some(r) => format!("0x17D251BE; the launch's rider {r:#010x} equipped with their saved loadout (0x82577AB0)"),
+        None => format!("0x17D251BE; WARNING no rider for the launch on {drop:#010x} (none listed): nothing equipped"),
+    });
+    let Some(info) = info.filter(|i| !i.required.is_empty()) else { return };
+    let put_on: Vec<String> =
+        gear.equipped.iter().map(|&((k, s), slot)| format!("{k:#010x}/{s} in gear slot {slot}")).collect();
+    fe.note(format!(
+        "the drop's required equipment {:?}: put on [{}], survival score {before} -> {after}",
+        info.required,
+        put_on.join(", ")
+    ));
+    if !gear.unmet.is_empty() {
+        fe.note(format!(
+            "WARNING the launch's rider owns no item for the required equipment {:?}: riding without it, as past the \
+             console's low-survival popup",
+            gear.unmet
+        ));
+    }
+}
+
+// PORT(choice): a network session's launch (no equipment screen; the round runs on the server's clock, so nothing may
+// wait for an answer) shows the console's low-survival warning — TXT_EQUIP_LOW_SURVIVAL_BODY with the launch's survival
+// score, under the console's test (UI 0x6C below 30 without FE_POPUP_LOW_SURVIVE_NeverShowAgain, UI 0x9E) — as a notice
+// row of the session's chat layer once the level shows it (its 10 s, nothing held, no answer taken). The console asks
+// it at Start Run (0x825FB798 → go_to_low_survive_popup → equip_low_surival.pop: TXT_EQUIP_LOW_SURVIVAL_TITLE, Yes / No
+// / Yes and never ask again, No the default): Yes launches without the gear (0x825FB788 → 0x825FB660), No stays on the
+// equipment screen, the never-again's confirm sets 0x9E (0x825F7368 → 0x825F7308, saved in the profile's chunk 9).
+#[cfg(feature = "net")]
+pub fn session_low_survival(fe: &mut FrontEnd, env: &mut FeEnv, drop: u32) {
+    if DropInfo::of(&fe.career, &fe.profile, drop).is_none() {
+        return;
+    }
+    let score = env.values.int(SURVIVAL_SCORE);
+    match low_survival_body(env.loc, env.values, score) {
+        Some(body) => {
+            fe.note(format!(
+                "the console's low-survival popup (0x825FB798: survival score {score} < 30, never-show flag clear): \
+                 its body kept as the session's launch notice"
+            ));
+            fe.ava.session.launch_notice = Some(body);
+        }
+        None => {
+            let why =
+                if score >= 30 { "the survival score is 30 or more" } else { "the never-show flag (0x9E) is set" };
+            fe.note(format!("no low-survival popup for the launch (survival score {score}): {why}"));
+            fe.ava.session.launch_notice = None;
+        }
+    }
+}
+
 fn set_category(fe: &mut FrontEnd, env: &mut FeEnv, category: i32) {
     let kind = kind_of(category);
     let mut inv = inv(fe);
@@ -346,14 +411,23 @@ pub fn advance(fe: &mut FrontEnd, env: &mut FeEnv) {
         env.nav_events.push("equipment_open_gear_restricted".into());
         return;
     }
-    if !env.values.bool(0x9E) && fe.equipment.score < 30 {
-        let score = env.loc.percent(i64::from(fe.equipment.score));
-        let body = env.loc.format("TXT_EQUIP_LOW_SURVIVAL_BODY", &[&score]);
+    if let Some(body) = low_survival_body(env.loc, env.values, fe.equipment.score) {
         env.values.set_str(0x99, body);
         env.nav_events.push("go_to_low_survive_popup".into());
         return;
     }
     advance_confirmed(fe, env);
+}
+
+pub const LOW_SURVIVE_NEVER_SHOW: u16 = 0x9E;
+pub const SURVIVAL_SCORE: u16 = 0x6C;
+
+pub fn low_survival_body(loc: &mut Localization, values: &UiValues, score: i32) -> Option<String> {
+    if values.bool(LOW_SURVIVE_NEVER_SHOW) || score >= 30 {
+        return None;
+    }
+    let percent = loc.percent(i64::from(score));
+    Some(loc.format("TXT_EQUIP_LOW_SURVIVAL_BODY", &[&percent]))
 }
 
 pub fn advance_confirmed(fe: &mut FrontEnd, env: &mut FeEnv) {
@@ -529,11 +603,43 @@ fn after_purchase(fe: &mut FrontEnd, env: &mut FeEnv, kind: i64, bought: (u32, u
     }
 }
 
-fn purchase_rider_level(fe: &mut FrontEnd, env: &mut FeEnv, level: i64) {
-    let Some(rider) = fe.equipment.inv.as_ref().map(|i| i.rider).filter(|&r| r != 0) else {
-        fe.note("equipment: level purchase without an equipped rider");
-        return;
-    };
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LevelPurchase {
+    NoEntry,
+    NotEnoughMoney,
+    NotOffered,
+    Buy { rider: u32, level: i64 },
+}
+
+pub(super) fn level_purchase(list: &[UiItem], index: usize, bank: i32) -> LevelPurchase {
+    let Some(item) = list.get(index) else { return LevelPurchase::NoEntry };
+    let buys_level = item.has(flag::LEVEL_PURCHASEABLE);
+    if (!item.has(flag::AVAILABLE) || buys_level) && item.cost > i64::from(bank) {
+        return LevelPurchase::NotEnoughMoney;
+    }
+    if !buys_level {
+        return LevelPurchase::NotOffered;
+    }
+    LevelPurchase::Buy { rider: item.key, level: item.level }
+}
+
+fn purchase_rider_level(fe: &mut FrontEnd, env: &mut FeEnv, argument: i32) {
+    let index = usize::try_from(argument).unwrap_or(usize::MAX);
+    fe.equipment.rider_index = argument;
+    fe.equipment.pending = Some((List::Items, index));
+    match level_purchase(&fe.equipment.list, index, env.values.int(0x228)) {
+        LevelPurchase::NoEntry => return,
+        LevelPurchase::NotEnoughMoney => {
+            env.nav_events.push("go_to_equip_not_enough_money_popup".into());
+            return;
+        }
+        LevelPurchase::NotOffered => {}
+        LevelPurchase::Buy { rider, level } => rider_purchase_level(fe, env, rider, level),
+    }
+    publish_list(fe, "dp_playable_characters");
+}
+
+fn rider_purchase_level(fe: &mut FrontEnd, env: &mut FeEnv, rider: u32, level: i64) {
     match fe.profile.purchase_rider_level(&fe.rules, rider, level) {
         Ok(price) => {
             if let Some(stats) = fe.profile.riders.get_mut(&rider) {
@@ -545,13 +651,17 @@ fn purchase_rider_level(fe: &mut FrontEnd, env: &mut FeEnv, level: i64) {
             }
             let bank = env.values.int(0x93).wrapping_sub(i32::try_from(price).unwrap_or(i32::MAX));
             env.values.set_int(0x93, bank);
-            fe.note(format!("equipment: bought level {} for {price}", level + 1));
-            loadout_refresh(fe, env);
-            fe.publish
-                .extend(["dp_selected_rider", "dp_playable_characters", "dp_equipment_categories"].map(String::from));
+            fe.note(format!("equipment: rider {rider:#010x} bought level {} for {price}", level.saturating_add(1)));
         }
-        Err(e) => fe.note(format!("equipment: level purchase refused: {e:?}")),
+        Err(e) => fe.note(format!("equipment: rider {rider:#010x} level {level} refused: {e:?}")),
     }
+    let mut inv = inv(fe);
+    inv.now_ms = (fe.time * 1000.0) as i64;
+    let drop = drop_info(fe);
+    let ctx = inv.store_context(&fe.career, &fe.profile, drop.as_ref());
+    inv.build_lists(&fe.career, &fe.profile, env.loc, drop.as_ref(), &ctx, inventory::RIDER);
+    env.values.set_int(0x64, inv.inventory_size);
+    fe.equipment.inv = Some(inv);
 }
 
 pub fn nav_action(fe: &mut FrontEnd, env: &mut FeEnv, name: &str) -> bool {
@@ -580,7 +690,7 @@ pub fn nav_action(fe: &mut FrontEnd, env: &mut FeEnv, name: &str) -> bool {
         }
         "advance_to_game" => advance(fe, env),
         "advance_to_game_confirmed" => advance_confirmed(fe, env),
-        "never_show_low_survive_again" => env.values.set_bool(0x9E, true),
+        "never_show_low_survive_again" => env.values.set_bool(LOW_SURVIVE_NEVER_SHOW, true),
         _ => return false,
     }
     true

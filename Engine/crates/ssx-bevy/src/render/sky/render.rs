@@ -16,6 +16,7 @@ use bevy::shader::Shader;
 use super::midground::gpu as midground;
 use super::package_gpu;
 use super::{SkySettings, SkyUniform};
+use crate::render::buffers::QueuedUniform;
 
 const SHADER: &str = "embedded://ssx_bevy/render/sky/sky.wesl";
 
@@ -198,7 +199,7 @@ fn prepare_pipelines(
 
 #[derive(Resource, Default)]
 struct SkyBuffer {
-    uniform: UniformBuffer<SkyUniform>,
+    uniform: QueuedUniform<SkyUniform>,
     bind_group: Option<BindGroup>,
 }
 
@@ -222,8 +223,7 @@ fn prepare_bind_group(
     else {
         return;
     };
-    buffer.uniform.set(settings.uniform);
-    buffer.uniform.write_buffer(&device, &queue);
+    buffer.uniform.write(&device, &queue, "ssx_sky_uniform", &settings.uniform);
     let bind_group = device.create_bind_group(
         "ssx_sky",
         &cache.get_bind_group_layout(&pipeline.layout),

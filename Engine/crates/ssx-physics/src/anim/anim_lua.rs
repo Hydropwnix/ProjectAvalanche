@@ -370,6 +370,28 @@ impl AnimScripts {
         }
     }
 
+    pub fn expressions_over(&mut self, values: &[(String, f32)], functions: &[(&str, bool)]) -> Vec<Option<f32>> {
+        let saved: Vec<(Vec<u8>, GsValue)> = {
+            let s = self.store.borrow();
+            values
+                .iter()
+                .filter_map(|(n, _)| {
+                    let base = n.split_once('.').map_or(n.as_str(), |(b, _)| b).as_bytes();
+                    s.values.get(base).map(|v| (base.to_vec(), v.clone()))
+                })
+                .collect()
+        };
+        for (n, v) in values {
+            self.set(n, *v);
+        }
+        let out = functions.iter().map(|&(f, float)| self.expression(f, float)).collect();
+        let mut s = self.store.borrow_mut();
+        for (k, v) in saved {
+            s.values.insert(k, v);
+        }
+        out
+    }
+
     pub fn has(&self, name: &str) -> bool {
         self.store.borrow().funcs.contains_key(name)
     }
@@ -438,6 +460,18 @@ function Strict() return UNDEFINED_GLOBAL end
         let e = &s.errors["UpdatePlayers"];
         assert!(e.contains("attempt to read undefined global variable 'UNDEFINED_GLOBAL'"), "{e}");
         assert_eq!(s.expression("Goofy", true), Some(-1.0), "the metatable is removed after the call");
+    }
+
+    #[test]
+    fn expressions_over_other_values() {
+        let mut s = scripts("UpdatePlayer");
+        let layer = [("FLT_a".to_string(), 0.5), ("BLN_c".to_string(), 1.0), ("FLT_unlisted".to_string(), 9.0)];
+        let want = (f64::from(0.5f32) * 1.2 + f64::from(0.3f32) * 0.4) as f32;
+        let got = s.expressions_over(&layer, &[("Scaled", true), ("ViaExpression", true), ("Unknown", true)]);
+        assert_eq!(got, [Some(want), Some(2.0), None]);
+        assert_eq!((s.get("FLT_a"), s.get("BLN_c")), (Some(0.7), Some(0.0)), "the stored values are back");
+        assert!(s.take_written().is_empty(), "no write of the scripts");
+        assert_eq!(s.expression("ViaExpression", true), Some(3.0));
     }
 
     #[test]

@@ -119,4 +119,20 @@ mod tests {
         let u = CharacterProperties::mix_gear(&min, &max, &GearStats::uniform(0.5)).unwrap();
         assert_eq!(u.get("TrickPointBonus").unwrap(), 1.25);
     }
+
+    #[test]
+    fn the_rewind_bonus_reaches_the_resolved_count() {
+        let t = crate::testutil::tuning();
+        let resolved = |g: &GearStats| {
+            let m = CharacterProperties::mix_gear(&t.cp_min, &t.cp_max, g).unwrap();
+            ResolvedCharacterProperties::resolve(&m).unwrap().max_rewind_count
+        };
+        let mut g = GearStats::default_gear();
+        assert_eq!(resolved(&g), 3.0);
+        g.stats[32] = 2.0;
+        assert_eq!(resolved(&g), 5.0);
+        let mut none = GearStats::none();
+        none.stats[32] = 2.0;
+        assert_eq!(resolved(&none), 3.0);
+    }
 }

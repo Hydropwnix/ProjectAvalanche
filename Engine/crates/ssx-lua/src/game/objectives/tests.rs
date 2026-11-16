@@ -172,3 +172,17 @@ fn named_flags_by_hash_are_the_profiles_permanent_ones() {
     f.set(&seen, false, false);
     assert!(f.permanent_hashes().is_empty() && !f.check(&seen));
 }
+
+#[test]
+fn the_goofy_grab_is_the_stance_mirror() {
+    use super::binder::mirrored_grab;
+    for (a, b) in [(3, 4), (5, 9), (6, 13), (8, 11), (2, 10)] {
+        assert_eq!((mirrored_grab(a), mirrored_grab(b)), (b, a));
+    }
+    for g in [1, 7, 12] {
+        assert_eq!(mirrored_grab(g), g);
+    }
+    for g in [0, -1, 14, i32::MAX] {
+        assert_eq!(mirrored_grab(g), g);
+    }
+}

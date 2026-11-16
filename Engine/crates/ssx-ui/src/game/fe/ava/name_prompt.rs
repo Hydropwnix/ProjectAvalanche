@@ -146,7 +146,7 @@ fn run(fe: &mut FrontEnd, env: &mut FeEnv, ready: bool) {
         Do::Save(name) => {
             fe.note(format!("name prompt: player name {name:?}"));
             confirm(fe, name);
-            options::save(fe, env, BROKEN);
+            options::save(fe, BROKEN);
         }
         Do::Refuse(why) => {
             fe.note(format!("name prompt: refused: {why}"));

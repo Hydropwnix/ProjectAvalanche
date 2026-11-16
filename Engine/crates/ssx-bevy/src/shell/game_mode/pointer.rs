@@ -83,6 +83,9 @@ pub(super) fn pointer_system(
     mut ui: ResMut<GameUiRes>,
     level: Option<Res<crate::shell::game_level::LevelGame>>,
 ) {
+    if shell.exiting.is_some() {
+        return;
+    }
     let riding =
         level.as_ref().is_some_and(|l| l.takes_input()) && !ui.fe.as_ref().is_some_and(|f| f.game_pause.paused);
     let other_input = p.keys.get_just_pressed().len() > 0

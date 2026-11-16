@@ -151,6 +151,15 @@ pub fn event_kind(ui_event_type: u32) -> i32 {
     }
 }
 
+pub fn race_event_type(kind: i32) -> i32 {
+    match kind {
+        1 | 5 => 1,
+        2 => 0,
+        3 | 4 => 2,
+        _ => -1,
+    }
+}
+
 pub fn kind_mode(kind: i32) -> u8 {
     match kind {
         1 | 5 => 1,
@@ -219,9 +228,14 @@ pub fn material_class(material: i32) -> i32 {
     }
 }
 
-fn wingsuit_params(spd: i32, r: &RideAudio) -> [i32; 3] {
+fn wingsuit_params(spd: i32, r: &RideAudio, presentation: i32) -> [i32; 3] {
     let axis = |v: f32, lo: i32| ((v * 1000.0) as i32).clamp(lo, 1000);
-    [spd.clamp(0, 1000), axis(r.stick[0], -1000), axis(r.stick[1], 0)]
+    let first = if presentation == crate::sfx::presentation::SKYDROP { tuning::WINGSUIT_MODE1 } else { spd };
+    [first.clamp(0, 1000), axis(r.stick[0], -1000), axis(r.stick[1], 0)]
+}
+
+fn wind_param(speed: f32, presentation: i32) -> i32 {
+    if presentation == crate::sfx::presentation::SKYDROP { 1000 } else { ((speed * 20.0).min(1000.0) as i32).max(0) }
 }
 
 #[derive(Default)]
@@ -247,7 +261,7 @@ impl EnvironmentSounds {
         } else {
             1
         };
-        let p = [((r.speed * 20.0).min(1000.0) as i32).max(0), self.ambience_index, i32::from(r.boosting), zone];
+        let p = [wind_param(r.speed, sfx.presentation()), self.ambience_index, i32::from(r.boosting), zone];
         match self.wind {
             Some(h) => sfx.update(h, &p),
             None => self.wind = call(sfx, "SFX_Wind", &p),
@@ -257,5 +271,32 @@ impl EnvironmentSounds {
     pub fn shutdown(&mut self, sfx: &mut SfxEngine) {
         stop(sfx, &mut self.wind);
         stop(sfx, &mut self.ambience);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sfx::presentation::{GROUND, SKYDROP};
+
+    #[test]
+    fn the_remix_event_type_follows_the_event_kind() {
+        let kinds = [(1, 1), (5, 1), (2, 0), (3, 2), (4, 2), (6, -1), (0, -1)];
+        for (kind, want) in kinds {
+            assert_eq!(race_event_type(kind), want, "kind {kind}");
+        }
+        assert_eq!(race_event_type(event_kind(3)), 2, "the UI event type 3 (the sky drop's tutorial)");
+    }
+
+    #[test]
+    fn the_sky_drop_holds_the_wind_and_wingsuit_at_their_tuning() {
+        assert_eq!(wind_param(10.0, 0), 200);
+        assert_eq!(wind_param(10.0, GROUND), 200);
+        assert_eq!(wind_param(10.0, SKYDROP), 1000);
+        assert_eq!(wind_param(80.0, 0), 1000);
+        let r = RideAudio::default();
+        assert_eq!(wingsuit_params(350, &r, 0)[0], 350);
+        assert_eq!(wingsuit_params(350, &r, GROUND)[0], 350);
+        assert_eq!(wingsuit_params(350, &r, SKYDROP)[0], tuning::WINGSUIT_MODE1);
     }
 }

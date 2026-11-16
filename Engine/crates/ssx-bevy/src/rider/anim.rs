@@ -6,7 +6,7 @@ use ssx_assets::rig_anim::RigPose;
 use ssx_assets::rigamate::RigamateRig;
 use ssx_formats::crsf::SceneGraph;
 use ssx_physics::curve::Curve;
-use ssx_physics::graph::{RiderGraph, RiderRigOps};
+use ssx_physics::graph::{BigHeadOp, RiderGraph, RiderRigOps};
 use ssx_physics::rider::RiderState;
 
 pub use ssx_physics::graph::CarveAnimTuning;
@@ -90,7 +90,7 @@ impl RiderAnimation {
         name: &str,
     ) -> anyhow::Result<LoadedAnimation> {
         use anyhow::Context;
-        use ssx_assets::rig_anim::{ANIM_DIR, RIG_BUNDLE, float_dofs};
+        use ssx_assets::rig_anim::{RIG_BUNDLE, float_dofs, has_bundle};
         let mut problems = Vec::new();
         let (rig, bind, _) =
             ssx_assets::anim_rigops::extend_character_rig(big_root, &character.rig, &character.bind_pose())?;
@@ -107,10 +107,9 @@ impl RiderAnimation {
             }
         };
         let own = format!("{name}.cba");
-        let anim_dir = big_root.join(ANIM_DIR);
         let bundles: Vec<&str> =
-            if anim_dir.join(&own).exists() { vec![RIG_BUNDLE, own.as_str()] } else { vec![RIG_BUNDLE] };
-        let db = ssx_assets::anim_db::AssetDb::load(&anim_dir, &bundles)?;
+            if has_bundle(big_root, &own) { vec![RIG_BUNDLE, own.as_str()] } else { vec![RIG_BUNDLE] };
+        let db = ssx_assets::anim_db::AssetDb::load(big_root, &bundles)?;
         let animator = Animator::new(&db, ssx_physics::graph::RIDER_GRAPH_ROOT, &rig, bind.clone(), &floats)?;
         let legs = LegRigOps::new(&rig, &floats);
         if legs.is_none() {
@@ -128,6 +127,14 @@ impl RiderAnimation {
                     .collect()
             })
             .unwrap_or_default();
+        let big_head = match BigHeadOp::load(&db, &rig) {
+            Ok(b) => Some(b),
+            Err(e) => {
+                problems.push(format!("PlayerBigHeadSceneOp not loaded: {e:#}"));
+                None
+            }
+        };
+        let rig_ops = RiderRigOps::new(legs, Curve::new(curve), rigamate, big_head, &floats);
         let carve = CarveAnimTuning::load(&db)?;
         let level_start = match ssx_physics::graph::LevelStartGraph::load(&db, &rig, bind.clone(), &floats) {
             Ok(s) => Some(s),
@@ -137,8 +144,7 @@ impl RiderAnimation {
             }
         };
         let scripts = ssx_physics::anim_lua::AnimScripts::from_db(&db)?;
-        let mut anim =
-            RiderAnimation::new(animator, rigamate, legs, rig.clone(), Curve::new(curve), carve, &floats, scripts);
+        let mut anim = RiderAnimation::new(animator, rig_ops, rig.clone(), carve, &floats, scripts);
         if let Some(level_start) = level_start {
             anim.set_level_start(level_start);
         }
@@ -149,18 +155,14 @@ impl RiderAnimation {
         Ok(LoadedAnimation { anim, rig, bind, problems })
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         animator: Animator,
-        rigamate: Option<RigamateRig>,
-        legs: Option<LegRigOps>,
+        rig_ops: RiderRigOps,
         rig: SceneGraph,
-        lean_curve: Curve,
         carve: CarveAnimTuning,
         floats: &[String],
         scripts: ssx_physics::anim_lua::AnimScripts,
     ) -> Self {
-        let rig_ops = RiderRigOps::new(legs, lean_curve, rigamate, floats);
         let graph = RiderGraph::new(animator, rig.clone(), floats, carve, scripts);
         let bind = graph.pose().clone();
         let bind_records = world_records(&rig, &bind.nodes, Vec3::ZERO);
@@ -202,6 +204,11 @@ impl RiderAnimation {
         v.extend(a.problems.iter().map(|p| format!("clip problem: {p}")));
         if let Some(summary) = self.rig_ops.rigamate_summary() {
             v.push(format!("rigamate: {summary}"));
+        }
+        if let Some(joints) = self.rig_ops.big_head_joints() {
+            let name = |j: Option<usize>| j.and_then(|i| self.rig.nodes.get(i)).map_or("-", |n| n.name.as_str());
+            let [head, left, right] = joints.map(name);
+            v.push(format!("PlayerBigHeadSceneOp: head {head}, hands {left} / {right}"));
         }
         v
     }

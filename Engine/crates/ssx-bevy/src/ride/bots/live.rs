@@ -265,10 +265,7 @@ fn load_live(
     before: &[u32],
 ) -> Result<LoadedBot> {
     let floats = ssx_assets::rig_anim::float_dofs(root)?;
-    let db = ssx_assets::anim_db::AssetDb::load(
-        &root.join(ssx_assets::rig_anim::ANIM_DIR),
-        &[ssx_assets::rig_anim::RIG_BUNDLE],
-    )?;
+    let db = ssx_assets::anim_db::AssetDb::load(root, &[ssx_assets::rig_anim::RIG_BUNDLE])?;
     let content = ssx_assets::content::GameContent::of(root);
     let (name, added) = live_rider(&content, look.character);
     let id_of = |key: u32| {

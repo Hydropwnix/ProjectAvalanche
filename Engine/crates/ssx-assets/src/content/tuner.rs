@@ -97,13 +97,14 @@ pub fn read(path: &Path) -> Result<Option<Loaded>> {
     Ok(loaded)
 }
 
+// PORT(choice): a tuner file outside the profile (`--tuner`, the launcher's `Tuner/tuner.bin`) is read before the
+// profile's chunk 7, and an empty launcher folder falls back to that chunk; the console had no file but the profile.
 pub fn load(explicit: Option<&Path>, profile: Option<&Path>) -> Result<Option<Loaded>> {
     if let Some(path) = explicit {
         let file = if path.is_dir() { path.join(TUNER_FILE) } else { path.to_path_buf() };
-        if !file.is_file() {
-            return Ok(None);
+        if file.is_file() {
+            return read(&file).with_context(|| format!("--tuner {}", file.display()));
         }
-        return read(&file).with_context(|| format!("--tuner {}", file.display()));
     }
     let Some(profile) = profile.filter(|p| p.is_file()) else { return Ok(None) };
     read(profile).with_context(|| format!("the profile {} (chunk 7)", profile.display()))
@@ -231,6 +232,31 @@ mod tests {
         let path = dir.join("big.bin");
         std::fs::write(&path, vec![0u8; MAX_FILE_BYTES as usize + 1]).unwrap();
         assert!(read(&path).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_empty_tuner_folder_falls_back_to_the_profile() {
+        let dir = std::env::temp_dir().join(format!("ssx-tuner-load-{}", std::process::id()));
+        let folder = dir.join(TUNER_DIR);
+        std::fs::create_dir_all(&folder).unwrap();
+        let mut tuning = TuningChunk { unk_word: 4, ..TuningChunk::default() };
+        tuning.buffer[..4].copy_from_slice(b"junk");
+        let damaged = dir.join("damaged_profile");
+        std::fs::write(&damaged, profile(tuning)).unwrap();
+        let plain = dir.join("plain_profile");
+        std::fs::write(&plain, profile(TuningChunk::default())).unwrap();
+
+        let err = load(Some(&folder), Some(&damaged)).unwrap_err();
+        assert!(format!("{err:#}").contains("damaged_profile"), "{err:#}");
+        assert!(load(Some(&folder.join(TUNER_FILE)), Some(&damaged)).is_err());
+        assert_eq!(load(Some(&folder), Some(&plain)).unwrap(), None);
+        assert_eq!(load(Some(&folder), None).unwrap(), None);
+        assert_eq!(load(Some(&folder), Some(&dir.join("missing"))).unwrap(), None);
+
+        std::fs::write(folder.join(TUNER_FILE), b"not a tuner pack").unwrap();
+        let err = load(Some(&folder), Some(&plain)).unwrap_err();
+        assert!(format!("{err:#}").contains(TUNER_FILE), "{err:#}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

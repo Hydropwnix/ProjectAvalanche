@@ -1,11 +1,10 @@
 use glam::{Quat, Vec3};
 
-use super::{Input, RideState, RiderState, World, air};
+use super::{Input, RideState, RiderState, UBER_RECOVER_HOP_TICKS, UberRecovery, World, air};
 use crate::rootmotion::nlerp;
 use crate::wingsuit::{
-    BLEND_DEFAULT, BLEND_ENTER_TO_FLY, BLEND_EXIT_TO_AIRBORNE, BLEND_FLY_TO_EXIT, BLEND_JUMP_TO_ENTER,
-    ControllerGameState, ControllerInputs, DEPLOY_END_TICKS, NodeBlend, OldNode, OldSide, RETRACT_END_TICKS,
-    WingsuitController, ballistic_step, joint_of, traj_of,
+    ControllerGameState, ControllerInputs, FlowTransition, NodeBlend, OldNode, OldSide, WingsuitController,
+    ballistic_step, joint_of, traj_of,
 };
 
 pub const WINGSUIT_CLASSES: &[&str] =
@@ -64,21 +63,24 @@ fn wingsuit_part(s: &mut RiderState, w: &World, input: &Input, c: &mut WingsuitC
     Part { dp: j0 * o.t, q: Some(o.dq) }
 }
 
-fn ballistic_part(s: &mut RiderState, w: &World, j0: Quat, current: bool, dt: f32) -> Part {
+fn ballistic_part(s: &mut RiderState, w: &World, j0: Quat, n0: f32, current: bool, dt: f32) -> Part {
     let (v, goofy) = ballistic_step(&w.props, s.traj_velocity, s.grind.wind, j0, s.goofy, dt);
     if current {
         s.goofy = goofy;
     }
-    Part { dp: if dt.abs() <= super::TINY { Vec3::ZERO } else { v * dt }, q: None }
+    let q = w.tuning.wingsuit.flow.retract_rotation.as_ref().and_then(|r| r.rotation(n0, dt));
+    Part { dp: if dt.abs() <= super::TINY { Vec3::ZERO } else { v * dt }, q }
 }
 
 fn aerial_slave_part(s: &mut RiderState, w: &World, input: &Input, side: &mut OldSide, j0: Quat, dt: f32) -> Part {
     let OldSide::Aerial { alignment, jump, first } = side else { return ZERO };
     let saved = (s.state, s.alignment, s.goofy, s.air_jumped, s.first_air_tick, s.velocity);
+    let entity_outputs = s.air.outputs;
     s.state = if *jump { RideState::Jump } else { RideState::Airborne };
     (s.alignment, s.first_air_tick) = (*alignment, *first);
     let dp = air(s, w, input, s.state, dt);
     (*alignment, *first) = (s.alignment, false);
+    (s.wingsuit.aerial_layer, s.air.outputs) = (Some((s.air.outputs, s.goofy)), entity_outputs);
     let q = j0.conjugate() * joint_of(*alignment);
     (s.state, s.alignment, s.goofy, s.air_jumped, s.first_air_tick, s.velocity) = saved;
     Part { dp, q: Some(q.normalize()) }
@@ -91,7 +93,11 @@ fn old_part(s: &mut RiderState, w: &World, input: &Input, node: &mut OldNode, de
     }
     let new = match &mut node.side {
         OldSide::Wingsuit(c) => wingsuit_part(s, w, input, c, j0, dt),
-        OldSide::Ballistic => ballistic_part(s, w, j0, false, dt),
+        OldSide::Ballistic { ticks } => {
+            let n0 = *ticks;
+            *ticks += dt;
+            ballistic_part(s, w, j0, n0, false, dt)
+        }
         side @ OldSide::Aerial { .. } => aerial_slave_part(s, w, input, side, j0, dt),
     };
     blend_with(s, w, input, &mut node.blend, new, depth, j0, dt)
@@ -129,7 +135,7 @@ fn node_part(s: &mut RiderState, w: &World, input: &Input, before: RideState, j0
             s.wingsuit.controller = Some(c);
             p
         }
-        RideState::WingsuitExit => ballistic_part(s, w, j0, true, dt),
+        RideState::WingsuitExit => ballistic_part(s, w, j0, s.wingsuit.ticks, true, dt),
         _ => {
             let dp = air(s, w, input, before, dt);
             Part { dp, q: Some((j0.conjugate() * joint_of(s.alignment)).normalize()) }
@@ -146,34 +152,42 @@ fn old_node(s: &mut RiderState, w: &World) -> OldNode {
         RideState::WingsuitEnter | RideState::WingsuitFly => OldSide::Wingsuit(
             s.wingsuit.controller.take().unwrap_or_else(|| WingsuitController::new(&w.tuning.wingsuit)),
         ),
-        RideState::WingsuitExit => OldSide::Ballistic,
+        RideState::WingsuitExit => OldSide::Ballistic { ticks: s.wingsuit.ticks },
         state => OldSide::Aerial { alignment: s.alignment, jump: state == RideState::Jump, first: s.first_air_tick },
     };
     OldNode { side, blend: s.wingsuit.blend.take() }
 }
 
-fn enter(s: &mut RiderState, w: &World, to: RideState, blend_time: f32) {
+fn take_tags(s: &mut RiderState, tr: FlowTransition) {
+    if let Some(v) = tr.uber_trigger {
+        s.tricks.uber_trigger_tag = Some(v);
+    }
+}
+
+fn enter(s: &mut RiderState, w: &World, to: RideState, tr: FlowTransition) {
     let from = s.state;
+    take_tags(s, tr);
     let old = old_node(s, w);
     if matches!(from, RideState::Airborne | RideState::Jump) {
-        // TODO(guess): the left `SF_AirTricks` as `TrickState::land` (the trick values reset at once; in the game the Lua tags `OnGrabExit` / `OnGrabReset` reset them when the monitor exits the left node's sets, 0x82B58D38, 0x82CEC2F0, 0x82CEAD68); settle: the tag kinds behind those scripts and their leave on the monitor's exit (0x8319BF80).
-        crate::guess_hit!();
-        s.tricks.land();
+        s.tricks.leave_air_node();
         s.jump_airborne = false;
     }
     s.state = to;
     s.wingsuit.signal = true;
     s.wingsuit.ticks = 0.0;
     s.wingsuit.controller = (to != RideState::WingsuitExit).then(|| WingsuitController::new(&w.tuning.wingsuit));
-    s.wingsuit.blend = Some(NodeBlend::new(old, blend_time));
+    s.wingsuit.blend = Some(NodeBlend::new(old, tr.blend));
 }
 
 fn leave_to_airborne(s: &mut RiderState, w: &World) {
+    let tr = w.tuning.wingsuit.flow.exit_to_airborne;
+    take_tags(s, tr);
     let old = old_node(s, w);
     (s.state, s.first_air_tick, s.jump_airborne) = (RideState::Airborne, true, false);
+    s.tricks.enter_air_node(false);
     s.wingsuit.signal = false;
     s.wingsuit.ticks = 0.0;
-    s.wingsuit.blend = Some(NodeBlend::new(old, BLEND_EXIT_TO_AIRBORNE));
+    s.wingsuit.blend = Some(NodeBlend::new(old, tr.blend));
 }
 
 pub(super) fn land(s: &mut RiderState) {
@@ -198,24 +212,25 @@ pub(super) fn transition(s: &mut RiderState, w: &World, correcting: bool) -> boo
 
 fn transition_once(s: &mut RiderState, w: &World, correcting: bool) -> bool {
     let very_close = s.close.is_very_close;
+    let f = &w.tuning.wingsuit.flow;
     match s.state {
         RideState::Airborne if !correcting && !s.recovering_from_uber_bail() => {
             if s.wingsuit.can_use() && enter_allowed(s) {
-                enter(s, w, RideState::WingsuitEnter, BLEND_DEFAULT);
+                enter(s, w, RideState::WingsuitEnter, f.airborne_to_enter);
             } else if s.wingsuit.signal {
-                enter(s, w, RideState::WingsuitFly, BLEND_DEFAULT);
+                enter(s, w, RideState::WingsuitFly, f.airborne_to_fly);
             } else {
                 return false;
             }
         }
         RideState::Jump if s.wingsuit.can_use() && enter_allowed(s) => {
-            enter(s, w, RideState::WingsuitEnter, BLEND_JUMP_TO_ENTER)
+            enter(s, w, RideState::WingsuitEnter, f.jump_to_enter)
         }
         RideState::WingsuitEnter | RideState::WingsuitFly if very_close => land(s),
         RideState::WingsuitExit if very_close && !s.uber_trigger => land(s),
         RideState::WingsuitFly if !s.wingsuit.hold => {
-            let blend = if s.board_particle.enabled { BLEND_DEFAULT } else { BLEND_FLY_TO_EXIT };
-            enter(s, w, RideState::WingsuitExit, blend)
+            let tr = if s.board_particle.enabled { f.fly_to_exit_board_particle } else { f.fly_to_exit };
+            enter(s, w, RideState::WingsuitExit, tr)
         }
         _ => return false,
     }
@@ -232,25 +247,32 @@ pub(super) fn motion(
 ) -> (Vec3, Option<Quat>) {
     let t0 = s.traj_orientation;
     let j0 = joint_of(t0);
+    let f = &w.tuning.wingsuit.flow;
     let window = match s.state {
-        RideState::WingsuitEnter => Some(DEPLOY_END_TICKS),
-        RideState::WingsuitExit => Some(RETRACT_END_TICKS),
+        RideState::WingsuitEnter => Some(f.deploy_end),
+        RideState::WingsuitExit => Some(f.retract_end),
         _ => None,
     };
     let due = window.map(|e| (e - s.wingsuit.ticks).max(0.0)).filter(|&d| d < dt);
     let part = match due {
         Some(due) => {
             let first = node_part(s, w, input, before, j0, due);
+            s.wingsuit.ticks += due;
             if s.state == RideState::WingsuitEnter {
+                take_tags(s, f.enter_to_fly);
                 let old = old_node(s, w);
                 s.state = RideState::WingsuitFly;
                 (s.wingsuit.ticks, s.wingsuit.controller) = (0.0, Some(WingsuitController::new(&w.tuning.wingsuit)));
-                s.wingsuit.blend = Some(NodeBlend::new(old, BLEND_ENTER_TO_FLY));
+                s.wingsuit.blend = Some(NodeBlend::new(old, f.enter_to_fly.blend));
                 transition(s, w, false);
             } else {
                 leave_to_airborne(s, w);
                 if s.close.is_very_close {
                     land(s);
+                } else {
+                    let correcting =
+                        matches!(s.landing.uber_recovery, UberRecovery::Hop(h) if h < UBER_RECOVER_HOP_TICKS);
+                    transition(s, w, correcting);
                 }
             }
             let rest = dt - due;
@@ -258,7 +280,7 @@ pub(super) fn motion(
                 s.on_ground = true;
                 super::touchdown(s, w, rest);
                 let dp = super::ride(s, w, input, flags, rest);
-                Part { dp, q: Some((j0.conjugate() * joint_of(super::ground_trajectory(s))).normalize()) }
+                Part { dp, q: Some((j0.conjugate() * joint_of(super::carving_trajectory(s))).normalize()) }
             } else {
                 let p = node_part(s, w, input, RideState::WingsuitExit, j0, rest);
                 s.wingsuit.ticks = rest;

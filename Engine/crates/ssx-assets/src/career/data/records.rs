@@ -82,7 +82,7 @@ pub struct Event {
     pub unk_b683b553: Vec<i64>,
     pub rivals: Vec<u32>,
     pub forced: Vec<u32>,
-    pub unk_63180fcc: bool,
+    pub ghost_drop: bool,
     pub unk_89d02fa4: bool,
     pub unk_12bccfb5: i64,
     pub unk_0b03fc19: Option<i64>,
@@ -91,6 +91,7 @@ pub struct Event {
     pub unk_links: [u32; 3],
     pub peak_ref: u32,
     pub helicopter: u32,
+    pub map_point: [f32; 2],
 }
 
 #[derive(Clone, Debug, PartialEq)]

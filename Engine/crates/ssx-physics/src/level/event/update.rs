@@ -54,6 +54,10 @@ impl EventManager {
             EventState::Finished | EventState::LoopOutro => self.after_finish(i, &mut out),
             _ => {}
         }
+        if !self.waiting {
+            self.ghost_clock.advance(i.dt_s);
+            out.ghost_clock_ms = Some(self.ghost_clock.ms());
+        }
         if self.finish_message.as_mut().is_some_and(|m| m.update(widget_dt_s)) {
             self.finish_message = None;
         }

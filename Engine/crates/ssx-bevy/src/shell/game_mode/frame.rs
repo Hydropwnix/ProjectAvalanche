@@ -29,6 +29,11 @@ pub(super) fn shell_input(
     mut text: TextKeys,
 ) {
     let s = &mut *shell;
+    if s.exiting.is_some() {
+        text.typed.clear();
+        text.ime.clear();
+        return;
+    }
     let focused = s.started && ui.text_focused();
     if let Ok(mut w) = text.windows.single_mut()
         && w.ime_enabled != focused
@@ -60,6 +65,9 @@ pub(super) fn shell_input(
             continue;
         }
         s.host.press_from(&mut ui, b, device);
+    }
+    for (b, device) in s.stick_dpad.take() {
+        s.host.press_from_stick(&mut ui, b, device);
     }
     let mut stick = Vec2::ZERO;
     for (_, pad) in &pads {
@@ -152,12 +160,35 @@ pub(super) struct Frame<'w, 's> {
     audio: Option<ResMut<'w, FrontEndAudio>>,
     world_check: Res<'w, WorldCheck>,
     exit: MessageWriter<'w, AppExit>,
+    closes: MessageReader<'w, 's, bevy::window::WindowCloseRequested>,
+    display: Option<ResMut<'w, super::display::DisplayState>>,
+    exit_wait: ResMut<'w, super::exit::ExitWait>,
     live: Option<ResMut<'w, crate::shell::live::LiveSession>>,
     render_scale: Option<Res<'w, super::display::RenderScale>>,
+    render_stopped: Option<Res<'w, crate::shell::device_loss::RenderStopped>>,
+    render_stop_end: Option<ResMut<'w, crate::shell::device_loss::ShellEndsOnRenderStop>>,
+}
+
+fn frame_clocks(time: &Time, real: &Time<Real>) -> (f64, f64) {
+    (time.delta_secs_f64().min(0.1), real.delta_secs_f64())
 }
 
 pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mut f: Frame) {
     let s = &mut *shell;
+    if f.closes.read().count() > 0 {
+        s.ask_exit(AppExit::Success, "the window's close");
+    }
+    if let Some(stopped) = f.render_stopped.as_ref().filter(|r| r.is_added()) {
+        let why = if stopped.device_lost { "the graphics device was lost" } else { "the renderer stopped on an error" };
+        s.ask_exit(AppExit::error(), why);
+    }
+    s.exit_frame(&ui, f.display.as_deref_mut(), &mut f.exit_wait, &mut f.exit);
+    if s.exit_written()
+        && let Some(end) = f.render_stop_end.as_deref_mut()
+        && !end.exit_written
+    {
+        end.exit_written = true;
+    }
     if let Some(ms) = s.frame_sleep {
         std::thread::sleep(std::time::Duration::from_millis(ms));
     }
@@ -204,8 +235,8 @@ pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mu
             s.op_stats = true;
         }
     }
-    let dt = f.time.delta_secs_f64().min(0.1);
-    if !f.level.as_ref().is_some_and(|l| l.takes_input()) {
+    let (dt, movie_dt) = frame_clocks(&f.time, &f.real);
+    if !f.level.as_ref().is_some_and(|l| l.takes_input()) && s.exiting.is_none() {
         let shots = s.host.frame(&mut ui, dt);
         if !shots.is_empty() {
             s.pending_shots = shots;
@@ -246,12 +277,15 @@ pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mu
         let menu = !ui.nav.is_active("backgroundcontainer_on") && screen != Some(ssx_ui::game::fe::screens::id::BOOT);
         if menu && !ui.views_loading() {
             s.test_launch = None;
+            let session = std::mem::take(&mut s.session_launch);
             let key = ui.fe.as_ref().and_then(|fe| fe.career.event_named(&name)).map(|e| e.key);
-            let free = s.test_map_mode.as_deref() == Some("freeride");
+            let free = !session && s.test_map_mode.as_deref() == Some("freeride");
             match key {
                 Some(key) => ui.fe_call(move |fe, env| {
                     ssx_ui::game::fe::progression::go_to_node(fe, key, 2);
-                    if free {
+                    if session {
+                        ssx_ui::game::fe::flow::launch_session(fe, env, key);
+                    } else if free {
                         ssx_ui::game::fe::flow::launch_free_ride(fe, env, key, true);
                     } else if !ssx_ui::game::fe::globe::tutorial_launch(fe, env, key) {
                         ssx_ui::game::fe::flow::launch(fe, env, key, true)
@@ -282,9 +316,18 @@ pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mu
         .as_deref()
         .filter(|r| r.enabled)
         .map_or_else(|| f.windows.iter().next().map_or(Vec2::new(1280.0, 720.0), |w| w.size()), |r| r.size.as_vec2());
-    s.play_movie(&mut ui, dt, window, &mut f.images, &mut f.sprites, &mut f.cameras, f.audio.as_deref_mut());
+    s.play_movie(&mut ui, movie_dt, window, &mut f.images, &mut f.sprites, &mut f.cameras, f.audio.as_deref_mut());
     let backdrop_shown = s.movie.is_none() && f.globe.frame.as_ref().is_some_and(|g| g.visible);
-    f.globe.backdrop_movie = s.backdrop.frame(backdrop_shown, dt, &mut f.images);
+    f.globe.backdrop_movie = s.backdrop.frame(backdrop_shown, movie_dt, &mut f.images);
+    if s.stage == Stage::Level
+        && let (Some(l), Some(ride)) = (f.level.as_mut(), f.ride.as_deref())
+    {
+        let leaving = ui.fe.as_ref().is_some_and(|fe| !fe.in_drop);
+        let gamertag = ui.values.str(0x22B).to_string();
+        for g in l.take_ghost(ride, &gamertag, leaving) {
+            s.keep_ghost(g);
+        }
+    }
     s.stage_step(&mut ui, f.level.as_deref(), f.ride.as_deref(), f.live.as_deref_mut());
     let sc = &mut *f.scene;
     let t0 = Instant::now();
@@ -315,10 +358,7 @@ pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mu
         use ssx_ui::game::fe::pause::GameRequest;
         info!("shell: game request {r:?}");
         match (r, f.level.as_mut()) {
-            (GameRequest::ExitGame, _) => {
-                info!("shell: Exit: the game closes (the profile {})", s.save.describe());
-                f.exit.write(AppExit::Success);
-            }
+            (GameRequest::ExitGame, _) => s.ask_exit(AppExit::Success, "the menu's Exit"),
             (GameRequest::SaveSettings, _) => {
                 s.save.front_end_from(&ui.values);
                 s.write_save(&mut ui, "settings", f.audio.as_deref(), f.ride.as_deref());
@@ -344,7 +384,7 @@ pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mu
     }
     let asked = ui.fe.as_mut().map(|fe| std::mem::take(&mut fe.saveload.requests)).unwrap_or_default();
     for r in asked {
-        use ssx_ui::game::fe::saveload::{self, LoadError, Request};
+        use ssx_ui::game::fe::saveload::{self, GhostsLoad, LoadError, Request};
         info!("shell: save library request {r:?}");
         match r {
             Request::Load => {
@@ -358,12 +398,25 @@ pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mu
                 s.save.replace_damaged();
                 s.write_save(&mut ui, "a new profile for the damaged one", f.audio.as_deref(), f.ride.as_deref());
             }
-            Request::NoSaving => s.save.no_saving = true,
+            Request::NoSaving => {
+                s.save.no_saving = true;
+                s.ghosts.not_loaded();
+            }
+            Request::LoadGhosts(load) => {
+                let read = s.ghosts.reread(&s.save.schema, load == GhostsLoad::SignIn);
+                info!("shell: the ghosts file read again: {read:?}");
+                if load == GhostsLoad::SignIn {
+                    ui.fe_call(|fe, env| saveload::ghosts_loaded(fe, env, read));
+                }
+            }
+            Request::NewGhosts => s.new_ghosts(),
+            Request::NoOwnGhost => s.own_ghost_cancelled = true,
         }
     }
     if f.level.as_mut().is_some_and(|l| l.take_save()) {
         s.write_save(&mut ui, "results", f.audio.as_deref(), f.ride.as_deref());
     }
+    s.update_save_icon(&mut ui);
     let sounds = ui.take_ui_sounds();
     let posts = ui.take_ui_posts();
     let messages = ui.take_fe_messages();
@@ -443,12 +496,13 @@ pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mu
         && s.segment_started
         && s.segments.is_empty()
         && s.host.script.is_empty()
-        && f.level.as_ref().is_some_and(|l| l.results_shown() && l.test_run_done());
+        && f.level.as_ref().is_some_and(|l| l.results_shown() && l.test_run_done() && !l.ghost_pending());
     if results_held && s.done_at.is_none() {
         info!("shell: level {}'s results are up and nothing scripted leaves them: the run ends", s.rides);
     }
     let rides_over = s.max_rides.is_some_and(|n| s.rides_done >= n) && s.stage == Stage::Menus || results_held;
-    if !rides_over && !s.seconds.is_some_and(|x| t >= x) {
+    if s.exiting.is_some() {
+    } else if !rides_over && !s.seconds.is_some_and(|x| t >= x) {
         s.done_at = None;
     } else {
         let at = *s.done_at.get_or_insert(t);
@@ -457,7 +511,7 @@ pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mu
             info!("shell: the scripted run ends at {t:.2} s (levels played {})", s.rides_done);
             let check = &*f.world_check;
             if check.covered.is_empty() {
-                f.exit.write(AppExit::Success);
+                s.ask_exit(AppExit::Success, "the scripted run's end");
             } else {
                 error!(
                     "world check: the level's world was covered in {} of {} ride screenshots: {}",
@@ -465,7 +519,7 @@ pub(super) fn shell_step(mut shell: ResMut<Shell>, mut ui: ResMut<GameUiRes>, mu
                     check.shots,
                     check.covered.join(", ")
                 );
-                f.exit.write(AppExit::error());
+                s.ask_exit(AppExit::error(), "the scripted run's end");
             }
         }
     }
@@ -580,5 +634,20 @@ mod tests {
         assert_eq!(key_text(KeyCode::Tab, Some("\t")), []);
         assert_eq!(key_text(KeyCode::ShiftLeft, None), []);
         assert_eq!(key_text(KeyCode::Digit2, Some("\u{e9}")), [T::Char('\u{e9}')]);
+    }
+
+    #[test]
+    fn a_slow_frame_counts_in_full_for_the_movies() {
+        let mut time = Time::<()>::default();
+        let mut real = Time::<Real>::default();
+        real.update_with_duration(std::time::Duration::ZERO);
+        for ms in [16, 800, 33] {
+            let d = std::time::Duration::from_millis(ms);
+            time.advance_by(d);
+            real.update_with_duration(d);
+            let (fe, movie) = frame_clocks(&time, &real);
+            assert_eq!(fe, (ms as f64 / 1000.0).min(0.1));
+            assert_eq!(movie, ms as f64 / 1000.0);
+        }
     }
 }

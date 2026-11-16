@@ -191,7 +191,7 @@ pub fn provider_update(fe: &mut FrontEnd, env: &mut FeEnv) {
     if fe.game_mode == 2 || !arrived(fe, env) {
         return;
     }
-    let entries = fe.globe_scene.as_ref().map(|s| s.entries(STAGE, STAGE.0 / STAGE.1)).unwrap_or_default();
+    let entries = entries(fe);
     fe.globe.provider_selectable = false;
     let Some(e) = entries.iter().find(|e| e.selected) else { return };
     let selectable = e.selectable
@@ -214,19 +214,22 @@ pub fn provider_update(fe: &mut FrontEnd, env: &mut FeEnv) {
     write_panels(fe, env);
 }
 
+pub fn mode_name_key(game_mode: i64) -> Option<&'static str> {
+    match game_mode {
+        1 => Some("TXT_M_GLOBE_CAMPAIGN"),
+        2 => Some("TXT_M_GLOBE_FREERIDE"),
+        3 => Some("TXT_M_GLOBAL_EVENTS"),
+        0 => Some("TXT_M_GLOBE_EXPLORE"),
+        _ => None,
+    }
+}
+
 pub fn activate(fe: &mut FrontEnd, env: &mut FeEnv, _view_model: &str) {
-    if fe.screen != screens::id::MAIN_MENU {
-        let key = match fe.game_mode {
-            1 => Some("TXT_M_GLOBE_CAMPAIGN"),
-            2 => Some("TXT_M_GLOBE_FREERIDE"),
-            3 => Some("TXT_M_GLOBAL_EVENTS"),
-            0 => Some("TXT_M_GLOBE_EXPLORE"),
-            _ => None,
-        };
-        if let Some(key) = key {
-            let t = env.loc.text(key);
-            env.values.set_str(0x32, t);
-        }
+    if fe.screen != screens::id::MAIN_MENU
+        && let Some(key) = mode_name_key(fe.game_mode)
+    {
+        let t = env.loc.text(key);
+        env.values.set_str(0x32, t);
     }
     fe.globe.input = true;
     fe.publish.extend(["dp_globe_data".into(), "dp_drop_overlay_data".into(), "dp_drop_metadata".into()]);

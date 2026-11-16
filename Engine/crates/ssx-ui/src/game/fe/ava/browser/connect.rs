@@ -220,9 +220,14 @@ fn save(fe: &mut FrontEnd, env: &mut FeEnv) {
     let (Some(dir), Some(file)) = (fe.ava.browser.app_dir.clone(), fe.ava.browser.file.clone()) else {
         return message(fe, env.loc.text("TXT_AVA_BROWSER_NOT_KEPT"));
     };
-    match file.save(&dir) {
-        Ok(None) => {}
-        Ok(Some(note)) | Err(note) => message(fe, note),
+    if fe.ava.browser.saver.is_none() {
+        match super::saver::ServersWriter::start() {
+            Ok(w) => fe.ava.browser.saver = Some(w),
+            Err(e) => return message(fe, format!("servers.json's writer (a thread) did not start ({e}): not saved")),
+        }
+    }
+    if !fe.ava.browser.saver.as_ref().is_some_and(|w| w.ask(dir, file)) {
+        message(fe, "servers.json's writer has ended: the lists are not saved".into());
     }
 }
 

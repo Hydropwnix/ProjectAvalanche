@@ -1,7 +1,7 @@
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::Threading::{
     AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW, GetCurrentThread, SetThreadPriority,
-    THREAD_PRIORITY_TIME_CRITICAL,
+    THREAD_PRIORITY_HIGHEST, THREAD_PRIORITY_TIME_CRITICAL,
 };
 
 pub(super) struct Mmcss(HANDLE);
@@ -32,4 +32,13 @@ pub(super) fn promote() -> Option<Mmcss> {
     }
     ssx_core::eprintln!("audio: the mixer thread runs as the MMCSS task \"Pro Audio\" (task index {index})");
     Some(Mmcss(handle))
+}
+
+pub(super) fn raise_file_thread() {
+    if unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST) } == 0 {
+        let e = std::io::Error::last_os_error();
+        ssx_core::eprintln!("audio: the stream file thread keeps its normal priority (THREAD_PRIORITY_HIGHEST: {e})");
+        return;
+    }
+    ssx_core::eprintln!("audio: the stream file thread runs at THREAD_PRIORITY_HIGHEST (the console's EA::Thread 2)");
 }

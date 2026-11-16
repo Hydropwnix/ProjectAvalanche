@@ -56,6 +56,20 @@ pub fn max(a: f32, b: f32) -> f32 {
 }
 
 #[inline]
+pub fn min(a: f32, b: f32) -> f32 {
+    let (a, b) = (daz(a), daz(b));
+    if a.is_nan() || b.is_nan() {
+        f32::NAN
+    } else if a == b {
+        if a.is_sign_negative() { a } else { b }
+    } else if a < b {
+        a
+    } else {
+        b
+    }
+}
+
+#[inline]
 pub fn gt(a: f32, b: f32) -> bool {
     daz(a) > daz(b)
 }
@@ -189,6 +203,18 @@ pub fn refp(x: f32) -> f32 {
     lane(1.0 / daz(x), &[x])
 }
 
+// TODO(guess): the estimate is libm's `exp2` (Xenia canary's POW2_V128 calls `std::exp2` per lane); the ISA bounds its relative error by 1/16 and promises nothing exact; the game feeds it only `vrfim` results, integers (0x82345890), whose power of two `exp2` gives exactly; settle: a console's vexptefp on integer inputs.
+#[inline]
+pub fn expte(x: f32) -> f32 {
+    lane(daz(x).exp2(), &[x])
+}
+
+// TODO(guess): the estimate is libm's `log2` (Xenia canary's LOG2_V128 calls `std::log2` per lane); the ISA bounds its error by 1/32 in the fraction; the game takes only its floor as the exponent of a normal argument (0x82D05438, 0x82D05500, 0x82D05608), which `log2` gives except where it rounds up to the next integer just below a power of two; settle: a console's vlogefp on arguments just below a power of two.
+#[inline]
+pub fn loge(x: f32) -> f32 {
+    lane(daz(x).log2(), &[x])
+}
+
 pub fn rsqrt(x: f32) -> f32 {
     let mut y = rsqrte(x);
     for _ in 0..2 {
@@ -278,6 +304,22 @@ pub fn cos(x: f32) -> f32 {
     acc
 }
 
+pub fn sin_cos(x: f32) -> (f32, f32) {
+    let r = reduce(x);
+    let mut p = [0.0f32; 24];
+    p[1] = r;
+    for k in 2..24 {
+        p[k] = mul(p[k - k / 2], p[k / 2]);
+    }
+    let mut s = r;
+    let mut c = 1.0;
+    for i in 0..11 {
+        s = madd(f32::from_bits(SIN[i]), p[3 + 2 * i], s);
+        c = madd(f32::from_bits(COS[i]), p[2 + 2 * i], c);
+    }
+    (s, c)
+}
+
 pub fn asin(x: f32) -> f32 {
     let [e, f, g] = [ARC_E, ARC_F, ARC_G].map(|v| v.map(f32::from_bits));
     let ax = f32::from_bits(x.to_bits() & 0x7FFF_FFFF);
@@ -297,6 +339,61 @@ pub fn asin(x: f32) -> f32 {
 
 pub fn acos(x: f32) -> f32 {
     sub(mul(PI, 0.5), asin(x))
+}
+
+#[inline]
+pub fn negate(x: f32) -> f32 {
+    f32::from_bits(x.to_bits() ^ 0x8000_0000)
+}
+
+#[inline]
+pub fn abs(x: f32) -> f32 {
+    f32::from_bits(x.to_bits() & 0x7FFF_FFFF)
+}
+
+pub fn recip_guarded(x: f32) -> f32 {
+    let y0 = refp(x);
+    let y1 = madd(y0, nmsub(x, y0, 1.0), y0);
+    let y2 = madd(y1, nmsub(x, y1, 1.0), y1);
+    if eq(y1, y1) { y2 } else { y0 }
+}
+
+const ATAN_P: [u32; 4] = [0xC15B_0533, 0xC1A4_0BFE, 0xC107_E9FB, 0xBF56_6BD7];
+const ATAN_Q: [u32; 4] = [0x4224_43E6, 0x42AC_5090, 0x426E_5052, 0x4170_624F];
+const ATAN_K: [u32; 4] = [0x3FDD_B3D7, 0x3F3B_67AF, 0x3E89_30A3, 0x3980_0000];
+const ATAN_A: [u32; 4] = [0x3FC9_0FDB, 0x3F86_0A92, 0x3F06_0A92, 0x7E80_0000];
+
+pub fn atan(x: f32) -> f32 {
+    let [p0, p1, p2, p3] = ATAN_P.map(f32::from_bits);
+    let [q0, q1, q2, q3] = ATAN_Q.map(f32::from_bits);
+    let [sqrt3, sqrt3_m1, two_m_sqrt3, tiny] = ATAN_K.map(f32::from_bits);
+    let [half_pi, third_pi, sixth_pi, huge] = ATAN_A.map(f32::from_bits);
+    let ax = abs(x);
+    let big = gt(ax, 1.0);
+    let t = if big { recip_guarded(ax) } else { ax };
+    let past = gt(t, two_m_sqrt3);
+    let base = match (past, big) {
+        (true, true) => third_pi,
+        (true, false) => sixth_pi,
+        (false, true) => half_pi,
+        (false, false) => 0.0,
+    };
+    let num = add(madd(t, sqrt3_m1, t), -1.0);
+    let y = if past { mul(num, recip_guarded(add(t, sqrt3))) } else { t };
+    let s = mul(y, y);
+    let p = madd(s, madd(s, madd(s, p3, p2), p1), p0);
+    let q = madd(s, madd(s, madd(s, add(s, q3), q2), q1), q0);
+    let f = mul(mul(p, s), recip_guarded(q));
+    let r = if gt(tiny, abs(y)) { y } else { madd(y, f, y) };
+    let r = add(if big { negate(r) } else { r }, base);
+    let r = if gt(0.0, x) { negate(r) } else { r };
+    if gt(x, huge) {
+        half_pi
+    } else if gt(negate(huge), x) {
+        negate(half_pi)
+    } else {
+        r
+    }
 }
 
 // TODO(guess): the mantissa rounds toward zero (the dropped 13 bits cut off) — Xenia's note on the encoding (12ff95197, 2022: "as used in vpkd3d128 (no denormals, rounding towards zero)"); canary since 1182f9d73 / 11815400c (2025-10 / 2026-02) rounds to nearest even, but only to meet pack_test.cc's PACK_FLOAT16_4 expectation (5678.0 → 0x6D8C, 9.0123 → 0x4882), which dates from 2014 (f74aafeb8) and was written against Microsoft's XMConvertFloatToHalf C code (poly::float_to_half, ties to even), not a console; the hardware-run instr_vpkd3d128.s packs only exactly representable values, and no SSX data holds a packed value of a known float; settle: a console's vpkd3d128 type 5 on an inexact value (5678.0: 0x6D8B toward zero, 0x6D8C to nearest even).
@@ -329,6 +426,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn min_and_max_order_the_zeros_and_keep_a_nan() {
+        assert!(min(0.0, -0.0).is_sign_negative() && min(-0.0, 0.0).is_sign_negative());
+        assert!(max(0.0, -0.0).is_sign_positive() && max(-0.0, 0.0).is_sign_positive());
+        assert!(min(f32::NAN, 1.0).is_nan() && min(1.0, f32::NAN).is_nan());
+        assert_eq!(min(0.25, -3.0), -3.0);
+    }
+
+    #[test]
+    fn sin_cos_follows_the_functions_and_differs_from_the_single_series_in_bits() {
+        let (mut differ_sin, mut differ_cos) = (0, 0);
+        for k in -2000..=2000 {
+            let x = k as f32 * 0.005;
+            let (s, c) = sin_cos(x);
+            assert!((s - x.sin()).abs() < 8e-7 && (c - x.cos()).abs() < 8e-7, "sin_cos {x}: {s} {c}");
+            differ_sin += usize::from(s.to_bits() != sin(x).to_bits());
+            differ_cos += usize::from(c.to_bits() != cos(x).to_bits());
+        }
+        assert!(differ_sin > 0 && differ_cos > 0, "{differ_sin} {differ_cos}");
+        assert_eq!(sin_cos(0.0), (0.0, 1.0));
+        let (s, c) = sin_cos(f32::NAN);
+        assert!(s.is_nan() && c.is_nan());
+    }
+
+    #[test]
     fn the_polynomials_follow_the_functions() {
         for k in -2000..=2000 {
             let x = k as f32 * 0.005;
@@ -343,6 +464,28 @@ mod tests {
             .fold(0.0f32, f32::max);
         assert!(worst < 3e-5, "{worst}");
         assert!(asin(1.0).is_finite() && acos(-1.0).is_finite());
+        let worst = (-200_000..=200_000)
+            .map(|k| {
+                let x = (k as f32 / 20_000.0).powi(3);
+                (f64::from(atan(x)) - f64::from(x).atan()).abs()
+            })
+            .fold(0.0f64, f64::max);
+        assert!(worst < 4e-7, "atan {worst}");
+    }
+
+    #[test]
+    fn the_arc_tangent_folds() {
+        assert_eq!(atan(0.0).to_bits(), 0);
+        assert_eq!(atan(-0.0).to_bits(), 0);
+        assert_eq!(atan(f32::INFINITY).to_bits(), 0x3FC9_0FDB);
+        assert_eq!(atan(f32::NEG_INFINITY).to_bits(), 0xBFC9_0FDB);
+        assert_eq!(atan(1e38).to_bits(), 0x3FC9_0FDB);
+        assert_eq!(atan(1e-4), 1e-4);
+        for x in [0.1f32, 0.26, 0.27, 0.5, 1.0, 1.5, 3.7, 1e3] {
+            assert_eq!(atan(-x).to_bits(), atan(x).to_bits() ^ 0x8000_0000, "{x}");
+        }
+        assert!((atan(1.0) - std::f32::consts::FRAC_PI_4).abs() < 1.2e-7);
+        assert!(atan(f32::NAN).is_nan());
     }
 
     #[test]

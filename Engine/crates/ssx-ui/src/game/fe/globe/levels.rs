@@ -196,8 +196,16 @@ impl GlobeScene {
     }
 
     pub fn set_widescreen(&mut self, widescreen: bool) {
+        self.hd = widescreen;
         self.nodes = crate::game::fe::globe::nodes::NodeMap::build(&self.data, widescreen);
-        if self.scene_peak != 0 && !self.drop_level && self.nodes.peaks.contains_key(&self.scene_peak) {
+        if let Some(i) = self.scene_shot {
+            // PORT(choice): a window crossing the 1.55 bound blends the scene's shot to the new display's (its target
+            // raised by `up` on 4:3) in 1 s, as a peak's level does to its other peak shot; the console built the
+            // scene's shots once for its one display (0x824D8ED0)
+            if let Some(shot) = self.data.globe.scene_shot(i, widescreen) {
+                self.shots.queue(&[Segment::new(shot, 3, 1.0)], &mut self.audio);
+            }
+        } else if self.scene_peak != 0 && !self.drop_level && self.nodes.peaks.contains_key(&self.scene_peak) {
             self.peak_focus_scene(self.scene_peak);
         }
     }
@@ -219,8 +227,15 @@ impl GlobeScene {
 
 impl GlobeScene {
     fn scene_message(&mut self, msg: u32) {
-        let shots = self.data.globe.shots;
+        let shots: [Shot; 5] = std::array::from_fn(|i| self.data.globe.scene_shot(i, self.hd).unwrap_or_default());
         let node_shot = |s: &Shot| (normalize(sub(s.look, s.offset)), s.offset, s.look);
+        self.scene_shot = match msg {
+            3 => Some(1),
+            5 | 7 | 11 => Some(3),
+            9 | 14 => Some(4),
+            12 | 16 | 18 | 20 | 21 => None,
+            _ => self.scene_shot,
+        };
         match msg {
             3 => self.shots.go(shots[1], 1.0, Some(shots[0]), &mut self.audio),
             5 => self.shots.go(shots[3], 0.5, None, &mut self.audio),
@@ -620,6 +635,9 @@ impl GlobeFlow for SceneOnly {
     fn focusable(&self, _key: u32) -> bool {
         true
     }
+    fn range_valid(&self, _key: u32) -> bool {
+        true
+    }
     fn mode(&self) -> i64 {
         self.mode
     }
@@ -647,6 +665,28 @@ pub fn screen_of_level(level: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn range_shot_scene() -> GlobeScene {
+        let mut data = ssx_assets::career::globe::GlobeData::default();
+        data.globe.up = [0.0, 500.0, 0.0];
+        data.globe.shots[4] =
+            Shot { offset: [0.0, 3500.0, 100.0], look: [0.0; 3], target: [-800.0, 0.0, 0.0], fov: 0.872_664_6 };
+        GlobeScene::new(data)
+    }
+
+    #[test]
+    fn the_scene_shots_rise_only_on_a_4_3_display() {
+        let target = |s: &GlobeScene| s.shots.queue.last().map(|g| g.shot.target);
+        let mut s = range_shot_scene();
+        s.scene_message(9);
+        assert_eq!(target(&s), Some([-800.0, 0.0, 0.0]), "HD: the stored target");
+        s.set_widescreen(false);
+        assert_eq!(target(&s), Some([-800.0, 500.0, 0.0]), "4:3: raised by up, blended to on the display's change");
+        s.scene_message(9);
+        assert_eq!(target(&s), Some([-800.0, 500.0, 0.0]), "4:3: the next range level too");
+        s.set_widescreen(true);
+        assert_eq!(target(&s), Some([-800.0, 0.0, 0.0]));
+    }
 
     #[test]
     fn globe_states_play_and_post_their_sounds() {

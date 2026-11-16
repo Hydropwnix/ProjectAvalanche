@@ -1,5 +1,9 @@
 use super::*;
 
+fn carving_state_vars(s: &RiderState) -> crate::ground::SubjectVars {
+    if s.carving.subject_update { s.carving.subject_vars } else { crate::rider::read_subject_vars(s) }
+}
+
 impl RiderGraph {
     pub(super) fn uber_crash_orientation(&mut self, s: &RiderState, velocity: Vec3) {
         if !s.ballistic.valid {
@@ -59,8 +63,10 @@ impl RiderGraph {
         self.put_bool("BLN_JumpTrigger", jumped);
         self.put_bool("BLN_EnableAirTricks", !(s.state == RideState::Airborne && s.jump.allow));
         self.producers.last_state = Some(s.state);
+        let vars = carving_state_vars(s);
         if riding {
             self.producers.carving(s, dt, &self.carve);
+            self.put_vector("VEC_carving_bounce_rotational_force", vars.bounce_rotational_force);
         } else {
             self.producers.carving_init = false;
         }
@@ -73,27 +79,27 @@ impl RiderGraph {
         self.put_bool("BLN_Goofy", s.goofy);
         self.put("FLT_LandingPitchBalanceOffset", -wrap_pi(s.landing.pitch + s.kin.pitch) * s.kin.fwd);
         self.put("FLT_LandingBalanceValue", s.landing.pitch_balance.clamp(-1.0, 1.0));
-        let spin = wrap_4pi(s.landing.spin * s.steering.forward_sign);
+        let spin = crate::rider::outputs::landing_spin_value(s.landing.spin * s.steering.forward_sign);
         self.put("FLT_landing_spin_value", spin);
-        self.put("FLT_landing_spin_value_normalized", wrap_pi(spin));
+        self.put("FLT_landing_spin_value_normalized", crate::rider::outputs::landing_spin_value_normalized(spin));
         self.put_bool("BLN_landing_mirror_flag", s.landing.landed_switch);
-        self.put_bool("BLN_carving_is_stable", s.landing.stable);
-        self.put_bool("BLN_carving_sliding_on_back", s.landing.backslide);
+        self.put_bool("BLN_carving_is_stable", vars.stable);
+        self.put_bool("BLN_carving_sliding_on_back", vars.backslide);
         self.put_bool("BLN_State_Wipeout", start.wipeout);
-        self.put_bool("BLN_carving_state_bail_on_landing", s.landing.bail_on_landing);
+        self.put_bool("BLN_carving_state_bail_on_landing", vars.bail_on_landing);
         self.put_bool("BLN_trigger_uber_crash", s.landing.uber_crash);
         self.put_bool("BLN_EnableBoardParticle", s.board_particle.enabled);
         self.put_bool("BLN_TriggerUberBailGateOpen", s.uber_gate_timer <= 0.0);
         self.put("FLT_TriggerUberCrashGatingTimer", s.uber_gate_timer);
-        self.put_bool("BLN_carving_state_request_stop", s.request_stop);
+        self.put_bool("BLN_carving_state_request_stop", vars.request_stop);
         self.put_bool("BLN_Pad_GetGoing", crate::rider::get_going_gesture(start.raw_stick, s.stick_prev));
         self.put("FLT_DPad_Char_Rel_Angle", crate::rootmotion::GET_GOING_ANGLE);
         self.put_bool("BLN_start_uber_bail_recover", true);
         self.put_bool("BLN_is_recovering_from_uber_bail", s.recovering_from_uber_bail());
         self.uber_crash_orientation(s, start.velocity);
-        self.put("FLT_carving_state_RideTicks", s.carving.ride_ticks);
-        self.put_bool("BLN_carving_state_is_dead", s.carving.is_dead);
-        self.put_bool("BLN_carving_state_BailedBecauseOfRock", s.landing.bailed_because_of_rock);
+        self.put("FLT_carving_state_RideTicks", vars.ride_ticks);
+        self.put_bool("BLN_carving_state_is_dead", vars.is_dead);
+        self.put_bool("BLN_carving_state_BailedBecauseOfRock", vars.bailed_because_of_rock);
         self.put_bool("BLN_Tripped", s.tripped);
         let reentry = s.reentry;
         self.put_bool("BLN_TriggerImpactBail", reentry == Some(crate::rider::Reentry::ImpactBail));
@@ -113,9 +119,9 @@ impl RiderGraph {
         let gc = &s.grind.carving;
         self.put_bool("BLN_IsGrinding", s.grind.is_grinding());
         self.put("FLT_GrindSpin", gc.spin);
-        self.put("FLT_GrindVeeringAngle", gc.veering_angle);
-        self.put("FLT_carving_state_GrindPressValue", gc.press.value);
-        self.put("FLT_carving_state_GrindOrBoardPressBlendValue", gc.grind_or_press_blend);
+        self.put("FLT_GrindVeeringAngle", vars.grind_veering_angle);
+        self.put("FLT_carving_state_GrindPressValue", vars.grind_press_value);
+        self.put("FLT_carving_state_GrindOrBoardPressBlendValue", vars.grind_or_press_blend);
         let g = &s.tricks.grind;
         self.put_bool("BLN_IsGrindTrickStarting", g.starting);
         self.put_bool("BLN_IsGrindTrick", g.is_grind_trick());
@@ -136,16 +142,9 @@ impl RiderGraph {
         dt: f32,
     ) {
         let riding = s.state == RideState::Riding;
-        let o = s.air.outputs;
-        self.put("FLT_FlipMagnitude", o.flip_magnitude);
-        self.put("FLT_SpinMagnitude", o.spin_magnitude);
-        self.put("FLT_FlipSpeed", o.flip_speed);
-        self.put("FLT_SpinSpeed", o.spin_speed);
-        self.put("FLT_FlipAngleDegrees", o.flip_angle_degrees);
-        self.put("FLT_FlipWiggleAngle", o.flip_wiggle);
-        self.put("FLT_SpinWiggleAngle", o.spin_wiggle);
-        self.put("FLT_AirIdleTime", o.air_idle_time);
-        self.put_bool("BLN_AirIdle", o.air_idle);
+        for (name, v) in s.air.outputs.signals() {
+            self.put(name, v);
+        }
         self.put_bool("BLN_EnableAirborneAutoUprighting", s.airborne_auto_upright);
         self.put("FLT_NumTicksToLanding", s.ballistic.ticks);
         self.put_bool("BLN_BallisticRayValid", s.ballistic.valid);
@@ -200,8 +199,9 @@ impl RiderGraph {
         self.put("FLT_ice_axe_layer_weight", ia.layer_weight);
         self.put("FLT_ice_axe_chop_weight_left", ia.chop_weight[0]);
         self.put("FLT_ice_axe_chop_weight_right", ia.chop_weight[1]);
-        self.put("FLT_carving_state_ice_axe_noise_left", ia.noise[0]);
-        self.put("FLT_carving_state_ice_axe_noise_right", ia.noise[1]);
+        let noise = carving_state_vars(s).ice_axe_noise;
+        self.put("FLT_carving_state_ice_axe_noise_left", noise[0]);
+        self.put("FLT_carving_state_ice_axe_noise_right", noise[1]);
         if riding || !self.producers.was_in_air {
             self.producers.airborne_timer = 0.0;
         } else {
@@ -227,25 +227,16 @@ impl RiderGraph {
         self.script_updates += 1;
     }
 
-    pub(super) fn trajectory_joint_rotation(&mut self, s: &RiderState) -> Quat {
-        let traj = s.traj_orientation * Quat::from_rotation_y(-FRAC_PI_2);
-        let sliding = s.state == RideState::Riding
-            && ((s.landing.uber_crash && s.uber_gate_timer <= 0.0) || s.board_particle.enabled);
-        if !sliding {
-            self.producers.uber_traj = None;
-            return traj;
-        }
-        let q = match self.producers.uber_traj {
-            Some(q) => {
-                self.producers.uber_frames += 1;
-                if self.producers.uber_frames > 1 { uber_tilt(q, s.ground_normal, self.carve.uber_traj_max) } else { q }
-            }
-            None => {
-                self.producers.uber_frames = 0;
-                traj
-            }
-        };
-        self.producers.uber_traj = Some(q);
-        q
+    pub(super) fn layered_scripts(&mut self, layer: &[(String, f32)]) -> Vec<(String, f32)> {
+        let sc = self.scripts.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let functions: Vec<(&str, bool)> =
+            self.script_signals.iter().map(|(_, f, float)| (f.as_str(), *float)).collect();
+        let values = sc.expressions_over(layer, &functions);
+        let names = self.script_signals.iter().map(|(i, _, _)| self.animator.graph.signals[*i].name.clone());
+        names.zip(values).filter_map(|(n, v)| Some((n, v?))).collect()
+    }
+
+    pub(super) fn trajectory_joint_rotation(&self, s: &RiderState) -> Quat {
+        crate::rootmotion::trajectory_joint(s.traj_orientation)
     }
 }

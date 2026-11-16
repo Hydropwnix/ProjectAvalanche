@@ -265,6 +265,36 @@ fn the_actors_run_after_the_step_once_per_execution() {
 }
 
 #[test]
+fn the_snapshot_holds_the_actors_writes() {
+    let w = world(plane(400.0, 0.3));
+    let mut s = RiderState::spawn(&w, Vec3::new(0.0, 50.0, 0.0), Vec3::Z).expect("ground");
+    s.velocity = Vec3::Z * 0.4;
+    s.track_started = true;
+    let mut x = Session::default();
+    let input = Input { tuck: 1.0, ..Input::default() };
+    for _ in 0..3 {
+        let mut written = Vec3::ZERO;
+        x.execute_with(
+            &mut s,
+            &w,
+            &input,
+            &TrickInput::default(),
+            0.0,
+            &RewindPad::default(),
+            None,
+            &mut |_, st, _| {
+                st.traj += Vec3::X;
+                written = st.traj;
+            },
+        );
+        let mut restored = s.clone();
+        restored.traj = Vec3::ZERO;
+        assert!(x.buffer.rewind(&mut restored, 0.0).is_some(), "no snapshot recorded");
+        assert_eq!(restored.traj, written);
+    }
+}
+
+#[test]
 fn a_restart_clears_the_heli_jump_of_the_run_before() {
     use glam::Quat;
     let data = heli_jump::HeliJumpData {
@@ -282,4 +312,173 @@ fn a_restart_clears_the_heli_jump_of_the_run_before() {
     let h = x.heli_jump.as_ref().expect("kept");
     assert!(!h.contact && h.outro.is_none());
     assert_eq!(h.intercept, heli_jump::Intercept::default());
+}
+
+#[test]
+fn the_tutorials_presentation_type_reaches_the_session_and_survives_a_restart() {
+    for (constant, want) in [("TutorialSkydrop", 1), ("TutorialGround", 2)] {
+        let mut w = world(plane(400.0, 0.3));
+        let src = format!("BeginObjective(\"Tutorial\")\n\tDO_AudioSetPresentationType({constant})\nEndObjective()");
+        let mut d = crate::objectives::DropScripts { list: vec!["t.lua".into()], ..Default::default() };
+        d.sources.insert("t.lua".into(), std::sync::Arc::from(src.as_bytes()));
+        w.survival.objectives = Some(std::sync::Arc::new(d));
+        let mut s = RiderState::spawn(&w, Vec3::new(0.0, 50.0, 0.0), Vec3::Z).expect("ground");
+        let mut x = Session::default();
+        assert_eq!(x.presentation, 0, "the loading screen's 0 before the scripts");
+        x.execute(&mut s, &w, &Input::default(), &TrickInput::default(), 0.0, &RewindPad::default(), None);
+        let o = x.objectives.as_ref().expect("objectives");
+        assert!(o.report.problems.is_empty(), "{:?}", o.report.problems);
+        assert_eq!(x.presentation, want, "{constant}");
+        x.restart_objectives(&mut s, &w, false);
+        assert_eq!(x.presentation, want, "{constant}: a restart keeps it");
+    }
+}
+
+fn ride_with_objectives(
+    mut w: crate::rider::World,
+    script: &str,
+    n: usize,
+) -> (crate::rider::World, Session, RiderState) {
+    let mut d = crate::objectives::DropScripts { list: vec!["t.lua".into()], ..Default::default() };
+    d.sources.insert("t.lua".into(), std::sync::Arc::from(script.as_bytes()));
+    w.survival.objectives = Some(std::sync::Arc::new(d));
+    let mut s = RiderState::spawn(&w, Vec3::new(0.0, 50.0, 0.0), Vec3::Z).expect("ground");
+    let mut x = Session::default();
+    for _ in 0..n {
+        x.execute(&mut s, &w, &Input::default(), &TrickInput::default(), 0.0, &RewindPad::default(), None);
+    }
+    let o = x.objectives.as_ref().expect("objectives");
+    assert!(o.report.problems.is_empty(), "{:?}", o.report.problems);
+    (w, x, s)
+}
+
+#[test]
+fn without_the_ground_ray_query_the_spq_publishes_no_ground() {
+    let script = |on: bool| {
+        format!(
+            "BeginObjective(\"Render NIS\")\n\tDO_SetGameStateValue(\"Player1\", BLN_GroundRayQueryEnabled, {on})\nEndObjective()"
+        )
+    };
+    let rock = || {
+        let (sn, c) = 0.3f32.sin_cos();
+        let p = |x: f32, z: f32| Vec3::new(x, -z * sn, z * c);
+        let mut w = crate::collision::CollisionWorld::default();
+        w.push_cluster(
+            &[p(-400.0, -400.0), p(-400.0, 400.0), p(400.0, 400.0), p(400.0, -400.0)],
+            None,
+            None,
+            &[[0, 1, 2], [0, 2, 3]],
+            10,
+            0,
+        );
+        w.finish();
+        world(w)
+    };
+    let (_, _, on) = ride_with_objectives(rock(), &script(true), 3);
+    let slope = on.contact.expect("the ground with the query").normal;
+    assert!(slope.y < 0.99 && on.close.is_close && on.ground_normal == slope, "{on:?}");
+    let (w, mut x, off) = ride_with_objectives(rock(), &script(false), 3);
+    assert!(off.contact.is_none(), "no published ray: {:?}", off.contact);
+    assert_eq!(off.ground_normal, Vec3::Y);
+    assert!(!off.close.is_close && !off.close.is_very_close);
+    assert_eq!(off.weights, on.weights, "the weights follow the raw hit");
+    assert_ne!(off.weights, crate::surface::no_contact_weights());
+    let mut n = RiderState::spawn(&w, Vec3::new(0.0, 50.0, 0.0), Vec3::Z).expect("ground");
+    n.carry_game_state(&off);
+    x.execute(&mut n, &w, &Input::default(), &TrickInput::default(), 0.0, &RewindPad::default(), None);
+    assert!(n.contact.is_none(), "carried into the fresh level start");
+}
+
+#[test]
+fn the_out_of_bounds_correction_is_off_while_the_scripts_say_so() {
+    let run = |off: bool| {
+        let mut w = world(plane(400.0, 0.3));
+        w.collision.boundary = Some(crate::rider::boundary::BoundaryGrid {
+            min: Vec3::splat(-500.0),
+            max: Vec3::splat(499.99),
+            cells_per_metre: Vec3::new(1.0 / 1000.0, 0.0, 1.0 / 1000.0),
+            width: 1,
+            height: 1,
+            cells: vec![0x4000 | (31 << 8)],
+        });
+        let script = format!(
+            "BeginObjective(\"ForceSpatialDataOutOfBoundsCorrectionOff\")\n\tDO_SetGameStateValue(\"Player1\", \
+             BLN_ForceSpatialDataOutOfBoundsCorrectionOff, {off})\nEndObjective()"
+        );
+        ride_with_objectives(w, &script, 10).2
+    };
+    let on = run(false);
+    assert!(
+        on.boundary.out_of_bounds && on.boundary.timer > 0.0 && on.boundary.wind.length() > 0.0,
+        "{:?}",
+        on.boundary
+    );
+    let off = run(true);
+    assert!(
+        !off.boundary.out_of_bounds && off.boundary.timer == 0.0 && off.boundary.wind == Vec3::ZERO,
+        "{:?}",
+        off.boundary
+    );
+}
+
+#[test]
+fn a_fresh_level_start_keeps_the_heli_interaction_switch() {
+    let w = world(plane(400.0, 0.3));
+    let mut s = RiderState::spawn(&w, Vec3::new(0.0, 50.0, 0.0), Vec3::Z).expect("ground");
+    s.heli_interaction_allowed = false;
+    let mut n = RiderState::spawn(&w, Vec3::new(0.0, 50.0, 0.0), Vec3::Z).expect("ground");
+    n.carry_game_state(&s);
+    assert!(!n.heli_interaction_allowed);
+}
+
+#[test]
+fn the_bodies_step_by_the_rider_s_restored_ticks() {
+    let w = world(plane(400.0, 0.3));
+    let mut s = RiderState::spawn(&w, Vec3::new(0.0, 50.0, 0.0), Vec3::Z).expect("ground");
+    s.velocity = Vec3::Z * 0.4;
+    let mut x = Session::default();
+    x.event.on_trigger_race_start(&mut x.timer);
+    let input = Input { tuck: 1.0, ..Input::default() };
+    for _ in 0..200 {
+        x.execute(&mut s, &w, &input, &TrickInput::default(), 0.0, &RewindPad::default(), None);
+    }
+    let flare = crate::rigid::RigidBodyDef {
+        offset: Vec3::new(-0.19, 0.0373, 0.0),
+        axis: Vec3::X,
+        half_height: 0.18,
+        radius: 0.04,
+        fat: 0.0,
+        inv_mass: 1.0,
+        inv_inertia: Vec3::new(1250.0, 89.2857, 89.2857),
+        max_speed: 1e32,
+        max_angular_speed: 100.0,
+        linear_damping: 0.0,
+        angular_damping: 0.0,
+        material: [0.2, 0.2, 0.1],
+    };
+    let mut c = crate::controllers::Controllers::offline(&w.triggers);
+    let mut body = crate::rigid::Body::new(flare, Vec3::new(0.0, 2000.0, 0.0), glam::Quat::IDENTITY);
+    body.push(Vec3::X * 5.0, Vec3::ZERO);
+    c.rigid.bodies.push(body);
+    x.controllers = Some(c);
+    let rewind = RewindPad { rewind_held: true, takeover: false, flip_accel: 1.0 };
+    let (mut restored, mut entered) = (0, false);
+    for _ in 0..40 {
+        let v = x.controllers.as_ref().unwrap().rigid.bodies[0].motion.velocity.y;
+        let e = x.execute(&mut s, &w, &input, &TrickInput::default(), 0.0, &rewind, None);
+        let stepped = (x.controllers.as_ref().unwrap().rigid.bodies[0].motion.velocity.y - v) / crate::rigid::GRAVITY.y;
+        let ticks = stepped * crate::TICKS_PER_SECOND;
+        assert!(
+            (ticks - e.rewind.delta_ticks).abs() < 2e-3,
+            "stepped {ticks} ticks, the rider's {}",
+            e.rewind.delta_ticks
+        );
+        entered |= x.manager.state == RewindState::Enter;
+        let live = crate::DT_TICKS * x.executed_dilation.1;
+        if (e.rewind.delta_ticks - live).abs() > 0.1 {
+            restored += 1;
+        }
+    }
+    assert!(entered, "the rewind entered");
+    assert!(restored >= 8, "the enter phase restores the pre-rewind's ticks: {restored} executions differ");
 }

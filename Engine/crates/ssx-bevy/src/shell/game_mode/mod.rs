@@ -29,11 +29,15 @@ use crate::ui;
 mod backdrop;
 mod check;
 mod display;
+mod exit;
+pub(crate) use exit::ExitWait;
 mod frame;
+mod ghosts;
 mod live;
 mod maps;
 mod pads;
 mod pointer;
+mod presence;
 mod save;
 mod stage;
 mod window;
@@ -63,6 +67,7 @@ pub struct GameArgs {
     pub range_movies: ssx_assets::port_options::RangeMovies,
     pub boot_movie: ssx_assets::port_options::BootMovie,
     pub menu_focus: ssx_assets::port_options::MenuFocus,
+    pub discord_presence: ssx_assets::port_options::DiscordPresence,
     pub window: WindowSpec,
     pub script: String,
     pub movie_cap: Option<f64>,
@@ -140,6 +145,18 @@ fn report_gpu(
         device.limits().max_texture_dimension_2d,
         device.limits().max_bind_groups,
     );
+    if info.device_type == wgpu::DeviceType::Cpu {
+        // PORT(choice): a software adapter (Mesa's llvmpipe / lavapipe, WARP) is named as such with what to do: the
+        // adapter search takes one only when no graphics card's driver answered; on lavapipe the front end draws 2
+        // frames a second and the boot movie's 3.7 s take 21 s (1600 × 900). The console had one GPU.
+        warn!(
+            "shell: GPU {:?} draws on the processor (a software renderer): no driver of a graphics card answered for \
+             {:?}, so every frame is drawn by the CPU — a few frames a second, the movies and cut-scenes slowed with \
+             it. Install the graphics card's driver (on Linux its Vulkan driver: Mesa's RADV / ANV, or NVIDIA's with \
+             its Vulkan part)",
+            info.name, info.backend,
+        );
+    }
 }
 
 fn start_failure_hook() {
@@ -265,6 +282,11 @@ struct Shell {
     speech_lang: crate::audio::sfx_input::SpeechLanguage,
     stage: Stage,
     save: SaveSlot,
+    ghosts: ghosts::GhostSave,
+    save_icon: bool,
+    exiting: Option<exit::Exiting>,
+    exit_writing: bool,
+    own_ghost_cancelled: bool,
     stat_names: std::sync::Arc<std::collections::BTreeMap<u32, String>>,
     loading: Option<(std::sync::Mutex<Receiver<Result<LoadedLevel>>>, Instant)>,
     op: std::sync::Mutex<Option<WorldOp>>,
@@ -308,6 +330,7 @@ struct Shell {
     notes: Vec<String>,
     done_at: Option<f64>,
     test_launch: Option<(String, f64)>,
+    session_launch: bool,
     launch_start_at: f64,
     test_map: Option<(String, f64)>,
     test_map_mode: Option<String>,
@@ -403,8 +426,9 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
     }
     let schema = SaveSchema::load(&a.big_root, &fe.career)?;
     let stat_names = std::sync::Arc::new(ssx_assets::career::save::modelled_stats(&schema));
+    let (ghost_save, ghost_note) = ghosts::GhostSave::load(ghosts::ghosts_path(&save_path), &schema)?;
     let (save, mut profile, note) = SaveSlot::load(save_path, schema)?;
-    let mut notes = vec![note];
+    let mut notes = vec![note, ghost_note];
     notes.push(tuner_note);
     if a.boot_movie != ssx_assets::port_options::BootMovie::default() {
         notes.push(format!("options: boot movie {} (port option; the game plays it at every start)", a.boot_movie));
@@ -428,6 +452,7 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
         ));
     }
     fe.saveload.load_error = save.damaged.then_some(ssx_ui::game::fe::saveload::LoadError::Corrupt);
+    fe.saveload.ghosts = ghost_save.read_state();
     game.fe = Some(fe);
     if let Some(name) = &a.play_movie {
         if ssx_assets::content::fmv::movie_id(name).is_none() {
@@ -465,7 +490,11 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
     let mut app = App::new();
     app.add_plugins((
         DefaultPlugins
-            .set(WindowPlugin { primary_window: Some(a.window.window("Project Avalanche")), ..default() })
+            .set(WindowPlugin {
+                primary_window: Some(a.window.window("Project Avalanche")),
+                close_when_requested: false,
+                ..default()
+            })
             .set(level::render_plugin())
             .set(level::log_plugin())
             .disable::<bevy::audio::AudioPlugin>(),
@@ -474,6 +503,7 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
         ui::globe::GlobePlugin,
     ));
     app.add_systems(Startup, report_gpu);
+    app.insert_resource(crate::shell::device_loss::ShellEndsOnRenderStop::default());
     if let Some(watch) = dev {
         app.add_plugins(crate::render::reload::ReloadPlugin { big_root: a.big_root.clone(), watch });
     }
@@ -537,7 +567,8 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
         .insert_resource(WinitSettings::game())
         .insert_resource(WindowHidden::from_env())
         .init_resource::<UiPipelinesReady>()
-        .init_resource::<WorldCheck>();
+        .init_resource::<WorldCheck>()
+        .init_resource::<ExitWait>();
     let (w, h) = (a.window.width as f32, a.window.height as f32);
     let movie_layer = RenderLayers::layer(MOVIE_LAYER);
     let movie_sprite = app
@@ -563,6 +594,11 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
             speech_lang,
             stage: Stage::Menus,
             save,
+            ghosts: ghost_save,
+            save_icon: false,
+            exiting: None,
+            exit_writing: false,
+            own_ghost_cancelled: false,
             stat_names,
             loading: None,
             op: std::sync::Mutex::new(None),
@@ -610,6 +646,7 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
             notes,
             done_at: None,
             test_launch: a.launch.clone(),
+            session_launch: false,
             launch_start_at: 0.0,
             test_map: a.launch_map.clone(),
             test_map_mode: a.launch_mode.clone(),
@@ -640,7 +677,9 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
         })
         .add_systems(
             PreUpdate,
-            (hidden_frame, pads_frame, shell_world, game_level::pause_frame).chain().after(bevy::input::InputSystems),
+            (exit::exit_input, hidden_frame, pads_frame, shell_world, game_level::pause_frame)
+                .chain()
+                .after(bevy::input::InputSystems),
         )
         .add_systems(
             Update,
@@ -648,6 +687,7 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
                 .chain()
                 .after(crate::ride::RideStepSet),
         );
+    presence::register(&mut app, a.discord_presence);
     app.sub_app_mut(RenderApp).add_systems(ExtractSchedule, report_pipelines);
     #[cfg(feature = "net")]
     if !a.classic_front_end {
@@ -664,7 +704,9 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
         #[cfg(not(feature = "net"))]
         anyhow::bail!("--connect {}: this build has no network session (the `net` feature)", connect.server);
     }
-    Ok(app.run())
+    let exit = app.run();
+    ssx_core::output::flush();
+    Ok(exit)
 }
 
 fn mount_mods(

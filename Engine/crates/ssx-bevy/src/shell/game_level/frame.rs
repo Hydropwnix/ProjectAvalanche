@@ -6,6 +6,7 @@ use ssx_ui::game::input::{Button, Input};
 
 use super::LevelGame;
 use super::results::{RideOutcome, post_results, stats_from_ride, sync_named_flags};
+use crate::audio::music::Music;
 use crate::audio::music::frontend::FrontEndAudio;
 use crate::ride::Ride;
 use crate::shell::game_mode::{self, GameUiRes, UiPipelinesReady};
@@ -31,7 +32,7 @@ pub fn level_frame(
     mut ui: ResMut<GameUiRes>,
     ready: Res<UiPipelinesReady>,
     meshes: Query<(), With<Mesh3d>>,
-    mut audio: Option<ResMut<FrontEndAudio>>,
+    (mut audio, music): (Option<ResMut<FrontEndAudio>>, Option<Res<Music>>),
     (ui_frame, mut world_check): (Res<ui::UiFrame>, ResMut<game_mode::WorldCheck>),
 ) {
     let (Some(mut level), Some(mut ride)) = (level, ride) else { return };
@@ -130,17 +131,35 @@ pub fn level_frame(
     l.ui_frames += 1;
     if l.restart_at.is_some_and(|f| l.ui_frames >= f) {
         l.restart_at = None;
+        if let Some(m) = music.as_deref() {
+            m.restart();
+        }
+        // PORT(choice): the port posts the pause's end to the audio at a restart, so the next song plays at once (the
+        // user's decision, 2026-11-15: keep the music playing) and the speech with it. The console posts none: the
+        // audio event 0xEA473DCC comes only from the BE step's pause end 0x823D2D40, and the BE shutdown 0x823D1198
+        // frees the pause manager and clears +0x22 without it. Its SFX level end 0x83094808 sets the eight
+        // `*_send_pause_on` globals to 1 as the pause end 0x83094530 does, so the SFX are the same; the music and the
+        // speech stay paused. The MusicBox player's +0x24 and its voice's Pause input are cleared only by
+        // `UnpauseMusic` 0x8310FA90 (its one caller the MusicBox's handler 0x831125E0), not by `StopMusic` 0x83110C68
+        // or a song's start 0x8310BF18; the speech level end 0x8308E468 posts `StopSpeech`, `Clear Follow`, `Clear
+        // Triggered Contexts`, `Reset Context Variables` and clears +0x49 but not +0x18, `UnpauseSpeech` is posted
+        // only by 0x8308E288 / 0x8308E2E8 and the speech voices' Pause input is written only by 0x835E90A8 /
+        // 0x835E9100. On the console the new song and the speech were silent until the next pause ended.
         if std::mem::take(&mut l.paused)
             && let Some(a) = audio.as_mut()
         {
             a.game_pause(false);
         }
         ride.respawn();
+        if l.ghost_pending() {
+            info!("level: the restart leaves the kept run's ghost save waiting: it takes the next halt's recording");
+        }
         l.feed = l.feed0.clone();
         l.sim_hold = None;
         l.ghosts = l.ghosts0.clone();
         l.result = None;
         l.results_posted = false;
+        l.restarts += 1;
         let launch = l.launch.clone();
         let name = ui.fe.as_ref().and_then(|fe| ssx_ui::game::fe::flow::range_visit_name(fe, &launch));
         if let Some(n) = ui.fe.as_mut().and_then(|fe| ssx_ui::game::fe::flow::count_range_visit(fe, &launch)) {
@@ -219,6 +238,10 @@ pub fn level_frame(
         }
         let won = posted.won;
         l.save_due = true;
+        if posted.keep_ghost {
+            let best = ui.fe.as_ref().and_then(|f| f.profile.explore_scores.get(&l.launch.drop)).map(|e| e.score);
+            l.ghost_due.extend(best.map(|b| (l.launch.drop, b)));
+        }
         let summary = ui.fe.as_ref().map_or_else(String::new, |f| game_mode::summary(&f.profile));
         info!(
             "level: results posted ({}, medal {:?} against the rows {:?}): {summary}",
@@ -341,6 +364,7 @@ fn pause_input(
         .into_iter()
         .filter(|&(b, device)| b != Button::Start && !(typing && device == ssx_ui::game::input::KEYBOARD_DEVICE))
         .collect();
+    presses.extend(l.stick_dpad.take());
     if let Some(device) = pad_start {
         presses.push((Button::Start, device));
     }

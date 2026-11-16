@@ -1,3 +1,4 @@
+pub mod device_loss;
 pub mod game_level;
 pub mod game_mode;
 pub mod level;

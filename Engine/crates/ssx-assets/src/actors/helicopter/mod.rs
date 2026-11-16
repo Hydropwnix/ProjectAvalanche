@@ -1,11 +1,11 @@
 mod animation;
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use ssx_formats::attrib::collection::{self, Collection, DecodedCollection, Field, FieldData};
-use ssx_formats::attrib::{Schema, Value, Vault, fnv1};
+use ssx_formats::attrib::collection::FieldData;
+use ssx_formats::attrib::{Value, fnv1};
 use ssx_formats::crsf::{CrsfFile, SceneGraph};
 
 use crate::character::{Skin, Srt};
@@ -51,71 +51,19 @@ pub struct HeliChoice {
     pub gameobject: u32,
 }
 
-pub(crate) struct Vaults {
-    cols: Vec<Vec<Collection>>,
-    decoded: Vec<Vec<DecodedCollection>>,
-    index: Vec<HashMap<(u32, u32), usize>>,
-}
+pub(crate) struct Vaults(crate::career::data::Vaults);
 
 impl Vaults {
     pub(crate) fn load(big_root: &Path) -> Result<Self> {
-        let dir = big_root.join("bootcache/data/xenon/attribdb");
-        let read = |path: &Path| -> Result<(Vec<u8>, Vec<u8>)> {
-            Ok((
-                std::fs::read(path).with_context(|| format!("reading {}", path.display()))?,
-                std::fs::read(path.with_extension("bin")).with_context(|| format!("reading {}", path.display()))?,
-            ))
-        };
-        let (svlt, sbin) = read(&dir.join("attribdb_schema.vlt"))?;
-        let schema = Schema::from_vault(&Vault::parse(&svlt, &sbin)?).context("reading the schema")?;
-        let known: std::collections::HashSet<u32> = schema.classes.iter().map(|c| c.key).collect();
-        let mut sources: Vec<(PathBuf, bool)> =
-            crate::vault_db::dlc_vaults(big_root).into_iter().map(|p| (p, false)).collect();
-        sources.push((dir.join("attribdb.vlt"), true));
-        let mut out = Self { cols: Vec::new(), decoded: Vec::new(), index: Vec::new() };
-        for (path, route) in sources {
-            let (vlt, bin) = read(&path)?;
-            let vault = Vault::parse(&vlt, &bin).with_context(|| format!("parsing {}", path.display()))?;
-            let cols = collection::collections(&vault)?;
-            let mut kept = Vec::with_capacity(cols.len());
-            let mut decoded = Vec::with_capacity(cols.len());
-            for c in cols {
-                if !known.contains(&c.class) {
-                    continue;
-                }
-                decoded.push(c.decode(&vault, &schema).with_context(|| format!("collection {:#010x}", c.key))?);
-                kept.push(c);
-            }
-            if route {
-                crate::content::data::events::route_ui_drops(big_root, &kept, &mut decoded);
-            }
-            out.index.push(collection::index(&kept));
-            out.cols.push(kept);
-            out.decoded.push(decoded);
-        }
-        Ok(out)
-    }
-
-    fn field(&self, class: u32, coll: u32, key: u32) -> Result<Option<&Field>> {
-        for v in 0..self.cols.len() {
-            if let Some(&i) = self.index[v].get(&(class, coll)) {
-                let fields = collection::with_inherited(&self.cols[v], &self.decoded[v], &self.index[v], i)?;
-                return Ok(fields.into_iter().map(|(_, f)| f).find(|f| f.key == key));
-            }
-        }
-        bail!("collection {class:#010x}/{coll:#010x} not found")
+        Ok(Self(crate::career::data::Vaults::load(big_root)?))
     }
 
     pub(crate) fn reference(&self, class: u32, coll: u32, key: u32) -> Result<u32> {
-        Ok(self.field(class, coll, key)?.map_or(0, |f| refs(&f.data).first().map_or(0, |r| r.collection)))
+        Ok(self.0.rec(class, coll)?.reference(key))
     }
 
     fn text(&self, class: u32, coll: u32, key: u32) -> Result<Option<String>> {
-        Ok(self.field(class, coll, key)?.and_then(|f| match &f.data {
-            FieldData::Single(Value::Text(t)) => t.clone(),
-            FieldData::Array(v) => v.iter().find_map(|x| if let Value::Text(t) = x { t.clone() } else { None }),
-            _ => None,
-        }))
+        Ok(self.0.rec(class, coll)?.text(key))
     }
 }
 
@@ -129,7 +77,7 @@ pub fn default_helicopter(big_root: &Path) -> Result<HeliChoice> {
 
 pub fn survey(big_root: &Path) -> Result<Vec<(u32, Result<HeliChoice>)>> {
     let v = Vaults::load(big_root)?;
-    let keys: Vec<u32> = v.cols[0].iter().filter(|c| c.class == CLASS_UI_DROP).map(|c| c.key).collect();
+    let keys = v.0.keys_of(CLASS_UI_DROP);
     Ok(keys.into_iter().map(|k| (k, choice(&v, k))).collect())
 }
 

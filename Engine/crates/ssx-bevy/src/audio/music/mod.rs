@@ -359,15 +359,9 @@ fn load(
     )
     .cloned();
     let event = def.as_ref().map_or_else(|| "no event".to_string(), |d| d.name.clone());
-    let race = def.as_ref().and_then(|d| {
-        RaceType::from_event(d.key, d.event_type.map_or(6, |t| ssx_assets::sfx_game::event_kind(t as u32)))
-    });
-    let remix_type = match race {
-        Some(RaceType::RaceIt) => 1,
-        Some(RaceType::TrickIt) => 0,
-        Some(RaceType::SurviveIt) => 2,
-        Some(RaceType::Menu) | None => -1,
-    };
+    let kind = def.as_ref().map_or(6, |d| d.event_type.map_or(6, |t| ssx_assets::sfx_game::event_kind(t as u32)));
+    let race = def.as_ref().and_then(|d| RaceType::from_event(d.key, kind));
+    let remix_type = ssx_assets::sfx_game::race_event_type(kind);
     let mut mb = MusicBox::load(big_root)?;
     mb.apply_switches(song_flags);
     if !plan.music.is_empty() {
@@ -399,6 +393,20 @@ pub struct MusicReload {
 }
 
 impl Music {
+    pub fn restart(&self) {
+        if self.dd {
+            return;
+        }
+        let shared = self.shared.clone();
+        self.game.post(move |_, _| {
+            if let Ok(mut shared) = shared.lock()
+                && let Engine::Licensed(lm) = &mut shared.engine
+            {
+                lm.restart();
+            }
+        });
+    }
+
     pub fn reload_inputs(&self) -> (AudioScope, bool) {
         (self.scope.clone(), self.dd)
     }

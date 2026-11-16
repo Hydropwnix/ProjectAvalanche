@@ -59,6 +59,7 @@ pub struct SurvivalTuning {
     pub riding_on_rock_curve: Curve,
     pub riding_on_rock_threshold: f32,
     pub uber_crash_landed_recently_threshold: f32,
+    pub min_air_time_to_bail_on_rock_landing: f32,
 }
 
 impl SurvivalTuning {
@@ -115,6 +116,7 @@ impl SurvivalTuning {
             riding_on_rock_curve: c.curve("RidingOnRockImpactOverTimeCurve")?,
             riding_on_rock_threshold: c.f32("RidingOnRockSurfacePropertyThreshold")?,
             uber_crash_landed_recently_threshold: c.f32("UberCrashLandedRecentlyThreshold")?,
+            min_air_time_to_bail_on_rock_landing: c.f32("MinAirTimeToBailOnRockLanding")?,
         })
     }
 }

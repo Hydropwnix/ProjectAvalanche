@@ -462,7 +462,12 @@ impl<W: World> Builder<W> {
 }
 
 pub fn mirrored_grab(grab: i32) -> i32 {
-    // TODO(guess): entry 0 (`Grab_None`) is not written by the constructor (an uninitialised stack word; no script adds grab 0); settle: the stack slot's earlier contents at 0x824DD968.
+    // PORT(choice): `Grab_None` (0) mirrors to itself and an id outside 0…13 is returned unchanged. The console indexes
+    // its stack table without a check, and its entry 0 is never written (0x824DD968 stores entries
+    // 1…13 at r1+0x64…0x94 and reads r1+0x60 + 4·grab: a word left in the new frame by earlier calls, not by this
+    // function's callees, so its value is whatever ran before); no disc script reaches it (it runs for
+    // `INT_ScoringTrickId`, 0xF3, only: the 21 such `DO_TutorialTrickObjectiveAdd` calls of the 27 in
+    // `tutorial0001_1_1/tutorialobjectives.lua` name `Grab_Rocket` … `Grab_Signature`), only a mod's script can.
     const MIRROR: [i32; 14] = [0, 1, 10, 4, 3, 9, 13, 7, 11, 5, 2, 8, 12, 6];
     usize::try_from(grab).ok().and_then(|i| MIRROR.get(i)).copied().unwrap_or(grab)
 }

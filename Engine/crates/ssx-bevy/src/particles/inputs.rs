@@ -27,7 +27,7 @@ impl Trackers {
             snow_spray: s.spray.carving,
             landing_impact: self.landing_impact,
             ground_contact: s.contact.is_some(),
-            in_air: s.in_air(),
+            in_air: s.bln_in_air(),
             depth_below_snow: s.depth_below_snow,
             grinding: s.grind.is_grinding(),
             powder: w[POWDER],

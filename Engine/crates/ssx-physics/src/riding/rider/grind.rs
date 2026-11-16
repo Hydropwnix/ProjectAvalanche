@@ -13,7 +13,7 @@ use std::f32::consts::{PI, TAU};
 use std::sync::Arc;
 
 use anyhow::Result;
-use glam::Vec3;
+use glam::{Quat, Vec3};
 
 use crate::collision::CollisionWorld;
 use crate::curve::Curve;
@@ -99,17 +99,19 @@ impl GrindTuning {
 }
 
 pub fn grind_input(dead_zone: f32, angle: f32, mag: f32, nose: bool, tail: bool) -> (f32, f32) {
-    let s = if angle >= 0.0 { 1.0 } else { -1.0 };
-    let t = ((s * angle - dead_zone) / (PI - 2.0 * dead_zone)).clamp(0.0, 1.0);
-    let th = t * s * PI;
+    let s: f32 = if angle >= 0.0 { 1.0 } else { -1.0 };
+    let t = s.mul_add(angle, -dead_zone) / -dead_zone.mul_add(2.0, -PI);
+    let t = if -t >= 0.0 { 0.0 } else { t };
+    let t = if 1.0 - t >= 0.0 { t } else { 1.0 };
+    let th = f64::from(t * s * PI);
     let press = if nose {
         1.0
     } else if tail {
         -1.0
     } else {
-        th.cos() * mag
+        th.cos() as f32 * mag
     };
-    (th.sin() * mag, press)
+    (th.sin() as f32 * mag, press)
 }
 
 pub fn damped_spring(stiffness: f32, x: f32, v: f32, target: f32, t: f32) -> (f32, f32) {
@@ -128,32 +130,30 @@ pub struct Press {
 }
 
 pub fn press_update(p: &mut Press, t: &GrindTuning, board_angle: f32, grind_or_press_blend: f32, input: f32, dt: f32) {
+    let within = |x: f32, e: f32| x.abs() <= e || x.is_nan();
     let mut sign = p.sign;
-    if sign.abs() <= 1.192_092_9e-7 || (p.value.abs() <= 0.05 && input.abs() <= 0.05) {
+    if within(sign, 1.192_092_9e-7) || (within(p.value, 0.05) && within(input, 0.05)) {
         let s = if board_angle >= 0.0 { 1.0 } else { -1.0 };
         let a = s * board_angle;
         sign = if a < t.input_dead_zone_angle || a > PI - t.input_dead_zone_angle { 0.0 } else { s };
     }
     let target = grind_or_press_blend * sign * input;
-    (p.value, p.vel) = damped_spring(t.press_stiffness, p.value, p.vel, target, dt);
+    let w = crate::intercept::sqrt(t.press_stiffness);
+    (p.value, p.vel) = crate::ground::critically_damped_step(w, p.value, p.vel, target, dt);
     p.sign = sign;
 }
 
 pub fn blend_update(blend: f32, grinding: bool, gain: f32, dt: f32) -> f32 {
     let target = if grinding { 1.0 } else { 0.0 };
-    target + (blend - target) * (-gain * dt).exp()
+    let e = f64::from(-(gain * dt)).exp() as f32;
+    e.mul_add(blend - target, target)
 }
 
 pub fn veering_update(angle: &mut f32, vel: &mut f32, stiffness: f32, n: Vec3, v_old: Vec3, v_new: Vec3, dt: f32) {
     let a = v_old - n * v_old.dot(n);
     let b = v_new - n * v_new.dot(n);
-    // TODO(guess): a zero projected velocity gives the target 0 (the game's `vrsqrtefp` normalise, 0x82CC89E8…0x82CC8A30, gives a NaN that `XMVectorACos` 0x8249EF98 and the spring carry); settle: how `SignalBlendArray` 0x82B63140 and its selection 0x8352A9E8 treat a NaN signal.
-    if a.length_squared() == 0.0 || b.length_squared() == 0.0 {
-        crate::guess_hit!();
-        (*angle, *vel) = damped_spring(stiffness, *angle, *vel, 0.0, dt);
-        return;
-    }
-    let c = a.normalize().dot(b.normalize()).clamp(-1.0, 1.0);
+    let unit = |p: Vec3| p * (1.0 / p.length());
+    let c = unit(a).dot(unit(b)).clamp(-1.0, 1.0);
     let s = if b.cross(a).dot(n) >= 0.0 { 1.0 } else { -1.0 };
     let target = c.acos() * s * 57.295_78 / dt;
     (*angle, *vel) = damped_spring(stiffness, *angle, *vel, target, dt);
@@ -249,8 +249,8 @@ pub const VELOCITY_TAIL_DISTANCE: f32 = 8.0;
 
 pub fn player_update(g: &mut GrindRider, i: &PlayerUpdateInputs) {
     g.prev_is_grinding = g.carving.is_grinding;
-    g.ticks_airborne = if i.in_air { g.ticks_airborne + i.dt } else { 0.0 };
-    g.carving.is_grinding &= !i.in_air;
+    g.ticks_airborne = if i.in_air && !i.nis { g.ticks_airborne + i.dt } else { 0.0 };
+    g.carving.is_grinding &= !i.in_air && !i.nis;
     let sa = g.sa.clone();
     let si = steering::SteeringInputs {
         sa: sa.as_deref(),
@@ -258,7 +258,7 @@ pub fn player_update(g: &mut GrindRider, i: &PlayerUpdateInputs) {
         t: i.steering,
         in_air: i.in_air,
         ticks_airborne: g.ticks_airborne,
-        disabled: i.in_wingsuit || i.board_particle,
+        disabled: i.nis || i.in_wingsuit || i.board_particle,
         traj: i.traj,
         velocity: i.velocity,
         look_ahead_vel: g.feature.look_ahead.vel,
@@ -277,6 +277,7 @@ pub struct PlayerUpdateInputs<'a> {
     pub c: &'a CollisionWorld,
     pub steering: &'a steering::SteeringTuning,
     pub in_air: bool,
+    pub nis: bool,
     pub traj: Vec3,
     pub velocity: Vec3,
     pub k_h_air: f32,
@@ -289,12 +290,41 @@ pub struct PlayerUpdateInputs<'a> {
 }
 
 pub fn stick_direction(angle: f32, mag: f32, v: Vec3, n: Vec3) -> Vec3 {
-    let h = state::on_plane(v, n);
-    if mag.abs() <= 1.192_092_9e-7 || h.length() <= 1.192_092_9e-7 {
+    use crate::steering::{vmx_cross, vmx_quat_mul, vmx_rotate};
+    use ssx_formats::vmx::{add, dot3, eq, ge, gt, mul, negate, rsqrt, sin_cos, sub};
+    const EPS: f32 = 1.192_092_9e-7;
+    let scale = |a: [f32; 3], k: f32| a.map(|x| mul(x, k));
+    let (v, n) = (v.to_array(), n.to_array());
+    let nh = scale(n, rsqrt(dot3(n, n)));
+    let c = vmx_cross(v, n);
+    let c2 = dot3(c, c);
+    let rc = rsqrt(c2);
+    let len = if eq(c2, 0.0) { 0.0 } else { mul(c2, rc) };
+    let (r, len) = if gt(len, 0.0) { (scale(c, rc), len) } else { ([0.0; 3], 0.0) };
+    if ge(EPS, mag.abs()) || ge(EPS, len.abs()) {
         return Vec3::ZERO;
     }
-    let h = h.normalize();
-    h * angle.cos() + h.cross(n) * angle.sin()
+    let fc = vmx_cross(nh, r);
+    let f = scale(fc, rsqrt(dot3(fc, fc)));
+    let (fx, ny, rz) = (f[0], nh[1], r[2]);
+    let lanes =
+        [(fx, ny, rz), (fx, negate(ny), negate(rz)), (negate(fx), ny, negate(rz)), (negate(fx), negate(ny), rz)];
+    let t4 = lanes.map(|(a, b, c)| add(add(a, b), add(c, 1.0)));
+    let rs = t4.map(rsqrt);
+    let sq: [f32; 4] = std::array::from_fn(|k| mul(t4[k], rs[k]));
+    let hr = rs.map(|x| mul(0.5, x));
+    let d = [sub(nh[2], r[1]), sub(r[0], f[2]), sub(f[1], nh[0])];
+    let e = [add(nh[2], r[1]), add(r[0], f[2]), add(f[1], nh[0])];
+    let qw = [mul(d[0], hr[0]), mul(d[1], hr[0]), mul(d[2], hr[0]), mul(0.5, sq[0])];
+    let qx = [mul(0.5, sq[1]), mul(e[2], hr[1]), mul(e[1], hr[1]), mul(d[0], hr[1])];
+    let qy = [mul(e[2], hr[2]), mul(0.5, sq[2]), mul(e[0], hr[2]), mul(d[1], hr[2])];
+    let qz = [mul(e[1], hr[3]), mul(e[0], hr[3]), mul(0.5, sq[3]), mul(d[2], hr[3])];
+    let sel = if gt(ny, rz) { qy } else { qz };
+    let sel = if gt(fx, ny) && gt(fx, rz) { qx } else { sel };
+    let q = Quat::from_array(if gt(add(add(fx, ny), rz), 0.0) { qw } else { sel });
+    let (sn, cs) = sin_cos(mul(angle, 0.5));
+    let turn = Quat::from_xyzw(mul(-0.0, sn), mul(-1.0, sn), mul(-0.0, sn), cs);
+    vmx_rotate(vmx_quat_mul(q, turn), Vec3::X)
 }
 
 pub const RAIL_MAX_DEPTH: f32 = 0.1;
@@ -340,30 +370,6 @@ pub fn carving_ctor(gc: &mut state::GrindCarving, c: &CollisionWorld, ground: Op
     gc.press = Press::default();
     (gc.prev_input, gc.ticks) = (false, 0.0);
     gc.grind_or_press_blend = gc.blend.max(0.0);
-    gc.board_angle_init = false;
-}
-
-pub fn update_board_angle(
-    gc: &mut state::GrindCarving,
-    q_traj: glam::Quat,
-    v: Vec3,
-    speed_threshold: f32,
-    max_spin_vel: f32,
-    dt: f32,
-) {
-    let l = q_traj.conjugate() * v;
-    if l.x * l.x + l.z * l.z >= speed_threshold * speed_threshold {
-        let target = l.z.atan2(l.x);
-        gc.board_angle = if gc.board_angle_init {
-            let max = max_spin_vel * dt;
-            crate::steering::wrap_pi(
-                gc.board_angle + crate::steering::wrap_pi(target - gc.board_angle).clamp(-max, max),
-            )
-        } else {
-            target
-        };
-    }
-    gc.board_angle_init = true;
 }
 
 pub struct DispatchState<'a> {

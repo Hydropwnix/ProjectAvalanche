@@ -283,20 +283,19 @@ fn apply(l8_in: vec4<f32>, n: vec3<f32>, v: vec3<f32>, ecc: f32, lli: f32) -> ve
     let bounds = h3.w + 11u;
     if h0.w != 0u {
         let cell = vec2<i32>(floor((ll_position.xz - vec2(bitcast<f32>(h0.x), bitcast<f32>(h0.y))) / bitcast<f32>(h0.z)));
-        if all(cell >= vec2(0)) && all(cell < vec2<i32>(h1.xy)) {
-            let list = words(h1.z + u32(cell.y) * h1.x + u32(cell.x));
-            for (var k = 0u; k < list.y; k++) {
-                let at = list.x + k;
-                let index = words(h1.w + at / 4u)[at % 4u];
-                let base = h2.x + index * RECORD;
-                let bin = bin_at(base);
-                while next_dynamic < h3.y && bin_at(h3.x + next_dynamic * RECORD) < bin {
-                    let d = h3.x + next_dynamic * RECORD;
-                    l8 = blend_light(l8, d, bounds + h0.w + next_dynamic, h2.y, n, v, ecc, lli);
-                    next_dynamic++;
-                }
-                l8 = blend_light(l8, base, bounds + index, h2.y, n, v, ecc, lli);
+        let inside = all(cell >= vec2(0)) && all(cell < vec2<i32>(h1.xy));
+        let list = words(h1.z + select(h1.x * h1.y, u32(cell.y) * h1.x + u32(cell.x), inside));
+        for (var k = 0u; k < list.y; k++) {
+            let at = list.x + k;
+            let index = words(h1.w + at / 4u)[at % 4u];
+            let base = h2.x + index * RECORD;
+            let bin = bin_at(base);
+            while next_dynamic < h3.y && bin_at(h3.x + next_dynamic * RECORD) < bin {
+                let d = h3.x + next_dynamic * RECORD;
+                l8 = blend_light(l8, d, bounds + h0.w + next_dynamic, h2.y, n, v, ecc, lli);
+                next_dynamic++;
             }
+            l8 = blend_light(l8, base, bounds + index, h2.y, n, v, ecc, lli);
         }
     }
     for (; next_dynamic < h3.y; next_dynamic++) {

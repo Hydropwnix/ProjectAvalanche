@@ -5,12 +5,14 @@ pub fn drop_point(fe: &FrontEnd, drop: u32) -> (f32, f32) {
     if (e.drop_type == DropType::Custom && e.custom_status == 2) || e.drop_type == DropType::Type2 {
         return (0.0, 0.0);
     }
-    fe.career
-        .drop_positions
-        .entries
+    point_of(&fe.career.drop_positions.entries, e)
+}
+
+fn point_of(positions: &[(String, f32, f32)], e: &ssx_assets::career::Event) -> (f32, f32) {
+    positions
         .iter()
-        .find(|(n, _, _)| fnv1(n.as_bytes()) == drop)
-        .map_or((0.0, 0.0), |&(_, x, y)| (x, y))
+        .find(|(n, _, _)| fnv1(n.as_bytes()) == e.key)
+        .map_or((e.map_point[0], e.map_point[1]), |&(_, x, y)| (x, y))
 }
 
 pub fn write_panels(fe: &mut FrontEnd, env: &mut FeEnv) {
@@ -20,7 +22,10 @@ pub fn write_panels(fe: &mut FrontEnd, env: &mut FeEnv) {
     }
     match fe.screen {
         0x44 => write_campaign_drop(fe, env, fe.globe.drop),
-        0xE => write_explore_drop(fe, env, fe.globe.drop),
+        0xE => {
+            let drop = fe.globe.drop;
+            write_explore_drop(fe, env, drop);
+        }
         _ => {}
     }
     if matches!(fe.screen, 0x44 | 0xE | 0x11) {
@@ -109,7 +114,9 @@ pub(super) fn write_campaign_drop(fe: &FrontEnd, env: &mut FeEnv, drop: u32) {
     v.set(0x3A, crate::game::values::UiValue::List(images));
 }
 
-pub(super) fn write_explore_drop(fe: &FrontEnd, env: &mut FeEnv, drop: u32) {
+pub(super) fn write_explore_drop(fe: &mut FrontEnd, env: &mut FeEnv, drop: u32) {
+    fe.explore_list = crate::game::fe::explore::ExploreList::build(&fe.profile, drop);
+    let fe = &*fe;
     let Some(e) = fe.career.event(drop) else { return };
     let loc = &mut *env.loc;
     let v = &mut *env.values;
@@ -287,6 +294,7 @@ pub(super) fn write_rival_panel(fe: &FrontEnd, env: &mut FeEnv, drop: u32) {
 
 #[cfg(test)]
 mod tests {
+    use super::point_of;
     use ssx_assets::career::data::Drop;
     use ssx_assets::career::{CareerDb, DropType, Event, Peak};
     use ssx_formats::attrib::fnv1;
@@ -334,7 +342,7 @@ mod tests {
             unk_b683b553: Vec::new(),
             rivals: Vec::new(),
             forced: Vec::new(),
-            unk_63180fcc: false,
+            ghost_drop: false,
             unk_89d02fa4: false,
             unk_12bccfb5: 0,
             unk_0b03fc19: None,
@@ -343,7 +351,20 @@ mod tests {
             unk_links: [0; 3],
             peak_ref,
             helicopter: 0,
+            map_point: [0.0; 2],
         }
+    }
+
+    #[test]
+    fn a_drop_missing_from_droppos_takes_its_records_point() {
+        let positions = vec![("exp_japan1101_1_1_drop_survive".to_string(), 840.75, 237.5)];
+        let mut e = event(fnv1(b"exp_dlc_mnt_eddie_drop_2_trick"), 0, 0);
+        e.map_point = [864.0, 292.0];
+        assert_eq!(point_of(&positions, &e), (864.0, 292.0));
+        let mut listed = event(fnv1(b"exp_japan1101_1_1_drop_survive"), 0, 0);
+        listed.map_point = [840.0, 237.0];
+        assert_eq!(point_of(&positions, &listed), (840.75, 237.5));
+        assert_eq!(point_of(&positions, &event(1, 0, 0)), (0.0, 0.0));
     }
 
     #[test]

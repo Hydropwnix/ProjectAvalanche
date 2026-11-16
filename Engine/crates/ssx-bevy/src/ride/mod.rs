@@ -53,6 +53,7 @@ pub struct RideSetup {
     pub fixed_input: Option<Input>,
     pub jump_release: Vec<u32>,
     pub air_input: Option<Vec2>,
+    pub steer_from: Option<f32>,
     pub grab: Option<Vec2>,
     pub tweak: bool,
     pub shoulders: Option<[bool; 4]>,
@@ -72,6 +73,7 @@ pub struct RideSetup {
     pub setup: Option<ssx_physics::gear::GameSetup>,
     pub intro_visits: Option<u32>,
     pub own_tombstone: Option<ssx_physics::session::tombstones::OwnRecord>,
+    pub own_ghost: Option<(usize, ssx_assets::ghosts::GhostReplay)>,
     pub live: Option<live::LiveRules>,
     pub game_mode: Option<i64>,
     pub sim_content_id: Option<String>,
@@ -215,6 +217,7 @@ pub struct Ride {
     fixed_input: Option<Input>,
     jump_release: Vec<u32>,
     air_input: Option<Vec2>,
+    steer_from: Option<f32>,
     grab: Option<Vec2>,
     tweak: bool,
     shoulders: Option<[bool; 4]>,
@@ -239,6 +242,7 @@ pub struct Ride {
     wingsuit_script: Option<(f32, f32)>,
     ws_pressed: Option<f32>,
     ws_deployed: Option<f32>,
+    oxygen_held: bool,
     last_press_capture: f32,
     pub motion_blur_cue: i32,
     pub hold: bool,
@@ -270,6 +274,7 @@ pub struct Ride {
     pub pads_held: bool,
     pub chat_held: bool,
     pub pose_blocks: Option<ssx_physics::graph::LiveBlocks>,
+    pub ghost_rumble: ssx_physics::graph::LandingRumble,
     pub start_gate: live::StartGate,
     pub go_step: Option<u64>,
 }
@@ -307,6 +312,10 @@ impl Ride {
 
     pub fn step(&self) -> (&Pose, f32) {
         (&self.curr, self.step_ticks)
+    }
+
+    pub fn previous_step(&self) -> &Pose {
+        &self.prev
     }
 
     pub fn drawn_frame(&self) -> Option<DrawnFrame> {

@@ -137,6 +137,7 @@ pub struct CareerResults {
     pub medal: Option<ssx_assets::career::profile::Medal>,
     pub notices: Vec<ssx_assets::career::profile::Notice>,
     pub best_not_kept: Option<ssx_assets::career::profile::BestNotKept>,
+    pub keep_ghost: bool,
 }
 
 pub fn bonus_lines(
@@ -187,6 +188,14 @@ pub fn bonus_lines(
     out
 }
 
+pub fn measure(event_type: i32, points: u32, time_ms: u32, descent_mm: u32) -> (&'static str, u32) {
+    match event_type {
+        5..=7 => ("TXT_YOUR_TIME_COLON", time_ms),
+        3 | 4 => ("TXT_YOU_DESCENDED_COLON", descent_mm),
+        _ => ("TXT_YOUR_SCORE_COLON", points),
+    }
+}
+
 pub fn value_text(loc: &mut Localization, event_type: i32, v: u32) -> String {
     match event_type {
         0..=2 => loc.int(i64::from(v)),
@@ -211,17 +220,8 @@ pub fn post_results_with(values: &mut UiValues, loc: &mut Localization, r: &Resu
     } else {
         EVENT_TYPE_NAMES.get(r.event_type as usize).map_or(String::new(), |k| loc.text(k))
     };
-    let label_key = match r.event_type {
-        5..=7 => "TXT_YOUR_TIME_COLON",
-        3 | 4 => "TXT_YOU_DESCENDED_COLON",
-        _ => "TXT_YOUR_SCORE_COLON",
-    };
+    let (label_key, value) = measure(r.event_type, r.points, r.time_ms, r.descent_mm);
     let label = loc.text(label_key);
-    let value = match r.event_type {
-        5..=7 => r.time_ms,
-        3 | 4 => r.descent_mm,
-        _ => r.points,
-    };
     let score = value_text(loc, r.event_type, value);
     let complete = if explore { !r.failed && r.medal >= 0 } else { r.career.success };
     let success = if explore {

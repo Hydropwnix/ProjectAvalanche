@@ -398,6 +398,7 @@ pub struct SessionWorld<'a> {
     pub backwards: bool,
     pub stats: &'a mut crate::stats::StatsStore,
     pub ui_flags: &'a BTreeMap<u16, bool>,
+    pub presentation: &'a mut i32,
 }
 
 pub const UI_HUD_READY: u16 = 0x124;
@@ -440,7 +441,12 @@ fn player_value(x: &SessionWorld, name: &str) -> Option<GsValue> {
         "BLN_RewindEnabled" => Bool(x.rewind.enabled),
         "BLN_RewindCountInfinite" => Bool(x.rewind.infinite),
         "BLN_WingsuitEnabled" => Bool(s.wingsuit.enabled),
+        "BLN_HeliInteractionAllowed" => Bool(s.heli_interaction_allowed),
+        "BLN_GroundRayQueryEnabled" => Bool(s.ground_ray_query_enabled),
+        "BLN_ForceSpatialDataOutOfBoundsCorrectionOff" => Bool(s.boundary.correction_off),
         "BLN_EnableAirborneAutoUprighting" => Bool(s.airborne_auto_upright),
+        "FLT_BigHeadScale" => Float(s.big_head.head),
+        "FLT_BigHandsScale" => Float(s.big_head.hands),
         "FLT_HeadLampBatteryLevel" => Float(s.survival.head_lamp_battery),
         "FLT_PulseGogglesBatteryLevel" => Float(s.survival.pulse_goggles_battery),
         "FLT_VignetteHealth" => Float(s.survival.vignette_health),
@@ -586,6 +592,7 @@ impl ObjectiveWorld for SessionWorld<'_> {
             Effect::PostFxStop { name, .. } => {
                 self.postfx.remove(&*name.text);
             }
+            Effect::AudioSetPresentationType(t) => *self.presentation = *t,
             Effect::SetStatsWriteable(b) => self.stats.writeable = *b,
             Effect::AwardTrackBonus { bonus, .. } => self.stats.award(&bonus.text, 0),
             Effect::AwardBadge { badge, .. } => self.stats.award(&badge.text, 2),
@@ -621,6 +628,8 @@ impl SessionWorld<'_> {
             (true, "BLN_WingsuitEnabled", GsValue::Bool(b)) => self.s.wingsuit.enabled = b,
             (true, "BLN_EnableAirborneAutoUprighting", GsValue::Bool(b)) => self.s.airborne_auto_upright = b,
             (true, "BLN_ForceDescentInAir", GsValue::Bool(b)) => self.event.setup.force_descent_in_air = b,
+            (true, "FLT_BigHeadScale", GsValue::Float(v)) => self.s.big_head.head = v,
+            (true, "FLT_BigHandsScale", GsValue::Float(v)) => self.s.big_head.hands = v,
             (true, "BLN_ForceCaptureScoring", GsValue::Bool(b)) => self.s.score.force_capture = b,
             (true, "BLN_ForceResetScoring", GsValue::Bool(b)) => self.s.score.overrides.force_reset = b,
             (true, "BLN_ForceAwesomeOn", GsValue::Bool(b)) => self.s.score.overrides.force_awesome_on = b,
@@ -641,6 +650,10 @@ impl SessionWorld<'_> {
             }
             (false, "BLN_HeliReverseCamLevel", GsValue::Bool(b)) if entity.is("DropHeli") => self.heli.reverse_cam = b,
             (true, "BLN_HeliInteractionAllowed", GsValue::Bool(b)) => self.s.heli_interaction_allowed = b,
+            (true, "BLN_GroundRayQueryEnabled", GsValue::Bool(b)) => self.s.ground_ray_query_enabled = b,
+            (true, "BLN_ForceSpatialDataOutOfBoundsCorrectionOff", GsValue::Bool(b)) => {
+                self.s.boundary.correction_off = b
+            }
             (true, "BLN_AllowRaceEnd", GsValue::Bool(b)) => self.s.allow_race_end = b,
             (true, "BLN_InterceptPositionValid", GsValue::Bool(b)) if self.intercept.is_some() => {
                 self.intercept.as_deref_mut().into_iter().for_each(|i| i.valid = b)

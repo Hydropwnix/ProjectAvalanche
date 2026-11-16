@@ -254,11 +254,14 @@ fn a_cancelled_join_leaves_nothing_behind() {
     assert!(out.cancelled, "{out:?}");
     let known = std::fs::read_to_string(home.join(ssx_net_join::KNOWN_SERVERS_FILE)).unwrap_or_default();
     assert!(!known.contains(&addr.to_string()), "no key pinned: {known}");
-    let joined = match wait(&JoinTask::spawn(request(), None, with()).expect("thread")) {
+    let mut joined = match wait(&JoinTask::spawn(request(), None, with()).expect("thread")) {
         Ok(joined) => joined,
         Err(failed) => panic!("the next join is granted: {failed:?}"),
     };
     assert_eq!(joined.server, addr);
+    let pinned = joined.pinned.take().expect("a new key is pinned").recv_timeout(Duration::from_secs(15));
+    let pinned = pinned.expect("the pin's write is reported");
+    assert_eq!(pinned.result, Ok(()), "the pin is written: {pinned:?}");
     let known = std::fs::read_to_string(home.join(ssx_net_join::KNOWN_SERVERS_FILE)).expect("pinned now");
     assert!(known.contains(&addr.to_string()));
     server.stop();

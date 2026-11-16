@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use ssx_formats::attrib::collection::{self, Collection, DecodedCollection, FieldData};
+use ssx_formats::attrib::collection::{self, Collection, DecodedCollection, Field, FieldData};
 use ssx_formats::attrib::{Schema, Value, Vault, fnv1};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -150,85 +150,87 @@ pub fn ui_drop_records(
     let mut out = Vec::new();
     for (i, c) in cols.iter().enumerate().filter(|(_, c)| c.class == CLASS_UI_DROP) {
         let fields = collection::with_inherited(cols, decoded, index, i)?;
-        let field = |k: u32| fields.iter().find(|(_, f)| f.key == k).map(|(_, f)| &f.data);
-        let drop_key = field(FIELD_UI_DROP_GE_DROP)
-            .and_then(|d| {
-                values(d).into_iter().find_map(|v| if let Value::Ref(r) = v { Some(r.collection) } else { None })
-            })
-            .unwrap_or(0);
-        let event_type = field(FIELD_UI_DROP_EVENT_TYPE).and_then(|d| match values(d).first() {
-            Some(Value::Raw { bytes, .. }) if bytes.len() >= 4 => {
-                EventType::from_raw(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-            }
-            _ => None,
-        });
-        let texts = |k: u32| -> Vec<String> {
-            field(k).map_or_else(Vec::new, |d| {
-                values(d)
-                    .into_iter()
-                    .filter_map(|v| if let Value::Text(Some(t)) = v { Some(t.clone()) } else { None })
-                    .collect()
-            })
-        };
-        let name = texts(FIELD_UI_DROP_NAME).into_iter().next().unwrap_or_else(|| format!("{:08x}", c.key));
-        let required_equipment = field(FIELD_UI_DROP_REQ_EQUIPMENT).map_or_else(Vec::new, |d| {
+        out.push(ui_drop_record(c.key, &fields.into_iter().map(|(_, f)| f).collect::<Vec<_>>()));
+    }
+    Ok(out)
+}
+
+pub fn ui_drop_record(key: u32, fields: &[&Field]) -> UiDropRecord {
+    let field = |k: u32| fields.iter().find(|f| f.key == k).map(|f| &f.data);
+    let drop_key = field(FIELD_UI_DROP_GE_DROP)
+        .and_then(|d| values(d).into_iter().find_map(|v| if let Value::Ref(r) = v { Some(r.collection) } else { None }))
+        .unwrap_or(0);
+    let event_type = field(FIELD_UI_DROP_EVENT_TYPE).and_then(|d| match values(d).first() {
+        Some(Value::Raw { bytes, .. }) if bytes.len() >= 4 => {
+            EventType::from_raw(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        }
+        _ => None,
+    });
+    let texts = |k: u32| -> Vec<String> {
+        field(k).map_or_else(Vec::new, |d| {
             values(d)
                 .into_iter()
-                .filter_map(|v| match v {
-                    Value::Raw { bytes, .. } if bytes.len() >= 4 => {
-                        Some(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-                    }
-                    _ => None,
-                })
+                .filter_map(|v| if let Value::Text(Some(t)) = v { Some(t.clone()) } else { None })
                 .collect()
-        });
-        let forced = |k: usize| {
-            field(FIELD_UI_DROP_FORCED_LOADOUT).map_or(0, |d| match values(d).get(k).copied() {
-                Some(Value::Ref(r)) => r.collection,
-                _ => 0,
-            })
-        };
-        let slot_counts = field(FIELD_UI_DROP_SLOT_COUNTS).map(|d| {
-            let mut out = [0u32; 5];
-            for (o, v) in out.iter_mut().zip(values(d)) {
-                *o = match v {
-                    Value::UInt8(b) => u32::from(*b).min(4),
-                    Value::UInt32(w) => (*w & 0xFF).min(4),
-                    _ => 0,
-                };
-            }
-            out
-        });
-        let word = |k: u32| {
-            field(k).and_then(|d| match values(d).first().copied() {
-                Some(Value::UInt32(v)) => Some(*v as i32),
-                Some(Value::Int32(v)) => Some(*v),
-                Some(Value::Raw { bytes, .. }) if bytes.len() >= 4 => {
-                    Some(i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        })
+    };
+    let name = texts(FIELD_UI_DROP_NAME).into_iter().next().unwrap_or_else(|| format!("{key:08x}"));
+    let required_equipment = field(FIELD_UI_DROP_REQ_EQUIPMENT).map_or_else(Vec::new, |d| {
+        values(d)
+            .into_iter()
+            .filter_map(|v| match v {
+                Value::Raw { bytes, .. } if bytes.len() >= 4 => {
+                    Some(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
                 }
                 _ => None,
             })
-        };
-        let text = |k: u32| texts(k).into_iter().next().filter(|t| !t.is_empty());
-        out.push(UiDropRecord {
-            name,
-            key: c.key,
-            drop_key,
-            event_type,
-            scripts: texts(FIELD_UI_DROP_SCRIPTS),
-            avalanche_scripts: texts(FIELD_UI_DROP_AVALANCHE_SCRIPTS),
-            required_equipment,
-            forced: std::array::from_fn(forced),
-            slot_counts,
-            title: text(FIELD_UI_DROP_HUD_TITLE),
-            body: text(FIELD_UI_DROP_HUD_BODY),
-            parameter: word(FIELD_UI_DROP_MESSAGE_PARAMETER).unwrap_or(0),
-            kind: word(FIELD_UI_DROP_TYPE).unwrap_or(0),
-            places: field(FIELD_UI_DROP_PLACES).and_then(|d| values(d).first().and_then(|v| int_of(v))),
-            goal: field(FIELD_UI_DROP_TARGETS).and_then(|d| values(d).into_iter().find_map(int_of)),
-        });
+            .collect()
+    });
+    let forced = |k: usize| {
+        field(FIELD_UI_DROP_FORCED_LOADOUT).map_or(0, |d| match values(d).get(k).copied() {
+            Some(Value::Ref(r)) => r.collection,
+            _ => 0,
+        })
+    };
+    let slot_counts = field(FIELD_UI_DROP_SLOT_COUNTS).map(|d| {
+        let mut out = [0u32; 5];
+        for (o, v) in out.iter_mut().zip(values(d)) {
+            *o = match v {
+                Value::UInt8(b) => u32::from(*b).min(4),
+                Value::UInt32(w) => (*w & 0xFF).min(4),
+                _ => 0,
+            };
+        }
+        out
+    });
+    let word = |k: u32| {
+        field(k).and_then(|d| match values(d).first().copied() {
+            Some(Value::UInt32(v)) => Some(*v as i32),
+            Some(Value::Int32(v)) => Some(*v),
+            Some(Value::Raw { bytes, .. }) if bytes.len() >= 4 => {
+                Some(i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+            }
+            _ => None,
+        })
+    };
+    let text = |k: u32| texts(k).into_iter().next().filter(|t| !t.is_empty());
+    UiDropRecord {
+        name,
+        key,
+        drop_key,
+        event_type,
+        scripts: texts(FIELD_UI_DROP_SCRIPTS),
+        avalanche_scripts: texts(FIELD_UI_DROP_AVALANCHE_SCRIPTS),
+        required_equipment,
+        forced: std::array::from_fn(forced),
+        slot_counts,
+        title: text(FIELD_UI_DROP_HUD_TITLE),
+        body: text(FIELD_UI_DROP_HUD_BODY),
+        parameter: word(FIELD_UI_DROP_MESSAGE_PARAMETER).unwrap_or(0),
+        kind: word(FIELD_UI_DROP_TYPE).unwrap_or(0),
+        places: field(FIELD_UI_DROP_PLACES).and_then(|d| values(d).first().and_then(|v| int_of(v))),
+        goal: field(FIELD_UI_DROP_TARGETS).and_then(|d| values(d).into_iter().find_map(int_of)),
     }
-    Ok(out)
 }
 
 pub fn load_ui_drops(big_root: &Path) -> Result<Vec<UiDropRecord>> {

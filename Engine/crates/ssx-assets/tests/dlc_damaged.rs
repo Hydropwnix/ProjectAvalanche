@@ -43,7 +43,7 @@ fn package(dlc_root: &Path, name: &str) -> PathBuf {
     std::fs::write(root.join("dlc.toc"), toc).unwrap();
     let data = root.join("data/xenon/attribdb");
     let decode = root.join("bootcache/data/xenon/attribdb");
-    write_pair(&data, &format!("dlc_{name}"), one_collection_pair(&format!("{name}/row")));
+    write_pair(&data, name, one_collection_pair(&format!("{name}/row")));
     write_pair(&data, "ge_attribdb", one_collection_pair(&format!("{name}/ge")));
     write_pair(&decode, "ge_attribdb", one_collection_pair(&format!("{name}/ge")));
     write_pair(&decode, "attribdb_schema", schema_pair());

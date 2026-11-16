@@ -15,6 +15,8 @@ use super::world_tour;
 use crate::sfx::settings::AudioSettings;
 use crate::sfx::store::AudioStore;
 
+pub mod ghosts;
+
 pub const PROFILE_GROUP: &str = "SSXV_PROFILE";
 
 #[derive(Clone, Debug)]
@@ -61,14 +63,38 @@ impl SaveSchema {
         self.field(table, field).map(|f| f.short.clone())
     }
 
-    pub fn coded(&self, table: &str, field: &str) -> Result<(String, bool)> {
+    fn coding(&self, table: &str, field: &str) -> Result<(String, Coding)> {
         let f = self.field(table, field)?;
-        Ok((f.short.clone(), stored_offset_binary(f)))
+        Ok((f.short.clone(), Coding::of(f)))
     }
 
     fn field<'a>(&'a self, table: &str, field: &str) -> Result<&'a ssx_formats::t3db::MetaField> {
         let t = self.meta.table(table).ok_or_else(|| anyhow!("schema has no table {table}"))?;
         t.fields.iter().find(|f| f.name == field).ok_or_else(|| anyhow!("no {table}.{field}"))
+    }
+
+    fn layout(&self, db: &Database) -> Layout {
+        if !self.offset_binary(db) {
+            Layout::PortRaw
+        } else if self.narrow_raw(db) {
+            Layout::PortNarrowRaw
+        } else {
+            Layout::Game
+        }
+    }
+
+    // PORT(choice): saves the port wrote from 2026-11-12 to 2026-11-15 hold the 32-bit fields encoded but `GEARTYPE` /
+    // `STATTYPE1…6` raw; such a save is recognised by a stored value the game's layout cannot hold — every generated
+    // row has one, as the disc's and the packages' templates carry at most three stats and the perk, so two of the
+    // six stat types are −1 (127); the console writes only its own layout.
+    fn narrow_raw(&self, db: &Database) -> bool {
+        self.meta.tables.iter().any(|mt| {
+            let Some(t) = db.table(&mt.short) else { return false };
+            mt.fields.iter().filter(|f| f.depth < 32 && f.range.0 != 0).any(|f| {
+                let c = Coding::of(f);
+                t.live_rows().any(|r| t.get(r, &f.short).is_some_and(|v| c.beyond_range(v)))
+            })
+        })
     }
 
     fn offset_binary(&self, db: &ssx_formats::t3db::Database) -> bool {
@@ -167,14 +193,67 @@ impl SaveExtras {
 const RIDER_SLOTS: [&str; 10] =
     ["SUIT", "BOARD", "GEAR0", "GEAR1", "GEAR2", "GEAR3", "GEOTAG0", "GEOTAG1", "GEOTAG2", "GEOTAG3"];
 
-// TODO(guess): the flip's place in the game is not found, so the rule is generalised from those values to every
-// signed 32-bit field; tried: `T3db_PutField` 0x830161C8 and the getter 0x830160F0 move the bits unchanged, the
-// profile getter 0x824A8A28 -> 0x83030A38 -> 0x8302B6A8 returns the query's 4-byte cell (+0x28) unchanged, the
-// insert 0x8301DC50 passes the caller's values through, and an `xoris 0x8000` scan of the image found no flip; not
-// traced: the lazy cell fill (0x8302B6A8 calls the column's +0x10 for a type-3 or 0xDEAD cell). It is not
-// `value − rangelow`: the 7-bit `STATTYPE1…6` (`rangelow` −1) hold a real 33 raw. Settle: that callback's conversion.
-fn stored_offset_binary(f: &ssx_formats::t3db::MetaField) -> bool {
-    f.depth == 32 && f.range.0 < 0
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Coding {
+    low: i64,
+    high: i64,
+    depth: u32,
+}
+
+impl Coding {
+    fn of(f: &ssx_formats::t3db::MetaField) -> Self {
+        Coding { low: f.range.0, high: f.range.1, depth: f.depth }
+    }
+
+    fn encode(self, value: u32) -> u32 {
+        value.wrapping_sub(self.low as u32)
+    }
+
+    fn decode(self, stored: u32) -> u32 {
+        stored.wrapping_add(self.low as u32)
+    }
+
+    fn decode_raw(self, stored: u32) -> u32 {
+        if self.depth < 32 && self.low < 0 && i64::from(stored) > self.high {
+            stored.wrapping_sub(1 << self.depth)
+        } else {
+            stored
+        }
+    }
+
+    fn beyond_range(self, stored: u32) -> bool {
+        i64::from(stored) > self.high - self.low
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Layout {
+    Game,
+    PortNarrowRaw,
+    PortRaw,
+}
+
+impl Layout {
+    fn decode(self, c: Coding, stored: u32) -> u32 {
+        match self {
+            Layout::Game => c.decode(stored),
+            Layout::PortNarrowRaw if c.depth >= 32 => c.decode(stored),
+            Layout::PortNarrowRaw | Layout::PortRaw => c.decode_raw(stored),
+        }
+    }
+}
+
+type ModeRecords = BTreeMap<u32, [u32; 5]>;
+
+// PORT(choice): the port wrote these records as `{mode 0…3, 0}` until 2026-11-15, one word off the game's; such a save
+// is recognised by no record holding its key in word 0 — the game's sign-in runs `Profile_UnlockDrop` 0x8258DE58, which
+// writes the key there, on every Explore drop, so a console profile with records always has one (the user's level-15
+// save: all 30 peaks and 11 ranges) — and its words move up by one behind the key (its fifth word, never written by the
+// port, is dropped); the console writes only its own layout.
+fn mode_records(peaks: &[(u32, [u32; 5])], ranges: &[(u32, [u32; 5])]) -> (ModeRecords, ModeRecords) {
+    let game = peaks.iter().chain(ranges).any(|&(key, words)| words[0] == key);
+    let record = |&(key, w): &(u32, [u32; 5])| (key, if game { w } else { [key, w[0], w[1], w[2], w[3]] });
+    (peaks.iter().map(record).collect(), ranges.iter().map(record).collect())
 }
 
 fn stat(key: u32, value: u32) -> StatRecord {
@@ -263,20 +342,20 @@ impl Profile {
         }
         let cap = |s: &str| group_tables.iter().find(|(n, _)| n == s).map_or(0, |(_, c)| *c);
         let f = |t: &str, n: &str| schema.short(t, n);
-        let coded: std::collections::BTreeMap<(String, String), bool> = schema
+        let codings: BTreeMap<(String, String), Coding> = schema
             .meta
             .tables
             .iter()
-            .flat_map(|t| t.fields.iter().map(move |f| ((t.short.clone(), f.short.clone()), stored_offset_binary(f))))
-            .filter(|(_, signed)| *signed)
+            .flat_map(|t| t.fields.iter().map(move |f| ((t.short.clone(), f.short.clone()), Coding::of(f))))
             .collect();
         let mut put_table = |name: &str, mut rows: Vec<Vec<(String, u32)>>| -> Result<()> {
             let short = schema.table_short(name)?;
             for row in &mut rows {
                 for (field, value) in row {
-                    if coded.contains_key(&(short.clone(), field.clone())) {
-                        *value ^= 0x8000_0000;
-                    }
+                    let c = codings
+                        .get(&(short.clone(), field.clone()))
+                        .ok_or_else(|| anyhow!("the schema has no {name}.{field}"))?;
+                    *value = c.encode(*value);
                 }
             }
             let t = db.table_mut(&short).ok_or_else(|| anyhow!("ssxv.db has no {short}"))?;
@@ -334,7 +413,7 @@ impl Profile {
             let mut r = vec![
                 (f(t, "DROPID")?, drop),
                 (f(t, "SCORE")?, e.score),
-                (f(t, "SCOREMODIFIED")?, e.unk_score_modified),
+                (f(t, "SCOREMODIFIED")?, e.score_modified),
                 (f(t, "ATTEMPTS")?, e.attempts),
                 (f(t, "ATTEMPTSREMAINING")?, e.unk_attempts_remaining),
                 (f(t, "DEATHS")?, e.deaths),
@@ -402,15 +481,15 @@ impl Profile {
         let c = &file.chunks;
         let mut p = Profile::default();
         let db = DatabaseChunk::parse(&c[0])?.database()?;
-        let coded = schema.offset_binary(&db);
+        let layout = schema.layout(&db);
         let table = |name: &str| -> Result<&Table> {
             let s = schema.table_short(name)?;
             db.table(&s).ok_or_else(|| anyhow!("the save has no table {name}"))
         };
         let get = |t: &Table, row: usize, name: &str, field: &str| -> Result<u32> {
-            let (short, flip) = schema.coded(name, field)?;
+            let (short, coding) = schema.coding(name, field)?;
             let v = t.get(row, &short).ok_or_else(|| anyhow!("{name}.{field} row {row}"))?;
-            Ok(if coded && flip { v ^ 0x8000_0000 } else { v })
+            Ok(layout.decode(coding, v))
         };
         let t = table("attribs")?;
         for r in t.live_rows() {
@@ -465,14 +544,13 @@ impl Profile {
                 attempts: g("ATTEMPTS")?,
                 deaths: g("DEATHS")?,
                 rewinds: g("REWINDS")?,
-                unk_score_modified: g("SCOREMODIFIED")?,
+                score_modified: g("SCOREMODIFIED")?,
                 unk_attempts_remaining: g("ATTEMPTSREMAINING")?,
             };
             p.explore_scores.insert(g("DROPID")?, e);
         }
         let flow = FlowChunk::parse(&c[2])?;
-        p.peak_modes = flow.peaks.iter().copied().collect();
-        p.range_modes = flow.ranges.iter().copied().collect();
+        (p.peak_modes, p.range_modes) = mode_records(&flow.peaks, &flow.ranges);
         for &(k, s) in &flow.drops {
             let s = match s {
                 0 => DropState::Locked,
@@ -563,11 +641,11 @@ fn generated_row(g: &GeneratedItem, f: &dyn Fn(&str, &str) -> Result<String>) ->
 }
 
 fn read_generated(g: &dyn Fn(&str) -> Result<u32>) -> Result<GeneratedItem> {
-    let signed7 = |v: u32| if v == 0x7F { -1 } else { i64::from(v) };
+    let signed = |v: u32| i64::from(v as i32);
     let mut item = GeneratedItem {
         equip_id: g("EQUIPID")?,
         kind: i64::from(g("TYPE")?),
-        slot: signed7(g("GEARTYPE")?),
+        slot: signed(g("GEARTYPE")?),
         level: i64::from(g("LEVEL")?),
         rarity: i64::from(g("RARITY")?),
         cost: i64::from(g("COST")? as i32),
@@ -584,7 +662,7 @@ fn read_generated(g: &dyn Fn(&str) -> Result<u32>) -> Result<GeneratedItem> {
         ..Default::default()
     };
     for (i, stat) in item.stats.iter_mut().enumerate() {
-        *stat = (signed7(g(&format!("STATTYPE{}", i + 1))?), g(&format!("STAT{}", i + 1))? as u8);
+        *stat = (signed(g(&format!("STATTYPE{}", i + 1))?), g(&format!("STAT{}", i + 1))? as u8);
     }
     Ok(item)
 }
@@ -603,7 +681,7 @@ mod tests {
 
     type TestTable = (&'static str, &'static str, i64, &'static str, Vec<(String, u32)>);
 
-    fn schema_with(signed: bool) -> SaveSchema {
+    pub(super) fn schema_with(wide: bool, narrow: bool) -> SaveSchema {
         let slots = RIDER_SLOTS
             .iter()
             .flat_map(|s| [(format!("LASTEQUIPPED_{s}_ID"), 32), (format!("LASTEQUIPPED_{s}_SRC"), 2)]);
@@ -661,7 +739,13 @@ mod tests {
                 .map(|n| (n.to_string(), 32))
                 .collect(),
             ),
-            ("common_explore_scores", "tggg", 300, "SSXV_COMMON", vec![("TRACKID".into(), 32)]),
+            (
+                "common_explore_scores",
+                "tggg",
+                300,
+                "SSXV_COMMON",
+                vec![("TRACKID".into(), 32), ("SCORE".into(), 32), ("GHOSTID".into(), 9)],
+            ),
         ];
         let mut xml = String::from("<database name=\"x\" shortname=\"y\" version=\"6\">");
         let mut n = 0;
@@ -671,7 +755,14 @@ mod tests {
             );
             for (f, d) in fields {
                 n += 1;
-                let (low, high) = if signed && *d == 32 { ("-2147483648", "2147483647") } else { ("0", "1") };
+                let narrow_signed = f == "GEARTYPE" || (f.starts_with("STATTYPE") && f != "STATTYPEID");
+                let (low, high) = if wide && *d == 32 {
+                    ("-2147483648", "2147483647")
+                } else if narrow && narrow_signed {
+                    ("-1", "100")
+                } else {
+                    ("0", "1")
+                };
                 xml += &format!(
                     "<field name=\"{f}\" shortname=\"f{n:03}\" type=\"FIELDTYPE_INTEGER\" depth=\"{d}\" rangelow=\"{low}\" rangehigh=\"{high}\" />"
                 );
@@ -692,8 +783,81 @@ mod tests {
         }
     }
 
-    fn schema() -> SaveSchema {
-        schema_with(true)
+    pub(super) fn schema() -> SaveSchema {
+        schema_with(true, true)
+    }
+
+    fn board() -> GeneratedItem {
+        GeneratedItem {
+            equip_id: 0x249,
+            kind: 1,
+            slot: 0,
+            level: 14,
+            charlock: 0x50C4_98EB,
+            descriptions: [0x5BD0_D2B2, 0],
+            stats: [(0, 95), (1, 95), (2, 95), (-1, 0), (-1, 0), (31, 80)],
+            wall_id: -1,
+            ..Default::default()
+        }
+    }
+
+    fn stored_generated(s: &SaveSchema, file: &ProfileFile, field: &str) -> u32 {
+        let db = DatabaseChunk::parse(&file.chunks[0]).unwrap().database().unwrap();
+        let t = db.table(&s.table_short("equip_generated").unwrap()).unwrap();
+        let row = t.live_rows().next().unwrap();
+        t.get(row, &s.short("equip_generated", field).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn an_integer_is_stored_as_its_value_minus_rangelow() {
+        let s = schema();
+        let mut p = Profile::new();
+        p.generated.insert(0x249, board());
+        let file = p.to_save(&s, &SaveExtras::fresh()).unwrap();
+        let stored = |f: &str| stored_generated(&s, &file, f);
+        assert_eq!([stored("GEARTYPE"), stored("STATTYPE1"), stored("STATTYPE4"), stored("STATTYPE6")], [1, 1, 0, 32]);
+        assert_eq!([stored("TYPE"), stored("LEVEL"), stored("STAT6")], [1, 14, 80]);
+        assert_eq!([stored("EQUIPID"), stored("WALLID")], [0x8000_0249, 0x7FFF_FFFF]);
+        let (q, _) = Profile::from_save(&ProfileFile::parse(&file.write()).unwrap(), &s).unwrap();
+        assert_eq!(q.generated[&0x249], board());
+    }
+
+    #[test]
+    fn a_port_save_with_raw_narrow_fields_still_reads() {
+        let port = schema_with(true, false);
+        let s = schema();
+        let mut p = Profile::new();
+        p.generated.insert(0x249, board());
+        let file = p.to_save(&port, &SaveExtras::fresh()).unwrap();
+        assert_eq!([stored_generated(&s, &file, "GEARTYPE"), stored_generated(&s, &file, "STATTYPE4")], [0, 127]);
+        let (q, _) = Profile::from_save(&ProfileFile::parse(&file.write()).unwrap(), &s).unwrap();
+        assert_eq!(q.generated[&0x249], board());
+        let again = q.to_save(&s, &SaveExtras::fresh()).unwrap();
+        assert_eq!([stored_generated(&s, &again, "GEARTYPE"), stored_generated(&s, &again, "STATTYPE4")], [1, 0]);
+    }
+
+    #[test]
+    fn an_old_port_save_reads_its_mode_records() {
+        let s = schema();
+        let (japan, rockies, peak) = (0x1FB5_DE13, 0xF78F_F173, 0x89E6_E130);
+        let mut p = Profile::new();
+        p.range_modes.insert(japan, [japan, 1, 0, 0, 1]);
+        p.range_modes.insert(rockies, [rockies, 1, 2, 0, 1]);
+        p.peak_modes.insert(peak, [peak, 1, 1, 0, 1]);
+        let file = p.to_save(&s, &SaveExtras::fresh()).unwrap();
+        let (q, _) = Profile::from_save(&ProfileFile::parse(&file.write()).unwrap(), &s).unwrap();
+        assert_eq!((q.range_modes.clone(), q.peak_modes.clone()), (p.range_modes.clone(), p.peak_modes.clone()));
+        assert_eq!((q.range_word(1, japan), q.range_word(0, japan), q.range_word(1, rockies)), (0, 1, 2));
+        let mut old = file.clone();
+        let mut flow = FlowChunk::parse(&old.chunks[2]).unwrap();
+        for (_, w) in flow.ranges.iter_mut().chain(flow.peaks.iter_mut()) {
+            *w = [w[1], w[2], w[3], w[4], 0];
+        }
+        old.chunks[2] = flow.write();
+        let (q, _) = Profile::from_save(&ProfileFile::parse(&old.write()).unwrap(), &s).unwrap();
+        assert_eq!((q.range_modes.clone(), q.peak_modes.clone()), (p.range_modes.clone(), p.peak_modes.clone()));
+        let again = FlowChunk::parse(&q.to_save(&s, &SaveExtras::fresh()).unwrap().chunks[2]).unwrap();
+        assert_eq!(again.ranges, vec![(japan, [japan, 1, 0, 0, 1]), (rockies, [rockies, 1, 2, 0, 1])]);
     }
 
     #[test]
@@ -719,7 +883,7 @@ mod tests {
 
     #[test]
     fn an_old_raw_save_still_reads() {
-        let raw = schema_with(false);
+        let raw = schema_with(false, false);
         let signed = schema();
         let mut p = Profile::new();
         p.add_credits(12_345, true);
@@ -761,7 +925,7 @@ mod tests {
         p.explore_scores.insert(77, ExploreScore { score: 90_000, attempts: 2, ..Default::default() });
         p.drop_states.insert(77, DropState::Completed);
         p.drop_states.insert(78, DropState::Unlocked);
-        p.peak_modes.insert(3, [1, 0, 0, 1, 0]);
+        p.peak_modes.insert(3, [3, 1, 0, 0, 1]);
         p.chapter_drops = vec![78, 77];
         p.purchased.insert(77);
         p.medals.insert(77, [1, 1, 0]);
@@ -830,5 +994,56 @@ mod tests {
         q.medals.insert(77, [1, 0, 0]);
         let again = q.to_save(&s, &ex).unwrap().write();
         assert_eq!(again.len(), ssx_formats::save::PROFILE_BUFFER_SIZE);
+    }
+
+    #[test]
+    fn explore_score_rows_are_the_consoles() {
+        use crate::career::data::DropType;
+        use crate::career::profile::{EventOutcome, EventRule, Rules};
+        let s = schema();
+        let mut rules = Rules::default();
+        for name in ["best", "fell"] {
+            let rule = EventRule {
+                key: fnv1(name.as_bytes()),
+                name: name.into(),
+                drop_type: DropType::Explore,
+                event_type: 6,
+                reward: 0,
+                places: None,
+                goal: None,
+                cost: 0,
+                peak: 0,
+                range: 0,
+                ghost_drop: false,
+            };
+            rules.events.insert(rule.key, rule);
+        }
+        let run = |name: &str, value, failed, rewinds| EventOutcome {
+            event: fnv1(name.as_bytes()),
+            value,
+            failed,
+            rewinds,
+            splits: [7, 8, 9, 10],
+            ..Default::default()
+        };
+        let mut p = Profile::new();
+        p.apply_result(&rules, &run("best", 90_000, false, 2));
+        p.apply_result(&rules, &run("fell", 80_000, true, 3));
+        let fields = ["SCORE", "SCOREMODIFIED", "SPLIT1", "SPLIT2", "SPLIT4", "ATTEMPTS", "DEATHS", "REWINDS"];
+        let rows = |p: &Profile| {
+            let file = p.to_save(&s, &SaveExtras::fresh()).unwrap();
+            let db = DatabaseChunk::parse(&file.chunks[0]).unwrap().database().unwrap();
+            let t = db.table(&s.table_short("explore_scores").unwrap()).unwrap();
+            let value = |r, f: &str| t.get(r, &s.short("explore_scores", f).unwrap()).unwrap() ^ 0x8000_0000;
+            ["best", "fell"].map(|name| {
+                let r = t.live_rows().find(|&r| value(r, "DROPID") == fnv1(name.as_bytes())).unwrap();
+                fields.map(|f| value(r, f))
+            })
+        };
+        let [best, fell] = rows(&p);
+        assert_eq!(best, [90_000, u32::MAX, 7, 8, 10, 1, 0, 0]);
+        assert_eq!(fell, [u32::MAX, 0x8000_0000, u32::MAX, 0x8000_0000, 0x8000_0000, 2, 1, 0]);
+        p.apply_result(&rules, &run("fell", 70_000, false, 1));
+        assert_eq!(rows(&p)[1], [70_000, u32::MAX, 7, 8, 10, 3, 1, 0]);
     }
 }

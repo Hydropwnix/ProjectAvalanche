@@ -205,6 +205,7 @@ pub(super) mod gpu {
 
     use super::super::SkySettings;
     use super::{EFFECT, MeshData, MidgroundPartUniform, MidgroundViewUniform, TECHNIQUE};
+    use crate::render::buffers::{filled_buffer, filled_uniform};
 
     const SHADER: &str = "embedded://ssx_bevy/render/sky/midground.wgsl";
 
@@ -353,11 +354,7 @@ pub(super) mod gpu {
             buffers.meshes.entry(key).or_insert_with(|| {
                 let m = &p.mesh;
                 let vertex = |label: &'static str, floats: &[f32]| {
-                    device.create_buffer_with_data(&BufferInitDescriptor {
-                        label: Some(label),
-                        contents: &float_bytes(floats),
-                        usage: BufferUsages::VERTEX,
-                    })
+                    filled_buffer(&device, &queue, label, &float_bytes(floats), BufferUsages::VERTEX)
                 };
                 let streams = [
                     vertex("ssx_midground_positions", m.positions.as_flattened()),
@@ -365,11 +362,9 @@ pub(super) mod gpu {
                     vertex("ssx_midground_tangents", m.tangents.as_flattened()),
                     vertex("ssx_midground_uvs", m.uvs.as_flattened()),
                 ];
-                let indices = device.create_buffer_with_data(&BufferInitDescriptor {
-                    label: Some("ssx_midground_indices"),
-                    contents: &m.indices.iter().flat_map(|i| i.to_le_bytes()).collect::<Vec<u8>>(),
-                    usage: BufferUsages::INDEX,
-                });
+                let index_bytes: Vec<u8> = m.indices.iter().flat_map(|i| i.to_le_bytes()).collect();
+                let indices =
+                    filled_buffer(&device, &queue, "ssx_midground_indices", &index_bytes, BufferUsages::INDEX);
                 (p.mesh.clone(), MeshBuffers { streams, indices, count: m.indices.len() as u32 })
             });
         }
@@ -406,24 +401,27 @@ pub(super) mod gpu {
                     view_formats: &[],
                 },
             );
-            let mut view_uniform = UniformBuffer::from(MidgroundViewUniform {
-                view_from_world: view.world_from_view.to_matrix().inverse(),
-                clip_from_view: view.clip_from_view,
-                camera: view.world_from_view.translation().extend(1.0),
-            });
-            view_uniform.write_buffer(&device, &queue);
+            let view_uniform = filled_uniform(
+                &device,
+                &queue,
+                "ssx_midground_view",
+                &MidgroundViewUniform {
+                    view_from_world: view.world_from_view.to_matrix().inverse(),
+                    clip_from_view: view.clip_from_view,
+                    camera: view.world_from_view.translation().extend(1.0),
+                },
+            );
             let mut draws = Vec::new();
             for p in &mg.parts {
                 let tex: Option<Vec<&GpuImage>> = p.textures.iter().map(|h| images.get(h)).collect();
                 let Some(tex) = tex else { continue };
-                let mut part_uniform = UniformBuffer::from(p.uniform);
-                part_uniform.write_buffer(&device, &queue);
+                let part_uniform = filled_uniform(&device, &queue, "ssx_midground_part", &p.uniform);
                 let bind_group = device.create_bind_group(
                     "ssx_midground",
                     &layout,
                     &BindGroupEntries::sequential((
-                        view_uniform.binding().expect("written"),
-                        part_uniform.binding().expect("written"),
+                        view_uniform.as_entire_binding(),
+                        part_uniform.as_entire_binding(),
                         &tex[0].texture_view,
                         &tex[1].texture_view,
                         &tex[2].texture_view,

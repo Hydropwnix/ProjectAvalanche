@@ -56,6 +56,7 @@ fn protocol(what: &str) -> Error {
 #[derive(Clone, Copy, Debug)]
 pub enum Arg<'a> {
     Str(&'a str),
+    I32(i32),
     U32(u32),
     U64(u64),
 }
@@ -64,6 +65,7 @@ impl Arg<'_> {
     fn code(&self) -> u8 {
         match self {
             Arg::Str(_) => b's',
+            Arg::I32(_) => b'i',
             Arg::U32(_) => b'u',
             Arg::U64(_) => b't',
         }
@@ -253,6 +255,10 @@ fn method_call(serial: u32, dest: &str, path: &str, iface: &str, member: &str, a
     for arg in args {
         match *arg {
             Arg::Str(s) => string(&mut m, s),
+            Arg::I32(v) => {
+                pad(&mut m, 4);
+                m.extend_from_slice(&v.to_le_bytes());
+            }
             Arg::U32(v) => {
                 pad(&mut m, 4);
                 m.extend_from_slice(&v.to_le_bytes());
@@ -583,6 +589,10 @@ mod tests {
         assert_eq!((msg.kind, msg.signature.as_slice()), (METHOD_CALL, b"tu".as_slice()));
         assert_eq!(&msg.body[..8], &1234u64.to_le_bytes());
         assert_eq!(&msg.body[8..], &10u32.to_le_bytes());
+        let m = method_call(8, RTKIT, "/p", RTKIT, "MakeThreadHighPriority", &[Arg::U64(1234), Arg::I32(-11)]);
+        let msg = whole(&m).unwrap();
+        assert_eq!(msg.signature.as_slice(), b"ti".as_slice());
+        assert_eq!(&msg.body[8..], &(-11i32).to_le_bytes());
         let hello = whole(&method_call(1, "a.b", "/a", "a.b", "Hello", &[])).unwrap();
         assert!(hello.signature.is_empty() && hello.body.is_empty());
     }
