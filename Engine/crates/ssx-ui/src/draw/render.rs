@@ -359,7 +359,7 @@ impl Renderer {
             check_grow_cell(lib, player, id, inst, &inh.xf.mul(&matrix), &inh.cx.concat(&inst.cxform));
         }
         if !inh.mask {
-            test_peak_path(inst, &inh, out);
+            test_peak_path(player, id, inst, &inh, out);
         }
         let here = Inherited {
             xf: inh.xf.mul(&matrix),
@@ -1245,6 +1245,16 @@ static RENDER_FRAME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 /// The frame the path was last drawn in (once a frame).
 static TEST_PEAK_PATH_DRAWN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
 
+/// The test peak's markers as the screen draws them: each one's place in the drop screen's places and its clip.
+#[allow(clippy::type_complexity)]
+static TEST_PEAK_MARKERS: std::sync::Mutex<Vec<((f32, f32), InstanceId)>> = std::sync::Mutex::new(Vec::new());
+
+pub fn set_test_peak_markers(markers: Vec<((f32, f32), InstanceId)>) {
+    if let Ok(mut m) = TEST_PEAK_MARKERS.lock() {
+        *m = markers;
+    }
+}
+
 pub fn set_test_peak_path(path: Option<(Vec<(f32, f32)>, (f32, f32))>) {
     if let Ok(mut p) = TEST_PEAK_PATH.lock() {
         *p = path;
@@ -1254,18 +1264,47 @@ pub fn set_test_peak_path(path: Option<(Vec<(f32, f32)>, (f32, f32))>) {
 /// A port mod (the test peak): its drop screen's path, a swerving glowing line through its markers on down the
 /// mountain to where the snow ends, pulsing as the game's peaks' drop lines do. It's drawn in the space of the first
 /// marker drawn (a clip the screen puts at a drop's place), under it.
-fn test_peak_path(inst: &Instance, inh: &Inherited, out: &mut Vec<Command>) {
+fn test_peak_path(player: &Player, id: InstanceId, inst: &Instance, inh: &Inherited, out: &mut Vec<Command>) {
     let Ok(guard) = TEST_PEAK_PATH.lock() else { return };
-    let Some((points, chosen)) = guard.as_ref() else { return };
-    let (mx, my) = (inst.matrix.tx / 20.0, inst.matrix.ty / 20.0);
-    let at = |p: &(f32, f32)| (mx - p.0).abs() <= 0.5 && (my - p.1).abs() <= 0.5;
-    if !(at(chosen) || points.iter().any(at)) || !matches!(inst.kind, InstanceKind::Sprite(_)) {
+    let Some((points, _)) = guard.as_ref() else { return };
+    let Ok(markers) = TEST_PEAK_MARKERS.lock() else { return };
+    if !markers.iter().any(|&(_, m)| m == id) {
         return;
     }
     let frame = RENDER_FRAME.load(std::sync::atomic::Ordering::Relaxed);
     if TEST_PEAK_PATH_DRAWN.swap(frame, std::sync::atomic::Ordering::Relaxed) == frame {
         return;
     }
+    // (the screen puts its markers in a space of its own, scaled and moved from the drop screen's places: that's worked
+    // out from the markers beside this one (each axis a scale and a shift, fitted), so the line, made in the drop
+    // screen's places, is drawn through them)
+    let pairs: Vec<((f32, f32), (f32, f32))> = markers
+        .iter()
+        .filter_map(|&(p, m)| {
+            let i = player.get(m)?;
+            let w = player.world_matrix(m);
+            i.visible.then_some((p, (w.tx / 20.0, w.ty / 20.0)))
+        })
+        .collect();
+    let fit = |f: fn(&((f32, f32), (f32, f32))) -> (f32, f32)| {
+        let n = pairs.len().max(1) as f32;
+        let (sx, sy) = pairs.iter().map(f).fold((0.0, 0.0), |a, (x, y)| (a.0 + x, a.1 + y));
+        let (mx, my) = (sx / n, sy / n);
+        let (sxy, sxx) =
+            pairs.iter().map(f).fold((0.0, 0.0), |a, (x, y)| (a.0 + (x - mx) * (y - my), a.1 + (x - mx).powi(2)));
+        if pairs.len() < 2 || sxx < 1e-3 {
+            return (1.0, my - mx);
+        }
+        let a = sxy / sxx;
+        (a, my - a * mx)
+    };
+    let (ax, bx) = fit(|&((x, _), (u, _))| (x, u));
+    let (ay, by) = fit(|&((_, y), (_, v))| (y, v));
+    ssx_assets::content::data::dev_peak::note(format!(
+        "test peak: path under `{}` ({} markers): x*{ax:.3}+{bx:.1}, y*{ay:.3}+{by:.1}",
+        inst.name,
+        pairs.len()
+    ));
     // (a Catmull-Rom curve through the points, a dozen steps a span: it swerves through each)
     let mut line: Vec<(f32, f32)> = Vec::new();
     let n = points.len();
@@ -1283,16 +1322,15 @@ fn test_peak_path(inst: &Instance, inh: &Inherited, out: &mut Vec<Command>) {
         }
     }
     line.push(points[n - 1]);
-    // (the game's drop lines are hand-drawn: swerves along the way and a fine jagged wobble throughout. Here the curve,
-    // walked a stage pixel at a time, is pushed sideways by a few waves of their sizes: a wide slow one, a middle one
-    // and short sharp ones, the same each frame)
+    // (the game's drop lines swerve: here, walked a stage pixel at a time, the curve bows out to one side between each
+    // pair of points and to the other side on the next (a half wave a span, so it flows smoothly through each marker),
+    // by more on some spans than others; the same each frame)
     let mut walked: Vec<(f32, f32)> = vec![line[0]];
     let mut along = vec![0.0f32];
-    // (how far along each marker is: the line's points start a span of 12 at each of the path's points, the markers
-    // first (all but the 3 of the tail))
+    // (how far along each of the path's points is: the line's points start a span of 12 at each)
     let mut marks = vec![0.0f32];
     for (j, w) in line.windows(2).enumerate() {
-        if j % 12 == 0 && j / 12 < n.saturating_sub(3) {
+        if j % 12 == 0 && j > 0 {
             marks.push(along.last().copied().unwrap_or(0.0));
         }
         let ((x0, y0), (x1, y1)) = (w[0], w[1]);
@@ -1304,22 +1342,32 @@ fn test_peak_path(inst: &Instance, inh: &Inherited, out: &mut Vec<Command>) {
             along.push(along.last().copied().unwrap_or(0.0) + l / steps as f32);
         }
     }
-    let wobble = |s: f32| {
-        let tri = |x: f32| (2.0 / std::f32::consts::PI) * x.sin().asin();
-        4.0 * (s * 0.04 + 0.7).sin() + 2.2 * tri(s * 0.17 + 1.9) + 1.0 * tri(s * 0.43 + 0.4) + 0.4 * tri(s * 0.97 + 2.6)
+    marks.push(along.last().copied().unwrap_or(0.0));
+    let bow = |s: f32| {
+        let k = marks.iter().rposition(|&m| m <= s).unwrap_or(0).min(marks.len().saturating_sub(2));
+        let (m0, m1) = (marks[k], marks.get(k + 1).copied().unwrap_or(marks[k] + 1.0));
+        let u = ((s - m0) / (m1 - m0).max(1e-3)).clamp(0.0, 1.0);
+        let side = if k % 2 == 0 { 1.0 } else { -1.0 };
+        let size = 9.0 + 3.5 * (k as f32 * 1.7 + 0.5).sin();
+        side * size * (std::f32::consts::PI * u).sin()
     };
+    // (smoothed a little, so the turn at each marker is a curve, not a corner)
     let mut shaped: Vec<(f32, f32)> = Vec::with_capacity(walked.len());
     for i in 0..walked.len() {
-        let (a, b) = (walked[i.saturating_sub(1)], walked[(i + 1).min(walked.len() - 1)]);
+        let (a, b) = (walked[i.saturating_sub(3)], walked[(i + 3).min(walked.len() - 1)]);
         let (dx, dy) = (b.0 - a.0, b.1 - a.1);
         let l = (dx * dx + dy * dy).sqrt().max(1e-6);
-        // (none at the markers, so the line goes through each, nor at the very top)
-        let near = marks.iter().map(|m| (along[i] - m).abs()).fold(f32::MAX, f32::min);
-        let k = (near / 16.0).min(1.0);
-        let w = wobble(along[i]) * k * k * (3.0 - 2.0 * k);
+        let w = (-6..=6).map(|d| bow(along[i] + d as f32)).sum::<f32>() / 13.0;
         shaped.push((walked[i].0 - dy / l * w, walked[i].1 + dx / l * w));
     }
-    let world: Vec<(f32, f32)> = shaped.iter().map(|&(x, y)| inh.xf.apply(x * 20.0, y * 20.0)).collect();
+    // (the fit gives stage places; drawn here in this clip's parent's space)
+    let into = inst.parent.map_or(Some(Mat2d::IDENTITY), |p| player.world_matrix(p).inverse());
+    let Some(into) = into else { return };
+    let screen = |x: f32, y: f32| {
+        let (u, v) = into.apply((ax * x + bx) * 20.0, (ay * y + by) * 20.0);
+        inh.xf.apply(u, v)
+    };
+    let world: Vec<(f32, f32)> = shaped.iter().map(|&(x, y)| screen(x, y)).collect();
     // (a brush stroke: its width swells and thins along the way, and it narrows to a point at the bottom (and a little
     // at the top, where the brush goes down))
     let total = along.last().copied().unwrap_or(1.0).max(1.0);
@@ -1334,8 +1382,8 @@ fn test_peak_path(inst: &Instance, inh: &Inherited, out: &mut Vec<Command>) {
         })
         .collect();
     let scale = {
-        let (a, b) = (inh.xf.apply(0.0, 0.0), inh.xf.apply(20.0, 0.0));
-        ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt().max(1e-3)
+        let (a, b) = (screen(0.0, 0.0), screen(1.0, 1.0));
+        (((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)) * 0.5).sqrt().max(1e-3)
     };
     let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f32() % 1000.0);
     // (it flashes: brighter and paler, then deeper in its colour, about once a second)

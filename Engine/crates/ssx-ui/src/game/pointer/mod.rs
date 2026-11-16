@@ -177,6 +177,15 @@ impl GameUi {
     }
 
     pub(super) fn pointer_read(&mut self, cx: &mut Ctx) {
+        // (a port mod: where the test peak's markers are drawn, for its path)
+        let markers = match self.fe.as_ref() {
+            Some(fe) if crate::game::fe::globe::test_peak_drop_screen(fe) => {
+                let order = lists::paint_order(cx);
+                crate::game::fe::globe::test_peak_markers(fe, lists::billboards(cx, &order))
+            }
+            _ => Vec::new(),
+        };
+        crate::draw::render::set_test_peak_markers(markers);
         for b in std::mem::take(&mut self.pointer.release) {
             self.input.push_from(Input::Button { button: b, down: false }, KEYBOARD_DEVICE);
         }

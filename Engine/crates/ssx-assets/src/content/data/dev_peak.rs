@@ -266,7 +266,7 @@ pub fn inject_from(
 }
 
 /// One line in the game's log for each different note (the collections are read by several parts of the game).
-fn note(line: String) {
+pub fn note(line: String) {
     static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
     let mut seen = SEEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if !seen.contains(&line) {

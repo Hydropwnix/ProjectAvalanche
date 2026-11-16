@@ -235,6 +235,22 @@ pub fn test_peak_path(fe: &FrontEnd) -> Option<(Vec<(f32, f32)>, (f32, f32))> {
     (points.len() >= 2).then(|| (points, drop_panels::drop_point(fe, fe.globe.drop)))
 }
 
+/// The test peak's markers as drawn (the screen's billboard clips, by drop): each with its place in the drop screen's
+/// places (`droppos.rnf`'s), so the path can be drawn where the screen really puts them.
+pub fn test_peak_markers(
+    fe: &FrontEnd,
+    boards: Vec<(u32, crate::display::InstanceId)>,
+) -> Vec<((f32, f32), crate::display::InstanceId)> {
+    if !test_peak_drop_screen(fe) {
+        return Vec::new();
+    }
+    boards
+        .into_iter()
+        .filter(|(k, _)| ssx_assets::content::data::dev_peak::is_dev_drop(*k))
+        .map(|(k, id)| (drop_panels::drop_point(fe, k), id))
+        .collect()
+}
+
 /// Whether the test peak's drop screen is up (its button bar shows Y "Switch Event").
 pub fn test_peak_drop_screen(fe: &FrontEnd) -> bool {
     fe.screen == crate::game::fe::screens::id::EXPLORE_DROP && fe.globe.peak == ssx_assets::content::data::dev_peak::PEAK
