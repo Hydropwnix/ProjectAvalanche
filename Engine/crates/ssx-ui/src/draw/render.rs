@@ -1384,7 +1384,7 @@ fn test_peak_path(player: &Player, id: InstanceId, inst: &Instance, inh: &Inheri
     let width: Vec<f32> = along
         .iter()
         .map(|&s| {
-            let swell = 0.82 + 0.22 * (s * 0.031 + 1.3).sin() + 0.12 * (s * 0.093 + 0.2).sin();
+            let swell = 1.0 + 0.2 * (s * 0.031 + 1.3).sin() + 0.1 * (s * 0.093 + 0.2).sin();
             let end = ((total - s) / 70.0).clamp(0.0, 1.0);
             let start = (s / 14.0).clamp(0.0, 1.0);
             let ease = |x: f32| x * x * (3.0 - 2.0 * x);
