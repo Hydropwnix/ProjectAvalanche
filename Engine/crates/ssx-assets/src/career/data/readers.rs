@@ -63,7 +63,7 @@ pub(crate) fn drops(v: &Vaults) -> Result<Vec<Drop>> {
             track,
             track_key,
             peak: r.text(0x17E8_41D0).unwrap_or_default(),
-            title: crate::content::data::dev_peak::drop_title(key, r.text(0x1A32_9A87).unwrap_or_default()),
+            title: r.text(0x1A32_9A87).unwrap_or_default(),
             selectable: r.int(F_SELECTABLE) == Some(1),
             difficulty: r.int(F_DIFFICULTY).unwrap_or(0),
         });

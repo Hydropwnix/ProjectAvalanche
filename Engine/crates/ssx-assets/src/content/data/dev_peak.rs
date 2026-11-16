@@ -51,7 +51,7 @@ const F_PEAK_REF: u32 = 0x8296_DA5A;
 /// `ge_attribdb`, on `test_peak`), the event's name and the title's string key. (The disc has twelve drops on the flat
 /// `test_plane`, the same track in different light and weather; the first of them stands for it. After them, the drops
 /// of the unused `classic_peak`.)
-pub const DROPS: [(u32, &str, &str); 14] = [
+pub const DROPS: [(u32, &str, &str); 11] = [
     (0x8E20_696D, "dev_test_profile", "TXT_NM_DRP_TEST_1_1"),
     (0x7F11_465C, "dev_test_happiness", "TXT_NM_DRP_HAPPINESS_1_1"),
     (0x9F3C_2FF0, "dev_test_snowjam", "TXT_NM_DRP_SNOWJAM_1_1"),
@@ -63,23 +63,7 @@ pub const DROPS: [(u32, &str, &str); 14] = [
     (0x8572_9FDD, "dev_test_spray", "Test Spray"),
     (0x7B8C_2A8E, "dev_test_plane", "TXT_NM_DRP_TESTPLANE_1_1"),
     (0x3A14_67B6, "dev_test_audio", "Test Audio"),
-    (0x321B_99E8, "dev_test_scene", "Test Scene"),
-    (0x2596_D667, "dev_test_intimidator", "TXT_NM_DRP_INTIMIDATOR_1_1"),
-    (DEFAULT_GE_DROP, DEFAULT_DROP, "default"),
 ];
-
-const DEFAULT_DROP: &str = "dev_test_default";
-const DEFAULT_GE_DROP: u32 = 0x9F7A_6694;
-
-/// A drop's title: its own, but the `default` record's ("default" is the key of the game's word "Idle") made its own.
-pub fn drop_title(ge_drop: u32, title: String) -> String {
-    if ge_drop == DEFAULT_GE_DROP { "TXT_NM_DRP_DEV_DEFAULT".to_string() } else { title }
-}
-
-/// Whether a drop of the test peak has a level to load (all but the `default` record's).
-pub fn playable(key: u32) -> bool {
-    key != fnv1(DEFAULT_DROP.as_bytes()) && key != fnv1(format!("{DEFAULT_DROP}{RACE}").as_bytes())
-}
 
 static RACE_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -136,9 +120,7 @@ pub fn strings() -> Vec<(String, String)> {
         ("TXT_NM_DRP_TESTPLANE_1_1".to_string(), "Test Plane".to_string()),
         ("TXT_NM_DRP_STYLEMILE_1_1".to_string(), "Style Mile".to_string()),
         ("TXT_NM_DRP_SNOWJAM_1_1".to_string(), "Snow Jam".to_string()),
-        ("TXT_NM_DRP_INTIMIDATOR_1_1".to_string(), "Intimidator".to_string()),
         ("TXT_NM_DRP_HAPPINESS_1_1".to_string(), "Happiness".to_string()),
-        ("TXT_NM_DRP_DEV_DEFAULT".to_string(), "Default".to_string()),
     ]
 }
 
@@ -157,7 +139,7 @@ pub fn add_drop_points(entries: &mut Vec<(String, f32, f32)>) {
     for (i, (_, name, _)) in DROPS.iter().enumerate() {
         // (a wave whose swing grows on the way down: a snaking line)
         let t = i as f32;
-        let (u, v) = (0.62 + (0.05 + 0.012 * t) * (0.9 * t).sin(), 0.08 + 0.061 * t);
+        let (u, v) = (0.62 + (0.05 + 0.012 * t) * (0.9 * t).sin(), 0.08 + 0.075 * t);
         let (x, y) = (x0 + w * u, y0 + h * v);
         entries.push(((*name).to_string(), x, y));
         entries.push((format!("{name}{RACE}"), x, y));
