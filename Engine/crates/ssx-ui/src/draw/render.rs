@@ -1427,31 +1427,43 @@ fn test_peak_path(player: &Player, id: InstanceId, inst: &Instance, inh: &Inheri
     // (the colours of the game's lines, read off a recording: Race It blue, Trick It yellow; each a glow, a body and a
     // pale core)
     let race = ssx_assets::content::data::dev_peak::race_mode();
-    let (glow, body, core) = if race {
-        ([0.30, 0.50, 1.0], [0.42, 0.62, 1.0], [0.86, 0.93, 1.0])
+    // (Mount Robson's line, read off a recording at 3440 x 1440, across it: no edge anywhere, a soft hump of light
+    // about 10 px wide at half its strength and fading out by about 16 px either side; pale at its middle and deeper in
+    // its colour outwards (blue for Race It), and as it pulses its middle goes white and its glow a pale cyan)
+    let (mid_lo, out_lo, mid_hi, out_hi) = if race {
+        ([0.72, 0.86, 1.0], [0.22, 0.42, 1.0], [1.0, 1.0, 1.0], [0.4, 0.8, 0.95])
     } else {
-        ([1.0, 0.62, 0.12], [1.0, 0.74, 0.28], [1.0, 0.96, 0.72])
+        ([1.0, 0.92, 0.66], [1.0, 0.56, 0.08], [1.0, 1.0, 1.0], [0.95, 0.82, 0.42])
     };
-    let mix = |c: [f32; 3], k: f32| [c[0] + (1.0 - c[0]) * k, c[1] + (1.0 - c[1]) * k, c[2] + (1.0 - c[2]) * k];
-    let draw = |out: &mut Vec<Command>, half: f32, c: [f32; 3], a: f32| {
+    let lerp = |a: [f32; 3], b: [f32; 3], k: f32| {
+        [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k]
+    };
+    let (mid, edge) = (lerp(mid_lo, mid_hi, pulse), lerp(out_lo, out_hi, pulse));
+    // (drawn as nested strips, widest first, each faint enough that together they build that hump: its strength at a
+    // distance is a narrow bell with a wider, fainter one under it (the measured hump has a long tail), in this space's
+    // units (about 1.2 px each at 1440 high), fitted to the recording's at its dimmest and at its brightest)
+    const LAYERS: usize = 20;
+    let (narrow, wide) = (5.25 + 0.75 * pulse, 7.5);
+    let reach = 2.2 * wide;
+    let bell = |d: f32, s: f32| (-(d / s).powi(2) * 0.5).exp();
+    let strength = |d: f32| 0.6 * bell(d, narrow) + 0.4 * bell(d, wide);
+    let mut below = 0.0f32;
+    for k in 0..LAYERS {
+        let half = reach * (1.0 - k as f32 / LAYERS as f32);
+        let inner = reach * (1.0 - (k as f32 + 0.5) / LAYERS as f32);
+        let want = if k + 1 == LAYERS { strength(0.0) } else { strength(inner) };
+        let a = (1.0 - (1.0 - want) / (1.0 - below).max(1e-4)).clamp(0.0, 1.0);
+        below = want.max(below);
+        let k_out = (inner / (0.75 * reach)).min(1.0).powi(2);
+        let c = lerp(mid, edge, k_out * k_out * (3.0 - 2.0 * k_out));
         out.push(Command::Draw(DrawItem {
-            mesh: stroke(half),
+            mesh: stroke(half * scale),
             paint: Paint::Solid([c[0], c[1], c[2], a]),
             transform: Mat2d::IDENTITY,
             cxform: inh.cx,
             blend: BlendMode::Normal,
         }));
-    };
-    // (a soft glow, as Mount Robson's: many faint strokes, each wider than the last, so it fades out from the line with
-    // no edge; paler and a little stronger as it pulses)
-    const HALO: usize = 10;
-    for k in (0..HALO).rev() {
-        let f = (k + 1) as f32 / HALO as f32;
-        draw(out, (2.4 + 6.0 * f) * scale, mix(glow, 0.55 * pulse), 0.07 + 0.04 * pulse);
     }
-    // (the line: a body in its colour and a pale core, both turning white as it pulses)
-    draw(out, 2.4 * scale, mix(body, 0.85 * pulse), 0.95);
-    draw(out, 1.2 * scale, mix(core, 0.4 + 0.6 * pulse), 1.0);
 }
 
 /// Whether the loading screen is up (set by the menus each frame).
