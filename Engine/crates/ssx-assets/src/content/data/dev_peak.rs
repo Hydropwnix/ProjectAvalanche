@@ -141,7 +141,7 @@ pub fn add_drop_points(entries: &mut Vec<(String, f32, f32)>) {
     for (i, (_, name, _)) in DROPS.iter().enumerate() {
         // (a wave whose swing grows on the way down: a snaking line)
         let t = i as f32;
-        let (u, v) = (0.62 + (0.05 + 0.012 * t) * (0.9 * t).sin(), 0.08 + 0.075 * t);
+        let (u, v) = (0.62 + (0.06 + 0.022 * t) * (0.8 * t).sin(), 0.08 + 0.078 * t);
         let (x, y) = (x0 + w * u, y0 + h * v);
         entries.push(((*name).to_string(), x, y));
         entries.push((format!("{name}{RACE}"), x, y));
