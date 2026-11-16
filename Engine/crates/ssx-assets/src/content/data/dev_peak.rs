@@ -88,6 +88,17 @@ pub fn toggle_race_mode() -> bool {
     !RACE_MODE.fetch_xor(true, std::sync::atomic::Ordering::Relaxed)
 }
 
+static DROP_SCREEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the test peak's drop screen is up (set by the menus each frame; its button bar shows Y "Switch Event").
+pub fn drop_screen() -> bool {
+    DROP_SCREEN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_drop_screen(up: bool) {
+    DROP_SCREEN.store(up, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn is_race(key: u32) -> bool {
     DROPS.iter().any(|(_, name, _)| fnv1(format!("{name}{RACE}").as_bytes()) == key)
 }

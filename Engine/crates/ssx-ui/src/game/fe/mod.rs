@@ -387,6 +387,7 @@ impl FrontEnd {
 
     pub fn update(&mut self, env: &mut FeEnv, dt: f64) {
         self.time += dt;
+        ssx_assets::content::data::dev_peak::set_drop_screen(globe::test_peak_drop_screen(self));
         scripts::update(self, env.loc, dt as f32);
         self.globe.advance_free = !self.globe_scene.as_ref().is_some_and(|s| s.entity_busy());
         let fe = !self.movie_queued();

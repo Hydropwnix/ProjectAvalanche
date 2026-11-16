@@ -225,6 +225,11 @@ pub fn dpad(fe: &mut FrontEnd, x: f32) {
     }
 }
 
+/// Whether the test peak's drop screen is up (its button bar shows Y "Switch Event").
+pub fn test_peak_drop_screen(fe: &FrontEnd) -> bool {
+    fe.screen == crate::game::fe::screens::id::EXPLORE_DROP && fe.globe.peak == ssx_assets::content::data::dev_peak::PEAK
+}
+
 /// A port mod: Y on the test peak's drop screen turns its events from Trick It to Race It and back. True when the
 /// press is taken.
 pub fn take_test_peak_press(fe: &mut FrontEnd, button: crate::game::input::Button) -> bool {

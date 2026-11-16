@@ -343,6 +343,12 @@ fn build_frame(
             None => drop(scene.player.tick(&scene.lib, time.delta_secs_f64())),
         }
     }
+    // (the test peak: Y "Switch Event" beside Freeride on its drop screen)
+    if let Some(vm) = scene.vm.as_mut() {
+        let show = ssx_assets::content::data::dev_peak::drop_screen();
+        let mut cx = vm.ctx(&mut scene.lib, &mut scene.player);
+        ssx_ui::render::test_peak_callout(&mut cx, show);
+    }
     // (the 3D Rider Select mod: the rider list laid out in a row across the window, each card known by the rider the
     // list's menu has put in it)
     if ssx_core::rider_showcase::enabled()

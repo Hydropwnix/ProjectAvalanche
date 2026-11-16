@@ -2943,6 +2943,76 @@ static RIDER_MENU: std::sync::Mutex<Option<InstanceId>> = std::sync::Mutex::new(
 static RIDER_CELLS: std::sync::Mutex<(Vec<(InstanceId, usize)>, usize)> = std::sync::Mutex::new((Vec::new(), 0));
 
 /// Reads the rider list's menu's cells (`read_rider_menu`'s note): before `relayout_rider_list`, each frame.
+/// A port mod (the test peak): its drop screen's button bar (the one with Freeride on X) also shows Y "Switch Event"
+/// (Y turns its events between Trick It and Race It), added with the bar's own `AddButton` in the style of Freeride's
+/// button; taken off again when the screen isn't the test peak's.
+pub fn test_peak_callout(cx: &mut crate::avm1::Ctx, show: bool) {
+    use crate::avm1::value::Value;
+    const LABEL: &str = "Switch Event";
+    static ADDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !show && !ADDED.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    let mut callout = Value::Object(cx.vm.global);
+    for p in ["components", "ButtonCallout"] {
+        callout = cx.get_member(&callout, p).unwrap_or_default();
+    }
+    let number = |cx: &mut crate::avm1::Ctx, obj: &Value, name: &str| {
+        let v = cx.get_member(obj, name).ok()?;
+        let n = cx.to_number(&v);
+        n.is_finite().then_some(n)
+    };
+    let (Some(x), Some(y)) =
+        (number(cx, &callout, "CALLOUT_FACE_BUTTON_TERTIARY"), number(cx, &callout, "CALLOUT_FACE_BUTTON_QUATERNARY"))
+    else {
+        return;
+    };
+    let objects: Vec<_> = cx
+        .vm
+        .display_objs
+        .iter()
+        .filter(|(id, _)| cx.player.get(**id).is_some_and(|i| matches!(i.kind, InstanceKind::Sprite(_))))
+        .map(|(_, &o)| o)
+        .collect();
+    let mut added = false;
+    for o in objects {
+        let bar = Value::Object(o);
+        let Ok(infos) = cx.get_member(&bar, "mButtonInfoArray") else { continue };
+        if !matches!(infos, Value::Object(_)) || !cx.get_member(&bar, "AddButton").is_ok_and(|f| cx.is_function(&f)) {
+            continue;
+        }
+        let n = number(cx, &infos, "length").unwrap_or(0.0).clamp(0.0, 16.0) as usize;
+        let (mut style, mut ours, mut freeride) = (None, false, false);
+        for i in 0..n {
+            let info = cx.get_member(&infos, &i.to_string()).unwrap_or_default();
+            let icon = number(cx, &info, "iconId");
+            let label = cx.get_member(&info, "label").unwrap_or_default();
+            let label = cx.to_string(&label).map(|s| s.to_string()).unwrap_or_default();
+            if icon == Some(x) {
+                freeride = true;
+                style = cx.get_member(&info, "style").ok();
+            }
+            if icon == Some(y) && label == LABEL {
+                ours = true;
+            }
+        }
+        if show && freeride && !ours {
+            if let Ok((f, _)) = cx.get_method(&bar, "AddButton") {
+                let args = [Value::Number(y), Value::str(LABEL), style.unwrap_or_default(), Value::Undefined, Value::Undefined];
+                cx.call_top(&f, bar.clone(), &args);
+            }
+            added = true;
+        } else if !show && ours {
+            if let Ok((f, _)) = cx.get_method(&bar, "RemoveButtonById") {
+                cx.call_top(&f, bar.clone(), &[Value::Number(y)]);
+            }
+        } else if show && ours {
+            added = true;
+        }
+    }
+    ADDED.store(added, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn read_rider_menu(cx: &mut crate::avm1::Ctx) {
     use crate::avm1::value::Value;
     let mut cells = Vec::new();
