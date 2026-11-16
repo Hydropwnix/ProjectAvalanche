@@ -137,15 +137,32 @@ pub fn add_drop_points(entries: &mut Vec<(String, f32, f32)>) {
         (x0, x1, y0, y1) = (x0.min(x), x1.max(x), y0.min(y), y1.max(y));
     }
     let (w, h) = (x1 - x0, y1 - y0);
-    // (in the area's own share: the summit of the drop shot's mountain is near (0.62, 0.08))
+    // (in the area's own share, worked out from a screenshot of the drop screen (ultrawide, 2576 pixels across):
+    // `u` = 0.62 + (x - 1595) / 542, `v` = 0.08 + (y - 350) / 580. The markers: "narrowing snake, left first", from
+    // the summit, swinging left first, the swings narrowing on the way down)
+    let at = |x: f32, y: f32| (x0 + w * (0.62 + (x - 1595.0) / 542.0), y0 + h * (0.08 + (y - 350.0) / 580.0));
     for (i, (_, name, _)) in DROPS.iter().enumerate() {
-        // (a wave whose swing grows on the way down: a snaking line)
         let t = i as f32;
-        let (u, v) = (0.62 + (0.06 + 0.022 * t) * (0.8 * t).sin(), 0.08 + 0.078 * t);
-        let (x, y) = (x0 + w * u, y0 + h * v);
+        let (x, y) = at(1600.0 - (70.0 - 5.0 * t) * t.sin(), 365.0 + 36.0 * t);
         entries.push(((*name).to_string(), x, y));
         entries.push((format!("{name}{RACE}"), x, y));
     }
+    // (the path's tail, past the last marker down to where the snow ends)
+    for (i, (x, y)) in [(1640.0, 765.0), (1600.0, 805.0), (1630.0, 845.0)].into_iter().enumerate() {
+        let (x, y) = at(x, y);
+        entries.push((format!("{PATH_TAIL}{i}"), x, y));
+    }
+}
+
+/// The names of the path's tail points among the drop screen's places (`add_drop_points`).
+pub const PATH_TAIL: &str = "dev_test_path_tail_";
+
+/// The test peak's path on the drop screen, top to bottom: its markers' places, then its tail's.
+pub fn path_points(entries: &[(String, f32, f32)]) -> Vec<(f32, f32)> {
+    let find = |n: &str| entries.iter().find(|(e, _, _)| e == n).map(|&(_, x, y)| (x, y));
+    let markers = DROPS.iter().filter_map(|(_, name, _)| find(*name));
+    let tail = (0..3).filter_map(|i| find(&format!("{PATH_TAIL}{i}")));
+    markers.chain(tail).collect()
 }
 
 pub fn is_dev_drop(key: u32) -> bool {

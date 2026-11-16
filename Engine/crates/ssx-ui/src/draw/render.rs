@@ -167,6 +167,7 @@ impl Renderer {
             (stage.apply(movie.stage.x0, movie.stage.y0), stage.apply(movie.stage.x1, movie.stage.y1));
         out.stage = Some([x0, y0, x1, y1]);
         ssx_core::rider_showcase::begin_frame(viewport.0, viewport.1);
+        RENDER_FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         grow_begin_frame();
         gear_layout(lib, player, &stage);
         let frame_start = std::time::Instant::now();
@@ -356,6 +357,9 @@ impl Renderer {
         let matrix = if inh.mask { matrix } else { grown_card_part(lib, player, id, inst, &inh.xf, matrix) };
         if !inh.mask && inst.name == "mcCell" {
             check_grow_cell(lib, player, id, inst, &inh.xf.mul(&matrix), &inh.cx.concat(&inst.cxform));
+        }
+        if !inh.mask {
+            test_peak_path(inst, &inh, out);
         }
         let here = Inherited {
             xf: inh.xf.mul(&matrix),
@@ -1232,6 +1236,100 @@ mod tests {
 // Port mod: the menus' side dimmer (dimmer.gfx: `mcDimmer`'s dark sheet down the left of the stage, under the World
 // Tour and Explore panels, character 2) is not drawn: on a wide screen it shows as a strip of another shade down the
 // left (v0.4.0 draws it on out to the window's edge). The full-screen dimmer beside it (character 4) is kept.
+/// The test peak's path (its drop screen's markers, top to bottom, on down the mountain) and the chosen drop's place, in
+/// the drop screen's places; set by the menus each frame, `None` off that screen.
+#[allow(clippy::type_complexity)]
+static TEST_PEAK_PATH: std::sync::Mutex<Option<(Vec<(f32, f32)>, (f32, f32))>> = std::sync::Mutex::new(None);
+/// The frames built (the test peak's path is drawn once in each).
+static RENDER_FRAME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// The frame the path was last drawn in (once a frame).
+static TEST_PEAK_PATH_DRAWN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+
+pub fn set_test_peak_path(path: Option<(Vec<(f32, f32)>, (f32, f32))>) {
+    if let Ok(mut p) = TEST_PEAK_PATH.lock() {
+        *p = path;
+    }
+}
+
+/// A port mod (the test peak): its drop screen's path, a swerving glowing line through its markers on down the
+/// mountain to where the snow ends, pulsing as the game's peaks' drop lines do. It's drawn in the space of the first
+/// marker drawn (a clip the screen puts at a drop's place), under it.
+fn test_peak_path(inst: &Instance, inh: &Inherited, out: &mut Vec<Command>) {
+    let Ok(guard) = TEST_PEAK_PATH.lock() else { return };
+    let Some((points, chosen)) = guard.as_ref() else { return };
+    let (mx, my) = (inst.matrix.tx / 20.0, inst.matrix.ty / 20.0);
+    let at = |p: &(f32, f32)| (mx - p.0).abs() <= 0.5 && (my - p.1).abs() <= 0.5;
+    if !(at(chosen) || points.iter().any(at)) || !matches!(inst.kind, InstanceKind::Sprite(_)) {
+        return;
+    }
+    let frame = RENDER_FRAME.load(std::sync::atomic::Ordering::Relaxed);
+    if TEST_PEAK_PATH_DRAWN.swap(frame, std::sync::atomic::Ordering::Relaxed) == frame {
+        return;
+    }
+    // (a Catmull-Rom curve through the points, a dozen steps a span: it swerves through each)
+    let mut line: Vec<(f32, f32)> = Vec::new();
+    let n = points.len();
+    for i in 0..n - 1 {
+        let p0 = points[i.saturating_sub(1)];
+        let (p1, p2) = (points[i], points[i + 1]);
+        let p3 = points[(i + 2).min(n - 1)];
+        for s in 0..12 {
+            let t = s as f32 / 12.0;
+            let (t2, t3) = (t * t, t * t * t);
+            let c = |a: f32, b: f32, c: f32, d: f32| {
+                0.5 * (2.0 * b + (c - a) * t + (2.0 * a - 5.0 * b + 4.0 * c - d) * t2 + (3.0 * b - a - 3.0 * c + d) * t3)
+            };
+            line.push((c(p0.0, p1.0, p2.0, p3.0), c(p0.1, p1.1, p2.1, p3.1)));
+        }
+    }
+    line.push(points[n - 1]);
+    let world: Vec<(f32, f32)> = line.iter().map(|&(x, y)| inh.xf.apply(x * 20.0, y * 20.0)).collect();
+    let scale = {
+        let (a, b) = (inh.xf.apply(0.0, 0.0), inh.xf.apply(20.0, 0.0));
+        ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt().max(1e-3)
+    };
+    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f32() % 1000.0);
+    let pulse = 0.65 + 0.35 * (t * 4.0).sin();
+    let stroke = |half: f32| {
+        let mut mesh = Mesh::default();
+        for w in world.windows(2) {
+            let ((x0, y0), (x1, y1)) = (w[0], w[1]);
+            let (dx, dy) = (x1 - x0, y1 - y0);
+            let l = (dx * dx + dy * dy).sqrt().max(1e-6);
+            let (nx, ny) = (-dy / l * half, dx / l * half);
+            let b = mesh.vertices.len() as u32;
+            mesh.vertices.extend([[x0 + nx, y0 + ny], [x1 + nx, y1 + ny], [x1 - nx, y1 - ny], [x0 - nx, y0 - ny]]);
+            mesh.indices.extend([b, b + 1, b + 2, b, b + 2, b + 3]);
+        }
+        // (round joins)
+        for &(x, y) in &world {
+            let b = mesh.vertices.len() as u32;
+            mesh.vertices.push([x, y]);
+            for k in 0..10 {
+                let a = k as f32 * std::f32::consts::TAU / 10.0;
+                mesh.vertices.push([x + a.cos() * half, y + a.sin() * half]);
+            }
+            for k in 0..10u32 {
+                mesh.indices.extend([b, b + 1 + k, b + 1 + (k + 1) % 10]);
+            }
+        }
+        Arc::new(mesh)
+    };
+    for (half, colour) in [
+        (5.0 * scale, [0.2, 0.75, 1.0, 0.22 * pulse]),
+        (2.6 * scale, [0.35, 0.9, 1.0, 0.45 * pulse]),
+        (1.1 * scale, [0.85, 1.0, 1.0, 0.95 * pulse]),
+    ] {
+        out.push(Command::Draw(DrawItem {
+            mesh: stroke(half),
+            paint: Paint::Solid(colour),
+            transform: Mat2d::IDENTITY,
+            cxform: inh.cx,
+            blend: BlendMode::Normal,
+        }));
+    }
+}
+
 /// Whether the loading screen is up (set by the menus each frame).
 pub static LOADING_SCREEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 

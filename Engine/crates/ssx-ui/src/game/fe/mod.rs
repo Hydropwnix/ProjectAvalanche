@@ -388,6 +388,7 @@ impl FrontEnd {
     pub fn update(&mut self, env: &mut FeEnv, dt: f64) {
         self.time += dt;
         ssx_assets::content::data::dev_peak::set_drop_screen(globe::test_peak_drop_screen(self));
+        crate::draw::render::set_test_peak_path(globe::test_peak_path(self));
         crate::draw::render::LOADING_SCREEN
             .store(self.screen == screens::id::LOADING, std::sync::atomic::Ordering::Relaxed);
         scripts::update(self, env.loc, dt as f32);
