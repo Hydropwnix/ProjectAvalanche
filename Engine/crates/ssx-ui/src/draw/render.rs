@@ -1303,6 +1303,10 @@ fn test_peak_path(player: &Player, id: InstanceId, inst: &Instance, inh: &Inheri
         pairs.len()
     ));
     // (a Catmull-Rom curve through the points, a dozen steps a span: it swerves through each)
+    // (the line's shape is made in a space of its own, stretched from the stage's (wider than tall), the one its look
+    // was settled in; its swerves, widths and lengths are in that space's units)
+    const LOOK: (f32, f32) = (2.086, 1.417);
+    let points: Vec<(f32, f32)> = points.iter().map(|&(x, y)| (x * LOOK.0, y * LOOK.1)).collect();
     let mut line: Vec<(f32, f32)> = Vec::new();
     let n = points.len();
     for i in 0..n - 1 {
@@ -1369,6 +1373,7 @@ fn test_peak_path(player: &Player, id: InstanceId, inst: &Instance, inh: &Inheri
     let into = inst.parent.map_or(Some(Mat2d::IDENTITY), |p| player.world_matrix(p).inverse());
     let Some(into) = into else { return };
     let screen = |x: f32, y: f32| {
+        let (x, y) = (x / LOOK.0, y / LOOK.1);
         let (u, v) = into.apply((ax * x + bx) * 20.0, (ay * y + by) * 20.0);
         inh.xf.apply(u, v)
     };
@@ -1391,8 +1396,14 @@ fn test_peak_path(player: &Player, id: InstanceId, inst: &Instance, inh: &Inheri
         (((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)) * 0.5).sqrt().max(1e-3)
     };
     let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f32() % 1000.0);
-    // (it flashes: brighter and paler, then deeper in its colour, about once a second)
-    let pulse = 0.5 + 0.5 * (t * 6.0).sin();
+    // (and, as the game's do, about once a second it flashes white: up quickly, then fading back to its colour)
+    let phase = (t / 1.1).fract();
+    let pulse = if phase < 0.2 {
+        let u = phase / 0.2;
+        u * u * (3.0 - 2.0 * u)
+    } else {
+        (-(phase - 0.2) * 4.5).exp()
+    };
     let stroke = |half: f32| {
         let mut mesh = Mesh::default();
         for (i, w) in world.windows(2).enumerate() {
@@ -1435,9 +1446,9 @@ fn test_peak_path(player: &Player, id: InstanceId, inst: &Instance, inh: &Inheri
     };
     let mix = |c: [f32; 3], k: f32| [c[0] + (1.0 - c[0]) * k, c[1] + (1.0 - c[1]) * k, c[2] + (1.0 - c[2]) * k];
     for (half, c, a) in [
-        (4.6 * scale, glow, 0.16 + 0.14 * pulse),
-        (2.6 * scale, mix(body, 0.25 * pulse), 0.85),
-        (1.3 * scale, mix(core, 0.5 * pulse), 1.0),
+        ((4.6 + 1.2 * pulse) * scale, mix(glow, 0.35 * pulse), 0.16 + 0.22 * pulse),
+        ((2.6 + 0.5 * pulse) * scale, mix(body, 0.8 * pulse), 0.85 + 0.15 * pulse),
+        (1.3 * scale, mix(core, 0.3 + 0.7 * pulse), 1.0),
     ] {
         out.push(Command::Draw(DrawItem {
             mesh: stroke(half),
