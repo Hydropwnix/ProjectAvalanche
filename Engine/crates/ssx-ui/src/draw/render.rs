@@ -3202,7 +3202,7 @@ static RIDER_CELLS: std::sync::Mutex<(Vec<(InstanceId, usize)>, usize)> = std::s
 /// button; taken off again when the screen isn't the test peak's.
 pub fn test_peak_callout(cx: &mut crate::avm1::Ctx, show: bool) {
     use crate::avm1::value::Value;
-    const LABEL: &str = "Switch Event";
+    const LABEL: &str = TEST_PEAK_LABEL;
     static ADDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if !show && !ADDED.load(std::sync::atomic::Ordering::Relaxed) {
         return;
@@ -3250,6 +3250,9 @@ pub fn test_peak_callout(cx: &mut crate::avm1::Ctx, show: bool) {
                 ours = true;
             }
         }
+        if show && freeride {
+            wrap_callout_bar(cx, &bar, x, y);
+        }
         if show && freeride && !ours {
             if let Ok((f, _)) = cx.get_method(&bar, "AddButton") {
                 let args = [Value::Number(y), Value::str(LABEL), style.unwrap_or_default(), Value::Undefined, Value::Undefined];
@@ -3265,6 +3268,98 @@ pub fn test_peak_callout(cx: &mut crate::avm1::Ctx, show: bool) {
         }
     }
     ADDED.store(added, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The test peak's Y button kept steady on its drop screen: the screen takes its bar's Y button off and puts its
+/// buttons back as the chosen drop changes, and a button put back shows a frame or two late (it loads first), so the Y
+/// blinked as the drops were scrolled. The bar's own `AddButton` and `RemoveButtonById` are wrapped (once a bar): on the
+/// test peak's drop screen, the Y isn't taken off (nor another Y put in its place), and when X (Freeride) is put back,
+/// the Y goes in just after it, in the same moment.
+fn wrap_callout_bar(cx: &mut crate::avm1::Ctx, bar: &crate::avm1::value::Value, x: f64, y: f64) {
+    use crate::avm1::object::{Func, FuncCode};
+    use crate::avm1::value::Value;
+    if cx.get_member(bar, "__pa_wrapped").is_ok_and(|v| matches!(v, Value::Bool(true))) {
+        return;
+    }
+    let (Ok((add, _)), Ok((remove, _))) = (cx.get_method(bar, "AddButton"), cx.get_method(bar, "RemoveButtonById"))
+    else {
+        return;
+    };
+    if !cx.is_function(&add) || !cx.is_function(&remove) {
+        return;
+    }
+    let wrapped_add = cx.new_function_object(Func { code: FuncCode::Native(callout_add), scope: None, base: None });
+    let wrapped_remove =
+        cx.new_function_object(Func { code: FuncCode::Native(callout_remove), scope: None, base: None });
+    for (k, v) in [
+        ("__pa_add", add),
+        ("__pa_remove", remove),
+        ("__pa_x", Value::Number(x)),
+        ("__pa_y", Value::Number(y)),
+        ("AddButton", Value::Object(wrapped_add)),
+        ("RemoveButtonById", Value::Object(wrapped_remove)),
+        ("__pa_wrapped", Value::Bool(true)),
+    ] {
+        let _ = cx.set_member(bar, k, v);
+    }
+}
+
+const TEST_PEAK_LABEL: &str = "Switch Event";
+
+fn callout_number(cx: &mut crate::avm1::Ctx, v: &crate::avm1::value::Value) -> f64 {
+    cx.to_number(v)
+}
+
+fn callout_add(
+    cx: &mut crate::avm1::Ctx,
+    this: crate::avm1::value::Value,
+    args: &[crate::avm1::value::Value],
+) -> Result<crate::avm1::value::Value, crate::avm1::Fault> {
+    use crate::avm1::value::Value;
+    let orig = cx.get_member(&this, "__pa_add").unwrap_or_default();
+    let on = ssx_assets::content::data::dev_peak::drop_screen();
+    let x = cx.get_member(&this, "__pa_x").map(|v| callout_number(cx, &v)).unwrap_or(f64::NAN);
+    let y = cx.get_member(&this, "__pa_y").map(|v| callout_number(cx, &v)).unwrap_or(f64::NAN);
+    let icon = args.first().map_or(f64::NAN, |v| callout_number(cx, v));
+    let label = args.get(1).and_then(|v| cx.to_string(v).ok()).map(|s| s.to_string()).unwrap_or_default();
+    // (another Y, not ours, on the test peak's drop screen: left out, ours stays)
+    if on && icon == y && label != TEST_PEAK_LABEL {
+        return Ok(Value::Undefined);
+    }
+    let out = cx.call(&orig, this.clone(), args, Value::Undefined)?;
+    // (X put back: ours just after it, unless it's there)
+    if on && icon == x && !callout_has(cx, &this, y) {
+        let style = args.get(2).cloned().unwrap_or_default();
+        let ours = [Value::Number(y), Value::str(TEST_PEAK_LABEL), style, Value::Undefined, Value::Undefined];
+        cx.call(&orig, this, &ours, Value::Undefined)?;
+    }
+    Ok(out)
+}
+
+fn callout_remove(
+    cx: &mut crate::avm1::Ctx,
+    this: crate::avm1::value::Value,
+    args: &[crate::avm1::value::Value],
+) -> Result<crate::avm1::value::Value, crate::avm1::Fault> {
+    use crate::avm1::value::Value;
+    let orig = cx.get_member(&this, "__pa_remove").unwrap_or_default();
+    let y = cx.get_member(&this, "__pa_y").map(|v| callout_number(cx, &v)).unwrap_or(f64::NAN);
+    let icon = args.first().map_or(f64::NAN, |v| callout_number(cx, v));
+    if ssx_assets::content::data::dev_peak::drop_screen() && icon == y {
+        return Ok(Value::Undefined);
+    }
+    cx.call(&orig, this, args, Value::Undefined)
+}
+
+/// Whether the bar has a button of this icon.
+fn callout_has(cx: &mut crate::avm1::Ctx, bar: &crate::avm1::value::Value, icon: f64) -> bool {
+    let Ok(infos) = cx.get_member(bar, "mButtonInfoArray") else { return false };
+    let n = cx.get_member(&infos, "length").map(|v| cx.to_number(&v)).unwrap_or(0.0);
+    let n = if n.is_finite() { n.clamp(0.0, 16.0) as usize } else { 0 };
+    (0..n).any(|i| {
+        let info = cx.get_member(&infos, &i.to_string()).unwrap_or_default();
+        cx.get_member(&info, "iconId").is_ok_and(|v| cx.to_number(&v) == icon)
+    })
 }
 
 pub fn read_rider_menu(cx: &mut crate::avm1::Ctx) {
