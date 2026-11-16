@@ -25,6 +25,8 @@ pub const PEAK_TEMPLATE: u32 = 0x89E6_E130;
 // (it stands between Mount Robson, the template, and Extinguisher Tower)
 const PEAK_A: u32 = PEAK_TEMPLATE;
 const PEAK_B: u32 = 0x89E6_E131;
+/// The peak whose drop shot (its direction and distance) the test peak's drop shot takes: Extinguisher Tower's.
+pub const CAMERA_TEMPLATE: u32 = PEAK_B;
 const EVENT_TEMPLATE: u32 = 0xBA22_B246;
 /// The Race It versions' template: `exp_newzealand_wakefield_drop_3_race`.
 const RACE_TEMPLATE: u32 = 0x6433_61E7;
