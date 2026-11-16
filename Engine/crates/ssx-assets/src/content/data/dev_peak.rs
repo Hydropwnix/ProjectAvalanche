@@ -21,7 +21,7 @@ const CLASS_GE_DROP: u32 = fnv1(b"ge_drop");
 
 /// The disc's records the new ones are copied from: the Rockies' second peak (its range, scene link and look) and an
 /// Explore Trick It event (`exp_newzealand_wakefield_drop_4_trick`).
-const PEAK_TEMPLATE: u32 = 0x89E6_E130;
+pub const PEAK_TEMPLATE: u32 = 0x89E6_E130;
 // (it stands between Mount Robson, the template, and Extinguisher Tower)
 const PEAK_A: u32 = PEAK_TEMPLATE;
 const PEAK_B: u32 = 0x89E6_E131;

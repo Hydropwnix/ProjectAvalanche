@@ -129,6 +129,17 @@ impl NodeMap {
                 },
             );
         }
+        // (a port mod: the test peak's drop shot is its template's (Mount Robson's) moved to the test peak, so the
+        // camera faces the test peak's part of the mountains as Robson's faces Robson)
+        use ssx_assets::content::data::dev_peak;
+        if let Some(t) = map.peaks.get(&dev_peak::PEAK_TEMPLATE).cloned()
+            && let Some(p) = map.peaks.get_mut(&dev_peak::PEAK)
+        {
+            let at = p.position;
+            let moved = |v: V3| add(at, sub(v, t.position));
+            p.shot_drop.offset = moved(t.shot_drop.offset);
+            p.shot_drop.look = moved(t.shot_drop.look);
+        }
         for d in &data.drops {
             let Some(peak) = map.peaks.get_mut(&d.peak) else { continue };
             let Some(range) = map.ranges.get(&peak.range) else { continue };
