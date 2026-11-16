@@ -1400,36 +1400,26 @@ fn test_peak_path(player: &Player, id: InstanceId, inst: &Instance, inh: &Inheri
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0.0, |d| (d.as_secs() % 1000) as f32 + d.subsec_nanos() as f32 * 1e-9);
-    // (and, as the game's do, it pulses: about once a second it swells smoothly to white and eases back to its colour)
-    let pulse = 0.5 - 0.5 * (t * std::f32::consts::TAU / 1.1).cos();
+    // (and, as the game's do, it pulses: it swells to white and eases back to its colour)
+    // (timed off Mount Robson's: every 1.35 s it swells for about half a second, eases back over another half, then
+    // rests in its colour for the rest)
+    let p = (t % 1.35) / 0.97;
+    let pulse = if p < 1.0 { (std::f32::consts::PI * p).sin().powi(2) } else { 0.0 };
+    // (one strip down the line, its sides at the given half width either side (times the brush's width there): no part
+    // of it laid over another, so a faint stroke is evenly faint)
     let stroke = |half: f32| {
         let mut mesh = Mesh::default();
-        for (i, w) in world.windows(2).enumerate() {
-            let ((x0, y0), (x1, y1)) = (w[0], w[1]);
-            let (dx, dy) = (x1 - x0, y1 - y0);
+        let last = world.len().saturating_sub(1);
+        for (i, &(x, y)) in world.iter().enumerate() {
+            let (a, b) = (world[i.saturating_sub(2)], world[(i + 2).min(last)]);
+            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
             let l = (dx * dx + dy * dy).sqrt().max(1e-6);
-            let (h0, h1) = (half * width[i], half * width[i + 1]);
             let (nx, ny) = (-dy / l, dx / l);
-            let b = mesh.vertices.len() as u32;
-            mesh.vertices.extend([
-                [x0 + nx * h0, y0 + ny * h0],
-                [x1 + nx * h1, y1 + ny * h1],
-                [x1 - nx * h1, y1 - ny * h1],
-                [x0 - nx * h0, y0 - ny * h0],
-            ]);
-            mesh.indices.extend([b, b + 1, b + 2, b, b + 2, b + 3]);
-        }
-        // (round joins, every few points (the points are close together))
-        for (i, &(x, y)) in world.iter().enumerate().filter(|(i, _)| i % 3 == 0) {
             let h = half * width[i];
-            let b = mesh.vertices.len() as u32;
-            mesh.vertices.push([x, y]);
-            for k in 0..8 {
-                let a = k as f32 * std::f32::consts::TAU / 8.0;
-                mesh.vertices.push([x + a.cos() * h, y + a.sin() * h]);
-            }
-            for k in 0..8u32 {
-                mesh.indices.extend([b, b + 1 + k, b + 1 + (k + 1) % 8]);
+            mesh.vertices.extend([[x + nx * h, y + ny * h], [x - nx * h, y - ny * h]]);
+            if i > 0 {
+                let v = 2 * i as u32;
+                mesh.indices.extend([v - 2, v - 1, v + 1, v - 2, v + 1, v]);
             }
         }
         Arc::new(mesh)
@@ -1442,11 +1432,8 @@ fn test_peak_path(player: &Player, id: InstanceId, inst: &Instance, inh: &Inheri
     } else {
         ([1.0, 0.62, 0.12], [1.0, 0.74, 0.28], [1.0, 0.96, 0.72])
     };
-    for (half, c, a) in [
-        (4.6 * scale, glow, 0.2),
-        (2.6 * scale, body, 0.85),
-        (1.3 * scale, core, 1.0),
-    ] {
+    let mix = |c: [f32; 3], k: f32| [c[0] + (1.0 - c[0]) * k, c[1] + (1.0 - c[1]) * k, c[2] + (1.0 - c[2]) * k];
+    let draw = |out: &mut Vec<Command>, half: f32, c: [f32; 3], a: f32| {
         out.push(Command::Draw(DrawItem {
             mesh: stroke(half),
             paint: Paint::Solid([c[0], c[1], c[2], a]),
@@ -1454,23 +1441,17 @@ fn test_peak_path(player: &Player, id: InstanceId, inst: &Instance, inh: &Inheri
             cxform: inh.cx,
             blend: BlendMode::Normal,
         }));
+    };
+    // (a soft glow, as Mount Robson's: many faint strokes, each wider than the last, so it fades out from the line with
+    // no edge; paler and a little stronger as it pulses)
+    const HALO: usize = 10;
+    for k in (0..HALO).rev() {
+        let f = (k + 1) as f32 / HALO as f32;
+        draw(out, (2.4 + 6.0 * f) * scale, mix(glow, 0.55 * pulse), 0.07 + 0.04 * pulse);
     }
-    // (the pulse: a white glow added over it, wider than its own, and its body turning white, as it swells)
-    if pulse > 0.01 {
-        for (half, a, blend) in [
-            (6.0 * scale, 0.4 * pulse, BlendMode::Add),
-            (3.8 * scale, 0.5 * pulse, BlendMode::Add),
-            (2.9 * scale, 0.9 * pulse, BlendMode::Normal),
-        ] {
-            out.push(Command::Draw(DrawItem {
-                mesh: stroke(half),
-                paint: Paint::Solid([1.0, 1.0, 1.0, a]),
-                transform: Mat2d::IDENTITY,
-                cxform: inh.cx,
-                blend,
-            }));
-        }
-    }
+    // (the line: a body in its colour and a pale core, both turning white as it pulses)
+    draw(out, 2.4 * scale, mix(body, 0.85 * pulse), 0.95);
+    draw(out, 1.2 * scale, mix(core, 0.4 + 0.6 * pulse), 1.0);
 }
 
 /// Whether the loading screen is up (set by the menus each frame).
