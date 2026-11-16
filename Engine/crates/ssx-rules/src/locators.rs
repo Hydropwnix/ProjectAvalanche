@@ -54,6 +54,7 @@ pub fn drop_starts(db: &Db, track: &str) -> Result<Vec<DropStart>> {
     let track_key = fnv1(&format!("{track}_track"));
     {
         let mut out = Vec::new();
+        let mut missing = Vec::new();
         for (key, _) in db.collections_of_all(CLASS_DROP) {
             let fields = db.fields(CLASS_DROP, key)?;
             let field = |k: u32| fields.iter().find(|f| f.key == k);
@@ -69,8 +70,9 @@ pub fn drop_starts(db: &Db, track: &str) -> Result<Vec<DropStart>> {
                     terrain_files.push(path.rsplit(['\\', '/']).next().unwrap_or(&path).to_owned());
                 }
             }
-            let Some(instances) = field(FIELD_DROP_SCENE_INSTANCES) else { continue };
-            for si in refs(&instances.data).into_iter().filter(|r| r.collection != 0) {
+            let found = out.len();
+            let instances = field(FIELD_DROP_SCENE_INSTANCES).map(|f| refs(&f.data)).unwrap_or_default();
+            for si in instances.into_iter().filter(|r| r.collection != 0) {
                 let sif = db.fields(CLASS_SCENE_INSTANCE, si.collection)?;
                 let reference = |k: u32| sif.iter().find(|f| f.key == k).and_then(|f| refs(&f.data).first().copied());
                 if reference(FIELD_GAMEOBJECT).is_none_or(|o| o.collection != START_LOCATOR_OBJECT) {
@@ -82,13 +84,45 @@ pub fn drop_starts(db: &Db, track: &str) -> Result<Vec<DropStart>> {
                     None => Vec::new(),
                 };
                 if !slots.is_empty() {
-                    out.push(DropStart { drop_key: key, slots, terrain_files });
+                    out.push(DropStart { drop_key: key, slots, terrain_files: terrain_files.clone() });
                     break;
+                }
+            }
+            if out.len() == found && track.starts_with("test_") {
+                missing.push((key, terrain_files));
+            }
+        }
+        // A port mod (the test peak): the developers' test tracks (`test_*`) put their start on the track, not on each
+        // drop, or on one drop only; a drop of one without its own start uses the track's, else another drop's.
+        if !missing.is_empty() {
+            let slots = track_start(db, track)?.or_else(|| out.first().map(|s| s.slots.clone()));
+            if let Some(slots) = slots {
+                for (key, terrain_files) in missing {
+                    out.push(DropStart { drop_key: key, slots: slots.clone(), terrain_files });
                 }
             }
         }
         Ok(out)
     }
+}
+
+/// The start locator among the track's own scene instances (not a drop's).
+fn track_start(db: &Db, track: &str) -> Result<Option<Vec<Placement>>> {
+    for (class, key) in track_scene_instances(db, track)? {
+        let Ok(sif) = db.fields(class, key) else { continue };
+        let reference = |k: u32| sif.iter().find(|f| f.key == k).and_then(|f| refs(&f.data).first().copied());
+        if reference(FIELD_GAMEOBJECT).is_none_or(|o| o.collection != START_LOCATOR_OBJECT) {
+            continue;
+        }
+        let Some(data) = reference(FIELD_INSTANCE_DATA).filter(|d| d.collection != 0) else { continue };
+        if let Some(f) = db.field(data.class, data.collection, FIELD_INSTANCE_DATA)? {
+            let slots = decode_placements(&f.data);
+            if !slots.is_empty() {
+                return Ok(Some(slots));
+            }
+        }
+    }
+    Ok(None)
 }
 
 pub const END_LOCATOR_OBJECT: u32 = 0x9297_7821;

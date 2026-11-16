@@ -28,7 +28,8 @@ const F_PEAK_TITLE: u32 = 0x4785_FF31;
 const F_PEAK_INFO: u32 = 0x31BA_F20E;
 const F_PEAK_POSITION: u32 = 0x5E19_D274;
 const F_PEAK_SELECTABLE: u32 = 0x0E54_07B9;
-const PEAK_SHOTS: [u32; 6] = [0xBD46_56E0, 0xBAD1_AEA6, 0x9746_39E4, 0x8ECD_EEEA, 0x9EF1_4AB2, 0x630F_3BF4];
+// (the peak's own shots, between its neighbours'; the drop shot is the template peak's own, its drops are by those)
+const PEAK_SHOTS: [u32; 4] = [0xBD46_56E0, 0xBAD1_AEA6, 0x9746_39E4, 0x8ECD_EEEA];
 
 const F_GE_DROP: u32 = 0xB9C2_CFC5;
 const F_NAME: u32 = 0xAF27_A974;
@@ -137,15 +138,15 @@ pub fn inject_from(
     }
     let mut added = vec![(peak, fields)];
 
-    // Its events, on a ring below the peak.
-    let n = DROPS.len() as f32;
+    // Its events, in two rows of ten where the template peak's drop shot looks (its own drops' spread).
+    let anchor = vec3(&pt.1, F_PEAK_POSITION).unwrap_or([16_843.65, 14_824.46, 26_394.14]);
     for (i, (ge_drop, name, _)) in DROPS.iter().enumerate() {
         let key = fnv1(name.as_bytes());
         let mut c = et.0.clone();
         c.key = key;
         c.export_key = fnv1(format!("ui_drop/{name}").as_bytes());
-        let a = i as f32 / n * std::f32::consts::TAU;
-        let at = [position[0] + 3_000.0 * a.cos(), position[1] - 2_000.0, position[2] + 3_000.0 * a.sin()];
+        let (col, row) = ((i % 10) as f32, (i / 10) as f32);
+        let at = [anchor[0] - 1_850.0 + 420.0 * col, anchor[1] - 1_500.0 + 1_000.0 * row, anchor[2] + 250.0];
         let mut fields = et.1.clone();
         let ge = RefSpec { class: CLASS_GE_DROP, collection: *ge_drop };
         set(&mut fields, &all, F_GE_DROP, FieldData::Single(Value::Ref(ge)));
