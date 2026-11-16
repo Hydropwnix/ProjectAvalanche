@@ -95,6 +95,8 @@ fn open_drops(fe: &FrontEnd, level: u32, node: u32) -> Vec<u32> {
             _ => peak == node,
         })
         .filter(|&(d, _, _, t)| (mode == 4 || t == mode) && (fe.profile.drop_state(d) != DropState::Locked || t == 3))
+        // (a port mod: the test peak's events of the kind not shown (Y) are left out)
+        .filter(|&(d, ..)| ssx_assets::content::data::dev_peak::shown(d))
         .map(|(d, ..)| d)
         .collect()
 }
@@ -213,6 +215,7 @@ pub fn peak_drops(fe: &FrontEnd) -> Vec<u32> {
     mode_events(fe)
         .into_iter()
         .filter(|k| fe.career.event(*k).is_some_and(|e| fe.career.peak_and_range(e).0 == fe.globe.peak))
+        .filter(|&k| ssx_assets::content::data::dev_peak::shown(k))
         .collect()
 }
 
@@ -220,6 +223,22 @@ pub fn dpad(fe: &mut FrontEnd, x: f32) {
     if let Some(s) = fe.globe_scene.as_mut() {
         s.dpad = x.clamp(-1.0, 1.0);
     }
+}
+
+/// A port mod: Y on the test peak's drop screen turns its events from Trick It to Race It and back. True when the
+/// press is taken.
+pub fn take_test_peak_press(fe: &mut FrontEnd, button: crate::game::input::Button) -> bool {
+    use ssx_assets::content::data::dev_peak;
+    if button != crate::game::input::Button::DigitalThree
+        || fe.screen != crate::game::fe::screens::id::EXPLORE_DROP
+        || fe.globe.peak != dev_peak::PEAK
+    {
+        return false;
+    }
+    let race = dev_peak::toggle_race_mode();
+    fe.note(format!("test peak: {} events (Y)", if race { "Race It" } else { "Trick It" }));
+    fe.play_sound(42);
+    true
 }
 
 /// Up (-1) or down (1) on the d-pad (a port mod: the test peak's drops go down the mountain).

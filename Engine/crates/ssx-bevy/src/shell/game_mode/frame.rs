@@ -90,6 +90,12 @@ pub(super) fn shell_input(
         {
             continue;
         }
+        // (the test peak: Y on its drop screen turns its events between Trick It and Race It)
+        if let Some(fe) = ui.fe.as_mut()
+            && ssx_ui::game::fe::globe::take_test_peak_press(fe, b)
+        {
+            continue;
+        }
         if rider_list && matches!(b, ssx_ui::game::input::Button::DpadLeft | ssx_ui::game::input::Button::DpadRight) {
             if let Ok(mut r) = RIDER_REPEAT.lock() {
                 *r = Some((b, device, Instant::now() + std::time::Duration::from_secs_f32(RIDER_REPEAT_DELAY)));

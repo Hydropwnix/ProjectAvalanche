@@ -26,6 +26,10 @@ const PEAK_TEMPLATE: u32 = 0x89E6_E130;
 const PEAK_A: u32 = PEAK_TEMPLATE;
 const PEAK_B: u32 = 0x89E6_E131;
 const EVENT_TEMPLATE: u32 = 0xBA22_B246;
+/// The Race It versions' template: `exp_newzealand_wakefield_drop_3_race`.
+const RACE_TEMPLATE: u32 = 0x6433_61E7;
+/// The Race It versions' names: the Trick It event's with this after it.
+const RACE: &str = "_race";
 
 const F_PEAK_TITLE: u32 = 0x4785_FF31;
 const F_PEAK_INFO: u32 = 0x31BA_F20E;
@@ -70,7 +74,41 @@ const DEFAULT_DROP: &str = "dev_test_default";
 
 /// Whether a drop of the test peak has a level to load (all but the `default` record's).
 pub fn playable(key: u32) -> bool {
-    key != fnv1(DEFAULT_DROP.as_bytes())
+    key != fnv1(DEFAULT_DROP.as_bytes()) && key != fnv1(format!("{DEFAULT_DROP}{RACE}").as_bytes())
+}
+
+static RACE_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the test peak shows its Race It events (Y on its drop screen) rather than its Trick It ones.
+pub fn race_mode() -> bool {
+    RACE_MODE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn toggle_race_mode() -> bool {
+    !RACE_MODE.fetch_xor(true, std::sync::atomic::Ordering::Relaxed)
+}
+
+fn is_race(key: u32) -> bool {
+    DROPS.iter().any(|(_, name, _)| fnv1(format!("{name}{RACE}").as_bytes()) == key)
+}
+
+/// Whether a drop is on the drop screen now: every drop but the test peak's events of the other kind.
+pub fn shown(key: u32) -> bool {
+    !is_dev_drop(key) || is_race(key) == race_mode()
+}
+
+/// A test peak event's other kind (Trick It ↔ Race It).
+pub fn counterpart(key: u32) -> Option<u32> {
+    DROPS.iter().find_map(|(_, name, _)| {
+        let (trick, race) = (fnv1(name.as_bytes()), fnv1(format!("{name}{RACE}").as_bytes()));
+        if key == trick {
+            Some(race)
+        } else if key == race {
+            Some(trick)
+        } else {
+            None
+        }
+    })
 }
 
 /// The strings the peak and its drops show (none of them is in the game's text).
@@ -105,12 +143,14 @@ pub fn add_drop_points(entries: &mut Vec<(String, f32, f32)>) {
         // (a wave whose swing grows on the way down: a snaking line)
         let t = i as f32;
         let (u, v) = (0.62 + (0.05 + 0.012 * t) * (0.9 * t).sin(), 0.08 + 0.061 * t);
-        entries.push(((*name).to_string(), x0 + w * u, y0 + h * v));
+        let (x, y) = (x0 + w * u, y0 + h * v);
+        entries.push(((*name).to_string(), x, y));
+        entries.push((format!("{name}{RACE}"), x, y));
     }
 }
 
 pub fn is_dev_drop(key: u32) -> bool {
-    DROPS.iter().any(|(_, name, _)| fnv1(name.as_bytes()) == key)
+    DROPS.iter().any(|(_, name, _)| fnv1(name.as_bytes()) == key) || is_race(key)
 }
 
 /// Adds the peak and its events to `attribdb`'s collections (once; nothing when the templates are not there, as in a
@@ -178,17 +218,21 @@ pub fn inject_from(
     // Its events, where the template peak's drop shot looks (its own drops' spread; the drop screen places the
     // markers by `add_drop_points`).
     let anchor = vec3(&pt.1, F_PEAK_POSITION).unwrap_or([16_843.65, 14_824.46, 26_394.14]);
-    for (i, (ge_drop, name, _)) in DROPS.iter().enumerate() {
+    let race = lookup(CLASS_UI_DROP, RACE_TEMPLATE);
+    let kinds = std::iter::once((&et, String::new())).chain(race.as_ref().map(|r| (r, RACE.to_string())));
+    let events = kinds.flat_map(|(t, suffix)| DROPS.iter().enumerate().map(move |(i, d)| (t, suffix.clone(), i, d)));
+    for (template, suffix, i, (ge_drop, name, _)) in events {
+        let name = format!("{name}{suffix}");
         let key = fnv1(name.as_bytes());
-        let mut c = et.0.clone();
+        let mut c = template.0.clone();
         c.key = key;
         c.export_key = fnv1(format!("ui_drop/{name}").as_bytes());
         let (col, row) = ((i % 10) as f32, (i / 10) as f32);
         let at = [anchor[0] - 1_850.0 + 420.0 * col, anchor[1] - 1_500.0 + 1_000.0 * row, anchor[2] + 250.0];
-        let mut fields = et.1.clone();
+        let mut fields = template.1.clone();
         let ge = RefSpec { class: CLASS_GE_DROP, collection: *ge_drop };
         set(&mut fields, &all, F_GE_DROP, FieldData::Single(Value::Ref(ge)));
-        set(&mut fields, &all, F_NAME, FieldData::Single(Value::Text(Some((*name).into()))));
+        set(&mut fields, &all, F_NAME, FieldData::Single(Value::Text(Some(name.clone()))));
         set(&mut fields, &all, F_PEAK_SHORT, FieldData::Single(Value::Text(Some(PEAK_NAME.into()))));
         set(&mut fields, &all, F_POSITION, FieldData::Single(Value::Vector3(at)));
         set(&mut fields, &all, F_RIVALS, FieldData::Array(Vec::new()));

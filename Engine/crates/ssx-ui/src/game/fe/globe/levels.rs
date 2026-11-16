@@ -549,7 +549,17 @@ impl GlobeScene {
     }
 
     fn drop_update(&mut self, dt: f32, input: bool, flow: &dyn GlobeFlow, ev: &mut SceneEvents) {
-        let Some(focus) = self.nodes.drops.get(&self.drop_focus).cloned() else { return };
+        let Some(mut focus) = self.nodes.drops.get(&self.drop_focus).cloned() else { return };
+        // (a port mod: the test peak shows its Trick It or its Race It events (Y), one kind at a time)
+        use ssx_assets::content::data::dev_peak;
+        if !dev_peak::shown(focus.key)
+            && let Some(other) = dev_peak::counterpart(focus.key).and_then(|k| self.nodes.drops.get(&k).cloned())
+        {
+            focus = other;
+            self.drop_focus = focus.key;
+            self.drop_focus_scene();
+            ev.drop = Some(focus.key);
+        }
         // (a port mod: the test peak's drops go down the mountain, walked with up and down)
         let vertical = ssx_assets::content::data::dev_peak::is_dev_drop(focus.key);
         let dir = match (input, vertical) {
@@ -564,7 +574,7 @@ impl GlobeScene {
         let mode = flow.mode();
         let mut list = Vec::new();
         let mut near = Nearest::new();
-        for d in self.nodes.drops_of(focus.peak) {
+        for d in self.nodes.drops_of(focus.peak).filter(|d| dev_peak::shown(d.key)) {
             let (x, y) = flow.drop_point(d.key);
             let at = along((x, y));
             let selected = d.key == focus.key;
