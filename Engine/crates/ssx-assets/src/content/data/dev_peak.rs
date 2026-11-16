@@ -64,7 +64,7 @@ pub fn strings() -> Vec<(String, String)> {
 }
 
 /// The drops' places on the drop screen (`droppos.rnf`, where the game keeps each drop's marker by name): the test
-/// peak's snake down the mountain from its top, side to side and wider as they go (up and down move along them).
+/// peak's snake down the mountain from its top in a widening wave (up and down move along them).
 pub fn add_drop_points(entries: &mut Vec<(String, f32, f32)>) {
     if entries.is_empty() || entries.iter().any(|(n, _, _)| n.starts_with("dev_test_")) {
         return;
@@ -76,15 +76,9 @@ pub fn add_drop_points(entries: &mut Vec<(String, f32, f32)>) {
     let (w, h) = (x1 - x0, y1 - y0);
     // (in the area's own share: the summit of the drop shot's mountain is near (0.62, 0.08))
     for (i, (_, name, _)) in DROPS.iter().enumerate() {
+        // (a wave whose swing grows on the way down: a snaking line)
         let t = i as f32;
-        let side = if i == 0 {
-            0.0
-        } else if i % 2 == 1 {
-            -1.0
-        } else {
-            1.0
-        };
-        let (u, v) = (0.62 + side * (0.06 + 0.045 * t), 0.10 + 0.09 * t);
+        let (u, v) = (0.62 + (0.05 + 0.02 * t) * (0.9 * t).sin(), 0.10 + 0.09 * t);
         entries.push(((*name).to_string(), x0 + w * u, y0 + h * v));
     }
 }
