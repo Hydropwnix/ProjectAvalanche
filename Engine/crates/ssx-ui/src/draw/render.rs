@@ -1395,7 +1395,11 @@ fn test_peak_path(player: &Player, id: InstanceId, inst: &Instance, inh: &Inheri
         let (a, b) = (screen(0.0, 0.0), screen(1.0, 1.0));
         (((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)) * 0.5).sqrt().max(1e-3)
     };
-    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f32() % 1000.0);
+    // (the seconds cut to the last thousand before they're made an f32: the whole count since 1970 is too big for one to
+    // hold its fractions, so it would stand still for minutes at a time)
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |d| (d.as_secs() % 1000) as f32 + d.subsec_nanos() as f32 * 1e-9);
     // (and, as the game's do, about once a second it flashes white: up quickly, then fading back to its colour)
     let phase = (t / 1.1).fract();
     let pulse = if phase < 0.2 {
