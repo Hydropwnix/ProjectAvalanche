@@ -388,6 +388,10 @@ impl Host {
                 let x = if b == Button::DpadRight { 1.0 } else { -1.0 };
                 ui.fe_call(|fe, _| super::globe::dpad(fe, x));
             }
+            if matches!(b, Button::DpadUp | Button::DpadDown) {
+                let y = if b == Button::DpadDown { 1.0 } else { -1.0 };
+                ui.fe_call(|fe, _| super::globe::dpad_y(fe, y));
+            }
         }
     }
 

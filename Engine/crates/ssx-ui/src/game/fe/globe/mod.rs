@@ -222,6 +222,13 @@ pub fn dpad(fe: &mut FrontEnd, x: f32) {
     }
 }
 
+/// Up (-1) or down (1) on the d-pad (a port mod: the test peak's drops go down the mountain).
+pub fn dpad_y(fe: &mut FrontEnd, y: f32) {
+    if let Some(s) = fe.globe_scene.as_mut() {
+        s.dpad_y = y.clamp(-1.0, 1.0);
+    }
+}
+
 pub fn construct(fe: &mut FrontEnd) {
     fe.globe.provider_node = 0;
     fe.globe.provider_is_drop = false;

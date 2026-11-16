@@ -38,20 +38,11 @@ const F_POSITION: u32 = 0x45B5_F74A;
 const F_RIVALS: u32 = 0xC211_FF58;
 const F_PEAK_REF: u32 = 0x8296_DA5A;
 
-/// The peak's drops: the `ge_drop` (in `ge_attribdb`, on `test_peak`), the event's name and the title's string key.
-pub const DROPS: [(u32, &str, &str); 20] = [
-    (0x7B8C_2A8E, "dev_test_plane_1", "TXT_NM_DRP_TESTPLANE_1_1"),
-    (0xCC3D_0DC3, "dev_test_plane_2", "TXT_NM_DRP_TESTPLANE_1_2"),
-    (0x5544_B724, "dev_test_plane_3", "TXT_NM_DRP_TESTPLANE_1_3"),
-    (0xBC35_46B9, "dev_test_plane_4", "TXT_NM_DRP_TESTPLANE_1_4"),
-    (0x8CD4_52B2, "dev_test_plane_5", "TXT_NM_DRP_TESTPLANE_1_5"),
-    (0x9489_0117, "dev_test_plane_6", "TXT_NM_DRP_TESTPLANE_1_6"),
-    (0x112B_1EB8, "dev_test_plane_7", "TXT_NM_DRP_TESTPLANE_1_7"),
-    (0x18CA_22FD, "dev_test_plane_8", "TXT_NM_DRP_TESTPLANE_1_8"),
-    (0xB06A_6676, "dev_test_plane_9", "TXT_NM_DRP_TESTPLANE_1_9"),
-    (0xBB1A_9CB2, "dev_test_plane_10", "TXT_NM_DRP_TESTPLANE_1_10"),
-    (0xEA7B_90B9, "dev_test_plane_11", "TXT_NM_DRP_TESTPLANE_1_11"),
-    (0x3F71_68B8, "dev_test_plane_12", "TXT_NM_DRP_TESTPLANE_1_12"),
+/// The peak's drops, one on each of the test tracks, from the top of the mountain down: the `ge_drop` (in
+/// `ge_attribdb`, on `test_peak`), the event's name and the title's string key. (The disc has twelve drops on the flat
+/// `test_plane`, the same track in different light and weather; the first of them stands for it.)
+pub const DROPS: [(u32, &str, &str); 9] = [
+    (0x7B8C_2A8E, "dev_test_plane", "TXT_NM_DRP_TESTPLANE_1_1"),
     (0xC627_0A13, "dev_test_slope", "Test Slope"),
     (0x23A1_AB80, "dev_test_rail", "Test Rail"),
     (0xE325_ADE7, "dev_test_surface", "Test Surface"),
@@ -64,19 +55,16 @@ pub const DROPS: [(u32, &str, &str); 20] = [
 
 /// The strings the peak and its drops show (none of them is in the game's text).
 pub fn strings() -> Vec<(String, String)> {
-    let mut out = vec![
+    vec![
         ("TXT_NM_PEA_TEST".to_string(), "Test Peak".to_string()),
         ("TXT_PEAK_INFO_TEST".to_string(), "The developers' test tracks, left unused in the game's files.".to_string()),
         ("TXT_NM_DRP_TEST_1_1".to_string(), "Test Profile".to_string()),
-    ];
-    for n in 1..=12 {
-        out.push((format!("TXT_NM_DRP_TESTPLANE_1_{n}"), format!("Test Plane {n}")));
-    }
-    out
+        ("TXT_NM_DRP_TESTPLANE_1_1".to_string(), "Test Plane".to_string()),
+    ]
 }
 
 /// The drops' places on the drop screen (`droppos.rnf`, where the game keeps each drop's marker by name): the test
-/// peak's are in a zigzag across the middle of the area the disc's markers take, in order from left to right.
+/// peak's snake down the mountain from its top, side to side and wider as they go (up and down move along them).
 pub fn add_drop_points(entries: &mut Vec<(String, f32, f32)>) {
     if entries.is_empty() || entries.iter().any(|(n, _, _)| n.starts_with("dev_test_")) {
         return;
@@ -86,10 +74,18 @@ pub fn add_drop_points(entries: &mut Vec<(String, f32, f32)>) {
         (x0, x1, y0, y1) = (x0.min(x), x1.max(x), y0.min(y), y1.max(y));
     }
     let (w, h) = (x1 - x0, y1 - y0);
+    // (in the area's own share: the summit of the drop shot's mountain is near (0.62, 0.08))
     for (i, (_, name, _)) in DROPS.iter().enumerate() {
-        // (each at its own x, as left and right move by x: a zigzag of two rows)
-        let (col, row) = (i as f32, (i % 2) as f32);
-        entries.push(((*name).to_string(), x0 + w * (0.10 + 0.042 * col), y0 + h * (0.38 + 0.2 * row)));
+        let t = i as f32;
+        let side = if i == 0 {
+            0.0
+        } else if i % 2 == 1 {
+            -1.0
+        } else {
+            1.0
+        };
+        let (u, v) = (0.62 + side * (0.06 + 0.045 * t), 0.10 + 0.09 * t);
+        entries.push(((*name).to_string(), x0 + w * u, y0 + h * v));
     }
 }
 
@@ -156,7 +152,8 @@ pub fn inject_from(
     }
     let mut added = vec![(peak, fields)];
 
-    // Its events, in two rows of ten where the template peak's drop shot looks (its own drops' spread).
+    // Its events, where the template peak's drop shot looks (its own drops' spread; the drop screen places the
+    // markers by `add_drop_points`).
     let anchor = vec3(&pt.1, F_PEAK_POSITION).unwrap_or([16_843.65, 14_824.46, 26_394.14]);
     for (i, (ge_drop, name, _)) in DROPS.iter().enumerate() {
         let key = fnv1(name.as_bytes());

@@ -484,6 +484,7 @@ impl GlobeScene {
             self.camera_idle(dt);
         }
         self.dpad = 0.0;
+        self.dpad_y = 0.0;
         // TODO(guess): the FE audio object's update (0x82511C58, from the FE game object's 0x824F9BE0, thunk
         // 0x823F7740) and the globe entity's (0x824F7360: the queue 0x824F6368, thunk 0x823F4424) are two game
         // objects' updates whose order in a frame was not traced (neither thunk is referenced as data or by an
@@ -549,15 +550,23 @@ impl GlobeScene {
 
     fn drop_update(&mut self, dt: f32, input: bool, flow: &dyn GlobeFlow, ev: &mut SceneEvents) {
         let Some(focus) = self.nodes.drops.get(&self.drop_focus).cloned() else { return };
-        let dir = if input { level_input(self.stick.0, self.dpad, &mut self.drop_repeat, dt) } else { None };
+        // (a port mod: the test peak's drops go down the mountain, walked with up and down)
+        let vertical = ssx_assets::content::data::dev_peak::is_dev_drop(focus.key);
+        let dir = match (input, vertical) {
+            (false, _) => None,
+            (true, false) => level_input(self.stick.0, self.dpad, &mut self.drop_repeat, dt),
+            (true, true) => level_input(-self.stick.1, self.dpad_y, &mut self.drop_repeat, dt),
+        };
         self.highlight_off = 1.0;
-        let focus_x = flow.drop_point(focus.key).0;
+        let along = |p: (f32, f32)| if vertical { p.1 } else { p.0 };
+        let focus_x = along(flow.drop_point(focus.key));
         let recommended = flow.recommended();
         let mode = flow.mode();
         let mut list = Vec::new();
         let mut near = Nearest::new();
         for d in self.nodes.drops_of(focus.peak) {
             let (x, y) = flow.drop_point(d.key);
+            let at = along((x, y));
             let selected = d.key == focus.key;
             let entry = GlobeEntry {
                 key: d.key,
@@ -578,7 +587,7 @@ impl GlobeScene {
                 list.push(entry);
             }
             if let Some(dd) = dir.filter(|_| !selected && of_mode && flow.focusable(d.key)) {
-                near.offer(d.key, (x - focus_x) * dd);
+                near.offer(d.key, (at - focus_x) * dd);
             }
         }
         self.list = list;

@@ -147,6 +147,8 @@ pub struct GlobeScene {
     pub steering: bool,
     pub stick: (f32, f32),
     pub dpad: f32,
+    /// Up (-1) or down (1) on the d-pad this frame (the test peak's drops are walked up and down).
+    pub dpad_y: f32,
     pub follow_focus: bool,
     pub repeat: f32,
     pub peak_focus: u32,
@@ -207,6 +209,7 @@ impl GlobeScene {
             steering: false,
             stick: (0.0, 0.0),
             dpad: 0.0,
+            dpad_y: 0.0,
             follow_focus: true,
             repeat: -1.0,
             peak_focus: 0,

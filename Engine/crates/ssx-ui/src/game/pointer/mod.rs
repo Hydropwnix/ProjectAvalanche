@@ -272,6 +272,10 @@ impl GameUi {
             let x = if b == Button::DpadRight { 1.0 } else { -1.0 };
             self.fe_call(|fe, _| super::fe::globe::dpad(fe, x));
         }
+        if matches!(b, Button::DpadUp | Button::DpadDown) {
+            let y = if b == Button::DpadDown { 1.0 } else { -1.0 };
+            self.fe_call(|fe, _| super::fe::globe::dpad_y(fe, y));
+        }
     }
 
     fn pointer_tab_pending(&self) -> bool {
