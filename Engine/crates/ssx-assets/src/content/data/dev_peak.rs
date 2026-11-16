@@ -75,6 +75,23 @@ pub fn strings() -> Vec<(String, String)> {
     out
 }
 
+/// The drops' places on the drop screen (`droppos.rnf`, where the game keeps each drop's marker by name): the test
+/// peak's are in two rows of ten across the middle of the area the disc's markers take.
+pub fn add_drop_points(entries: &mut Vec<(String, f32, f32)>) {
+    if entries.is_empty() || entries.iter().any(|(n, _, _)| n.starts_with("dev_test_")) {
+        return;
+    }
+    let (mut x0, mut x1, mut y0, mut y1) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+    for &(_, x, y) in entries.iter() {
+        (x0, x1, y0, y1) = (x0.min(x), x1.max(x), y0.min(y), y1.max(y));
+    }
+    let (w, h) = (x1 - x0, y1 - y0);
+    for (i, (_, name, _)) in DROPS.iter().enumerate() {
+        let (col, row) = ((i % 10) as f32, (i / 10) as f32);
+        entries.push(((*name).to_string(), x0 + w * (0.12 + 0.084 * col), y0 + h * (0.35 + 0.3 * row)));
+    }
+}
+
 pub fn is_dev_drop(key: u32) -> bool {
     DROPS.iter().any(|(_, name, _)| fnv1(name.as_bytes()) == key)
 }

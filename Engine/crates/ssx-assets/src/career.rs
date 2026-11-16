@@ -87,7 +87,8 @@ impl CareerDb {
         for a in graph.nodes.iter().flat_map(|n| &n.attribs) {
             v.dict.insert(a);
         }
-        let drop_positions = DropPositions::parse(&read("fecache/data/common/fe/droppos.rnf")?)?;
+        let mut drop_positions = DropPositions::parse(&read("fecache/data/common/fe/droppos.rnf")?)?;
+        crate::content::data::dev_peak::add_drop_points(&mut drop_positions.entries);
         let ghost_text = if routed {
             crate::content::data::events::ghost_db_text(big_root)
         } else {
