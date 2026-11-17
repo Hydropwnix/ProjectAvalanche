@@ -756,19 +756,12 @@ fn equipment_slot_under(
 ) -> Result<(i32, usize, String), String> {
     let list = reach.lists.iter().find(|l| l.clip == e.menu).ok_or("no list")?;
     let cell = list.cells.iter().find(|c| c.item == e.item).ok_or("no cell")?;
-    // (only the gear steps' options: not the rider list's cards, say)
-    let in_options = cx
-        .player
-        .get(cell.clip)
-        .and_then(|i| i.parent)
-        .and_then(|p| cx.player.get(p))
-        .is_some_and(|p| p.name == "mcCategoryMenu");
-    if !in_options {
+    // (the option's icons: its `mcSlots`, wherever it is in the option; only the gear steps' options (in their
+    // `mcCategoryMenu`), not the rider list's cards, say)
+    let mut icons = find_named(cx.player, cell.clip, "mcSlots", 6).ok_or("not an equipment option")?;
+    if !cx.player.path(icons).contains(".mcCategoryMenu.") {
         return Err("not an equipment option".into());
     }
-    // (the option's icons: its `mcSlots`, wherever it is in the option)
-    let mut icons = find_named(cx.player, cell.clip, "mcSlots", 6)
-        .ok_or_else(|| format!("no mcSlots under {}", cx.player.path(cell.clip)))?;
     // (the icons side by side: the first level down with more than one)
     let mut slots = Vec::new();
     for _ in 0..4 {
