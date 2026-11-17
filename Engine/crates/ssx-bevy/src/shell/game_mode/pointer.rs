@@ -38,7 +38,8 @@ pub(super) struct PointerShell {
     /// them round).
     rider_last_offset: Option<i32>,
     rider_flip: bool,
-    /// The rider whose card the pointer was last on (for its sound).
+    /// The rider whose card the pointer was last on (or the highlighted card, or the level's X button), for its
+    /// sound.
     hovered_rider: Option<String>,
 }
 
@@ -230,7 +231,16 @@ pub(super) fn pointer_system(
     ssx_core::rider_showcase::set_pointer(at);
     // (a soft sound (the menus' highlight) as the pointer comes onto another card; not while the list's moving under
     // it on its own)
-    let hovered = ssx_core::rider_showcase::hovered_rider();
+    // (the highlighted card and the level's X button too)
+    let hovered = at.and_then(|(x, y)| {
+        if ssx_core::rider_showcase::on_prompt(x, y) {
+            Some("\u{1}x-button".to_string())
+        } else if ssx_core::rider_showcase::on_highlighted(x, y) {
+            Some("\u{1}highlighted".to_string())
+        } else {
+            ssx_core::rider_showcase::hovered_rider()
+        }
+    });
     let moving = p.state.rider_target.is_some() || p.state.rider_steps != 0 || ssx_core::rider_showcase::menu_animating();
     if hovered != p.state.hovered_rider {
         if hovered.is_some()
