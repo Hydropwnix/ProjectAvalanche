@@ -66,10 +66,12 @@ struct SlotFocus {
     settle: u32,
     /// Hovered from another option (the highlight is on its way from the option's own first slot).
     switching: bool,
+    /// The option's slots (the highlight goes round them: the shorter way's taken).
+    count: usize,
 }
 
 /// Reads waited, the option selected, before stepping to a slot.
-const SLOT_SETTLE: u32 = 2;
+const SLOT_SETTLE: u32 = 1;
 
 /// At most this many left / right steps to a slot.
 const MAX_SLOT_STEPS: u32 = 8;
@@ -351,10 +353,10 @@ impl GameUi {
                     *l = key;
                     self.pointer.note(line);
                 }
-                found.ok().map(|(slot, ..)| (e, slot))
+                found.ok().map(|(slot, n, _)| (e, slot, n))
             });
             match hovered {
-                Some((e, slot)) => {
+                Some((e, slot, count)) => {
                     if self.pointer.slot.is_none_or(|f| f.entry != e || f.slot != slot) {
                         let selected = reach.lists.iter().find(|l| l.clip == e.menu).map(|l| l.selected);
                         // (still switching from another option: carried on)
@@ -365,8 +367,9 @@ impl GameUi {
                             slot,
                             step: Step::default(),
                             click: false,
-                            settle: SLOT_SETTLE,
+                            settle: if switching { SLOT_SETTLE } else { 0 },
                             switching,
+                            count,
                         });
                     }
                 }
@@ -725,7 +728,14 @@ impl GameUi {
             }
             Next::Step => {
                 f.step.made(current);
-                let dir = if f.slot > current { Button::DpadRight } else { Button::DpadLeft };
+                // (the shorter way round: the slots wrap)
+                let n = i32::try_from(f.count).unwrap_or(0);
+                let right = if n > 1 {
+                    (f.slot - current).rem_euclid(n) <= (current - f.slot).rem_euclid(n)
+                } else {
+                    f.slot > current
+                };
+                let dir = if right { Button::DpadRight } else { Button::DpadLeft };
                 self.pointer.slot = Some(f);
                 self.pointer_press(dir, &format!("slot {current} → {}", f.slot));
                 return;
