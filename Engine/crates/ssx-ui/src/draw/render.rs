@@ -416,7 +416,12 @@ impl Renderer {
         let here = Inherited {
             xf: inh.xf.mul(&matrix),
             cx: {
-                let mut cx = inh.cx.concat(&lit_look(player, id, inst).unwrap_or(inst.cxform));
+                let mut own = lit_look(player, id, inst).unwrap_or(inst.cxform);
+                // (Start Run not highlighted: as solid as the other options (the game fades it))
+                if (0.3..0.99).contains(&own.mult[3]) && start_run_faded_part(player, inst) {
+                    own.mult[3] = 1.0;
+                }
+                let mut cx = inh.cx.concat(&own);
                 if plain_edge {
                     cx.mult[..3].copy_from_slice(&[0.0; 3]);
                     cx.add[..3].copy_from_slice(&PLAIN_EDGE);
@@ -1675,20 +1680,34 @@ fn start_run_lit_part(player: &Player, inst: &Instance) -> bool {
                         && p.parent.and_then(|g| player.get(g)).is_some_and(|g| g.name == "mcEquipmentRoot")
                 })
         }
-        "mcBackerContainer" | "mcGlow" => parent.is_some_and(|p| p.name == "mcAdvance"),
+        "mcBackerContainer" | "mcGlow" | "mcTitle" => parent.is_some_and(|p| p.name == "mcAdvance"),
         _ => false,
     }
 }
 
-/// A colour as red: a little brighter than its brightest channel, its colour turned to red (greys and white stay).
+/// Start Run (or its box or title) while the gear steps are up and it isn't highlighted.
+fn start_run_faded_part(player: &Player, inst: &Instance) -> bool {
+    if !GEAR_STEPS_UP.load(std::sync::atomic::Ordering::Relaxed)
+        || START_RUN_LIT.load(std::sync::atomic::Ordering::Relaxed)
+    {
+        return false;
+    }
+    let parent = inst.parent.and_then(|p| player.get(p));
+    match inst.name.as_str() {
+        "mcAdvance" => parent.is_some_and(|p| p.name == "mcSlots"),
+        "mcBackerContainer" | "mcBacker" | "mcTitle" => parent.is_some_and(|p| p.name == "mcAdvance"),
+        _ => false,
+    }
+}
+
+/// A colour as red: its brightest channel (a little brighter) as its red, its dimmest as its green and blue, so a
+/// light blue comes out a light red and a dark one a dark red (greys and white stay).
 fn red_of(c: [f32; 4]) -> [f32; 4] {
     let (hi, lo) = (c[0].max(c[1]).max(c[2]), c[0].min(c[1]).min(c[2]));
-    if hi - lo < 0.08 {
+    if hi - lo < 0.03 {
         return c;
     }
-    let r = (hi * 1.3 + 0.08).min(1.0);
-    let rest = (lo * 0.3 + hi * 0.15).min(1.0);
-    [r, rest, rest, c[3]]
+    [(hi * 1.15 + 0.05).min(1.0), lo * 0.85, lo * 0.85, c[3]]
 }
 
 /// A drawing turned red: its colours (with its colour transform, which is then left plain) as red.
@@ -1715,7 +1734,7 @@ fn reddened(d: &mut DrawItem) {
             // (a picture: its colour transform turned red)
             let m = cx.mult;
             let (hi, lo) = (m[0].max(m[1]).max(m[2]), m[0].min(m[1]).min(m[2]));
-            d.cxform.mult = [hi * 1.3, lo * 0.3 + hi * 0.15, lo * 0.3 + hi * 0.15, m[3]];
+            d.cxform.mult = [hi * 1.15, lo * 0.85, lo * 0.85, m[3]];
             d.cxform.add = red_of(cx.add);
         }
     }
