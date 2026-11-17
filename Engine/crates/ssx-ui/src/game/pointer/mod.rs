@@ -71,8 +71,9 @@ enum Next {
     Stalled,
 }
 
-// (a port mod: 3 reads, not 8 (the equipment screen's Start Run to its options was slow to follow the pointer))
-const STEP_WAIT: u32 = 3;
+// (a port mod: a read, not 8: the selection follows the pointer at once (a step a frame), the menus answering a step
+// within the frame after it)
+const STEP_WAIT: u32 = 1;
 
 impl<T: PartialEq + Copy> Step<T> {
     fn next(&mut self, now: T, max_steps: u32, ways: usize) -> Next {
