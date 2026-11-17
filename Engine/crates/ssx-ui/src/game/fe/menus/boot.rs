@@ -218,6 +218,13 @@ pub fn bind(fe: &mut FrontEnd, bound: bool) {
 /// The startup's black (0 none, 1 all black), as the shell's top overlay draws it over everything (`skip-intros`).
 static STARTUP_BLACK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// The startup's black put up at once (`skip-intros`, as the game starts): nothing of the menus shows before its
+/// fade in, not even the frames before the boot screen starts the fade.
+pub fn startup_cover() {
+    STARTUP_BLACK.store(1.0f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    ssx_assets::musicbox::set_startup_gain(0.0);
+}
+
 pub fn startup_black() -> f32 {
     f32::from_bits(STARTUP_BLACK.load(std::sync::atomic::Ordering::Relaxed))
 }

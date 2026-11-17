@@ -445,6 +445,7 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
     fe.ava.options.file = Some(ssx_assets::setup::app_dir().join("settings.json"));
     fe.boot.skip_intros = mods.iter().flat_map(|r| &r.mounted).any(|m| m.name == SKIP_INTROS_MOD);
     if fe.boot.skip_intros {
+        ssx_ui::game::fe::boot::startup_cover();
         info!("mods: {SKIP_INTROS_MOD} enabled: the logo movie, the start screen and the autosave notice are skipped");
     }
     ssx_ui::game::fe::ava::options::reload(&mut fe);
