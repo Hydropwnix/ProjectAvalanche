@@ -299,6 +299,11 @@ pub(super) fn read_equipment(cx: &mut Ctx, view: InstanceId) -> Option<(List, Ve
         Some(r.transform(&m))
     });
     let slot = backer.unwrap_or_else(|| crate::display::hit::drawn_bounds(cx.player, cx.lib, start).transform(&m));
+    // (a port mod: the options are a plain list, every one of them the pointer's: none outside a carousel's band (with
+    // Start Run selected the menu's own selection is off it, and its first option was counted outside))
+    for c in &mut list.cells {
+        c.preview = false;
+    }
     list.cells.insert(0, Cell { item: -1, clip: start, slot, preview: false });
     if cx.to_bool(&selected_start) {
         list.selected = -1;
