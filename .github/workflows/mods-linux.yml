@@ -1,0 +1,55 @@
+name: mods-linux
+
+# Builds the Linux game (avalanche-game) of Hydropwnix's mods branch and attaches it to a pre-release, for the
+# Linux installers of the mod packages.
+on:
+  push:
+    branches: [mods-linux-build]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+defaults:
+  run:
+    working-directory: Engine
+
+jobs:
+  linux-game:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - name: System libraries for Bevy
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev libudev-dev \
+            libwayland-dev libxkbcommon-dev libgtk-3-dev nasm
+      - name: Rust toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: Engine
+          cache-on-failure: true
+      - name: Build
+        run: cargo build --release -p avalanche-game
+      - name: Package
+        run: |
+          mkdir -p ../out
+          cp target/release/avalanche-game ../out/
+          tar -C ../out -czf ../avalanche-game-linux-x64.tar.gz avalanche-game
+          sha256sum ../out/avalanche-game | tee ../avalanche-game-linux-x64.sha256
+      - name: Release
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="mods-linux-${GITHUB_SHA::12}"
+          gh release create "$tag" avalanche-game-linux-x64.tar.gz avalanche-game-linux-x64.sha256 \
+            --target "$GITHUB_SHA" --prerelease --title "Mods Linux game $tag" \
+            --notes "Linux avalanche-game built from $GITHUB_SHA for the Hydropwnix mod packages."
