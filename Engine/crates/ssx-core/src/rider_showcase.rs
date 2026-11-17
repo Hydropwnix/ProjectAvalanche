@@ -156,6 +156,11 @@ pub fn card_at(x: f32, y: f32) -> Option<i32> {
 /// The mouse pointer on the rider step (fractions of the screen), while it's shown there.
 static POINTER: Mutex<Option<(f32, f32)>> = Mutex::new(None);
 
+/// The mouse pointer on the rider step (fractions of the screen), while it's shown there.
+pub fn pointer() -> Option<(f32, f32)> {
+    POINTER.lock().ok().and_then(|p| *p)
+}
+
 pub fn set_pointer(at: Option<(f32, f32)>) {
     if let Ok(mut p) = POINTER.lock() {
         *p = at;

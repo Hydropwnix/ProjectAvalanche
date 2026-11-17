@@ -180,6 +180,7 @@ impl Renderer {
         }
         dimmer_fade(&mut out.commands, frame_start);
         gear_frame(&mut out.commands);
+        hover_glows(&mut out.commands);
         // (the highlighted card as drawn this frame, for the mouse)
         if let Some(r) = CARD_NOW.lock().ok().and_then(|c| *c) {
             ssx_core::rider_showcase::found_card([r.x0, r.y0, r.x1, r.y1], true);
@@ -1768,10 +1769,12 @@ fn grown_card(inh: &Inherited, out: &mut Vec<Command>) {
     let pulse = INNER_PULSE.lock().map_or(1.0, |p| p.0);
     // the glow outside the edge: fading out smoothly
     let scale = ((r.y1 - r.y0).abs() / 760.0).max(0.5);
-    let outer = (16.0 * scale).round().max(4.0) as i32;
+    // (wider and a little brighter under the mouse)
+    let hover = card_hover();
+    let outer = (16.0 * scale * (1.0 + 0.75 * hover)).round().max(4.0) as i32;
     for i in (0..outer).rev() {
         let t = 1.0 - (i as f32 + 0.5) / outer as f32;
-        ring(out, i as f32, CARD_GLOW, 0.55 * t * t * alpha * pulse);
+        ring(out, i as f32, CARD_GLOW, (0.55 + 0.2 * hover) * t * t * alpha * pulse);
     }
     // the card: solid
     {
@@ -3124,6 +3127,76 @@ fn stretched(matrix: Mat2d, cx: f32, cy: f32, kx: f32, ky: f32) -> Mat2d {
 /// highlighted card's bottom right, worked out with the bio's place (drawn just before them).
 /// …this many window pixels right of the highlighted card's edge.
 const LEVEL_PROMPT_GAP_PX: f32 = 14.0;
+/// The level for sale's X button as drawn this frame (the drawing's pixels), for its glow under the mouse.
+static LEVEL_BUTTON: std::sync::Mutex<Option<RectF>> = std::sync::Mutex::new(None);
+
+/// The mouse on the rider step's highlighted card and on the level's X button: how far each one's glow has grown (0
+/// to 1, easing in and out), and when they were last eased.
+static HOVER_GLOWS: std::sync::Mutex<([f32; 2], Option<std::time::Instant>)> = std::sync::Mutex::new(([0.0; 2], None));
+/// A glow grows in (or back out) over this long (seconds).
+const HOVER_EASE_SECS: f32 = 0.15;
+
+/// The mouse pointer on the rider step in the drawing's pixels.
+fn pointer_px() -> Option<(f32, f32)> {
+    let (x, y) = ssx_core::rider_showcase::pointer()?;
+    let (w, h) = FRAME_SIZE.lock().ok().and_then(|s| *s)?;
+    Some((x * w, y * h))
+}
+
+/// The glows under the mouse eased toward where the pointer is, and the X button's drawn (after everything).
+fn hover_glows(out: &mut Vec<Command>) {
+    let at = pointer_px();
+    let inside = |r: Option<RectF>| {
+        r.zip(at).is_some_and(|(r, (x, y))| (r.x0..=r.x1).contains(&x) && (r.y0..=r.y1).contains(&y))
+    };
+    let card = CARD_NOW.lock().ok().and_then(|c| *c);
+    let button = LEVEL_BUTTON.lock().ok().and_then(|b| *b);
+    let want = [inside(card) as u8 as f32, inside(button) as u8 as f32];
+    let Ok(mut g) = HOVER_GLOWS.lock() else { return };
+    let now = std::time::Instant::now();
+    let dt = g.1.map_or(0.0, |t| now.duration_since(t).as_secs_f32()).min(0.1);
+    g.1 = Some(now);
+    for i in 0..2 {
+        let step = dt / HOVER_EASE_SECS;
+        g.0[i] = if want[i] > g.0[i] { (g.0[i] + step).min(1.0) } else { (g.0[i] - step).max(0.0) };
+    }
+    let k = g.0[1];
+    if let Some(b) = button.filter(|_| k > 0.0) {
+        let e = k * k * (3.0 - 2.0 * k);
+        let layers = (4.0 + 10.0 * e).round() as i32;
+        for i in (0..layers).rev() {
+            let f = 1.0 - (i as f32 + 0.5) / layers as f32;
+            glow_ring(out, [b.x0, b.y0, b.x1, b.y1], 1.0 + i as f32, 1.0, [CARD_GLOW[0], CARD_GLOW[1], CARD_GLOW[2], 0.6 * f * f * e]);
+        }
+    }
+}
+
+/// How far the highlighted card's glow has grown under the mouse (0 to 1, eased).
+fn card_hover() -> f32 {
+    let k = HOVER_GLOWS.lock().map_or(0.0, |g| g.0[0]);
+    k * k * (3.0 - 2.0 * k)
+}
+
+/// A ring `w` pixels wide, `d` pixels outside `rect` (the drawing's pixels).
+fn glow_ring(out: &mut Vec<Command>, rect: [f32; 4], d: f32, w: f32, c: [f32; 4]) {
+    let [x0, y0, x1, y1] = rect;
+    let (a0, b0, a1, b1) = (x0 - d - w, y0 - d - w, x1 + d + w, y1 + d + w);
+    let (i0, j0, i1, j1) = (x0 - d, y0 - d, x1 + d, y1 + d);
+    let mut mesh = Mesh::default();
+    for [qx0, qy0, qx1, qy1] in [[a0, b0, a1, j0], [a0, j1, a1, b1], [a0, j0, i0, j1], [i1, j0, a1, j1]] {
+        let base = mesh.vertices.len() as u32;
+        mesh.vertices.extend([[qx0, qy0], [qx1, qy0], [qx1, qy1], [qx0, qy1]]);
+        mesh.indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+    out.push(Command::Draw(DrawItem {
+        mesh: Arc::new(mesh),
+        paint: Paint::Solid(c),
+        transform: Mat2d::IDENTITY,
+        cxform: Cxform::IDENTITY,
+        blend: BlendMode::Normal,
+    }));
+}
+
 static LEVEL_PROMPT_SHIFT: std::sync::Mutex<Option<(f32, f32)>> = std::sync::Mutex::new(None);
 
 fn grown_card_part(lib: &Library, player: &Player, id: InstanceId, inst: &Instance, parent: &Mat2d, matrix: Mat2d) -> Mat2d {
@@ -3170,6 +3243,7 @@ fn grown_card_part(lib: &Library, player: &Player, id: InstanceId, inst: &Instan
         if ssx_core::rider_showcase::level_offer() && !ssx_core::rider_showcase::gear_view() {
             let world = parent.mul(&Mat2d::translate(dx / parent.a, dy / parent.d).mul(&matrix));
             let mut u: Option<RectF> = None;
+            let mut button: Option<RectF> = None;
             for name in ["mcPrompt", "mcPrice"] {
                 let Some((c, ch)) =
                     s.children.values().find_map(|&c| player.get(c).filter(|ch| ch.name == name).map(|ch| (c, ch)))
@@ -3181,6 +3255,9 @@ fn grown_card_part(lib: &Library, player: &Player, id: InstanceId, inst: &Instan
                     continue;
                 }
                 let b = b.transform(&world.mul(&ch.matrix));
+                if name == "mcPrompt" {
+                    button = Some(b);
+                }
                 u = Some(match u {
                     Some(a) => RectF { x0: a.x0.min(b.x0), y0: a.y0.min(b.y0), x1: a.x1.max(b.x1), y1: a.y1.max(b.y1) },
                     None => b,
@@ -3196,10 +3273,18 @@ fn grown_card_part(lib: &Library, player: &Player, id: InstanceId, inst: &Instan
                 shift = Some((x / world.a, y / world.d));
                 // (where it is for the mouse: a click on it is X)
                 ssx_core::rider_showcase::found_prompt([u.x0 + x - 6.0, u.y0 + y - 6.0, u.x1 + x + 6.0, u.y1 + y + 6.0]);
+                if let (Some(b), Ok(mut lb)) = (button, LEVEL_BUTTON.lock()) {
+                    *lb = Some(RectF { x0: b.x0 + x, y0: b.y0 + y, x1: b.x1 + x, y1: b.y1 + y });
+                }
             }
         }
         if let Ok(mut p) = LEVEL_PROMPT_SHIFT.lock() {
             *p = shift;
+        }
+        if shift.is_none()
+            && let Ok(mut lb) = LEVEL_BUTTON.lock()
+        {
+            *lb = None;
         }
         return Mat2d::translate(dx / parent.a, dy / parent.d).mul(&matrix);
     }
