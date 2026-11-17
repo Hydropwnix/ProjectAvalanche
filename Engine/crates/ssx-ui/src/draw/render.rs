@@ -2780,6 +2780,21 @@ pub fn pointer_watch(ids: impl IntoIterator<Item = InstanceId>) {
     }
 }
 
+/// More entries the mouse asks about (after [`pointer_watch`], till its next call): the equipment options' slots.
+pub fn pointer_watch_more(ids: impl IntoIterator<Item = InstanceId>) {
+    if let Ok(mut w) = POINTER_WATCH.lock() {
+        w.extend(ids);
+    }
+}
+
+/// Where an entry the mouse asks about was last drawn, and where the mouse (a point of the stage, twips) is in the
+/// same drawing: `None` when it wasn't seen drawn.
+pub fn pointer_drawn(id: InstanceId, at: (f32, f32)) -> Option<(RectF, (f32, f32))> {
+    let d = POINTER_DRAWN.lock().ok()?;
+    let r = *d.1.get(&id)?;
+    Some((r, d.2?.apply(at.0, at.1)))
+}
+
 /// Whether the gear steps' layout is up (parts drawn moved: the mouse goes by where they're drawn).
 pub fn pointer_map_on() -> bool {
     POINTER_MAP.lock().is_ok_and(|m| m.is_some())

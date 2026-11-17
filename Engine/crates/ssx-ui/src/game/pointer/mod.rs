@@ -734,8 +734,33 @@ fn equipment_slot_under(cx: &mut Ctx, reach: &Reach, e: Entry, raw: (f32, f32)) 
     if slots.len() < 2 {
         return Err(format!("{} slot(s) in {}", slots.len(), cx.player.path(icons)));
     }
-    let stage = crate::draw::render::pointer_place_for(cx.player, icons, raw);
-    let (x, _) = cx.player.to_local(icons, stage).ok_or("no local place")?;
+    // (where the slots were drawn, when they were seen drawn (the highlighted option is drawn grown, and the options
+    // moved), else where the menus have them)
+    crate::draw::render::pointer_watch_more(slots.iter().flat_map(|s| s.2.iter().copied()));
+    let drawn: Option<Vec<(f32, f32, Vec<InstanceId>)>> = slots
+        .iter()
+        .map(|s| {
+            let mut span: Option<(f32, f32)> = None;
+            for &k in &s.2 {
+                if let Some((r, _)) = crate::draw::render::pointer_drawn(k, raw) {
+                    span = Some(span.map_or((r.x0, r.x1), |(a, b)| (a.min(r.x0), b.max(r.x1))));
+                }
+            }
+            span.map(|(a, b)| (a, b, Vec::new()))
+        })
+        .collect();
+    let at_drawn = slots
+        .first()
+        .and_then(|s| s.2.first())
+        .and_then(|&k| crate::draw::render::pointer_drawn(k, raw))
+        .map(|(_, p)| p.0);
+    let (x, slots) = match (drawn, at_drawn) {
+        (Some(d), Some(x)) => (x, d),
+        _ => {
+            let stage = crate::draw::render::pointer_place_for(cx.player, icons, raw);
+            (cx.player.to_local(icons, stage).ok_or("no local place")?.0, slots)
+        }
+    };
     // (the slot whose icon the pointer is over, or the nearest one along the row, within the icons' span)
     let (lo, hi) = (slots[0].0, slots[slots.len() - 1].1);
     if x < lo || x > hi {
@@ -745,7 +770,7 @@ fn equipment_slot_under(cx: &mut Ctx, reach: &Reach, e: Entry, raw: (f32, f32)) 
         .iter()
         .enumerate()
         .min_by(|a, b| {
-            let d = |r: &(f32, f32)| (r.0 - x).max(x - r.1).max(0.0);
+            let d = |r: &(f32, f32, Vec<InstanceId>)| (r.0 - x).max(x - r.1).max(0.0);
             d(a.1).total_cmp(&d(b.1))
         })
         .map(|(i, _)| i)
@@ -765,27 +790,28 @@ fn visible_kids(player: &crate::display::Player, id: InstanceId) -> Vec<Instance
 /// The slots the visible parts of `id` draw, by their left and right edges in its own space, left to right: parts
 /// drawn over one another (an icon, its empty mark, the highlight's frame) are one slot, and a part as wide as more
 /// than one slot (a backing) isn't one.
-fn side_by_side(cx: &mut Ctx, id: InstanceId) -> Vec<(f32, f32)> {
-    let mut parts: Vec<(f32, f32)> = visible_kids(cx.player, id)
+fn side_by_side(cx: &mut Ctx, id: InstanceId) -> Vec<(f32, f32, Vec<InstanceId>)> {
+    let mut parts: Vec<(f32, f32, InstanceId)> = visible_kids(cx.player, id)
         .into_iter()
         .filter_map(|k| {
             let m = cx.player.get(k)?.matrix;
             let r = crate::display::hit::drawn_bounds(cx.player, cx.lib, k).transform(&m);
-            (!r.is_empty() && r.x1 - r.x0 > 1.0).then_some((r.x0, r.x1))
+            (!r.is_empty() && r.x1 - r.x0 > 1.0).then_some((r.x0, r.x1, k))
         })
         .collect();
-    let Some(narrowest) = parts.iter().map(|p| p.1 - p.0).min_by(f32::total_cmp) else { return parts };
+    let Some(narrowest) = parts.iter().map(|p| p.1 - p.0).min_by(f32::total_cmp) else { return Vec::new() };
     parts.retain(|p| p.1 - p.0 <= narrowest * 1.6);
     parts.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut slots: Vec<(f32, f32)> = Vec::new();
+    let mut slots: Vec<(f32, f32, Vec<InstanceId>)> = Vec::new();
     for p in parts {
         match slots.last_mut() {
             // (overlapping the slot before by more than half the narrower of the two: the same slot)
             Some(last) if last.1.min(p.1) - p.0 > 0.5 * (p.1 - p.0).min(last.1 - last.0) => {
                 last.0 = last.0.min(p.0);
                 last.1 = last.1.max(p.1);
+                last.2.push(p.2);
             }
-            _ => slots.push(p),
+            _ => slots.push((p.0, p.1, vec![p.2])),
         }
     }
     slots
