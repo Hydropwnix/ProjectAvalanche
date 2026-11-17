@@ -29,6 +29,8 @@ pub(super) struct PointerShell {
     /// as the list shows them), and when the next goes.
     rider_steps: i32,
     rider_next: Option<std::time::Instant>,
+    /// The moves under way are quick ones (more than one card to go when they started).
+    rider_quick: bool,
 }
 
 /// The rider step (the Custom Event Menus mod), by the mouse: a button for the menus, or cards to move the list.
@@ -37,8 +39,9 @@ enum RiderMouse {
     Steps(i32),
 }
 
-/// The rider list moves a card at most this often for the mouse (seconds; a card's slide).
-const RIDER_STEP_EVERY: f32 = 0.22;
+/// The rider list's moves for the mouse: one at most this often (seconds), and each only once the last card's slide
+/// is done.
+const RIDER_STEP_EVERY: f32 = 0.1;
 
 #[derive(SystemParam)]
 pub(super) struct PointerInput<'w, 's> {
@@ -164,17 +167,24 @@ pub(super) fn pointer_system(
         .map(|(a, s)| (a.x / s.x, a.y / s.y));
     ssx_core::rider_showcase::set_pointer(at);
     let now = std::time::Instant::now();
+    // (several cards to go: the slides quick, each move as soon as the last slide's done)
+    ssx_core::rider_showcase::set_quick_scroll(p.state.rider_steps.abs() > 1 || p.state.rider_quick);
     if p.state.rider_steps != 0
         && p.state.rider_next.is_some_and(|t| now >= t)
+        && !ssx_core::rider_showcase::menu_animating()
     {
         use ssx_ui::game::input::Button;
         let right = p.state.rider_steps > 0;
         let shown = if right { Button::DpadRight } else { Button::DpadLeft };
         shell.host.press_from(&mut ui, super::frame::rider_list_turned(shown), device);
+        p.state.rider_quick = p.state.rider_steps.abs() > 1 || (p.state.rider_quick && p.state.rider_steps != 0);
         p.state.rider_steps -= if right { 1 } else { -1 };
         p.state.rider_next = Some(now + std::time::Duration::from_secs_f32(RIDER_STEP_EVERY));
     } else if p.state.rider_steps == 0 {
         p.state.rider_next = None;
+        if !ssx_core::rider_showcase::menu_animating() {
+            p.state.rider_quick = false;
+        }
     }
     for line in std::mem::take(&mut ui.pointer.log) {
         info!("{line}");

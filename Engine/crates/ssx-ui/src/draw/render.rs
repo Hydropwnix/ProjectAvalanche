@@ -3547,6 +3547,33 @@ fn callout_has(cx: &mut crate::avm1::Ctx, bar: &crate::avm1::value::Value, icon:
     })
 }
 
+/// The rider list's slides at the game's length, or quicker (`quick`): `components.RiderMenu`'s tween length.
+fn quick_slides(cx: &mut crate::avm1::Ctx, quick: bool) {
+    use crate::avm1::value::Value;
+    /// The game's own length, kept from before it was first changed.
+    static GAME_LENGTH: std::sync::Mutex<Option<f64>> = std::sync::Mutex::new(None);
+    /// A quick slide is this much of the game's.
+    const QUICK: f64 = 0.35;
+    let mut class = Value::Object(cx.vm.global);
+    for p in ["components", "RiderMenu"] {
+        class = cx.get_member(&class, p).unwrap_or_default();
+    }
+    if !matches!(class, Value::Object(_)) {
+        return;
+    }
+    let name = "ANIMATE_SELECTION_TWEEN_LENGTH";
+    let now = cx.get_member(&class, name).map(|v| cx.to_number(&v)).unwrap_or(f64::NAN);
+    if !now.is_finite() || now <= 0.0 {
+        return;
+    }
+    let Ok(mut game) = GAME_LENGTH.lock() else { return };
+    let game = *game.get_or_insert(now);
+    let want = if quick { game * QUICK } else { game };
+    if (now - want).abs() > 1e-6 {
+        let _ = cx.set_member(&class, name, Value::Number(want));
+    }
+}
+
 pub fn read_rider_menu(cx: &mut crate::avm1::Ctx) {
     use crate::avm1::value::Value;
     let mut cells = Vec::new();
@@ -3567,6 +3594,10 @@ pub fn read_rider_menu(cx: &mut crate::avm1::Ctx) {
         // them). Should the menu not come out whole, it's put back as it was.)
         static RAISED: std::sync::Mutex<Option<InstanceId>> = std::sync::Mutex::new(None);
         let flag = |cx: &mut crate::avm1::Ctx, name: &str| cx.get_member(&obj, name).map(|v| cx.to_bool(&v)).unwrap_or(false);
+        // (the Custom Event Menus mod: while the mouse moves the list several cards, each card's slide is quicker
+        // (`components.RiderMenu.ANIMATE_SELECTION_TWEEN_LENGTH`), and the next move goes as soon as one's done)
+        ssx_core::rider_showcase::set_menu_animating(flag(cx, "mIsAnimating"));
+        quick_slides(cx, ssx_core::rider_showcase::quick_scroll());
         let tried = RAISED.lock().ok().and_then(|r| *r) == Some(menu);
         if !tried
             && let (Some(max), Some(total)) = (number(cx, "mMaxVisibleItems"), number(cx, "mNumTotalItems"))

@@ -327,3 +327,24 @@ pub fn set_level_offer(on: bool) {
 pub fn level_offer() -> bool {
     LEVEL_OFFER.load(Ordering::Relaxed)
 }
+
+/// The rider list being moved several cards by the mouse: its slides made quicker meanwhile.
+static QUICK_SCROLL: AtomicBool = AtomicBool::new(false);
+/// The rider list's menu is sliding its cards (it takes no other move till it's done).
+static MENU_ANIMATING: AtomicBool = AtomicBool::new(false);
+
+pub fn set_quick_scroll(on: bool) {
+    QUICK_SCROLL.store(on, Ordering::Relaxed);
+}
+
+pub fn quick_scroll() -> bool {
+    QUICK_SCROLL.load(Ordering::Relaxed)
+}
+
+pub fn set_menu_animating(on: bool) {
+    MENU_ANIMATING.store(on, Ordering::Relaxed);
+}
+
+pub fn menu_animating() -> bool {
+    MENU_ANIMATING.load(Ordering::Relaxed)
+}
