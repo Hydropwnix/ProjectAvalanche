@@ -14,10 +14,12 @@ const BOOT_LOGO_STARTED: u16 = 0x2F;
 const BOOT_FLOW_STARTED: u16 = 0x30;
 const BOOT_SKIP_INTRO: u16 = 0x31;
 const BACKGROUND_TRANSITION: u16 = 0x2E;
-/// With `skip-intros`: seconds the screen stays black and the music silent while the menu, its music and its
-/// background come up, then the seconds of the fade in.
+/// With `skip-intros`: seconds the screen stays black and the music silent once the main menu's up (its music and its
+/// background settling), then the seconds of the fade in.
 const STARTUP_HOLD_S: f64 = 1.0;
 const STARTUP_FADE_S: f64 = 1.5;
+/// …the black held for the main menu at most this long (seconds of updates), then it fades all the same.
+const STARTUP_WAIT_MAX_S: f64 = 6.0;
 const STARTUP_STEP_S: f64 = 1.0 / 30.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -232,6 +234,18 @@ pub fn startup_black() -> f32 {
 /// The startup's black screen, then its fade in, with the music's gain following the picture (`skip-intros`).
 /// An update's time counts at most `STARTUP_STEP_S`, so the long first frames while the game loads do not use it up.
 fn startup_fade(fe: &mut FrontEnd, dt: f64) {
+    // (the black held till the main menu's up, then a moment more while it settles, then the fade: never a fade over
+    // a screen still loading)
+    // (but no longer than a few seconds' wait in all, nor over a question (a damaged save's): those go on regardless)
+    static WAITED: std::sync::Mutex<f64> = std::sync::Mutex::new(0.0);
+    let waited = WAITED.lock().map_or(f64::MAX, |mut w| {
+        *w += dt.min(STARTUP_STEP_S);
+        *w
+    });
+    let ready = fe.screen == crate::game::fe::screens::id::MAIN_MENU
+        || !fe.popups.stack.is_empty()
+        || waited >= STARTUP_WAIT_MAX_S;
+    let dt = if ready { dt } else { 0.0 };
     fe.boot.startup_left = (fe.boot.startup_left - dt.min(STARTUP_STEP_S)).max(0.0);
     let black = (fe.boot.startup_left / STARTUP_FADE_S).clamp(0.0, 1.0) as f32;
     STARTUP_BLACK.store(black.to_bits(), std::sync::atomic::Ordering::Relaxed);
