@@ -110,6 +110,9 @@ pub struct PointerRouter {
     click: Option<Entry>,
     globe: Option<GlobeFocus>,
     globe_click: Option<u32>,
+    /// The ranges' globe pulled with the right button (a port addition): where the pointer last was, and how far it
+    /// has gone since the button went down (a right click that never moved is the pad's B).
+    globe_drag: Option<((f32, f32), f32)>,
     #[cfg(feature = "net")]
     tab: Option<(super::fe::ava::browser::Tab, Step<super::fe::ava::browser::Tab>)>,
     pub log: Vec<String>,
@@ -203,11 +206,38 @@ impl GameUi {
         self.pointer.latch.wheel = 0;
         let pressed = |i: usize| latch.went_down[i] || (latch.down[i] && !self.pointer.read_down[i]);
         let released = |i: usize| !latch.down[i] && (self.pointer.read_down[i] || latch.went_down[i]);
-        let (left_down, left_up, right_down) = (pressed(0), released(0), pressed(1));
+        let (left_down, left_up, mut right_down) = (pressed(0), released(0), pressed(1));
+        let right_up = released(1);
         self.pointer.read_down = latch.down;
         let Some(pos) = latch.position else { return };
         let moved = self.pointer.read_position != Some(pos);
         self.pointer.read_position = Some(pos);
+        // (a port addition: on the ranges' globe the right button held pulls the globe round; a right click that
+        // didn't move it is the pad's B, given as the button comes up)
+        let mouse_globe = self.fe.as_ref().is_some_and(super::fe::globe::mouse_screen);
+        if mouse_globe {
+            if right_down {
+                self.pointer.globe_drag = Some((pos, 0.0));
+            }
+            right_down = false;
+            if let Some((from, gone)) = self.pointer.globe_drag {
+                let (dx, dy) = (pos.0 - from.0, pos.1 - from.1);
+                if dx != 0.0 || dy != 0.0 {
+                    self.fe_call(|fe, _| super::fe::globe::pointer_drag(fe, dx, dy));
+                }
+                let gone = gone + (dx * dx + dy * dy).sqrt();
+                self.pointer.globe_drag = Some((pos, gone));
+                if right_up || !latch.down[1] {
+                    self.pointer.globe_drag = None;
+                    if gone < 4.0 {
+                        self.pointer_press(Button::DigitalTwo, "a right click on the globe: B");
+                    }
+                }
+            }
+        } else {
+            self.pointer.globe_drag = None;
+        }
+        let dragging = self.pointer.globe_drag.is_some();
         // TODO(guess): a move only when the position changed (the game's handler 0x825757F0 posts one every read; whether GFx's mouse state 0x82667938 reports an unchanged point to the movies was not read); settle: 0x82667938 and the AS2 root's mouse processing.
         if moved {
             cx.vm.pointer_event(PointerEvent::Move { x: pos.0, y: pos.1 });
@@ -244,7 +274,7 @@ impl GameUi {
                 self.pointer.click = None;
             }
         }
-        if moved {
+        if moved && !dragging {
             match under.globe {
                 Some((k, _)) if self.pointer.globe.is_none_or(|g| g.key != k) => {
                     self.pointer.globe = Some(GlobeFocus { key: k, step: Step::default() });
@@ -254,7 +284,7 @@ impl GameUi {
                 _ => {}
             }
         }
-        if left_down {
+        if left_down && !dragging {
             cx.vm.pointer_event(PointerEvent::Button { down: true });
             self.click_at(cx, stage, &under, &reach, &order);
         }
@@ -342,6 +372,20 @@ impl GameUi {
         let Some(mut g) = self.pointer.globe else { return };
         let selected = nodes.iter().find(|n| n.selected);
         let target = nodes.iter().find(|n| n.key == g.key);
+        // (a port addition: on the ranges' globe the range under the pointer is selected at once, the globe left as
+        // it is; a click on it, once selected, is the pad's A)
+        if level == 1 && target.is_some() {
+            let key = g.key;
+            let mut ok = false;
+            self.fe_call(|fe, _| ok = super::fe::globe::pointer_focus(fe, key));
+            let clicked = self.pointer.globe_click == Some(key);
+            self.pointer.globe = None;
+            self.pointer.globe_click = None;
+            if ok && clicked {
+                self.pointer_press(Button::DigitalOne, "a click on a range: A");
+            }
+            return;
+        }
         let (Some(sel), Some(target)) = (selected, target) else {
             self.globe_release();
             return;

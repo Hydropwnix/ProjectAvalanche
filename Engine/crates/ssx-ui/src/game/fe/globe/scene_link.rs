@@ -192,6 +192,55 @@ pub(super) fn focus_range(fe: &mut FrontEnd, range: u32) {
     focus_peak(fe, peak);
 }
 
+/// A port addition (the mouse on the ranges' globe): the screens of ranges, where the mouse works (the pad's other
+/// globe screens and the keyboard's stay as the console had them).
+pub fn mouse_screen(fe: &FrontEnd) -> bool {
+    fe.globe_scene.is_some() && matches!(fe.screen, 0xC | 0x42 | 0xF)
+}
+
+/// The mouse on the ranges' globe: the range under it highlighted (the selection, as the stick's pick makes it),
+/// without turning the globe to it. Whether it can be (a range of this mode).
+pub fn pointer_focus(fe: &mut FrontEnd, key: u32) -> bool {
+    if !mouse_screen(fe) || !range_valid(fe, key) {
+        return false;
+    }
+    if scene_range(fe) == key {
+        return true;
+    }
+    let mut sounds = Vec::new();
+    if let Some(s) = fe.globe_scene.as_mut() {
+        s.follow_focus = false;
+        s.focus = key;
+        s.audio.highlight(1, &mut sounds);
+    }
+    for id in sounds {
+        fe.play_sound(id);
+    }
+    fe.note(format!("globe: the pointer selects range {key:#x}"));
+    focus_range(fe, key);
+    true
+}
+
+/// The globe pulled by the mouse (right button held): turned as if its surface follows the pointer, by `dx`, `dy`
+/// stage pixels.
+pub fn pointer_drag(fe: &mut FrontEnd, dx: f32, dy: f32) {
+    if !mouse_screen(fe) {
+        return;
+    }
+    let Some(s) = fe.globe_scene.as_mut() else { return };
+    // (about the globe's drawn radius in stage pixels: a pixel's drag turns it a pixel's arc)
+    const PER_PIXEL: f32 = 1.0 / 300.0;
+    s.follow_focus = false;
+    s.yaw.x += dx * PER_PIXEL;
+    s.yaw.v = 0.0;
+    s.yaw.target = s.yaw.x;
+    s.pitch.x = (s.pitch.x + dy * PER_PIXEL).clamp(-super::scene::PITCH_CLAMP, super::scene::PITCH_CLAMP);
+    s.pitch.v = 0.0;
+    s.pitch.target = s.pitch.x;
+    s.wrap_yaw();
+    s.yaw.target = s.yaw.x;
+}
+
 pub fn stick(fe: &mut FrontEnd, x: f32, y: f32) {
     if let Some(s) = fe.globe_scene.as_mut() {
         s.stick = (x.clamp(-1.0, 1.0), y.clamp(-1.0, 1.0));
