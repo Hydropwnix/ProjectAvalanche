@@ -82,6 +82,16 @@ pub fn found_card(rect: [f32; 4], highlighted: bool) {
     }
 }
 
+/// How many of the list's other cards were found so far in the drawing under way.
+pub fn cards_found() -> usize {
+    CARDS_FOUND.lock().map_or(0, |c| c.others.len())
+}
+
+/// The last of the list's other cards found in the drawing under way (fractions of the screen).
+pub fn last_card_found() -> Option<[f32; 4]> {
+    CARDS_FOUND.lock().ok().and_then(|c| c.others.last().copied())
+}
+
 /// The level for sale's X prompt and price drawn (in the drawing's pixels).
 pub fn found_prompt(rect: [f32; 4]) {
     let r = fraction(rect);

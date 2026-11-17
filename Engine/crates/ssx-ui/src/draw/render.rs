@@ -313,8 +313,11 @@ impl Renderer {
             out.extend([Command::MaskPopBegin, Command::Draw(clip), Command::MaskPopEnd]);
             if inst.name == "mcBacker" && inst.visible {
                 // (where it is for the mouse: the card's frame, down to the cut)
-                let m = (b.x1 - b.x0) * CARD_MARGIN;
-                let w = RectF { x0: b.x0 + m, y0: b.y0, x1: b.x1 - m, y1: cut }.transform(&inh.xf);
+                // (its frame: as wide as its bottom edge's line (the bar and a little either side), its top as far in
+                // from the backing's as its sides are)
+                let side = (bar.x1 - bar.x0) * 0.083;
+                let m = (bar.x0 - side - b.x0).max(0.0);
+                let w = RectF { x0: bar.x0 - side, y0: b.y0 + m, x1: bar.x1 + side, y1: cut }.transform(&inh.xf);
                 if inh.cx.mult[3] * inst.cxform.mult[3] > 0.02 {
                     ssx_core::rider_showcase::found_card([w.x0, w.y0, w.x1, w.y1], false);
                 }
@@ -460,10 +463,17 @@ impl Renderer {
                                         .mul(&Mat2d::scale(HOVER_GROW, HOVER_GROW))
                                         .mul(&Mat2d::translate(-cx, -cy));
                                     let bigger = Inherited { xf: grow.mul(&here.xf), ..here };
+                                    let before = ssx_core::rider_showcase::cards_found();
                                     self.instance(lib, player, child, bigger, out);
+                                    // (round its frame as just drawn (larger); else as last drawn, made larger)
+                                    let frame = (ssx_core::rider_showcase::cards_found() > before)
+                                        .then(ssx_core::rider_showcase::last_card_found)
+                                        .flatten()
+                                        .zip(FRAME_SIZE.lock().ok().and_then(|s| *s))
+                                        .map(|(r, (w, hgt))| [r[0] * w, r[1] * hgt, r[2] * w, r[3] * hgt]);
                                     let (hw, hh) = ((h.x1 - h.x0) * HOVER_GROW * 0.5, (h.y1 - h.y0) * HOVER_GROW * 0.5);
                                     let alpha = (here.cx.mult[3] * c.cxform.mult[3]).clamp(0.0, 1.0);
-                                    hover_glow(out, [cx - hw, cy - hh, cx + hw, cy + hh], alpha);
+                                    hover_glow(out, frame.unwrap_or([cx - hw, cy - hh, cx + hw, cy + hh]), alpha);
                                 }
                                 None => self.instance(lib, player, child, here, out),
                             }
@@ -2152,9 +2162,10 @@ fn hover_glow(out: &mut Vec<Command>, rect: [f32; 4], alpha: f32) {
     let glow = 12;
     for i in (0..glow).rev() {
         let f = 1.0 - (i as f32 + 0.5) / glow as f32;
-        ring(out, 2.0 + i as f32, 1.0, [0.2, 0.55, 1.0, 0.55 * f * f * alpha]);
+        ring(out, 1.0 + i as f32, 1.0, [0.2, 0.55, 1.0, 0.55 * f * f * alpha]);
     }
-    ring(out, 0.0, 2.0, [0.6, 0.85, 1.0, alpha]);
+    // (the line over the frame's own edge)
+    ring(out, -1.5, 3.0, [0.6, 0.85, 1.0, alpha]);
 }
 
 fn draw_frame(out: &mut Vec<Command>, rect: [f32; 4], alpha: f32, inner: Option<([f32; 4], [f32; 4])>, now: std::time::Instant) {
