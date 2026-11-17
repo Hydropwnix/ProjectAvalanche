@@ -327,9 +327,23 @@ impl GameUi {
         // (a port addition: on the equipment screen's Gear and Mods options, the slot under the pointer is the one
         // highlighted)
         if moved {
-            let hovered = under.entry.filter(|_| !under.preview).and_then(|(e, _)| {
-                let slot = equipment_slot_under(cx, &reach, e, raw)?;
-                Some((e, slot))
+            let on_equipment = self.fe.as_ref().is_some_and(|fe| fe.screen == super::fe::screens::id::EQUIPMENT);
+            let hovered = under.entry.filter(|_| !under.preview && on_equipment).and_then(|(e, _)| {
+                match equipment_slot_under(cx, &reach, e, raw) {
+                    Ok(slot) => Some((e, slot)),
+                    Err(why) => {
+                        // (why not, in the log, as it changes)
+                        static LAST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+                        let line = format!("pointer: no slots of option {}: {why}", e.item);
+                        if let Ok(mut l) = LAST.lock()
+                            && *l != line
+                        {
+                            l.clone_from(&line);
+                            self.pointer.note(line);
+                        }
+                        None
+                    }
+                }
             });
             match hovered {
                 Some((e, slot)) => {
@@ -681,34 +695,34 @@ impl GameUi {
 }
 
 /// The equipment screen's Gear and Mods options (a port addition): which of the option's slots (its icons, left to
-/// right) the pointer is over, for an option of more than one.
-fn equipment_slot_under(cx: &mut Ctx, reach: &Reach, e: Entry, raw: (f32, f32)) -> Option<i32> {
-    let list = reach.lists.iter().find(|l| l.clip == e.menu)?;
-    let cell = list.cells.iter().find(|c| c.item == e.item)?;
-    let inner = cx.player.child_by_name(cell.clip, "mcCell", true)?;
-    let inner = cx.player.child_by_name(inner, "mcCell", true)?;
-    let icons = cx.player.child_by_name(inner, "mcSlots", true)?;
-    let crate::display::InstanceKind::Sprite(s) = &cx.player.get(icons)?.kind else { return None };
-    let kids: Vec<InstanceId> = s.children.values().copied().collect();
-    let mut slots: Vec<(f32, f32)> = kids
-        .into_iter()
-        .filter(|&k| cx.player.get(k).is_some_and(|i| i.visible))
-        .filter_map(|k| {
-            let m = cx.player.get(k)?.matrix;
-            let r = crate::display::hit::drawn_bounds(cx.player, cx.lib, k).transform(&m);
-            (!r.is_empty() && r.x1 - r.x0 > 1.0).then_some((r.x0, r.x1))
-        })
-        .collect();
-    if slots.len() < 2 {
-        return None;
+/// right) the pointer is over, for an option of more than one. (`Err`: why not, for the log.)
+fn equipment_slot_under(cx: &mut Ctx, reach: &Reach, e: Entry, raw: (f32, f32)) -> Result<i32, String> {
+    let list = reach.lists.iter().find(|l| l.clip == e.menu).ok_or("no list")?;
+    let cell = list.cells.iter().find(|c| c.item == e.item).ok_or("no cell")?;
+    // (the option's icons: its `mcSlots`, wherever it is in the option)
+    let mut icons = find_named(cx.player, cell.clip, "mcSlots", 6)
+        .ok_or_else(|| format!("no mcSlots under {}", cx.player.path(cell.clip)))?;
+    // (the icons side by side: the first level down with more than one)
+    let mut slots = Vec::new();
+    for _ in 0..4 {
+        slots = side_by_side(cx, icons);
+        if slots.len() >= 2 {
+            break;
+        }
+        match visible_kids(cx.player, icons).as_slice() {
+            [only] => icons = *only,
+            _ => break,
+        }
     }
-    slots.sort_by(|a, b| a.0.total_cmp(&b.0));
+    if slots.len() < 2 {
+        return Err(format!("{} slot(s) in {}", slots.len(), cx.player.path(icons)));
+    }
     let stage = crate::draw::render::pointer_place_for(cx.player, icons, raw);
-    let (x, _) = cx.player.to_local(icons, stage)?;
+    let (x, _) = cx.player.to_local(icons, stage).ok_or("no local place")?;
     // (the slot whose icon the pointer is over, or the nearest one along the row, within the icons' span)
     let (lo, hi) = (slots[0].0, slots[slots.len() - 1].1);
     if x < lo || x > hi {
-        return None;
+        return Err(format!("the pointer outside the icons ({} of them)", slots.len()));
     }
     let i = slots
         .iter()
@@ -717,8 +731,46 @@ fn equipment_slot_under(cx: &mut Ctx, reach: &Reach, e: Entry, raw: (f32, f32)) 
             let d = |r: &(f32, f32)| (r.0 - x).max(x - r.1).max(0.0);
             d(a.1).total_cmp(&d(b.1))
         })
-        .map(|(i, _)| i)?;
-    i32::try_from(i).ok()
+        .map(|(i, _)| i)
+        .ok_or("no slot")?;
+    i32::try_from(i).map_err(|e| e.to_string())
+}
+
+fn visible_kids(player: &crate::display::Player, id: InstanceId) -> Vec<InstanceId> {
+    match player.get(id).map(|i| &i.kind) {
+        Some(crate::display::InstanceKind::Sprite(s)) => {
+            s.children.values().copied().filter(|&k| player.get(k).is_some_and(|i| i.visible)).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The visible parts of `id` that draw something, by their left and right edges in its own space, left to right.
+fn side_by_side(cx: &mut Ctx, id: InstanceId) -> Vec<(f32, f32)> {
+    let mut slots: Vec<(f32, f32)> = visible_kids(cx.player, id)
+        .into_iter()
+        .filter_map(|k| {
+            let m = cx.player.get(k)?.matrix;
+            let r = crate::display::hit::drawn_bounds(cx.player, cx.lib, k).transform(&m);
+            (!r.is_empty() && r.x1 - r.x0 > 1.0).then_some((r.x0, r.x1))
+        })
+        .collect();
+    slots.sort_by(|a, b| a.0.total_cmp(&b.0));
+    slots
+}
+
+fn find_named(player: &crate::display::Player, id: InstanceId, name: &str, depth: u32) -> Option<InstanceId> {
+    let kids: Vec<InstanceId> = match player.get(id).map(|i| &i.kind) {
+        Some(crate::display::InstanceKind::Sprite(s)) => s.children.values().copied().collect(),
+        _ => return None,
+    };
+    if let Some(&k) = kids.iter().find(|&&k| player.get(k).is_some_and(|i| i.name == name)) {
+        return Some(k);
+    }
+    if depth == 0 {
+        return None;
+    }
+    kids.into_iter().find_map(|k| find_named(player, k, name, depth - 1))
 }
 
 impl Ctx<'_> {
