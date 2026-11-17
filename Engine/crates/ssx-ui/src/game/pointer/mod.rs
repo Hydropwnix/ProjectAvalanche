@@ -671,6 +671,12 @@ impl GameUi {
 }
 
 impl GameUi {
+    /// The mouse is moving the equipment options' highlight to a slot (a port addition): the steps' sounds are held,
+    /// and only the last (the slot's own) played.
+    pub(super) fn slot_stepping(&self) -> bool {
+        self.pointer.slot.is_some()
+    }
+
     /// The equipment screen's Gear and Mods options (a port addition): once the option under the pointer is the one
     /// selected, left / right (a step a read) till its slot under the pointer is the one highlighted; then A if a
     /// click waits for it.

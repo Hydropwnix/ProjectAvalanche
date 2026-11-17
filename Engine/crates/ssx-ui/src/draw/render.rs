@@ -213,8 +213,8 @@ impl Renderer {
     }
 
     fn instance(&mut self, lib: &Library, player: &Player, id: InstanceId, inh: Inherited, out: &mut Vec<Command>) {
-        // (Start Run highlighted (the 3D Rider Select mod): its highlight and glow drawn red)
-        if START_RUN_LIT.load(std::sync::atomic::Ordering::Relaxed)
+        // (Start Run (the 3D Rider Select mod): its box and glow, and its highlight, drawn red)
+        if GEAR_STEPS_UP.load(std::sync::atomic::Ordering::Relaxed)
             && !inh.mask
             && player.get(id).is_some_and(|i| start_run_lit_part(player, i))
         {
@@ -1680,13 +1680,15 @@ fn start_run_lit_part(player: &Player, inst: &Instance) -> bool {
     }
 }
 
-/// A colour as red: as bright as its brightest channel, its colour turned to red (greys and white stay).
+/// A colour as red: a little brighter than its brightest channel, its colour turned to red (greys and white stay).
 fn red_of(c: [f32; 4]) -> [f32; 4] {
     let (hi, lo) = (c[0].max(c[1]).max(c[2]), c[0].min(c[1]).min(c[2]));
     if hi - lo < 0.08 {
         return c;
     }
-    [hi, lo * 0.3, lo * 0.3, c[3]]
+    let r = (hi * 1.3 + 0.08).min(1.0);
+    let rest = (lo * 0.3 + hi * 0.15).min(1.0);
+    [r, rest, rest, c[3]]
 }
 
 /// A drawing turned red: its colours (with its colour transform, which is then left plain) as red.
@@ -1713,7 +1715,7 @@ fn reddened(d: &mut DrawItem) {
             // (a picture: its colour transform turned red)
             let m = cx.mult;
             let (hi, lo) = (m[0].max(m[1]).max(m[2]), m[0].min(m[1]).min(m[2]));
-            d.cxform.mult = [hi, lo * 0.3, lo * 0.3, m[3]];
+            d.cxform.mult = [hi * 1.3, lo * 0.3 + hi * 0.15, lo * 0.3 + hi * 0.15, m[3]];
             d.cxform.add = red_of(cx.add);
         }
     }
@@ -2526,12 +2528,15 @@ fn slot_stepping() -> bool {
 
 /// Start Run highlighted on the gear steps (drawn red there).
 static START_RUN_LIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The gear steps' layout up this frame (Start Run drawn red, highlighted or not).
+static GEAR_STEPS_UP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// The selection highlight on Start Run (and not still on an option) as laid out this frame.
 static HIGHLIGHT_ON_START: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn gear_layout(lib: &Library, player: &Player, stage: &Mat2d) {
     static ROOT: std::sync::Mutex<Option<InstanceId>> = std::sync::Mutex::new(None);
     START_RUN_LIT.store(false, std::sync::atomic::Ordering::Relaxed);
+    GEAR_STEPS_UP.store(false, std::sync::atomic::Ordering::Relaxed);
     HIGHLIGHT_ON_START.store(false, std::sync::atomic::Ordering::Relaxed);
     if let Ok(mut f) = GEAR_FRAME.lock() {
         *f = None;
@@ -2722,6 +2727,7 @@ fn gear_layout(lib: &Library, player: &Player, stage: &Mat2d) {
         }
         let start_lit = !rows.is_empty() && (start_grown || (!plain_lit && !other_lit));
         START_RUN_LIT.store(start_lit, std::sync::atomic::Ordering::Relaxed);
+        GEAR_STEPS_UP.store(true, std::sync::atomic::Ordering::Relaxed);
         // (the Suit's or the Board's box as long as it's drawn highlighted, for Start Run's)
         static PLAIN_LIT_W: std::sync::Mutex<Option<f32>> = std::sync::Mutex::new(None);
         if plain_lit && let Ok(mut w) = PLAIN_LIT_W.lock() {

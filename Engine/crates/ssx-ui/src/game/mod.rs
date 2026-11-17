@@ -95,6 +95,8 @@ pub struct GameUi {
     pub handler: Option<String>,
     pub fe: Option<fe::FrontEnd>,
     dimmer: fe::user::Dimmer,
+    /// Sounds held while the mouse steps the equipment options' highlight to a slot, and since when.
+    held_sounds: (Vec<i32>, Option<std::time::Instant>),
     pending_views: Vec<String>,
     due_views: Vec<String>,
     loading_views: Vec<String>,
@@ -143,6 +145,7 @@ impl GameUi {
             handler: None,
             fe: None,
             dimmer: fe::user::Dimmer::default(),
+            held_sounds: (Vec::new(), None),
             pending_views: Vec::new(),
             due_views: Vec::new(),
             loading_views: Vec::new(),
@@ -187,7 +190,19 @@ impl GameUi {
     pub fn take_ui_sounds(&mut self) -> Vec<i32> {
         let mut out = self.fe.as_mut().map(|f| std::mem::take(&mut f.ui_sounds)).unwrap_or_default();
         out.extend(std::mem::take(&mut self.sounds).into_iter().map(|id| id as i32));
-        out
+        // (a port addition: the mouse stepping the equipment options' highlight to a slot: the steps' sounds held, and
+        // only the last played once it's there (or after a second at most))
+        let now = std::time::Instant::now();
+        if self.slot_stepping() && self.held_sounds.1.is_none_or(|t| now.duration_since(t).as_secs_f32() < 1.0) {
+            if !out.is_empty() {
+                self.held_sounds = (out, self.held_sounds.1.or(Some(now)));
+            } else if self.held_sounds.1.is_none() {
+                self.held_sounds.1 = Some(now);
+            }
+            return Vec::new();
+        }
+        let (held, _) = std::mem::take(&mut self.held_sounds);
+        if out.is_empty() { held } else { out }
     }
 
     pub fn take_ui_posts(&mut self) -> Vec<fe::globe::audio::Post> {
