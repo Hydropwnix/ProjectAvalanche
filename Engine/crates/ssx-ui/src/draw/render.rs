@@ -219,10 +219,11 @@ impl Renderer {
             && player.get(id).is_some_and(|i| start_run_lit_part(player, i))
         {
             let from = out.len();
+            let title = player.get(id).is_some_and(|i| i.name == "mcTitle");
             self.instance_drawn(lib, player, id, inh, out);
             for c in &mut out[from..] {
                 if let Command::Draw(d) = c {
-                    reddened(d);
+                    reddened(d, title);
                 }
             }
             return;
@@ -1710,32 +1711,48 @@ fn red_of(c: [f32; 4]) -> [f32; 4] {
     [(hi * 1.15 + 0.05).min(1.0), lo * 0.85, lo * 0.85, c[3]]
 }
 
+/// Text's colour as red, as washed out as it was (a pale blue comes out a pale red).
+fn text_red_of(c: [f32; 4]) -> [f32; 4] {
+    let (hi, lo) = (c[0].max(c[1]).max(c[2]), c[0].min(c[1]).min(c[2]));
+    if hi - lo < 0.03 {
+        return c;
+    }
+    [hi, lo, lo, c[3]]
+}
+
 /// A drawing turned red: its colours (with its colour transform, which is then left plain) as red.
-fn reddened(d: &mut DrawItem) {
+fn reddened(d: &mut DrawItem, text: bool) {
     let cx = d.cxform;
+    let red = if text { text_red_of } else { red_of };
     match &mut d.paint {
         Paint::Solid(c) => {
-            *c = red_of(cx.apply(*c));
+            *c = red(cx.apply(*c));
             d.cxform = Cxform::IDENTITY;
         }
         Paint::Gradient(g) => {
             let mut n = (**g).clone();
             for s in &mut n.stops {
-                s.1 = red_of(cx.apply(s.1));
+                s.1 = red(cx.apply(s.1));
             }
             *g = Arc::new(n);
             d.cxform = Cxform::IDENTITY;
         }
         Paint::Glyph { color, .. } => {
-            *color = red_of(cx.apply(*color));
+            *color = text_red_of(cx.apply(*color));
             d.cxform = Cxform::IDENTITY;
         }
         Paint::Bitmap { .. } => {
-            // (a picture: its colour transform turned red)
-            let m = cx.mult;
+            let (m, a) = (cx.mult, cx.add);
             let (hi, lo) = (m[0].max(m[1]).max(m[2]), m[0].min(m[1]).min(m[2]));
-            d.cxform.mult = [hi * 1.15, lo * 0.85, lo * 0.85, m[3]];
-            d.cxform.add = red_of(cx.add);
+            if hi - lo < 0.1 {
+                // (a picture in its own colours (the boxes' teal): its green and blue mostly taken out, red added)
+                d.cxform.mult = [m[0] * 1.6, m[1] * 0.25, m[2] * 0.25, m[3]];
+                d.cxform.add = [a[0] + 0.2, a[1] * 0.25, a[2] * 0.25, a[3]];
+            } else {
+                // (a picture coloured by its colour transform: the colour turned red)
+                d.cxform.mult = [hi * 1.15, lo * 0.85, lo * 0.85, m[3]];
+                d.cxform.add = red_of(a);
+            }
         }
     }
 }
