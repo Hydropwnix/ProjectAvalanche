@@ -540,12 +540,23 @@ impl Renderer {
                                 }
                                 None => self.instance(lib, player, child, here, out),
                             }
-                            // (whose card it is, for the mouse)
+                            // (whose card it is, for the mouse; and where, for its copies sliding on)
                             if ssx_core::rider_showcase::cards_found() > found
                                 && let Some((rider, _)) =
                                     CARD_RIDERS.lock().ok().and_then(|m| m.as_ref().and_then(|h| h.get(&child).cloned()))
                             {
                                 ssx_core::rider_showcase::name_last_card(&rider);
+                                if c.visible
+                                    && c.cxform.mult[3] >= 0.99
+                                    && hover.is_none()
+                                    && let (Some(r), Some((w, h))) = (
+                                        ssx_core::rider_showcase::last_card_found(),
+                                        FRAME_SIZE.lock().ok().and_then(|s| *s),
+                                    )
+                                    && let Ok(mut m) = CARD_RECTS.lock()
+                                {
+                                    m.insert(rider, RectF { x0: r[0] * w, y0: r[1] * h, x1: r[2] * w, y1: r[3] * h });
+                                }
                             }
                             // (only as it's fully shown: not fading in at the list's end)
                             if c.visible && c.cxform.mult[3] >= 0.99 {
@@ -3069,10 +3080,24 @@ fn draw_card_copies(menu_xf: &Mat2d, out: &mut Vec<Command>) {
     }
     let ghosts = GHOST.lock().map(|g| g.clone()).unwrap_or_default();
     let Ok(cards) = PLAIN_CARDS.lock() else { return };
+    let rects = CARD_RECTS.lock().map(|m| m.clone()).unwrap_or_default();
     for (rider, x, alpha) in ghosts {
         let Some((_, was_menu, was_card, draws)) = cards.iter().find(|c| c.0 == rider) else { continue };
         let Some(back) = was_menu.mul(was_card).inverse() else { continue };
         let to = menu_xf.mul(&Mat2d { tx: x, ..*was_card }).mul(&back);
+        // (the copy's card where the mouse finds it, as the card itself would be; under the mouse, its glow)
+        let mut glow = None;
+        if alpha > 0.02
+            && let Some(r) = rects.get(&rider)
+        {
+            let w = r.transform(&to);
+            ssx_core::rider_showcase::found_card([w.x0, w.y0, w.x1, w.y1], false);
+            ssx_core::rider_showcase::name_last_card(&rider);
+            let mid = (w.x0 + w.x1) * 0.5;
+            if hovered_card_px().is_some_and(|h| (h.x0..=h.x1).contains(&mid)) {
+                glow = Some([w.x0, w.y0, w.x1, w.y1]);
+            }
+        }
         for c in draws {
             let mut c = c.clone();
             if let Command::Draw(d) = &mut c {
@@ -3081,6 +3106,9 @@ fn draw_card_copies(menu_xf: &Mat2d, out: &mut Vec<Command>) {
                 d.cxform.add[3] *= alpha;
             }
             out.push(c);
+        }
+        if let Some(g) = glow {
+            hover_glow(out, g, alpha.clamp(0.0, 1.0));
         }
     }
 }
@@ -3113,6 +3141,9 @@ fn remember_card(lib: &Library, player: &Player, id: InstanceId, card: &Instance
         None => cards.push((rider, *menu_xf, card.matrix, draws)),
     }
 }
+/// Each rider's card's frame as last drawn (the drawing's pixels), with the card kept for its copies (`PLAIN_CARDS`).
+static CARD_RECTS: std::sync::Mutex<std::collections::BTreeMap<String, RectF>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
 /// The rider list's cards as last laid out: each card's rider, and whether its pictures are in.
 static CARD_RIDERS: std::sync::Mutex<Option<HashMap<InstanceId, (String, bool)>>> = std::sync::Mutex::new(None);
 
