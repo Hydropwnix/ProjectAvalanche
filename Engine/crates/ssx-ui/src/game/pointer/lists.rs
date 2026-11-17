@@ -284,7 +284,21 @@ pub(super) fn read_equipment(cx: &mut Ctx, view: InstanceId) -> Option<(List, Ve
     }
     let mut list = menu_cells(cx, menu)?;
     let m = cx.player.get(start).map(|i| i.matrix)?;
-    let slot = crate::display::hit::drawn_bounds(cx.player, cx.lib, start).transform(&m);
+    // (a port mod: Start Run's box only (its backing), not all it draws (its button and glow reach down over the
+    // options under it))
+    let backer = cx.player.child_by_name(start, "mcBackerContainer", true).and_then(|b| {
+        let bm = cx.player.get(b)?.matrix;
+        let r = crate::display::hit::drawn_bounds(cx.player, cx.lib, b);
+        if r.is_empty() {
+            return None;
+        }
+        let mut r = r.transform(&bm);
+        // (as wide as it's drawn: the 3D Rider Select mod draws it as wide as an option)
+        let k = crate::draw::render::pointer_stretch(b);
+        r.x1 = r.x0 + (r.x1 - r.x0) * k;
+        Some(r.transform(&m))
+    });
+    let slot = backer.unwrap_or_else(|| crate::display::hit::drawn_bounds(cx.player, cx.lib, start).transform(&m));
     list.cells.insert(0, Cell { item: -1, clip: start, slot, preview: false });
     if cx.to_bool(&selected_start) {
         list.selected = -1;

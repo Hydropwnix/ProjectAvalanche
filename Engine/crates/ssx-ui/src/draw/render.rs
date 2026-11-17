@@ -2715,6 +2715,15 @@ pub fn pointer_place_for(player: &Player, id: InstanceId, at: (f32, f32)) -> (f3
     at
 }
 
+/// How much wider a part is drawn on the gear steps (1 when it isn't).
+pub fn pointer_stretch(id: InstanceId) -> f32 {
+    POINTER_MAP
+        .lock()
+        .ok()
+        .and_then(|m| m.as_ref().and_then(|m| m.moved.iter().find(|e| e.0 == id).map(|e| e.4)))
+        .unwrap_or(1.0)
+}
+
 /// Whether a part (or one it's in) is hidden on the gear steps (not for the mouse).
 pub fn pointer_hidden(player: &Player, id: InstanceId) -> bool {
     let Ok(m) = POINTER_MAP.lock() else { return false };
