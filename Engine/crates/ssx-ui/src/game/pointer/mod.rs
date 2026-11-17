@@ -74,13 +74,18 @@ enum Next {
 // (a port mod: a read, not 8: the selection follows the pointer at once (a step a frame), the menus answering a step
 // within the frame after it)
 const STEP_WAIT: u32 = 1;
+const START_RUN_WAIT: u32 = 6;
 
 impl<T: PartialEq + Copy> Step<T> {
     fn next(&mut self, now: T, max_steps: u32, ways: usize) -> Next {
+        self.next_waiting(now, max_steps, ways, STEP_WAIT)
+    }
+
+    fn next_waiting(&mut self, now: T, max_steps: u32, ways: usize, wait: u32) -> Next {
         if let Some(at) = self.at {
             if at == now {
                 self.since += 1;
-                if self.since <= STEP_WAIT {
+                if self.since <= wait {
                     return Next::Wait;
                 }
                 if self.tried + 1 >= ways {
@@ -567,7 +572,9 @@ impl GameUi {
             return;
         }
         let ways = lists::step_ways(cx, menu, f.entry.item);
-        match f.step.next(menu.selected, MAX_FOCUS_STEPS, ways.len()) {
+        // (a port mod: off the equipment screen's Start Run (-1) the screen changes its state first: a few reads)
+        let wait = if menu.selected < 0 { START_RUN_WAIT } else { STEP_WAIT };
+        match f.step.next_waiting(menu.selected, MAX_FOCUS_STEPS, ways.len(), wait) {
             Next::Wait => {
                 self.pointer.focus = Some(f);
                 return;

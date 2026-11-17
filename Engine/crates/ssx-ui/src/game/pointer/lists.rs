@@ -575,6 +575,14 @@ pub(super) fn prompt_button(cx: &mut Ctx, label: InstanceId) -> Option<Button> {
 }
 
 pub(super) fn step_ways(cx: &Ctx, list: &List, item: i32) -> Vec<Button> {
+    // (a port mod: the equipment screen's Start Run (-1) is over its options as the 3D Rider Select mod draws them:
+    // down from it into them, up to it from them)
+    if list.selected < 0 && item >= 0 {
+        return vec![Button::DpadDown, Button::DpadRight];
+    }
+    if item < 0 && list.selected >= 0 {
+        return vec![Button::DpadUp, Button::DpadLeft];
+    }
     let at = match list.selected_cell {
         Some(clip) => list.cells.iter().find(|c| c.clip == clip),
         None => list.cells.iter().find(|c| c.item == list.selected),
