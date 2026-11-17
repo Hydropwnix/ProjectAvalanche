@@ -88,7 +88,8 @@ fn inputs(y: f32, end: bool, allow: bool) -> EventInputs {
 fn a_race_runs_its_clock_through_the_splits_to_the_finish_and_the_medal() {
     let mut m = race(vec![59_000, 61_000, 70_000]);
     let mut timer = DeathTimer::default();
-    assert_eq!(m.update(&mut timer, &inputs(0.0, true, false)), EventUpdate::default(), "idle before the start");
+    let idle = EventUpdate { ghost_clock_ms: Some(0), ..EventUpdate::default() };
+    assert_eq!(m.update(&mut timer, &inputs(0.0, true, false)), idle, "idle before the start");
     m.on_trigger_race_start(&mut timer);
     let mut splits = Vec::new();
     for i in 0..1800 {
@@ -513,4 +514,25 @@ fn an_unfinished_trick_bot_is_projected_from_its_points_at_the_results() {
     assert_eq!(m.racers[0].points, 400_000.0, "the points are the feed's");
     assert_eq!(r.rivals, [500_000]);
     assert_eq!((r.value, r.place, r.rank), (450_000, u32::MAX, Some(1)));
+}
+
+#[test]
+fn the_ghost_clock_runs_on_past_the_finish_and_holds_while_waiting() {
+    let mut m = race(vec![59_000]);
+    let mut timer = DeathTimer::default();
+    m.on_trigger_race_start(&mut timer);
+    let mut last = 0;
+    for i in 0..3000 {
+        let u = m.update(&mut timer, &inputs(-(i as f32).min(900.0), i > 900, true));
+        last = u.ghost_clock_ms.expect("written while +0x1DC is clear");
+    }
+    assert!(m.finish_ms.is_some());
+    assert!(m.clock.ms() < last, "{} < {last}", m.clock.ms());
+    assert_eq!(last, m.ghost_clock.ms());
+    m.waiting = true;
+    assert_eq!(m.update(&mut timer, &inputs(-3000.0, false, false)).ghost_clock_ms, None);
+    assert_eq!(m.ghost_clock.ms(), last);
+    m.waiting = false;
+    m.reset();
+    assert_eq!((m.ghost_clock.seconds, m.ghost_clock.running), (0.0, false));
 }

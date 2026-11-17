@@ -295,6 +295,16 @@ pub struct Selector {
     shown: Option<usize>,
 }
 
+pub(crate) const fn snapshot_selectors() -> [Selector; 5] {
+    [
+        Selector::new("gLayer0SnapshotSelector", LAYER0),
+        Selector::new("gLayer1SnapshotSelector", LAYER1),
+        Selector::new("gLayer2SnapshotSelector", LAYER2),
+        Selector::new("gReverbSnapshotSelector", REVERB),
+        Selector::new("gCameraSnapshotSelector", CAMERA),
+    ]
+}
+
 impl Selector {
     const fn new(variable: &'static str, table: &'static [&'static str]) -> Self {
         Self { variable, table, mask: 0, shown: None }
@@ -413,13 +423,7 @@ impl Graph {
             order: Vec::new(),
             accs: Vec::new(),
             snaps: Vec::new(),
-            selectors: [
-                Selector::new("gLayer0SnapshotSelector", LAYER0),
-                Selector::new("gLayer1SnapshotSelector", LAYER1),
-                Selector::new("gLayer2SnapshotSelector", LAYER2),
-                Selector::new("gReverbSnapshotSelector", REVERB),
-                Selector::new("gCameraSnapshotSelector", CAMERA),
-            ],
+            selectors: snapshot_selectors(),
             dac: 0,
             log: Vec::new(),
             meter: std::env::var_os("SSX_SFX_METER").map(|_| (0, Default::default())),

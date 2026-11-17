@@ -94,9 +94,7 @@ pub fn render_object(radius: f32, atmosphere: f32, rotation: Quat, camera: V3) -
 pub trait GlobeFlow {
     fn shown(&self, key: u32) -> bool;
     fn focusable(&self, key: u32) -> bool;
-    fn range_valid(&self, _key: u32) -> bool {
-        true
-    }
+    fn range_valid(&self, key: u32) -> bool;
     fn mode(&self) -> i64;
     fn recommended(&self) -> u32;
     fn is_new(&self, key: u32) -> bool;
@@ -133,6 +131,8 @@ pub struct GlobeScene {
     pub lighting_slot: u32,
     pub transition: i32,
     pub shots: ShotBlend,
+    pub hd: bool,
+    pub scene_shot: Option<usize>,
     pub peak_shot: Shot,
     pub drop_shot: Shot,
     pub scene_peak: u32,
@@ -195,6 +195,8 @@ impl GlobeScene {
             lighting_slot: 0,
             transition: 0,
             shots: ShotBlend::default(),
+            hd: true,
+            scene_shot: Some(3),
             peak_shot: Shot::default(),
             drop_shot: Shot::default(),
             scene_peak: 0,
@@ -236,7 +238,7 @@ impl GlobeScene {
                 .filter_map(|p| crate::game::fe::globe::clouds::CloudEffect::new(&p.effect))
                 .collect(),
         );
-        s.shots.current = s.data.globe.shots[3];
+        s.shots.current = s.data.globe.scene_shot(3, s.hd).unwrap_or_default();
         s.yaw.x = -0.0;
         s.wrap_yaw();
         s.dd = true;
@@ -288,6 +290,133 @@ mod tests {
             s.step(1.0 / 30.0);
         }
         assert!((s.x - 1.0).abs() < 1e-4 && s.v.abs() < 1e-3);
+    }
+
+    struct Ranges {
+        invalid: Vec<u32>,
+        new: Vec<u32>,
+    }
+
+    impl GlobeFlow for Ranges {
+        fn shown(&self, _key: u32) -> bool {
+            true
+        }
+        fn focusable(&self, _key: u32) -> bool {
+            true
+        }
+        fn range_valid(&self, key: u32) -> bool {
+            !self.invalid.contains(&key)
+        }
+        fn mode(&self) -> i64 {
+            1
+        }
+        fn recommended(&self) -> u32 {
+            0
+        }
+        fn is_new(&self, key: u32) -> bool {
+            self.new.contains(&key)
+        }
+        fn drop_point(&self, _drop: u32) -> (f32, f32) {
+            (0.0, 0.0)
+        }
+    }
+
+    const FOCUS: u32 = 1;
+    const EAST: u32 = 2;
+    const NORTH_EAST: u32 = 3;
+    const WEST: u32 = 4;
+
+    fn range_screen() -> GlobeScene {
+        let mut data = GlobeData::default();
+        data.globe.radius = 1200.0;
+        let range = |key, lon: f32, lat: f32| ssx_assets::career::globe::RangeView {
+            key,
+            lon_lat: [lon, lat],
+            ..Default::default()
+        };
+        data.ranges = vec![
+            range(FOCUS, 0.0, 30.0),
+            range(EAST, 15.0, 30.0),
+            range(NORTH_EAST, 15.0, 38.0),
+            range(WEST, -15.0, 30.0),
+        ];
+        let mut s = GlobeScene::new(data);
+        s.level = Some(3);
+        s.focus = FOCUS;
+        s.pitch.x = 30f32.to_radians();
+        s.yaw.x = 0.0;
+        s.shots.current = Shot { offset: [0.0, 5000.0, 100.0], look: [0.0; 3], target: [0.0; 3], fov: 0.87 };
+        s
+    }
+
+    fn listed(s: &GlobeScene, flow: &Ranges) -> Vec<u32> {
+        let stage = crate::game::fe::globe::STAGE;
+        s.entries(stage, stage.0 / stage.1, flow).iter().map(|e| e.key).collect()
+    }
+
+    #[test]
+    fn the_range_screens_list_only_the_modes_ranges() {
+        let s = range_screen();
+        assert_eq!(listed(&s, &Ranges { invalid: vec![], new: vec![] }), vec![FOCUS, EAST, NORTH_EAST, WEST]);
+        assert_eq!(listed(&s, &Ranges { invalid: vec![EAST, WEST], new: vec![] }), vec![FOCUS, NORTH_EAST]);
+        assert_eq!(listed(&s, &Ranges { invalid: vec![FOCUS], new: vec![] }), vec![EAST, NORTH_EAST, WEST]);
+        let mut menu = range_screen();
+        menu.level = Some(2);
+        assert_eq!(listed(&menu, &Ranges { invalid: vec![FOCUS], new: vec![] }), vec![FOCUS]);
+    }
+
+    #[test]
+    fn the_range_screens_mark_the_ranges_the_fe_manager_calls_new() {
+        let stage = crate::game::fe::globe::STAGE;
+        let new = |s: &GlobeScene, flow: &Ranges| -> Vec<(u32, bool)> {
+            s.entries(stage, stage.0 / stage.1, flow).iter().map(|e| (e.key, e.is_new)).collect()
+        };
+        let s = range_screen();
+        let flow = Ranges { invalid: vec![WEST], new: vec![EAST, WEST] };
+        assert_eq!(new(&s, &flow), vec![(FOCUS, false), (EAST, true), (NORTH_EAST, false)]);
+        let flow = Ranges { invalid: vec![], new: vec![FOCUS] };
+        assert_eq!(new(&s, &flow), vec![(FOCUS, true), (EAST, false), (NORTH_EAST, false), (WEST, false)]);
+        let mut menu = range_screen();
+        menu.level = Some(2);
+        assert_eq!(new(&menu, &flow), vec![(FOCUS, false)]);
+    }
+
+    #[test]
+    fn the_stick_picks_past_an_invalid_range() {
+        let all = Ranges { invalid: vec![], new: vec![] };
+        let mut s = range_screen();
+        let stage = crate::game::fe::globe::STAGE;
+        let entries = s.entries(stage, stage.0 / stage.1, &all);
+        let at = |k: u32| entries.iter().find(|e| e.key == k).map(|e| (e.x, e.y)).unwrap();
+        let (focus, east) = (at(FOCUS), at(EAST));
+        let (dx, dy) = (east.0 - focus.0, east.1 - focus.1);
+        let l = (dx * dx + dy * dy).sqrt();
+        s.stick = (dx / l, -dy / l);
+        assert_eq!(s.pick(&all), Some(EAST));
+        assert_eq!(s.pick(&Ranges { invalid: vec![EAST], new: vec![] }), Some(NORTH_EAST));
+        assert_eq!(
+            s.pick(&Ranges { invalid: vec![EAST, NORTH_EAST], new: vec![] }),
+            None,
+            "only the focus is left that way"
+        );
+    }
+
+    #[test]
+    fn the_stick_picks_on_the_globe_its_update_turned() {
+        const FAR: u32 = 5;
+        let all = Ranges { invalid: vec![], new: vec![] };
+        let mut s = range_screen();
+        s.data.ranges.retain(|r| r.key == FOCUS);
+        s.data.ranges.push(ssx_assets::career::globe::RangeView {
+            key: FAR,
+            lon_lat: [80.0, 30.0],
+            ..Default::default()
+        });
+        s.stick = (1.0, 0.0);
+        s.yaw.v = -20.0;
+        assert_eq!(s.pick(&all), None, "before the step the far range lies past the reach");
+        assert_eq!(s.camera_range(1.0 / 30.0, true, &all), Some(FAR));
+        assert_eq!((s.focus, s.repeat), (FAR, 0.225));
     }
 
     #[test]

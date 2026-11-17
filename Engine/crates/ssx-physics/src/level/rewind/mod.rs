@@ -29,11 +29,19 @@ pub struct RecordFlags {
     pub nis_active: bool,
     pub trigger_reset: bool,
     pub warped: bool,
+    pub delta_ticks: f32,
 }
 
 impl Default for RecordFlags {
     fn default() -> Self {
-        Self { track_started: true, track_finished: false, nis_active: false, trigger_reset: false, warped: false }
+        Self {
+            track_started: true,
+            track_finished: false,
+            nis_active: false,
+            trigger_reset: false,
+            warped: false,
+            delta_ticks: crate::DT_TICKS,
+        }
     }
 }
 
@@ -42,6 +50,7 @@ struct Snapshot {
     time: f32,
     valid: bool,
     state: RiderState,
+    delta_ticks: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -153,7 +162,7 @@ impl RewindBuffer {
     }
 
     pub fn record_with(&mut self, s: &RiderState, f: &RecordFlags) -> Option<usize> {
-        let in_air = s.state != RideState::Riding;
+        let in_air = s.bln_in_air();
         self.grounded_since_start = f.track_started && (self.grounded_since_start || !in_air);
         if self.active {
             self.janked_latch = false;
@@ -167,10 +176,10 @@ impl RewindBuffer {
         let w = self.cur;
         match &mut self.snaps[w] {
             Some(x) => {
-                (x.time, x.valid) = (self.time, valid);
+                (x.time, x.valid, x.delta_ticks) = (self.time, valid, f.delta_ticks);
                 x.state.clone_from(s);
             }
-            slot => *slot = Some(Snapshot { time: self.time, valid, state: s.clone() }),
+            slot => *slot = Some(Snapshot { time: self.time, valid, state: s.clone(), delta_ticks: f.delta_ticks }),
         }
         if let Some(x) = &mut self.snaps[w] {
             x.state.grind.sa = None;
@@ -193,7 +202,7 @@ impl RewindBuffer {
             self.time += dt;
         }
         self.grounded_since_start = true;
-        self.record_with(s, &RecordFlags::default());
+        self.record_with(s, &RecordFlags { delta_ticks: dt, ..RecordFlags::default() });
     }
 
     #[cfg(test)]
@@ -257,7 +266,6 @@ pub struct RewindTuning {
     pub transition_a_curve: Curve,
     pub transition_b_time: f32,
     pub transition_b_curve: Curve,
-    pub max_rewind_count: i32,
     pub time_dilation: crate::session::dilation::TimeDilationTuning,
 }
 
@@ -279,7 +287,6 @@ impl Default for RewindTuning {
             transition_a_curve: curve("curve_rewind_transitionA_time_dilation", &[[0.0, 1.0], [1.0, 0.0]]),
             transition_b_time: 0.3,
             transition_b_curve: curve("curve_rewind_transitionB_time_dilation", &[[0.0, 0.0], ramp_end, one]),
-            max_rewind_count: 3,
             time_dilation: Default::default(),
         }
     }
@@ -288,8 +295,6 @@ impl Default for RewindTuning {
 impl RewindTuning {
     pub fn load(bundle: &Bundle) -> Result<Self> {
         let a = bundle.view("Rewind Management SceneOp", "RewindManagementSceneOpAsset")?;
-        let cp = bundle.view("CharacterPropertiesSceneOpAsset", "CharacterPropertiesSceneOpAsset")?;
-        let cp_max = cp.asset("CharacterPropertiesAssetMax")?;
         Ok(Self {
             pre_time: number(&a, "RewindTimePreRewind")?,
             pre_curve: a.curve("RewindCurvePreRewindAsset")?,
@@ -301,7 +306,6 @@ impl RewindTuning {
             transition_a_curve: a.curve("RewindCurveTransitionARewindAsset")?,
             transition_b_time: number(&a, "RewindTimeTransitionBRewind")?,
             transition_b_curve: a.curve("RewindCurveTransitionBRewindAsset")?,
-            max_rewind_count: number(&cp_max, "MaxRewindCount")? as i32,
             time_dilation: crate::session::dilation::TimeDilationTuning::load(bundle)?,
         })
     }
@@ -337,6 +341,7 @@ pub struct RewindStep {
     pub speed: f32,
     pub stopped_at_start: bool,
     pub state: RewindState,
+    pub delta_ticks: f32,
 }
 
 impl RewindStep {
@@ -348,6 +353,7 @@ impl RewindStep {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RewindCount {
     pub rewinds_left: i32,
+    pub initial: i32,
     pub session_start: f32,
     pub enabled: bool,
     pub infinite: bool,
@@ -409,18 +415,56 @@ pub struct RewindManager {
     pub timer: f32,
     pub start_index: usize,
     pub count: RewindCount,
+    pub count_initialised: bool,
+    pub live_rule: Option<LiveRewindRule>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LiveRewindRule {
+    Off,
+    Limit(i32),
 }
 
 impl RewindManager {
     pub fn new(tuning: RewindTuning) -> Self {
-        let count =
-            RewindCount { rewinds_left: tuning.max_rewind_count, session_start: 0.0, enabled: true, infinite: true };
-        Self { tuning, state: RewindState::Idle, timer: 0.0, start_index: 0, count }
+        let count = RewindCount { rewinds_left: 0, initial: 0, session_start: 0.0, enabled: true, infinite: true };
+        let (state, timer) = (RewindState::Idle, 0.0);
+        Self { tuning, state, timer, start_index: 0, count, count_initialised: false, live_rule: None }
     }
 
-    pub fn reset(&mut self, buf: &mut RewindBuffer) {
+    pub fn set_live_rule(&mut self, rule: LiveRewindRule) {
+        self.live_rule = Some(rule);
+        self.apply_live_rule();
+    }
+
+    // PORT(choice): a live session's rule (the server's `rewinds = off | N`) is written into the count of every node the
+    // level builds, the level start's and each restart's; the console has no live session, its count's flags come from
+    // the node's constructor and the objectives' writes alone.
+    fn apply_live_rule(&mut self) {
+        match self.live_rule {
+            Some(LiveRewindRule::Off) => self.count.enabled = false,
+            Some(LiveRewindRule::Limit(_)) => self.count.infinite = false,
+            None => {}
+        }
+    }
+
+    pub fn init_count(&mut self, w: &World, resolved: bool) {
+        if self.count_initialised || !resolved {
+            return;
+        }
+        // PORT(choice): a live session's `rewinds = N` (the server's rule) is the count every init gives; the console
+        // has no live session, its count is always the resolved `MaxRewindCount`.
+        let n = match self.live_rule {
+            Some(LiveRewindRule::Limit(n)) => n,
+            _ => w.props.max_rewind_count as i32,
+        };
+        (self.count.rewinds_left, self.count.initial, self.count_initialised) = (n, n, true);
+    }
+
+    pub fn restart(&mut self, buf: &mut RewindBuffer) {
         *buf = RewindBuffer::new();
-        (self.state, self.timer) = (RewindState::Idle, 0.0);
+        *self = Self { live_rule: self.live_rule, ..Self::new(self.tuning.clone()) };
+        self.apply_live_rule();
     }
 
     pub fn step(
@@ -433,6 +477,7 @@ impl RewindManager {
         dt: f32,
     ) -> RewindStep {
         use RewindState::*;
+        self.init_count(w, s.props_resolved);
         let (btn, janked) = (pad.rewind_held, s.janked.anim_complete);
         self.timer += 2.0;
         let secs = self.timer * 0.016_666_668;
@@ -555,7 +600,7 @@ impl RewindManager {
         }
         (buf.dilation_on, buf.dilation, buf.cur) = (dilate, factor, cur);
         (buf.active, buf.terminating, buf.speed) = (stepping, terminating, step / dt);
-        playback(buf, s, w, pad, ctx, dt);
+        let delta_ticks = playback(buf, s, w, pad, ctx, dt);
         RewindStep {
             physics: !buf.active,
             next_dilation: if dilate { factor } else { 1.0 },
@@ -564,21 +609,26 @@ impl RewindManager {
             speed: buf.speed,
             stopped_at_start,
             state: self.state,
+            delta_ticks,
         }
     }
 }
 
-fn playback(buf: &RewindBuffer, s: &mut RiderState, w: &World, pad: &RewindPad, ctx: &ScoringContext, dt: f32) {
-    let Some(snap) = buf.snap(buf.cur) else { return };
+fn playback(buf: &RewindBuffer, s: &mut RiderState, w: &World, pad: &RewindPad, ctx: &ScoringContext, dt: f32) -> f32 {
+    let Some(snap) = buf.snap(buf.cur) else { return dt };
     if buf.active {
         restore(s, &snap.state);
         let mut c = *ctx;
         (c.rewind_active, c.rewind_speed, c.rewind_terminating) = (true, buf.speed, false);
         let inputs = playback_inputs(s, pad.flip_accel);
-        s.score.update_with(&w.tuning.scoring, &w.props, &inputs, &c, dt);
+        s.score.update_with(&w.tuning.scoring, &w.props, &inputs, &c, snap.delta_ticks);
+        snap.delta_ticks
     } else if buf.terminating {
         restore(s, &snap.state);
         terminate_playback(s);
+        snap.delta_ticks
+    } else {
+        dt
     }
 }
 

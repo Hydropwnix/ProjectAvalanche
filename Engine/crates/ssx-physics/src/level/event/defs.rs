@@ -102,110 +102,44 @@ impl EventDef {
 pub fn rider_display_names(big_root: &Path) -> Result<HashMap<String, String>> {
     const FIELD_SHORT_NAME: u32 = 0x8097_DCBE;
     const FIELD_DISPLAY_NAME: u32 = 0xEAA0_A6F7;
-    let dir = big_root.join("bootcache/data/xenon/attribdb");
-    let (svlt, sbin) = read_pair(&dir.join("attribdb_schema.vlt"))?;
-    let schema = Schema::from_vault(&Vault::parse(&svlt, &sbin)?).context("reading the schema")?;
-    let mut out = HashMap::new();
-    for file in ["attribdb.vlt", "ge_attribdb.vlt"] {
-        let (v, b) = read_pair(&dir.join(file))?;
-        let vault = Vault::parse(&v, &b).with_context(|| format!("parsing {file}"))?;
-        let cols = collection::collections(&vault)?;
-        let decoded = cols.iter().map(|c| c.decode(&vault, &schema)).collect::<ssx_formats::Result<Vec<_>>>()?;
-        let index = collection::index(&cols);
-        for (i, _) in cols.iter().enumerate().filter(|(_, c)| c.class == crate::gear::CLASS_CHARACTER) {
-            let fields = collection::with_inherited(&cols, &decoded, &index, i)?;
-            let text = |k: u32| {
-                fields.iter().find(|(_, f)| f.key == k).and_then(|(_, f)| {
-                    values(&f.data)
-                        .into_iter()
-                        .find_map(|v| if let Value::Text(Some(t)) = v { Some(t.clone()) } else { None })
-                })
-            };
+    ssx_assets::vault_db::with_all_db(big_root, |db| {
+        let mut out = HashMap::new();
+        for (key, _) in db.collections_of_all(crate::gear::CLASS_CHARACTER) {
+            let fields = db.fields(crate::gear::CLASS_CHARACTER, key)?;
+            let text =
+                |k: u32| fields.iter().find(|f| f.key == k).and_then(|f| ssx_assets::vault_db::single_text(&f.data));
             if let (Some(short), Some(display)) = (text(FIELD_SHORT_NAME), text(FIELD_DISPLAY_NAME)) {
                 out.insert(short, display);
             }
         }
-    }
-    Ok(out)
+        Ok(out)
+    })
 }
 
-#[allow(clippy::type_complexity)]
-pub(super) fn read_attribdb(
-    big_root: &Path,
-) -> Result<(Vec<collection::Collection>, Vec<collection::DecodedCollection>, HashMap<(u32, u32), usize>, GearDb)> {
+pub fn load_gear_db(big_root: &Path) -> Result<GearDb> {
     let dir = big_root.join("bootcache/data/xenon/attribdb");
     let (vlt, bin) = read_pair(&dir.join("attribdb.vlt"))?;
     let (svlt, sbin) = read_pair(&dir.join("attribdb_schema.vlt"))?;
     let schema_vault = Vault::parse(&svlt, &sbin)?;
     let schema = Schema::from_vault(&schema_vault).context("reading the schema")?;
     let vault = Vault::parse(&vlt, &bin).context("parsing attribdb.vlt")?;
-    let mut cols = collection::collections(&vault)?;
-    let mut decoded = cols.iter().map(|c| c.decode(&vault, &schema)).collect::<ssx_formats::Result<Vec<_>>>()?;
-    ssx_assets::content::data::events::route_ui_drops(big_root, &mut cols, &mut decoded);
-    let index = collection::index(&cols);
-    let mut gear = GearDb::from_vault(&cols, &decoded, &index)?;
+    let cols = collection::collections(&vault)?;
+    let decoded = cols.iter().map(|c| c.decode(&vault, &schema)).collect::<ssx_formats::Result<Vec<_>>>()?;
+    let mut gear = GearDb::from_vault(&cols, &decoded, &collection::index(&cols))?;
     if let Ok((gv, gb)) = read_pair(&dir.join("ge_attribdb.vlt")) {
         let gvault = Vault::parse(&gv, &gb).context("parsing ge_attribdb.vlt")?;
         let gcols = collection::collections(&gvault)?;
         let gdec = gcols.iter().map(|c| c.decode(&gvault, &schema)).collect::<ssx_formats::Result<Vec<_>>>()?;
         gear.add_riders(&gcols, &gdec, &collection::index(&gcols))?;
     }
-    Ok((cols, decoded, index, gear))
-}
-
-pub fn load_gear_db(big_root: &Path) -> Result<GearDb> {
-    Ok(read_attribdb(big_root)?.3)
+    Ok(gear)
 }
 
 pub fn load_events(big_root: &Path) -> Result<Vec<EventDef>> {
-    let (cols, decoded, index, gear) = read_attribdb(big_root)?;
+    let gear = load_gear_db(big_root)?;
     let ghosts =
         ssx_assets::content::data::events::ghost_db_text(big_root).map(|t| parse_ghost_db(&t)).unwrap_or_default();
-    let mut out = Vec::new();
-    for r in ssx_rules::events::ui_drop_records(&cols, &decoded, &index)? {
-        out.push(event_def(r, &gear, &ghosts));
-    }
-    for e in dlc_events(big_root, &gear, &ghosts)? {
-        if !out.iter().any(|b| b.key == e.key) {
-            out.push(e);
-        }
-    }
-    Ok(out)
-}
-
-fn dlc_events(big_root: &Path, gear: &GearDb, ghosts: &[(u32, Rival)]) -> Result<Vec<EventDef>> {
-    let paths = ssx_assets::vault_db::dlc_delta_vaults();
-    if paths.is_empty() {
-        return Ok(Vec::new());
-    }
-    let dir = big_root.join("bootcache/data/xenon/attribdb");
-    let (svlt, sbin) = read_pair(&dir.join("attribdb_schema.vlt"))?;
-    let schema = Schema::from_vault(&Vault::parse(&svlt, &sbin)?).context("reading the schema")?;
-    let known: std::collections::HashSet<u32> = schema.classes.iter().map(|c| c.key).collect();
-    let mut out = Vec::new();
-    for path in paths {
-        let (vlt, bin) = read_pair(&path)?;
-        let vault = Vault::parse(&vlt, &bin).with_context(|| format!("parsing {}", path.display()))?;
-        let mut cols = Vec::new();
-        let mut decoded = Vec::new();
-        for c in collection::collections(&vault)? {
-            if !known.contains(&c.class) {
-                continue;
-            }
-            decoded.push(c.decode(&vault, &schema).with_context(|| format!("collection {:#010x}", c.key))?);
-            cols.push(c);
-        }
-        let index = collection::index(&cols);
-        for r in ssx_rules::events::ui_drop_records(&cols, &decoded, &index)? {
-            if r.drop_key == 0 || r.name.is_empty() {
-                continue;
-            }
-            if !out.iter().any(|e: &EventDef| e.key == r.key) {
-                out.push(event_def(r, gear, ghosts));
-            }
-        }
-    }
-    Ok(out)
+    Ok(ssx_assets::career::event_records(big_root)?.into_iter().map(|r| event_def(r, &gear, &ghosts)).collect())
 }
 
 fn event_def(r: ssx_rules::events::UiDropRecord, gear: &GearDb, ghosts: &[(u32, Rival)]) -> EventDef {

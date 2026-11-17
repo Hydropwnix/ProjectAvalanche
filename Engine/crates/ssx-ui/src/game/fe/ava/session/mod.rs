@@ -62,6 +62,7 @@ pub struct Session {
     pub banner_shown: String,
     pub results_exit: Option<(results::ResultsExit, f64)>,
     pub results_quit: Option<f64>,
+    pub launch_notice: Option<String>,
 }
 
 impl Session {

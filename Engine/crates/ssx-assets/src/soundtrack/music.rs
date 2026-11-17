@@ -8,7 +8,7 @@ use ssx_formats::ealayer3_decode::SectionDecoder;
 use ssx_formats::mpf::{MpfFile, MusFile};
 
 use crate::pathfinder::{PITCH_ONE, Pathfinder, SAMPLE_RATE, SegmentLengths, TICK_MS};
-use crate::sfx_stream::{BlockKind, Next, Ring, Slot, StreamFile};
+use crate::sfx_stream::{BlockKind, Lease, Next, Slot, StreamFile, UNSTEALABLE, music_pool, new_owner};
 
 pub const SSXDD_EVENTS: [(&str, u32); 43] = [
     ("DD_ID_01", 0x02CD_5E1F),
@@ -119,6 +119,14 @@ struct SoundCursor {
 enum CursorSrc {
     Ram { blocks: Vec<(usize, usize, u32)>, next: usize },
     Stream { tag: u64, done: bool },
+    Unrequested,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SoundRead {
+    Ram,
+    Request(u64),
+    Refused,
 }
 
 enum Decoded {
@@ -128,11 +136,12 @@ enum Decoded {
 }
 
 impl SoundCursor {
-    fn open(audio: &TrackAudio, track: usize, entry: usize, tag: Option<u64>) -> Result<Self> {
+    fn open(audio: &TrackAudio, track: usize, entry: usize, read: SoundRead) -> Result<Self> {
         let (h, body) = audio.sound(entry)?;
-        let src = match tag {
-            Some(tag) => CursorSrc::Stream { tag, done: false },
-            None => {
+        let src = match read {
+            SoundRead::Request(tag) => CursorSrc::Stream { tag, done: false },
+            SoundRead::Refused => CursorSrc::Unrequested,
+            SoundRead::Ram => {
                 let blocks = read_v0_blocks(&h, &audio.data, body)?;
                 let list = blocks
                     .sections
@@ -162,6 +171,7 @@ impl SoundCursor {
                 let dec = section_decoder(&mut self.dec, section, self.channels)?;
                 dec.decode_payload(block.payload, tmp)?.min(samples as usize)
             }
+            CursorSrc::Unrequested => return Ok(Decoded::Pending),
             CursorSrc::Stream { tag, done } => {
                 if *done {
                     return Ok(Decoded::End);
@@ -209,15 +219,17 @@ fn section_decoder(
 #[derive(Default)]
 struct Voice {
     item: Option<u64>,
-    sounds: VecDeque<(usize, usize, Option<u64>)>,
+    sounds: VecDeque<(usize, usize, SoundRead)>,
     cur: Option<SoundCursor>,
     buf: Vec<f32>,
     base: usize,
     pos: f64,
     reported: f64,
     gain: f32,
-    slot: Option<Slot>,
+    lease: Option<Lease>,
     requested: VecDeque<(u64, u64)>,
+    owner: u64,
+    refused: Option<u64>,
 }
 
 enum Frame {
@@ -227,7 +239,7 @@ enum Frame {
 }
 
 impl Voice {
-    fn open(&mut self, id: u64, sounds: VecDeque<(usize, usize, Option<u64>)>, carry: f64) {
+    fn open(&mut self, id: u64, sounds: VecDeque<(usize, usize, SoundRead)>, carry: f64) {
         self.item = Some(id);
         self.sounds = sounds;
         self.cur = None;
@@ -258,9 +270,9 @@ impl Voice {
         }
         loop {
             if self.cur.is_none() {
-                let Some((t, e, tag)) = self.sounds.pop_front() else { return Decoded::End };
+                let Some((t, e, read)) = self.sounds.pop_front() else { return Decoded::End };
                 let Some(audio) = tracks.get(t).and_then(Option::as_ref) else { return Decoded::End };
-                match SoundCursor::open(audio, t, e, tag) {
+                match SoundCursor::open(audio, t, e, read) {
                     Ok(c) => self.cur = Some(c),
                     Err(err) => {
                         ssx_core::eprintln!("music: track {t} entry {e}: {err:#}");
@@ -270,7 +282,12 @@ impl Voice {
             }
             let Some(cur) = self.cur.as_mut() else { return Decoded::End };
             let Some(audio) = tracks.get(cur.track).and_then(Option::as_ref) else { return Decoded::End };
-            match cur.decode_block(audio, self.slot.as_mut(), &mut self.buf, tmp) {
+            let (buf, lease) = (&mut self.buf, self.lease.as_ref());
+            let decoded = match lease {
+                Some(l) => l.with(|slot| cur.decode_block(audio, Some(slot), buf, tmp)).unwrap_or(Ok(Decoded::End)),
+                None => cur.decode_block(audio, None, buf, tmp),
+            };
+            match decoded {
                 Ok(Decoded::End) => self.cur = None,
                 Ok(d) => return d,
                 Err(err) => {
@@ -286,6 +303,7 @@ const TICK_FRAMES: usize = (SAMPLE_RATE / 1000 * TICK_MS) as usize;
 
 pub struct PathfinderMusic {
     pub rt: Pathfinder,
+    name: String,
     tracks: Vec<Option<TrackAudio>>,
     voices: Vec<Voice>,
     tick_left: usize,
@@ -362,9 +380,11 @@ impl PathfinderMusic {
                 rt.add_player(t, tr.num_subbanks > 0);
             }
         }
-        let voices = (0..crate::pathfinder::MAX_PLAYERS).map(|_| Voice::default()).collect();
+        let voices =
+            (0..crate::pathfinder::MAX_PLAYERS).map(|_| Voice { owner: new_owner(), ..Voice::default() }).collect();
         Ok(Self {
             rt,
+            name: name.to_string(),
             tracks,
             voices,
             tick_left: 0,
@@ -450,9 +470,7 @@ impl PathfinderMusic {
                 }
                 self.tick_left = TICK_FRAMES;
             }
-            for i in 0..self.voices.len() {
-                self.sync_requests(i);
-            }
+            self.sync_slots();
             let chunk = (n - done).min(self.tick_left);
             if let Some(score) = self.score.as_mut() {
                 score.render(&mut out[done * 2..(done + chunk) * 2]);
@@ -467,33 +485,37 @@ impl PathfinderMusic {
             self.tick_left -= chunk;
             done += chunk;
         }
+        self.sync_slots();
+    }
+
+    pub fn sync_slots(&mut self) {
+        for i in 0..self.voices.len() {
+            self.sync_requests(i);
+        }
     }
 }
 
 impl PathfinderMusic {
-    fn item_sounds(&self, node: u16, record: usize, piece: u8) -> VecDeque<(usize, usize, Option<u64>)> {
+    fn item_sounds(&self, node: u16, record: usize, piece: u8) -> VecDeque<(usize, usize, SoundRead)> {
         let Some(n) = self.rt.mpf.nodes.get(usize::from(node)) else { return VecDeque::new() };
         let t = n.track as usize;
         let Some(audio) = self.tracks.get(t).and_then(Option::as_ref) else { return VecDeque::new() };
         if !audio.ram {
-            return record.checked_sub(audio.first_sample).map(|e| (t, e, None)).into_iter().collect();
+            return record.checked_sub(audio.first_sample).map(|e| (t, e, SoundRead::Ram)).into_iter().collect();
         }
         let Some(rec) = self.rt.mpf.samples.get(record) else { return VecDeque::new() };
         let first = (rec.location & 0xFFFF) as usize;
         if piece > 0 {
-            return VecDeque::from([(t, first + usize::from(piece) - 1, None)]);
+            return VecDeque::from([(t, first + usize::from(piece) - 1, SoundRead::Ram)]);
         }
         let k = (usize::from(n.beats_per_bar) * usize::from(n.bars)).max(1);
-        (first..first + k).map(|e| (t, e, None)).collect()
+        (first..first + k).map(|e| (t, e, SoundRead::Ram)).collect()
     }
 
     fn sync_requests(&mut self, i: usize) {
         let Some(p) = self.rt.players.get(i).and_then(Option::as_ref) else {
-            if let Some(v) = self.voices.get_mut(i)
-                && let Some(slot) = v.slot.as_mut()
-                && !v.requested.is_empty()
-            {
-                slot.flush();
+            if let Some(v) = self.voices.get_mut(i) {
+                (v.lease, v.refused) = (None, None);
                 v.requested.clear();
             }
             return;
@@ -501,32 +523,73 @@ impl PathfinderMusic {
         let t = usize::from(p.track);
         let Some(audio) = self.tracks.get(t).and_then(Option::as_ref) else { return };
         let Some(file) = audio.file.clone() else { return };
-        let v = &mut self.voices[i];
-        if v.slot.is_none() {
-            match Slot::new(Ring::MUSIC) {
-                Ok(slot) => v.slot = Some(slot),
-                Err(e) => {
-                    ssx_core::eprintln!("music: p{i}: {e:#}");
-                    return;
-                }
-            }
-        }
         let items: Vec<(u64, usize)> = p.stream.items.iter().map(|q| (q.id, q.record)).collect();
+        let ms = (self.rt.frame * 1000 / u64::from(SAMPLE_RATE)) as u32;
+        let v = &mut self.voices[i];
         if let Some(k) = items.first().and_then(|(id, _)| v.requested.iter().position(|r| r.0 == *id)) {
             v.requested.drain(..k);
         }
         let in_order = v.requested.len() <= items.len() && v.requested.iter().zip(&items).all(|(r, it)| r.0 == it.0);
-        let Some(slot) = v.slot.as_mut() else { return };
         if !in_order {
-            slot.flush();
+            if let Some(lease) = &v.lease {
+                lease.with(Slot::flush);
+            }
             v.requested.clear();
         }
-        for &(id, record) in &items[v.requested.len()..] {
-            let entry = record.checked_sub(audio.first_sample).and_then(|e| audio.index.entries.get(e));
-            let Some(entry) = entry else { continue };
-            let tag = slot.queue(file.clone(), u64::from(entry.sns_offset), BlockKind::V0);
-            v.requested.push_back((id, tag));
+        if v.refused.is_some_and(|id| items.iter().all(|it| it.0 != id)) {
+            v.refused = None;
         }
+        let todo = &items[v.requested.len()..];
+        if v.refused.is_some() || (todo.is_empty() && v.requested.is_empty()) {
+            if v.lease.take().is_some() {
+                let text = format!("p{i} Music slot given back ({} held)", music_pool().held());
+                self.rt.log.push(crate::pathfinder::LogLine { ms, text });
+            }
+            return;
+        }
+        if v.lease.is_none() && !todo.is_empty() {
+            let label = format!("pathfinder {} p{i}", self.name);
+            match music_pool().acquire(v.owner, UNSTEALABLE, &label) {
+                Ok(Some(lease)) => {
+                    v.lease = Some(lease);
+                    let pool = music_pool();
+                    let text = format!("p{i} Music slot taken ({} held: {})", pool.held(), pool.holders().join(", "));
+                    self.rt.log.push(crate::pathfinder::LogLine { ms, text });
+                }
+                Ok(None) => {
+                    let pool = music_pool();
+                    ssx_core::eprintln!(
+                        "music: {label}: no Music slot free ({} held: {}), its segment stays silent",
+                        pool.held(),
+                        pool.holders().join(", ")
+                    );
+                    // TODO(guess): the player's segment whose request found no slot holds the voice silent and the
+                    // runtime is told nothing played, and the player requests nothing more until the runtime drops
+                    // that segment — decoded: SndPlayer1 clears a request that gets no slot (0x82A4FB58) and, without
+                    // a request, returns no frames and keeps its position (0x82A39778); guessed: what the stream's
+                    // status tells the runtime and whether the next segment's request (0x835CDBE8) plays; tried: the
+                    // status 0x835C8EF8 gives 2 (buffering) when the stream object's (+0x12C) vt+0x24 is below its
+                    // vt+0x20 (−1), not followed into those two; settle: what they return for a request cleared at its
+                    // start.
+                    v.refused = todo.first().map(|it| it.0);
+                    return;
+                }
+                Err(e) => {
+                    ssx_core::eprintln!("music: {label}: {e:#}");
+                    return;
+                }
+            }
+        }
+        let Some(lease) = v.lease.as_ref() else { return };
+        let mut queued = Vec::with_capacity(todo.len());
+        lease.with(|slot| {
+            for &(id, record) in todo {
+                let entry = record.checked_sub(audio.first_sample).and_then(|e| audio.index.entries.get(e));
+                let Some(entry) = entry else { continue };
+                queued.push((id, slot.queue(file.clone(), u64::from(entry.sns_offset), BlockKind::V0)));
+            }
+        });
+        v.requested.extend(queued);
     }
 
     fn render_voice(&mut self, i: usize, out: &mut [f32]) {
@@ -559,7 +622,12 @@ impl PathfinderMusic {
                 if sounds.len() == 1
                     && let Some(s) = sounds.front_mut()
                 {
-                    s.2 = self.voices[i].requested.iter().find(|r| r.0 == id).map(|r| r.1);
+                    let v = &self.voices[i];
+                    if v.refused == Some(id) {
+                        s.2 = SoundRead::Refused;
+                    } else if let Some(r) = v.requested.iter().find(|r| r.0 == id) {
+                        s.2 = SoundRead::Request(r.1);
+                    }
                 }
                 let at = self.rt.frame + f as u64;
                 let what = if front.piece > 0 { format!(" beat {}", front.piece) } else { String::new() };

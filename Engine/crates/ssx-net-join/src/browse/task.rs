@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use ssx_net_proto::join::{JoinContent, RefusalCode};
 use ssx_net_proto::keys::ServerKey;
@@ -10,9 +11,9 @@ use zeroize::Zeroizing;
 
 use super::address::ServerAddress;
 use crate::http::{Granted, JoinFailure, JoinParams};
-use crate::http::{join_listed_showing, join_showing};
+use crate::http::{join_listed_showing, join_showing_then_pin};
 use crate::identity::PlayerIdentity;
-use crate::known::KnownServers;
+use crate::known::{KnownServers, PinWrite};
 use crate::resources::{Fetched, Progress, ResourceOptions, Step, fetch_all, fetch_manifest};
 
 pub struct JoinRequest {
@@ -34,7 +35,20 @@ pub struct Joined {
     pub granted: Box<Granted>,
     pub identity_created: bool,
     pub resources: Option<Box<Fetched>>,
+    pub pinned: Option<Receiver<Pinned>>,
 }
+
+#[derive(Debug)]
+pub struct Pinned {
+    pub path: PathBuf,
+    pub after: Duration,
+    pub result: Result<(), String>,
+}
+
+// PORT(choice): a direct connect's new key (trust on first use) is written to `known_servers.txt` after the join's
+// token is handed on, so that the write (the file and its folder synced: 3.4 + 5.8 s once under another program's
+// 3 GB write, btrfs, which expired the 10 s token: round io1) is not in the token's time; a failed write is reported
+// and the session goes on (the next join to the server pins it anew). The console has no direct connects.
 
 pub struct ResourceJoin {
     pub options: ResourceOptions,
@@ -104,7 +118,7 @@ fn run(
     mut with: ResourceJoin,
     cancel: &Arc<AtomicBool>,
     held: &Mutex<HeldText>,
-) -> Result<Joined, Failed> {
+) -> Result<(Joined, Option<PinWrite>), Failed> {
     let identity = PlayerIdentity::load_or_create(&req.app_dir).map_err(|e| failed(e.to_string()))?;
     let server = req.address.resolve_until(Some(cancel)).map_err(failed)?;
     let mut fetched = resources(server, &mut with, cancel)?;
@@ -124,10 +138,10 @@ fn run(
             }
         };
         let result = match &listed {
-            Some(key) => join_listed_showing(server, &identity, key, &params, &show),
+            Some(key) => join_listed_showing(server, &identity, key, &params, &show).map(|g| (g, None)),
             None => {
                 let mut known = KnownServers::load(&req.app_dir).map_err(|e| failed(e.to_string()))?;
-                join_showing(server, &identity, &mut known, &params, &show)
+                join_showing_then_pin(server, &identity, &mut known, &params, &show)
             }
         };
         match result {
@@ -141,8 +155,15 @@ fn run(
         }
     };
     match result {
-        Ok(granted) => {
-            Ok(Joined { server, granted: Box::new(granted), identity_created: identity.created(), resources: fetched })
+        Ok((granted, pin)) => {
+            let joined = Joined {
+                server,
+                granted: Box::new(granted),
+                identity_created: identity.created(),
+                resources: fetched,
+                pinned: None,
+            };
+            Ok((joined, pin))
         }
         Err(JoinFailure::Cancelled) => Err(Failed { text: "cancelled".into(), refusal: None, cancelled: true }),
         Err(JoinFailure::Refused(r)) => {
@@ -170,11 +191,24 @@ impl JoinTask {
         let held = Arc::new(Mutex::new(HeldText::default()));
         let shown = Arc::clone(&held);
         std::thread::Builder::new().name("network join".into()).spawn(move || {
-            let mut out = run(req, listed, with, &flag, &shown);
+            let (mut out, pin) = match run(req, listed, with, &flag, &shown) {
+                Ok((joined, pin)) => (Ok(joined), pin),
+                Err(f) => (Err(f), None),
+            };
+            let (pinned_tx, pinned_rx) = std::sync::mpsc::channel();
+            if let (Ok(joined), Some(_)) = (&mut out, &pin) {
+                joined.pinned = Some(pinned_rx);
+            }
             if flag.load(Ordering::Acquire) {
                 out = Err(Failed { text: "cancelled".into(), refusal: None, cancelled: true });
             }
             let _ = tx.send(out);
+            if let Some(pin) = pin {
+                let handed = Instant::now();
+                let path = pin.path().to_path_buf();
+                let result = pin.write().map_err(|e| e.to_string());
+                let _ = pinned_tx.send(Pinned { path, after: handed.elapsed(), result });
+            }
         })?;
         Ok(Self { cancel, answer: Mutex::new(rx), address, held })
     }

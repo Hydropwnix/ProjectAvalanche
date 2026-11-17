@@ -242,7 +242,7 @@ fn highlight_action(fe: &mut FrontEnd, env: &mut FeEnv, action: &str, param: &Ac
             fe.equipment.pending = Some((List::Inventory, index));
             env.nav_events.push("equip_sell_confirm_popup".into());
         }
-        "A_EquipmentPurchaseRiderLevel" => purchase_rider_level(fe, env, i64::from(fctiwz(param.number))),
+        "A_EquipmentPurchaseRiderLevel" => purchase_rider_level(fe, env, fctiwz(param.number)),
         // (the 3D Rider Select mod: no attribute descriptions (Y), Y is a suit's favourite there)
         "A_EquipmentShowHelp" if ssx_core::rider_showcase::enabled() => {}
         "A_EquipmentShowHelp" => crate::game::fe::hint::gear_help(fe, env, param.number, true),

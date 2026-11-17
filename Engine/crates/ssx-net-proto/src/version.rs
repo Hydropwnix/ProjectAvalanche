@@ -1,4 +1,4 @@
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;
 
 pub const API_LEVEL: u32 = 0;
 

@@ -10,6 +10,7 @@ mod sys;
 mod tests;
 mod tree;
 mod write;
+pub mod writer;
 
 #[cfg(feature = "cap-std")]
 pub use cap::replace_in;

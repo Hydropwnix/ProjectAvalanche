@@ -66,6 +66,50 @@ impl Visit for Visitor<'_> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct QueuedStderr;
+
+pub struct LineWriter {
+    keep: crate::output::Keep,
+    line: Vec<u8>,
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for QueuedStderr {
+    type Writer = LineWriter;
+
+    fn make_writer(&'a self) -> LineWriter {
+        LineWriter { keep: crate::output::Keep::Always, line: Vec::new() }
+    }
+
+    fn make_writer_for(&'a self, meta: &tracing::Metadata<'_>) -> LineWriter {
+        let keep = if *meta.level() <= tracing::Level::WARN {
+            crate::output::Keep::Always
+        } else {
+            crate::output::Keep::Droppable
+        };
+        LineWriter { keep, line: Vec::new() }
+    }
+}
+
+impl std::io::Write for LineWriter {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.line.extend_from_slice(b);
+        Ok(b.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Drop for LineWriter {
+    fn drop(&mut self) {
+        if !self.line.is_empty() {
+            let _ = crate::output::line(crate::output::Stream::Err, self.keep, std::mem::take(&mut self.line));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::io;

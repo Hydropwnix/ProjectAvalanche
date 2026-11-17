@@ -21,8 +21,7 @@ fn num(a: &Asset, field: &str) -> f32 {
 }
 
 pub fn nis_audio_tags(big_root: &Path, bundles: &[String], sequence: &str) -> Result<Vec<NisAudioTag>> {
-    let dir = big_root.join(crate::rig_anim::ANIM_DIR);
-    nis_audio_tags_in(&AssetDb::load(&dir, &bundles.iter().map(String::as_str).collect::<Vec<_>>())?, sequence)
+    nis_audio_tags_in(&AssetDb::load(big_root, &bundles.iter().map(String::as_str).collect::<Vec<_>>())?, sequence)
 }
 
 pub fn nis_audio_tags_in(db: &AssetDb, sequence: &str) -> Result<Vec<NisAudioTag>> {
@@ -52,8 +51,7 @@ pub fn nis_audio_tags_in(db: &AssetDb, sequence: &str) -> Result<Vec<NisAudioTag
 }
 
 pub fn nis_node_signals(big_root: &Path, bundles: &[String], node: &str) -> Result<Vec<String>> {
-    let dir = big_root.join(crate::rig_anim::ANIM_DIR);
-    nis_node_signals_in(&AssetDb::load(&dir, &bundles.iter().map(String::as_str).collect::<Vec<_>>())?, node)
+    nis_node_signals_in(&AssetDb::load(big_root, &bundles.iter().map(String::as_str).collect::<Vec<_>>())?, node)
 }
 
 pub fn nis_node_signals_in(db: &AssetDb, node: &str) -> Result<Vec<String>> {

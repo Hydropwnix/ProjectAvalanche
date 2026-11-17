@@ -13,6 +13,7 @@ pub fn scoring_context(s: &RiderState, w: &World, cached: (Vec3, Vec3, Vec3)) ->
         death_by_death_plane: s.death.dead_by_death_plane,
         in_wingsuit: s.wingsuit.signal,
         is_boosting: s.boost.is_boosting,
+        on_vertical_surface_for_scoring: s.carving.scoring_vertical,
         tuning: w.tuning.combo_flow,
         ..ScoringContext::default()
     }
@@ -52,7 +53,7 @@ pub(super) fn score(s: &mut RiderState, w: &World, input: &Input, ctx: &ScoringC
 
 pub(super) fn spq(s: &mut RiderState, w: &World, dt: f32, correct: Option<()>) {
     let t = &w.tuning;
-    let in_air = s.in_air();
+    let in_air = s.bln_in_air();
     let prev_colliding = s.impact.colliding;
     let prev_very_close = s.close.is_very_close;
     let mut impact = ImpactState::default();
@@ -96,8 +97,10 @@ pub(super) fn spq(s: &mut RiderState, w: &World, dt: f32, correct: Option<()>) {
         grinding: s.grind.is_grinding(),
         uber_in_air: in_air && s.uber_trigger && !s.board_particle.enabled,
         wind,
+        query_enabled: s.ground_ray_query_enabled,
     };
-    s.contact = w.ground_probe(&probe, &s.ballistic);
+    let ground = w.ground_query(&probe, &s.ballistic);
+    s.contact = ground.published;
     let sa = s.grind.sa.as_deref().unwrap_or(grind::surface_analysis::initial());
     s.grind.sa_ground = grind::surface_analysis::sa_ground(&s.grind.sa_ground, sa, s.traj, s.board_point());
     let chatter = ChatterInputs {
@@ -105,17 +108,14 @@ pub(super) fn spq(s: &mut RiderState, w: &World, dt: f32, correct: Option<()>) {
         grind_blend: s.grind.carving.blend,
         player_speed: s.player_speed,
     };
-    match &s.contact {
+    match &ground.raw {
         Some(c) => {
             s.weights = c.weights;
             s.surface = t.surfaces.blend(&c.weights, &chatter);
-            s.ground_normal = c.normal;
         }
-        None => {
-            s.weights = no_contact_weights();
-            s.ground_normal = Vec3::Y;
-        }
+        None => s.weights = no_contact_weights(),
     }
+    s.ground_normal = s.contact.map_or(Vec3::Y, |c| c.normal);
     s.close = close_to_ground(s.contact.as_ref(), s.surface.snow_depth);
     let launch = LaunchInputs {
         velocity: s.traj_velocity,
@@ -131,12 +131,12 @@ pub(super) fn spq(s: &mut RiderState, w: &World, dt: f32, correct: Option<()>) {
         wind,
     };
     if let Some(l) = jump_launch(w, &launch) {
-        s.jump.launch = l;
+        (s.jump.launch, s.jump.intercept) = (l, None);
     }
     if correct.is_some()
         && !prev_very_close
         && s.close.is_very_close
-        && let Some(c) = s.contact
+        && let Some(c) = ground.raw
         && (s.traj_orientation * Vec3::Y).dot(c.normal) < t.queries.cos_angle_from_upright_for_impact_on_landing
     {
         let li = w.impact_surface_weights(s.traj_orientation, s.traj_velocity, c.normal, prev_colliding, c.entity);
@@ -172,7 +172,7 @@ pub fn has_prewind_input(input: &Input, prewind_hold: bool, classic: bool) -> bo
 
 pub(super) fn update_prewind(s: &mut RiderState, w: &World, input: &Input, prewind_hold: bool, dt: f32) {
     let r = &w.props;
-    let in_air = s.state != RideState::Riding;
+    let in_air = s.bln_in_air();
     let awesome = s.score.is_awesome;
     let accum = if awesome { r.awesome_prewind_accum_rate } else { r.prewind_accum_rate };
     let natural = if awesome { r.awesome_prewind_decay_rate_natural } else { r.prewind_decay_rate_natural };

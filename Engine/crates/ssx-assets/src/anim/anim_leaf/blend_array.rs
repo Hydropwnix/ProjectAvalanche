@@ -58,10 +58,21 @@ fn select(xs: &[f32], pos: f32) -> Vec<(usize, f32)> {
     vec![(n - 1, 1.0)]
 }
 
+fn damp(cur: f32, target: f32, clamp: [f32; 2], damping: [f32; 2], dt: f32) -> f32 {
+    let diff = target - cur;
+    let rate = if cur * diff < 0.0 { damping[1] } else { damping[0] };
+    let max = rate * dt;
+    let step = if max - diff.abs() >= 0.0 { diff.abs() } else { max };
+    let cur = cur + if target >= cur { step } else { -step };
+    let lo = if clamp[0] - cur >= 0.0 { clamp[0] } else { cur };
+    if clamp[1] - lo >= 0.0 { lo } else { clamp[1] }
+}
+
 impl BlendArrayInst {
     pub fn new(env: &Env, gs: &GameState, ctrl: CtrlId) -> Self {
         let d = array_data(env, ctrl).expect("blend array");
-        let cur = d.signal.map_or(0.0, |s| gs.get(s)).clamp(d.clamp[0], d.clamp[1]);
+        let v = d.signal.map_or(0.0, |s| gs.get(s));
+        let cur = damp(v, v, d.clamp, d.damping, 0.0);
         let master = d.master.map(|m| instantiate(env, gs, m));
         let mut a = BlendArrayInst {
             ctrl,
@@ -119,10 +130,7 @@ impl Controller for BlendArrayInst {
     fn update(&mut self, env: &Env, gs: &mut GameState, dt: f32) {
         let Some(d) = array_data(env, self.ctrl) else { return };
         let target = d.signal.map_or(0.0, |s| gs.get(s));
-        let rate = if self.cur * (target - self.cur) >= 0.0 { d.damping[0] } else { d.damping[1] };
-        let diff = target - self.cur;
-        self.cur += diff.signum() * diff.abs().min(rate * dt);
-        self.cur = self.cur.clamp(d.clamp[0], d.clamp[1]);
+        self.cur = damp(self.cur, target, d.clamp, d.damping, dt);
         self.activate(env, gs);
         if let Some(m) = &self.master {
             let mp = phase(m.as_ref());
@@ -200,7 +208,7 @@ impl Controller for BlendArrayInst {
             }
         }
     }
-    fn path(&self, env: &Env, out: &mut Vec<(String, f32)>) {
+    fn path(&self, env: &Env, out: &mut Vec<PathNode>) {
         if let Some(c) = self.active.first().and_then(|&(i, _)| self.items[i].as_ref()) {
             c.path(env, out);
         }
@@ -210,5 +218,22 @@ impl Controller for BlendArrayInst {
         for c in self.items.iter_mut().flatten() {
             c.exit(env, gs);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::damp;
+
+    #[test]
+    fn the_signal_damping_follows_the_executable() {
+        let (clamp, damping) = ([-1.0, 1.0], [0.03, 0.05]);
+        assert!((damp(0.2, 0.9, clamp, damping, 2.0) - 0.26).abs() < 1e-6);
+        assert!((damp(0.2, -0.9, clamp, damping, 2.0) - 0.1).abs() < 1e-6);
+        assert_eq!(damp(0.2, 0.21, clamp, damping, 2.0), 0.21);
+        assert_eq!(damp(0.95, 3.0, clamp, damping, 2.0), 1.0);
+        assert!((damp(0.2, f32::NAN, clamp, damping, 2.0) - 0.14).abs() < 1e-6);
+        assert_eq!(damp(-0.99, f32::NAN, clamp, damping, 2.0), -1.0);
+        assert_eq!(damp(f32::NAN, f32::NAN, clamp, damping, 0.0), 1.0);
     }
 }

@@ -17,6 +17,7 @@ mod score;
 pub use drop_info::*;
 pub use equip::*;
 pub use generated::*;
+pub use lists::level_purchase_description;
 
 pub const KINDS: usize = 5;
 pub const RIDER: i64 = 5;

@@ -335,9 +335,7 @@ impl GameUi {
     }
 
     fn globe_nodes(&self) -> Vec<super::fe::globe_scene::GlobeEntry> {
-        let stage = super::fe::globe::STAGE;
-        let scene = self.fe.as_ref().and_then(|f| f.globe_scene.as_ref());
-        scene.map(|s| s.entries(stage, stage.0 / stage.1)).unwrap_or_default()
+        self.fe.as_ref().map(super::fe::globe::entries).unwrap_or_default()
     }
 
     fn globe_step(&mut self, level: u8, nodes: &[super::fe::globe_scene::GlobeEntry]) {

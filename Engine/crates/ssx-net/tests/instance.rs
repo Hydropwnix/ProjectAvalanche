@@ -96,17 +96,52 @@ fn a_client_keeps_back_a_sample_the_server_refuses() {
     let mut peers = common::connected(Io::Crossbeam, 2, None);
     let tick = common::server_tick(&peers);
     let mut block = common::block(5);
-    block.trajectory_position[0] = -36_027.0;
+    block.trajectory_position[0] = -1_000_000.0;
     let far = ssx_net_proto::NetPose::new(tick, ssx_net_proto::PoseFlags::default(), block).expect("encodable");
     peers.clients[0].world_mut().resource_mut::<PoseOutbox>().next = Some(far);
     peers.run_until(Duration::from_millis(500), |_| false);
     let outbox = peers.clients[0].world().resource::<PoseOutbox>();
     assert_eq!((outbox.implausible, outbox.sent), (1, 0), "kept back");
-    assert!(outbox.implausible_why.as_deref().is_some_and(|w| w.contains("-36027")), "{:?}", outbox.implausible_why);
+    assert!(outbox.implausible_why.as_deref().is_some_and(|w| w.contains("-1000000")), "{:?}", outbox.implausible_why);
     peers.clients[0].world_mut().resource_mut::<PoseOutbox>().next = Some(common::pose(common::server_tick(&peers), 6));
     peers.run_until(Duration::from_millis(500), |_| false);
     assert_eq!(peers.clients[0].world().resource::<PoseOutbox>().sent, 1, "the next goes");
     assert_eq!(peers.server.world().resource::<ServerStats>().kicked, 0);
+}
+
+#[test]
+fn the_intros_far_scene_is_sent_and_relayed() {
+    use core::time::Duration;
+    use ssx_net::harness::Io;
+    use ssx_net::{PoseOutbox, RemotePoses, ServerStats};
+    use ssx_net_proto::{NetPose, PoseFlag, PoseFlags};
+    const WITHIN: Duration = Duration::from_secs(5);
+    let mut peers = common::connected(Io::Crossbeam, 2, None);
+    let sender = peers.rider(0).expect("client 0's rider number");
+    let points = [
+        (PoseFlags::default(), [-60_292.176, -3_173.494, -6_726.396]),
+        (PoseFlags::default(), [-60_292.348, -3_175.333, -6_720.677]),
+        (PoseFlags::default().with_warp_epoch(1).with(PoseFlag::Teleport), [545.750, 839.301, -411.203]),
+    ];
+    let mut last: Option<u32> = None;
+    for (k, (flags, at)) in points.into_iter().enumerate() {
+        if let Some(t) = last {
+            assert!(peers.steps_for(WITHIN, |p| common::server_tick(p) >= t + 4), "the server's tick advances");
+        }
+        let tick = common::server_tick(&peers).max(1);
+        let mut block = common::block(k as u64 + 11);
+        block.trajectory_position = at;
+        let pose = NetPose::new(tick, flags, block).expect("encodable");
+        assert!(peers.send_pose(0, &pose, WITHIN), "sample {k} at {at:?} sent");
+        let relayed = |p: &mut ssx_net::harness::Peers| {
+            p.clients[1].world().resource::<RemotePoses>().riders.get(&sender).is_some_and(|r| r.pose == pose)
+        };
+        assert!(peers.steps_for(WITHIN, relayed), "sample {k} at {at:?} relayed");
+        last = Some(tick);
+    }
+    assert_eq!(peers.clients[0].world().resource::<PoseOutbox>().implausible, 0, "none kept back");
+    let stats = peers.server.world().resource::<ServerStats>().clone();
+    assert_eq!((stats.poses_received, stats.poses_relayed, stats.kicked), (3, 3, 0), "{stats:?}");
 }
 
 #[test]

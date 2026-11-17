@@ -176,8 +176,7 @@ impl HeliGrabBinding {
 }
 
 pub fn binding_item_start(big_root: &Path, binding: &str, role: i64) -> Result<Option<([f32; 3], [f32; 4])>> {
-    let dir = big_root.join(ANIM_DIR);
-    let db = AssetDb::load(&dir, &[&format!("{binding}.cba"), RIG_BUNDLE])?;
+    let db = AssetDb::load(big_root, &[&format!("{binding}.cba"), RIG_BUNDLE])?;
     let b = db.by_name(binding).with_context(|| format!("no NisBindingAsset {binding}"))?;
     Ok(b.guids("Bindings")
         .into_iter()
@@ -187,15 +186,13 @@ pub fn binding_item_start(big_root: &Path, binding: &str, role: i64) -> Result<O
 }
 
 pub fn requires_wingsuit(big_root: &Path, binding: &str) -> Result<bool> {
-    let dir = big_root.join(ANIM_DIR);
-    let db = AssetDb::load(&dir, &[&format!("{binding}.cba")])?;
+    let db = AssetDb::load(big_root, &[&format!("{binding}.cba")])?;
     let b = db.by_name(binding).with_context(|| format!("no NisBindingAsset {binding}"))?;
     Ok(b.bool("RequiresWingsuit").unwrap_or(false))
 }
 
 pub fn character_of_interest_name(big_root: &Path, binding: &str) -> Result<Option<String>> {
-    let dir = big_root.join(ANIM_DIR);
-    let db = AssetDb::load(&dir, &[&format!("{binding}.cba")])?;
+    let db = AssetDb::load(big_root, &[&format!("{binding}.cba")])?;
     let b = db.by_name(binding).with_context(|| format!("no NisBindingAsset {binding}"))?;
     Ok(b.value("CharacterOfInterestName").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_string))
 }

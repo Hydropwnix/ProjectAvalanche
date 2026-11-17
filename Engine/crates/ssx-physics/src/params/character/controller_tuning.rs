@@ -44,6 +44,7 @@ pub struct CarvingTuning {
     pub lean_input_curve: Curve,
     pub max_lean_vs_speed_curve: Curve,
     pub lean_input_angle_transform: Curve,
+    pub wiggle_offset_angle_curve: Curve,
     pub pitch_vs_normal_curve: Curve,
     pub balance_surface_adhesion_modifier_curve: Curve,
     pub bias: f32,
@@ -76,6 +77,8 @@ pub struct CarvingTuning {
     pub collision_steering_angular_vel: f32,
     pub scoring_vertical_surface_angle_threshold: f32,
     pub uber_crash_ticks_to_full_friction: f32,
+    pub stance_angle_sideways_value: f32,
+    pub uber_crash_traj_angle_max_delta: f32,
     pub carving_spray_filter_responsiveness: f32,
     pub ice_axe: crate::ice_axe::IceAxeTuning,
 }
@@ -141,6 +144,7 @@ impl CarvingTuning {
             lean_input_curve: a.curve("LeanInputCurveAsset")?,
             max_lean_vs_speed_curve: a.curve("SpeedVsMaxLeanInputAngleCurveAsset")?,
             lean_input_angle_transform: a.curve("LeanInputAngleTransform")?,
+            wiggle_offset_angle_curve: a.curve("WiggleOffsetAngleCurve")?,
             pitch_vs_normal_curve: a.curve("PitchVsNormalCurveAsset")?,
             balance_surface_adhesion_modifier_curve: a.curve("BalanceSurfaceAdhesionModifierCurve")?,
             bias: a.f32("Bias")?,
@@ -173,6 +177,8 @@ impl CarvingTuning {
             collision_steering_angular_vel: a.f32("CollisionSteeringAngularVel")?,
             scoring_vertical_surface_angle_threshold: a.f32("ScoringVerticalSurfaceAngleThreshold")?,
             uber_crash_ticks_to_full_friction: a.f32("UberCrashTicksToFullFriction")?,
+            stance_angle_sideways_value: a.f32("StanceAngleSidewaysValue")?,
+            uber_crash_traj_angle_max_delta: a.f32("UberCrashTrajAngleMaxDelta")?,
             carving_spray_filter_responsiveness: a.f32("CarvingSprayFilterResponsiveness")?,
             ice_axe: crate::ice_axe::IceAxeTuning::load(&a.asset("IceAxeProperties")?)?,
         })

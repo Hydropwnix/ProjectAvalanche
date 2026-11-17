@@ -49,6 +49,7 @@ impl Session {
             backwards: self.rewind_backwards,
             stats: &mut self.stats,
             ui_flags: &self.ui_flags,
+            presentation: &mut self.presentation,
         };
         o.runner.update(dt_s, &mut world);
         for (name, v) in &self.flag_overrides {
@@ -150,7 +151,7 @@ impl Session {
             dt: DT_TICKS * self.dilation,
             rewind_active: self.buffer.is_active(),
             rewind_terminating: self.buffer.is_terminating(),
-            in_air: s.in_air(),
+            in_air: s.bln_in_air(),
             can_interact: !(intercept || s.state.is_wingsuit()) && s.heli_interaction_allowed,
             aerial_trick_priority: s.tricks.is_tricking && (s.score.is_awesome || s.score.is_super_awesome),
             track_finished: self.flow.track_finished,
@@ -179,6 +180,34 @@ impl Session {
         if let Some(d) = h.physics_queries(&w.collision) {
             self.downwash = Some(d);
             self.set_downwash(&d);
+        }
+    }
+
+    pub fn interaction_toolkit(&self, heli: Option<&crate::helicopter::Helicopter>, s: &mut RiderState, dt: f32) {
+        use crate::query::{Animatable, QueryTask, actor_type, find_heli};
+        use std::f32::consts::FRAC_PI_2;
+        for task in std::mem::take(&mut s.queued_queries) {
+            match task {
+                QueryTask::FindHeli => {
+                    let player = std::iter::once((Animatable::Player, actor_type::SNOWBOARDER));
+                    let helicopter = heli.map(|_| (Animatable::Helicopter, actor_type::HELICOPTER));
+                    let ghosts = self
+                        .bots
+                        .iter()
+                        .flat_map(|b| (0..b.bots.len()).map(|k| (Animatable::Ghost(k), actor_type::GHOST)));
+                    s.target_animatable = find_heli(Animatable::Player, player.chain(helicopter).chain(ghosts));
+                }
+            }
+        }
+        let Some(d) = s.attachment.as_mut() else { return };
+        let (Some(Animatable::Helicopter), Some(h)) = (s.target_animatable, heli) else { return };
+        let heli_rig = ssx_assets::nis::HELI_RIG;
+        let Some((_, joint)) = d.tag.target_joints.iter().find(|(rig, _)| rig == heli_rig) else { return };
+        let Some(target) = h.joint_world(joint) else { return };
+        let root = (s.traj_orientation * glam::Quat::from_rotation_y(-FRAC_PI_2), s.traj);
+        if let Some((q, p)) = d.update(root, target, dt) {
+            s.traj_orientation = (q * glam::Quat::from_rotation_y(FRAC_PI_2)).normalize();
+            s.traj = p;
         }
     }
 
@@ -213,6 +242,7 @@ impl Session {
             backwards: self.rewind_backwards,
             stats: &mut self.stats,
             ui_flags: &self.ui_flags,
+            presentation: &mut self.presentation,
         };
         o.runner.restart_set(crate::objectives::SetId::Level, &mut world);
     }

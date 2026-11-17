@@ -37,9 +37,9 @@ impl Sim {
             let mut c = self.ctx;
             r.apply_to(&mut c);
             let (t, p) = (&self.w.tuning.scoring, &self.w.props);
-            self.s.score.update_with(t, p, &ScoringInputs::default(), &c, self.dt);
+            self.s.score.update_with(t, p, &ScoringInputs::default(), &c, r.delta_ticks);
         }
-        self.buf.record_with(&self.s, &RecordFlags::default());
+        self.buf.record_with(&self.s, &RecordFlags { delta_ticks: r.delta_ticks, ..RecordFlags::default() });
         self.dt = DT_TICKS * r.next_dilation;
         r
     }
@@ -79,7 +79,7 @@ fn the_buffer_arms_on_the_first_grounded_execution() {
 
 #[test]
 fn rewinds_left_and_sessions() {
-    let mut c = RewindCount { rewinds_left: 1, session_start: 0.0, enabled: true, infinite: false };
+    let mut c = RewindCount { rewinds_left: 1, initial: 1, session_start: 0.0, enabled: true, infinite: false };
     assert!(c.can_rewind(500.0, false));
     c.consume(500.0);
     assert_eq!((c.rewinds_left, c.session_start), (0, 500.0));
@@ -93,6 +93,79 @@ fn rewinds_left_and_sessions() {
     assert!(!c.can_rewind(1e4, false) && c.can_rewind(1e4, true));
     c.consume(1e4);
     assert_eq!(c.rewinds_left, 0);
+}
+
+#[test]
+fn the_count_is_initialised_from_the_resolved_properties() {
+    let mut w = world(plane(500.0, 0.0));
+    let mut s = rider(&w);
+    let (mut buf, ctx) = (RewindBuffer::new(), ScoringContext::default());
+    let mut m = RewindManager::new(RewindTuning::default());
+    w.props.max_rewind_count = 5.7;
+    s.props_resolved = false;
+    m.step(&mut buf, &mut s, &w, &OFF, &ctx, DT_TICKS);
+    assert_eq!((m.count.rewinds_left, m.count.initial, m.count_initialised), (0, 0, false));
+    s.props_resolved = true;
+    m.step(&mut buf, &mut s, &w, &OFF, &ctx, DT_TICKS);
+    assert_eq!((m.count.rewinds_left, m.count.initial, m.count_initialised), (5, 5, true));
+    (m.count.rewinds_left, m.count.session_start, w.props.max_rewind_count) = (4, 300.0, 2.0);
+    m.step(&mut buf, &mut s, &w, &OFF, &ctx, DT_TICKS);
+    assert_eq!(m.count.rewinds_left, 4);
+    m.restart(&mut buf);
+    assert!(!m.count_initialised);
+    m.step(&mut buf, &mut s, &w, &OFF, &ctx, DT_TICKS);
+    assert_eq!((m.count.rewinds_left, m.count.initial, m.count.session_start), (2, 2, 0.0));
+}
+
+#[test]
+fn a_restart_gives_the_fresh_start_s_node() {
+    let mut sim = Sim::new(0);
+    sim.w.props.max_rewind_count = 3.0;
+    sim.s.props_resolved = true;
+    let ride = |sim: &mut Sim, n: usize| (0..n).for_each(|_| _ = sim.exec(OFF));
+    let rewind = |sim: &mut Sim| {
+        let seen: Vec<_> = (0..20).map(|_| sim.exec(HELD).state).collect();
+        assert!(seen.contains(&Enter), "the rewind is granted: {seen:?}");
+        let back = (0..1000).position(|_| sim.exec(OFF).state == Idle);
+        assert!(back.is_some(), "the replay ends");
+        ride(sim, 100);
+    };
+    sim.m.count.infinite = false;
+    ride(&mut sim, 400);
+    rewind(&mut sim);
+    rewind(&mut sim);
+    assert_eq!(sim.m.count.rewinds_left, 1, "two rewinds spent");
+    assert!(sim.m.count.session_start > 600.0, "the last session's start: {}", sim.m.count.session_start);
+    let fresh = RewindManager::new(sim.m.tuning.clone());
+    sim.m.restart(&mut sim.buf);
+    assert_eq!(sim.m, fresh, "the restart's node is the constructor's");
+    assert!(sim.buf.is_empty() && sim.buf.time == 0.0, "a new buffer");
+    sim.m.count.infinite = false;
+    ride(&mut sim, 100);
+    assert_eq!((sim.m.count.rewinds_left, sim.m.count.initial), (3, 3), "refilled");
+    rewind(&mut sim);
+    assert_eq!(sim.m.count.rewinds_left, 2, "the first rewind after the restart costs one");
+}
+
+#[test]
+fn a_live_limit_replaces_the_resolved_count() {
+    let w = world(plane(500.0, 0.0));
+    let mut s = rider(&w);
+    s.props_resolved = true;
+    let (mut buf, ctx) = (RewindBuffer::new(), ScoringContext::default());
+    let mut m = RewindManager::new(RewindTuning::default());
+    m.set_live_rule(LiveRewindRule::Limit(1));
+    assert!(!m.count.infinite);
+    m.step(&mut buf, &mut s, &w, &OFF, &ctx, DT_TICKS);
+    assert_eq!((m.count.rewinds_left, m.count.initial), (1, 1));
+    assert_eq!(w.props.max_rewind_count, 3.0);
+    m.restart(&mut buf);
+    assert!(!m.count.infinite && !m.count_initialised);
+    m.step(&mut buf, &mut s, &w, &OFF, &ctx, DT_TICKS);
+    assert_eq!((m.count.rewinds_left, m.count.initial), (1, 1));
+    m.set_live_rule(LiveRewindRule::Off);
+    m.restart(&mut buf);
+    assert!(!m.count.enabled && m.count.infinite);
 }
 
 #[test]
@@ -187,6 +260,38 @@ fn rewind_release_replay_and_restore() {
 }
 
 #[test]
+fn the_playback_scores_on_the_snapshot_s_ticks() {
+    let k = RewindTuning::default();
+    let mut g = Sim::new(100);
+    let pre = |timer: f32| k.pre_curve.eval(timer / 60.0 / k.pre_time);
+    let per_tick = -1000.0 * 0.10 / 60.0;
+    let r = g.press();
+    assert_eq!(r.state, Enter);
+    assert!((r.delta_ticks - DT_TICKS * pre(10.0)).abs() < 1e-5, "{}", r.delta_ticks);
+    assert!((g.s.score.rewind_bank - per_tick * DT_TICKS * pre(10.0)).abs() < 1e-4, "{}", g.s.score.rewind_bank);
+    assert!((g.s.score.rewind_bank + 1.7828).abs() < 1e-3, "the original's first bank: {}", g.s.score.rewind_bank);
+    let shown = [10.0, 10.0, 8.0, 8.0, 6.0, 6.0, 4.0, 2.0, 2.0, 0.0, 0.0];
+    for t in shown {
+        let r = g.exec(HELD);
+        assert_eq!(r.state, Enter);
+        assert!((r.delta_ticks - DT_TICKS * pre(t)).abs() < 1e-5, "timer {t}: {}", r.delta_ticks);
+    }
+    assert!((g.s.score.rewind_bank + 29.7665).abs() < 1e-3, "the original's enter total: {}", g.s.score.rewind_bank);
+    let mut n = 12;
+    loop {
+        let before = g.s.score.rewind_bank;
+        let r = g.exec(HELD);
+        n += 1;
+        assert_eq!((r.state, r.delta_ticks), (Rewinding, DT_TICKS));
+        if before - g.s.score.rewind_bank > -per_tick * DT_TICKS * 1.5 {
+            break;
+        }
+        assert!(n < 30);
+    }
+    assert_eq!(n, 19);
+}
+
+#[test]
 fn rewinding_stops_after_the_oldest_snapshot() {
     let mut g = Sim::new(10);
     assert_eq!(g.press().state, Enter);
@@ -260,4 +365,20 @@ fn without_rewinds_left_only_a_janked_rider_rewinds() {
     assert_eq!((r.state, g.buf.len()), (Enter, n));
     assert_eq!((g.m.count.rewinds_left, g.m.count.session_start), (0, g.buf.target_time));
     assert!(!g.s.janked.anim_complete, "puppeted by an earlier snapshot");
+}
+
+#[test]
+fn the_level_start_does_not_arm_the_buffer() {
+    let w = world(plane(500.0, 0.0));
+    let mut s = rider(&w);
+    s.start = Some(crate::levelstart::LevelStart::new(&w, s.traj, glam::Quat::IDENTITY).expect("ground"));
+    assert_eq!(s.state, RideState::Riding);
+    let mut buf = RewindBuffer::new();
+    let flags = RecordFlags { nis_active: true, ..RecordFlags::default() };
+    (0..10).for_each(|_| _ = buf.record_with(&s, &flags));
+    assert!(buf.is_empty() && !buf.race_proper_started());
+    s.start = None;
+    buf.record_with(&s, &RecordFlags::default());
+    assert!(buf.race_proper_started());
+    assert_eq!(buf.len(), 1);
 }

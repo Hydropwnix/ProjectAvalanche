@@ -50,11 +50,59 @@ pub(super) fn enum_value(db: &AssetDb, a: &Asset, f: &str) -> Option<i64> {
     a.guid(f).and_then(|g| db.get(g)).and_then(|v| v.int("Value"))
 }
 
-fn first_animation<'a>(db: &'a AssetDb, a: &Asset<'a>) -> Result<Asset<'a>> {
+struct TrackAnim<'a> {
+    asset: Asset<'a>,
+    start_time: f32,
+    start_in_time: f32,
+    end_in_time: f32,
+    scale: f32,
+    flags: i64,
+    holds: (f32, f32),
+    blend: Option<Blend>,
+}
+
+impl TrackAnim<'_> {
+    fn clock(&self) -> Result<ElementClock> {
+        let scale = if self.scale == 0.0 { 1.0 } else { self.scale };
+        anyhow::ensure!(scale.is_finite() && scale > 0.0, "Scale {} (not ported)", self.scale);
+        Ok(ElementClock {
+            begin: self.start_time + self.start_in_time,
+            start_in: self.start_in_time,
+            scale,
+            end: self.start_time + self.end_in_time,
+        })
+    }
+}
+
+fn track_animations<'a>(db: &'a AssetDb, a: &Asset<'a>) -> Result<Vec<TrackAnim<'a>>> {
     let track = a.array("Tracks").first().context("no track")?;
-    let anim = field(a.schema, track, "Anims").and_then(Value::as_array).and_then(|v| v.first());
-    let g = anim.and_then(|x| field(a.schema, x, "Asset")).and_then(Value::as_guid).context("no animation")?;
-    db.get(g).context("animation controller not loaded")
+    let anims = field(a.schema, track, "Anims").and_then(Value::as_array).unwrap_or_default();
+    let mut out = Vec::with_capacity(anims.len());
+    for (k, an) in anims.iter().enumerate() {
+        let fv = |n: &str| {
+            field(a.schema, an, n).and_then(|v| v.as_f32().or_else(|| v.as_i64().map(|x| x as f32))).unwrap_or(0.0)
+        };
+        let g = field(a.schema, an, "Asset").and_then(Value::as_guid).with_context(|| format!("animation {k}"))?;
+        let blend = match field(a.schema, an, "BlendAsset").and_then(Value::as_guid).filter(|g| !g.is_null()) {
+            Some(g) => {
+                let b = db.get(g).with_context(|| format!("animation {k}: blend {g} not loaded"))?;
+                Some(Blend::of_asset(&b).with_context(|| format!("animation {k}: {} is no blend", b.name()))?)
+            }
+            None => None,
+        };
+        out.push(TrackAnim {
+            asset: db.get(g).with_context(|| format!("animation {k}: controller not loaded"))?,
+            start_time: fv("StartTime"),
+            start_in_time: fv("StartInTime"),
+            end_in_time: fv("EndInTime"),
+            scale: fv("Scale"),
+            flags: field(a.schema, an, "Flags").and_then(Value::as_i64).unwrap_or(0),
+            holds: (fv("StartHoldTime"), fv("EndHoldTime")),
+            blend,
+        });
+    }
+    anyhow::ensure!(!out.is_empty(), "no animation");
+    Ok(out)
 }
 
 impl<'a> Walk<'a> {
@@ -119,15 +167,66 @@ impl<'a> Walk<'a> {
         let role = enum_value(self.db, a, "TrackSelectionEnumValue")
             .or(role)
             .with_context(|| format!("{}: no track selection", a.name()))?;
-        let ctrl = first_animation(self.db, a)?;
-        let mut actor = self.descend(a.name(), role, &ctrl)?;
+        let anims = track_animations(self.db, a)?;
+        let first = &anims[0];
+        let clock = first.clock().with_context(|| format!("{}: track animation 0", a.name()))?;
+        anyhow::ensure!(
+            clock.begin == 0.0 && first.start_time <= 0.0 && first.flags == 0 && first.holds == (0.0, 0.0),
+            "{}: track animation 0 begins at {} (StartTime {}, flags {:#x}, holds {:?}; not ported)",
+            a.name(),
+            clock.begin,
+            first.start_time,
+            first.flags,
+            first.holds
+        );
+        let mut actor = self.descend(a.name(), role, &first.asset)?;
+        let nested_loop = actor.root.as_ref().is_some_and(|(_, l)| l.is_some());
+        anyhow::ensure!(
+            clock.start_in == 0.0 && clock.scale == 1.0 || !nested_loop && actor.pieces.is_empty(),
+            "{}: a nested sequence's loop or later animations under a track animation with its own clock (not ported)",
+            a.name()
+        );
+        actor.clock = clock.then(&actor.clock);
         actor.length = a.f32("Length").unwrap_or(0.0);
+        for (k, pair) in anims.windows(2).enumerate() {
+            let (before, t) = (&pair[0], &pair[1]);
+            let piece = self.piece(a.name(), role, k + 1, t)?;
+            let end = before.start_time + before.end_in_time;
+            anyhow::ensure!(
+                piece.clock.begin == end && end > actor.pieces.last().map_or(0.0, |p| p.clock.begin),
+                "{}: track animation {} begins at {} (the one before ends at {end}; not ported)",
+                a.name(),
+                k + 1,
+                piece.clock.begin
+            );
+            actor.pieces.push(piece);
+        }
         self.tags(a, self.rig(role), &mut actor.tags);
         Ok(actor)
     }
 
     pub(super) fn actor(&self, a: &Asset<'a>) -> Result<NisActor> {
         self.actor_as(a, None)
+    }
+
+    fn piece(&self, name: &str, role: i64, k: usize, t: &TrackAnim<'a>) -> Result<NisPiece> {
+        let blend_time = t.blend.as_ref().map_or(0.0, |b| b.blend_time);
+        anyhow::ensure!(
+            blend_time <= 0.0,
+            "{name}: track animation {k} blends in over {blend_time} ticks (not ported)"
+        );
+        anyhow::ensure!(t.flags == 0, "{name}: track animation {k} has flags {:#x} (not ported)", t.flags);
+        anyhow::ensure!(t.holds == (0.0, 0.0), "{name}: track animation {k} holds {:?} (not ported)", t.holds);
+        let clock = t.clock().with_context(|| format!("{name}: track animation {k}"))?;
+        let inner = self.descend(name, role, &t.asset)?;
+        anyhow::ensure!(
+            inner.choices.is_empty()
+                && inner.sequences.is_empty()
+                && inner.pieces.is_empty()
+                && inner.clock == ElementClock::SEQUENCE,
+            "{name}: track animation {k} is a chooser or a sequence (not ported)"
+        );
+        Ok(NisPiece { clock, clip: inner.clip, offset: inner.offset })
     }
 
     pub(super) fn rig(&self, role: i64) -> &'a Rig {
@@ -208,7 +307,7 @@ impl<'a> Walk<'a> {
                         for e in &entries {
                             let c = target(e).context("chooser entry")?;
                             let item = self.descend(name, role, &c)?;
-                            choices.push((item.clip, e.f32("Weight").unwrap_or(1.0)));
+                            choices.push((item.clip, e.f32("Weight").unwrap_or(1.0), item.clock));
                         }
                         anyhow::ensure!(!choices.is_empty(), "{name}: empty chooser");
                         chooser = Some(self.chooser_of(&ctrl));
@@ -255,6 +354,8 @@ impl<'a> Walk<'a> {
                         sequences: Vec::new(),
                         root: toc_root.map(|r| (r, loop_end)),
                         tags: Tags::default(),
+                        clock: ElementClock::SEQUENCE,
+                        pieces: Vec::new(),
                     });
                 }
                 c => bail!("{name}: {} is a {c}, no clip", ctrl.name()),
@@ -346,12 +447,12 @@ impl<'a> Walk<'a> {
                     first.name = chooser.name().to_string();
                     first.seed = seed;
                     first.chooser = Some(self.chooser_of(chooser));
-                    first.choices = vec![(item.clip, weight)];
+                    first.choices = vec![(item.clip, weight, item.clock)];
                     first.sequences = vec![(seq.name().to_string(), item.length)];
                     out = Some(first);
                 }
                 Some(o) => {
-                    o.choices.push((item.clip, weight));
+                    o.choices.push((item.clip, weight, item.clock));
                     o.sequences.push((seq.name().to_string(), item.length));
                 }
             }

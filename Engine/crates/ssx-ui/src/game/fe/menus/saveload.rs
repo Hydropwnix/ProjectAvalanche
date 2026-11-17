@@ -11,10 +11,25 @@ pub const MESSAGE: u16 = 0x1BF;
 pub const TYPE: u16 = 0x1C2;
 pub const GAME_TITLE: &str = "GameTitle";
 pub const PROFILE_GROUP_NAME: &str = "TXT_PROF_SAVEGROUP_NAME";
+pub const GHOSTS_DISPLAY_NAME: &str = "TXT_SSXV_COMMONFILE_DISPLAY";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoadError {
     Corrupt,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GhostsRead {
+    #[default]
+    Loaded,
+    Missing,
+    Corrupt,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GhostsLoad {
+    SignIn,
+    Slot,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,6 +37,9 @@ pub enum Request {
     Load,
     SaveNew,
     NoSaving,
+    LoadGhosts(GhostsLoad),
+    NewGhosts,
+    NoOwnGhost,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -37,6 +55,8 @@ pub struct SaveLoad {
     pub load_error: Option<LoadError>,
     pub dialog: Option<u32>,
     pub signing_in: Option<i32>,
+    pub ghosts: GhostsRead,
+    pub ghosts_load: Option<GhostsLoad>,
     pub requests: Vec<Request>,
 }
 
@@ -77,6 +97,18 @@ pub fn corrupt_saving(loc: &mut Localization) -> Dialog {
             format(loc, "SL_CreateANew", &[GAME_TITLE, &group], false),
             format(loc, "SL_ContinueWithoutSaving", &[], true),
         ],
+        default_button: 0,
+    }
+}
+
+// PORT(choice): the file's name is the key's text in the language of now; the console shows the display name its
+// content package was created with.
+pub fn corrupt_ghosts(loc: &mut Localization) -> Dialog {
+    let file = loc.text(GHOSTS_DISPLAY_NAME);
+    Dialog {
+        id: 0xB,
+        body: format(loc, "SSXV_FILE_CORRUPT_RECREATE", &[&file], false),
+        buttons: vec![format(loc, "SL_RETRY", &[], true), format(loc, "SL_CANCEL", &[], true)],
         default_button: 0,
     }
 }
@@ -122,7 +154,7 @@ pub fn lead_profile_load(fe: &mut FrontEnd, env: &mut FeEnv, device: i32) -> boo
 
 fn after_notice(fe: &mut FrontEnd, env: &mut FeEnv) {
     match fe.saveload.load_error {
-        None => flow_ended(fe, env),
+        None => flow_ended(fe, env, true),
         Some(LoadError::Corrupt) => {
             let d = corrupt_saving(env.loc);
             show(fe, env, d);
@@ -138,13 +170,21 @@ pub fn answer(fe: &mut FrontEnd, env: &mut FeEnv, index: i32) {
         (0x23, 0) => fe.saveload.requests.push(Request::Load),
         (0x23, 1) => {
             fe.saveload.requests.push(Request::SaveNew);
-            flow_ended(fe, env);
+            flow_ended(fe, env, true);
         }
         (0x23, 2) => {
             fe.saveload.requests.push(Request::NoSaving);
-            flow_ended(fe, env);
+            flow_ended(fe, env, false);
         }
-        _ => flow_ended(fe, env),
+        (0xB, 0) => {
+            let load = fe.saveload.ghosts_load.take().unwrap_or(GhostsLoad::SignIn);
+            fe.saveload.requests.push(Request::LoadGhosts(load));
+        }
+        (0xB, _) => match fe.saveload.ghosts_load.take() {
+            Some(GhostsLoad::Slot) => fe.saveload.requests.push(Request::NoOwnGhost),
+            _ => sign_in_ghosts_failed(fe, env),
+        },
+        _ => flow_ended(fe, env, false),
     }
 }
 
@@ -153,7 +193,7 @@ pub fn loaded(fe: &mut FrontEnd, env: &mut FeEnv, error: Option<LoadError>) {
     match error {
         None => {
             crate::game::fe::flow::profile_into_sign_in(fe, env);
-            flow_ended(fe, env);
+            flow_ended(fe, env, true);
         }
         Some(LoadError::Corrupt) => {
             let d = corrupt_saving(env.loc);
@@ -162,12 +202,54 @@ pub fn loaded(fe: &mut FrontEnd, env: &mut FeEnv, error: Option<LoadError>) {
     }
 }
 
-fn flow_ended(fe: &mut FrontEnd, env: &mut FeEnv) {
+fn flow_ended(fe: &mut FrontEnd, env: &mut FeEnv, ok: bool) {
     save_icon(fe, env, false);
     fe.saveload.load_error = None;
+    if fe.saveload.signing_in.is_none() {
+        return;
+    }
+    if ok {
+        sign_in_ghosts_load(fe, env);
+    } else {
+        sign_in_job_done(fe, env);
+    }
+}
+
+fn sign_in_ghosts_load(fe: &mut FrontEnd, env: &mut FeEnv) {
+    match fe.saveload.ghosts {
+        GhostsRead::Loaded => sign_in_job_done(fe, env),
+        GhostsRead::Missing => sign_in_ghosts_failed(fe, env),
+        GhostsRead::Corrupt => {
+            fe.saveload.ghosts_load = Some(GhostsLoad::SignIn);
+            let d = corrupt_ghosts(env.loc);
+            show(fe, env, d);
+        }
+    }
+}
+
+fn sign_in_ghosts_failed(fe: &mut FrontEnd, env: &mut FeEnv) {
+    fe.note("the sign-in's ghosts load failed (0x825081E8): message 0xDDA6AD47, the ghosts group saved");
+    fe.messages.push(crate::game::fe::FeMessage::BootFlowLoaded);
+    fe.saveload.requests.push(Request::NewGhosts);
+    sign_in_job_done(fe, env);
+}
+
+fn sign_in_job_done(fe: &mut FrontEnd, env: &mut FeEnv) {
     if let Some(device) = fe.saveload.signing_in.take() {
         crate::game::fe::flow::profile_job_done(fe, env, device);
     }
+}
+
+pub fn ghosts_loaded(fe: &mut FrontEnd, env: &mut FeEnv, read: GhostsRead) {
+    fe.saveload.ghosts = read;
+    fe.saveload.ghosts_load = None;
+    sign_in_ghosts_load(fe, env);
+}
+
+pub fn own_ghost_damaged(fe: &mut FrontEnd, env: &mut FeEnv) {
+    fe.saveload.ghosts_load = Some(GhostsLoad::Slot);
+    let d = corrupt_ghosts(env.loc);
+    show(fe, env, d);
 }
 
 #[cfg(test)]
@@ -183,6 +265,16 @@ mod tests {
         assert_eq!(fill("%1d!", &args), "SSX!");
         assert_eq!(fill("%1s%2s %2s", &args), "SSX%2s Profile");
         assert_eq!(fill("%1s", &["%2s".to_string(), "x".to_string()]), "%2s");
+    }
+
+    #[test]
+    fn the_damaged_ghosts_dialog_names_the_file() {
+        let mut loc = crate::game::loc::Localization::empty(crate::game::loc::Language::English);
+        let d = super::corrupt_ghosts(&mut loc);
+        assert_eq!((d.id, d.default_button), (0xB, 0));
+        assert_eq!(d.buttons, vec![loc.text("SL_RETRY"), loc.text("SL_CANCEL")]);
+        let file = loc.text(super::GHOSTS_DISPLAY_NAME);
+        assert_eq!(d.body, super::fill(&loc.text("SSXV_FILE_CORRUPT_RECREATE"), &[file]));
     }
 
     #[test]

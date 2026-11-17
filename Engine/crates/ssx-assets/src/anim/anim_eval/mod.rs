@@ -14,8 +14,27 @@ pub use state_flow::*;
 #[derive(Debug)]
 pub struct GameState {
     values: Vec<std::sync::atomic::AtomicU32>,
+    vectors: Vec<[std::sync::atomic::AtomicU32; 4]>,
     pub random: RandomState,
     pub audio_tags: Vec<AudioTagEvent>,
+    pub drivers: Vec<DriverEvent>,
+    pub queries: Vec<String>,
+    pub updated_nodes: Vec<u64>,
+    pub transition_tags: Vec<crate::anim_graph::GameTag>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DriverEvent {
+    pub tag: crate::anim_graph::DriverTag,
+    pub event: crate::tags::TagEvent,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PathNode {
+    pub flow: String,
+    pub name: String,
+    pub time: f32,
+    pub serial: u64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -36,16 +55,23 @@ impl Clone for RandomState {
 
 impl Clone for GameState {
     fn clone(&self) -> Self {
-        Self::from_values((0..self.values.len()).map(|i| self.get(i)).collect(), self.random.clone())
+        let c = Self::from_values((0..self.values.len()).map(|i| self.get(i)).collect(), self.random.clone());
+        (0..self.values.len()).for_each(|i| c.set_vector(i, self.vector(i)));
+        c
     }
 }
 
 impl GameState {
     pub fn from_values(values: Vec<f32>, random: RandomState) -> Self {
         Self {
+            vectors: values.iter().map(|_| Default::default()).collect(),
             values: values.into_iter().map(|v| std::sync::atomic::AtomicU32::new(v.to_bits())).collect(),
             random,
             audio_tags: Vec::new(),
+            drivers: Vec::new(),
+            queries: Vec::new(),
+            updated_nodes: Vec::new(),
+            transition_tags: Vec::new(),
         }
     }
 
@@ -66,7 +92,13 @@ impl GameState {
 
     pub fn new(g: &Graph) -> Self {
         let values = g.signals.iter().map(|s| s.kind.default_value()).collect();
-        Self::from_values(values, RandomState(std::sync::atomic::AtomicU32::new(g.random_seed.unwrap_or(0))))
+        let gs = Self::from_values(values, RandomState(std::sync::atomic::AtomicU32::new(g.random_seed.unwrap_or(0))));
+        for (i, s) in g.signals.iter().enumerate() {
+            if let crate::anim_graph::SignalKind::Vector(v) = s.kind {
+                gs.set_vector(i, v);
+            }
+        }
+        gs
     }
 
     pub fn get(&self, s: SigId) -> f32 {
@@ -83,10 +115,25 @@ impl GameState {
         }
     }
 
+    pub fn vector(&self, s: SigId) -> [f32; 4] {
+        self.vectors.get(s).map_or([0.0; 4], |v| {
+            std::array::from_fn(|k| f32::from_bits(v[k].load(std::sync::atomic::Ordering::Relaxed)))
+        })
+    }
+
+    pub fn set_vector(&self, s: SigId, v: [f32; 4]) {
+        if let Some(x) = self.vectors.get(s) {
+            for (x, v) in x.iter().zip(v) {
+                x.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+
     pub fn merge_from(&self, other: &GameState, keep: &[SigId]) {
         for i in 0..self.len().min(other.len()) {
             if !keep.contains(&i) {
                 self.set(i, other.get(i));
+                self.set_vector(i, other.vector(i));
             }
         }
         self.random
@@ -146,7 +193,7 @@ pub trait Controller: Send + Sync {
         Vec::new()
     }
     fn label(&self, env: &Env, weight: f32, out: &mut Vec<(String, f32)>);
-    fn path(&self, _env: &Env, _out: &mut Vec<(String, f32)>) {}
+    fn path(&self, _env: &Env, _out: &mut Vec<PathNode>) {}
     fn as_flow(&self) -> Option<&SfInst> {
         None
     }

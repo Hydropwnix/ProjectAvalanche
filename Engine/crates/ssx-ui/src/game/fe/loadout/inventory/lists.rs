@@ -15,6 +15,41 @@ pub(super) struct ListInputs<'a> {
     pub ctx: &'a StoreContext,
 }
 
+pub fn level_purchase_description(loc: &mut Localization, rows: &[[u8; 5]], level: i64) -> String {
+    use crate::game::loc::{FormatArg, format_positional};
+    let Some((from, to)) = usize::try_from(level).ok().and_then(|l| Some((rows.get(l)?, rows.get(l.checked_add(1)?)?)))
+    else {
+        return String::new();
+    };
+    let mut texts = Vec::new();
+    for (column, (&a, &b)) in to.iter().zip(from.iter()).enumerate() {
+        let growth = i64::from(a) - i64::from(b);
+        if growth <= 0 {
+            continue;
+        }
+        let key = match column {
+            2 => "TXT_EQUIP_BUY_LVL_GEAR",
+            3 => "TXT_EQUIP_BUY_LVL_BOOST",
+            4 => "TXT_EQUIP_BUY_LVL_GEOTAG",
+            _ => "",
+        };
+        let text = if key.is_empty() { String::new() } else { loc.text(key) };
+        texts.push(format_positional(&text, &[FormatArg::Int(growth)]));
+    }
+    // PORT(choice): four or five growing columns (no disc or tuner row pair has more than two) give an empty
+    // description, as 0x8248C580's count check (`< 4`) leaves it; the executable formats every growing column's text
+    // into a three-string array on its stack first, so a fourth or fifth one is written past the array, over the
+    // frame's saved registers — a tuner or package row pair is a save's or a mod's data, and the port does not.
+    if texts.len() > 3 {
+        return String::new();
+    }
+    let shown = FormatArg::Int(level.saturating_add(2));
+    let mut args = vec![shown];
+    args.extend(texts.iter().map(|t| FormatArg::Str(t)));
+    let text = loc.text(&format!("TXT_EQUIP_BUY_LVL_{}", texts.len()));
+    format_positional(&text, &args)
+}
+
 impl Inventory {
     pub fn ui_item(
         &self,
@@ -64,12 +99,15 @@ impl Inventory {
             } else if let Some(r) = db.riders.iter().find(|r| r.key == rec.descriptions[0]) {
                 if !rec.owned {
                     u.asset = format!("{PORTRAIT_LOCKED}{}.dds", r.portrait);
-                } else if let Some((suit, src)) = self.rider_suit(db, profile, r.key) {
-                    let descs = match src {
-                        0 => {
+                } else {
+                    let descs = match self.rider_suit(db, profile, r.key) {
+                        Some((suit, 0)) => {
                             db.items.iter().find(|i| i.key == suit).map(|i| i.descriptions.clone()).unwrap_or_default()
                         }
-                        _ => profile.generated.get(&suit).map(|g| g.descriptions.to_vec()).unwrap_or_default(),
+                        Some((suit, _)) => {
+                            profile.generated.get(&suit).map(|g| g.descriptions.to_vec()).unwrap_or_default()
+                        }
+                        None => Vec::new(),
                     };
                     let id = |k: Option<&u32>| {
                         k.and_then(|k| db.descriptions.iter().find(|d| d.key == *k)).map_or(0, |d| d.id)
@@ -149,6 +187,8 @@ impl Inventory {
                 ) {
                     u.cost = price;
                     u.flags |= flag::LEVEL_PURCHASEABLE;
+                    u.description = level_purchase_description(loc, &db.progression.level_slots, level);
+                    return u;
                 }
             }
             u.description =

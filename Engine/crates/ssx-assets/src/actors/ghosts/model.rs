@@ -27,8 +27,14 @@ pub struct GhostModel {
     pub rig_file: PathBuf,
     pub rig: SceneGraph,
     pub bind: Vec<Srt>,
-    pub parts: Vec<GhostPart>,
+    pub lod_parts: Vec<Vec<GhostPart>>,
     pub problems: Vec<String>,
+}
+
+impl GhostModel {
+    pub fn parts(&self) -> &[GhostPart] {
+        self.lod_parts.first().map_or(&[], Vec::as_slice)
+    }
 }
 
 pub(crate) struct PartRef {
@@ -136,7 +142,8 @@ pub fn load_model(big_root: &Path, track: &str) -> Result<GhostModel> {
         Ok((thresholds, models))
     })?;
     let lods = models.iter().map(|m| m.iter().map(|p| p.name.clone()).collect()).collect();
-    let lod0 = models.into_iter().next().context("ghost_gameobject has no model")?;
+    let models_len = models.len();
+    let lod0 = models.first().context("ghost_gameobject has no model")?;
     let skeleton = lod0.iter().find_map(|p| p.skeleton.clone()).context("no part names a skeleton")?;
     let rig_file = asset_file(big_root, &skeleton).with_context(|| format!("rig {skeleton} not found"))?;
     let rig = CrsfFile::parse(&std::fs::read(&rig_file).with_context(|| format!("reading {}", rig_file.display()))?)
@@ -145,7 +152,7 @@ pub fn load_model(big_root: &Path, track: &str) -> Result<GhostModel> {
         .with_context(|| format!("{} has no SGRF scene graph", rig_file.display()))?;
     let mut problems = Vec::new();
     let mut loaded = Vec::new();
-    for p in lod0 {
+    for (lod, p) in models.into_iter().enumerate().flat_map(|(k, m)| m.into_iter().map(move |p| (k, p))) {
         if p.skeleton.as_deref() != Some(skeleton.as_str()) {
             problems.push(format!("{}: rig {:?}, drawn on {skeleton}", p.name, p.skeleton));
         }
@@ -158,28 +165,28 @@ pub fn load_model(big_root: &Path, track: &str) -> Result<GhostModel> {
             Ok((geom.clone(), crate::content::models::rider_mesh(big_root, &p.geom)?, file))
         };
         match read() {
-            Ok(x) => loaded.push((p, x)),
+            Ok(x) => loaded.push((lod, p, x)),
             Err(e) => problems.push(format!("{}: {e:#}", p.name)),
         }
     }
     let mut face_offsets = HashMap::new();
-    for (_, (_, _, file)) in &loaded {
+    for (_, _, (_, _, file)) in &loaded {
         for o in file.face_offsets.iter().flatten() {
             face_offsets.insert(o.joint.clone(), o.translate);
         }
     }
     let bind = bind_pose(&rig, &face_offsets);
-    let mut parts = Vec::new();
-    for (p, (geom, mesh, file)) in loaded {
+    let mut lod_parts: Vec<Vec<GhostPart>> = vec![Vec::new(); models_len];
+    for (lod, p, (geom, mesh, file)) in loaded {
         match skin_of(&file, &rig, mesh.positions.len()) {
-            Ok(skin) => parts.push(GhostPart { mesh_name: p.name, geom, mesh, skin, material: p.material }),
+            Ok(skin) => lod_parts[lod].push(GhostPart { mesh_name: p.name, geom, mesh, skin, material: p.material }),
             Err(e) => problems.push(format!("{}: {e:#}", p.name)),
         }
     }
-    if parts.is_empty() {
-        bail!("ghost_gameobject: no part loaded ({})", problems.join("; "));
+    if lod_parts[0].is_empty() {
+        bail!("ghost_gameobject: no part of LOD 0 loaded ({})", problems.join("; "));
     }
-    Ok(GhostModel { lod_thresholds, lods, rig_file, rig, bind, parts, problems })
+    Ok(GhostModel { lod_thresholds, lods, rig_file, rig, bind, lod_parts, problems })
 }
 
 const CLASS_CHARACTER: u32 = 0x1A08_2B62;

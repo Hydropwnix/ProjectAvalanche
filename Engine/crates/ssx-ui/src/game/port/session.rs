@@ -23,7 +23,13 @@ impl crate::game::GameUi {
         }
         fe.ava.session.chat.up = up;
         fe.note(format!("chat: the layer {}", if up { "comes (the level's HUD is up)" } else { "goes" }));
-        if !up {
+        if up {
+            if fe.ava.session.launch_notice.is_some() {
+                fe.note("chat: the launch's notice is said (the low-survival warning)");
+            }
+            let now = fe.time;
+            chat::level_shown(&mut fe.ava.session, now);
+        } else {
             self.fe_call(chat::close_entries);
         }
         self.nav.raise(if up { chat::ENABLE } else { chat::DISABLE });

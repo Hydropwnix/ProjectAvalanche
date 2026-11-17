@@ -11,7 +11,7 @@ pub fn build(fe: &FrontEnd, cx: &mut Ctx, values: &UiValues, loc: &mut Localizat
 pub(super) fn overlay(fe: &FrontEnd, cx: &mut Ctx, values: &UiValues) -> Value {
     let o = Value::Object(cx.new_object());
     let drop_level = matches!(fe.screen, 0x44 | 0xE | 0x11) && values.int(0xB3) == 3;
-    let entries = fe.globe_scene.as_ref().map(|s| s.entries(STAGE, STAGE.0 / STAGE.1)).unwrap_or_default();
+    let entries = entries(fe);
     let g = &fe.globe;
     let event = fe.career.event(g.provider_node).filter(|_| g.provider_is_drop && drop_level && !entries.is_empty());
     // (a port mod: the test peak has no outline picture of its own)
@@ -65,7 +65,7 @@ pub fn character_icon(fe: &FrontEnd, node: u32) -> String {
     const COMPLETE: &str = "assets/drop_selector_icons/campaign_complete.dds";
     const PLAYER: &str = "assets/gamertagIcons/player.dds";
     let map = |k: u32| CHARACTER_ICONS.iter().find(|(key, _)| *key == k).map(|(_, icon)| *icon);
-    if fe.career.range(node).is_some() && fe.profile.range_modes.get(&node).is_some_and(|m| m[1] == 2) {
+    if fe.career.range(node).is_some() && fe.profile.range_word(1, node) == 2 {
         return COMPLETE.into();
     }
     if let Some(icon) = map(node) {
@@ -92,7 +92,7 @@ pub fn character_icon(fe: &FrontEnd, node: u32) -> String {
 }
 
 pub(super) fn globe_data(fe: &FrontEnd, cx: &mut Ctx, values: &UiValues, loc: &mut Localization) -> Value {
-    let entries = fe.globe_scene.as_ref().map(|s| s.entries(STAGE, STAGE.0 / STAGE.1)).unwrap_or_default();
+    let entries = entries(fe);
     let complete = loc.text("TXT_GLOBE_COMPLETE");
     let new_label = loc.text("TXT_GLOBE_INDICATOR_NEW");
     let campaign = fe.game_mode == 1;

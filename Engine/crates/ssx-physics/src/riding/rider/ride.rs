@@ -3,18 +3,23 @@ use super::*;
 pub(super) fn ride(s: &mut RiderState, w: &World, input: &Input, flags: (bool, bool), dt: f32) -> Vec3 {
     let (recovery_input, level_complete) = flags;
     let (t, c) = (&w.tuning, &w.tuning.carving);
-    let prev_request = s.request_stop;
+    s.carving.bounce_rotational_force = s.graph.bounce_rotational_force;
+    let seen = s.carving.subject_vars;
+    if s.carving.initialized {
+        s.carving.subject_vars = read_subject_vars(s);
+    }
+    s.carving.subject_update = true;
     if s.graph.driven {
         s.stopped = s.graph.carving_stopped;
     } else if !s.stopped && !s.landing.uber_crash && !s.tricks.grind.is_grind_trick() {
-        let bailing = s.landing.bail_on_landing;
-        if !s.nested_stable && !bailing && s.landing.stable {
+        let bailing = seen.bail_on_landing;
+        if !s.nested_stable && !bailing && seen.stable {
             s.nested_stable = true;
         }
         if s.nested_stable {
-            if s.request_stop {
+            if seen.request_stop {
                 s.stopped = true;
-            } else if !s.landing.stable || bailing {
+            } else if !seen.stable || bailing {
                 s.nested_stable = false;
             }
         }
@@ -23,10 +28,11 @@ pub(super) fn ride(s: &mut RiderState, w: &World, input: &Input, flags: (bool, b
     let has_contact = gframe.contact.is_some();
     let n = gframe.n;
     let stick = input.carve_stick(s.tricks.classic);
-    let uber = s.landing.uber_crash || s.board_particle.enabled;
+    let uber = s.uber_bail_sliding();
     let dead_on_ground = matches!(s.landing.uber_recovery, UberRecovery::GettingUp(_)) && uber;
     let is_dead = s.carving.is_dead;
-    let vertical = n.y < c.vertical_surface_angle_threshold.cos();
+    let vertical = crate::ground::vertical_surface(c, n);
+    s.carving.scoring_vertical = crate::ground::scoring_vertical_surface(c, n, has_contact);
     let has_prewind = super::spq::has_prewind_input(input, s.jump.prewind.hold, s.tricks.classic);
     let damp = if c.prewind_dampens_carving && has_prewind {
         let curve = if s.tricks.classic {
@@ -38,7 +44,10 @@ pub(super) fn ride(s: &mut RiderState, w: &World, input: &Input, flags: (bool, b
     } else {
         1.0
     };
-    let speed = s.velocity.length();
+    let speed = {
+        let v = s.velocity.to_array();
+        crate::intercept::sqrt(ssx_formats::vmx::dot3(v, v))
+    };
     let can_brake = s.landing.is_upright(&t.balance);
     let rock_effects = t.survival.riding_on_rock_curve.eval(s.carving.ticks_on_rock * 0.0625);
     let pt = &t.board_press;
@@ -77,27 +86,24 @@ pub(super) fn ride(s: &mut RiderState, w: &World, input: &Input, flags: (bool, b
     let av_on = !s.boost.is_boosting && !level_complete && s.grind.carving.state != 2;
     let av = s.avalanche.read_inputs(at, av_on, s.carving.ride_ticks);
     let alive = s.death.is_alive();
+    let full_friction = full_friction(s.carving.ride_ticks, c.uber_crash_ticks_to_full_friction);
     let latch = (speed < c.stopped_threshold
-        && (s.force_stop
-            || (is_dead && !vertical)
-            || (uber && !vertical && s.carving.ride_ticks >= c.uber_crash_ticks_to_full_friction)))
+        && (s.force_stop || (is_dead && !vertical) || (uber && !vertical && full_friction)))
         || s.janked.janked;
     let stopped = s.stopped || latch;
     let mut q = ground_frame(s.alignment, n);
     update_concavity(&mut s.steering, c, has_contact, s.filtered_velocity, n, dt);
     let (lean_in, brake_in) = (s.inputs.lean_in, s.inputs.brake);
     update_slip_state(&mut s.steering, c, &mut s.alignment, &mut q, n, s.velocity, lean_in, brake_in, stopped, dt);
-    s.kin = kinematics(&mut s.steering, c, q, s.alignment, s.velocity, dt, ice_blend);
+    s.kin = kinematics(&s.steering, c, q, s.alignment, s.velocity, dt, ice_blend);
     s.lean = s.kin.lean;
     let comp = snow_compression(c, &s.surface, s.carving.distance_carved);
     let h = gframe.contact.map_or(0.0, |p| (p - s.traj).dot(n));
     let f210 = h + comp;
     let f218 = c.on_ground_distance_threshold - (s.surface.snow_depth - comp);
-    let blends = HeightBlends {
-        tuck: tuck_blend(s),
-        pre_jump: if input.jump { s.jump.a_hold_filtered.clamp(0.0, 1.0) } else { 0.0 },
-        boost: s.boost.blend.clamp(0.0, 1.0),
-    };
+    let pre_jump = if input.jump { s.jump.a_hold_filtered } else { -s.jump.rstick_y_filtered };
+    let blends =
+        HeightBlends { tuck: tuck_blend(s), pre_jump: pre_jump.clamp(0.0, 1.0), boost: s.boost.blend.clamp(0.0, 1.0) };
     let ground_trick = s.tricks.is_grind_trick();
     let forced = uber || is_dead || s.janked.janked || ground_trick;
     let kin30 = riding_height_target(
@@ -115,13 +121,13 @@ pub(super) fn ride(s: &mut RiderState, w: &World, input: &Input, flags: (bool, b
     }
     let q_traj =
         if s.graph.driven { s.graph.traj_rotation } else { s.traj_orientation * Quat::from_rotation_y(-FRAC_PI_2) };
-    let l = q_traj.conjugate() * s.velocity;
-    let vel_angle = if l.x * l.x + l.z * l.z >= c.speed_threshold * c.speed_threshold {
-        l.z.atan2(l.x)
-    } else {
-        s.grind.carving.board_angle
-    };
-    grind::update_board_angle(&mut s.grind.carving, q_traj, s.velocity, c.speed_threshold, c.max_spin_vel, dt);
+    let vel_angle = crate::steering::velocity_angle_in_trajectory_frame(
+        q_traj,
+        s.velocity,
+        c.speed_threshold,
+        s.grind.carving.board_angle,
+    );
+    s.grind.carving.board_angle = vel_angle;
     s.goofy = outputs::goofy_update(vel_angle, s.goofy, c.goofy_hysteresis_angle);
     let (raw_angle, raw_mag) = crate::steering::stick_angle_and_magnitude(stick);
     let (grind_lateral, grind_press) =
@@ -131,8 +137,29 @@ pub(super) fn ride(s: &mut RiderState, w: &World, input: &Input, flags: (bool, b
         grind::press_update(&mut gc.press, gt, gc.board_angle, gc.grind_or_press_blend, grind_press, dt);
     }
     let first_contact = !s.carving.have_made_first_contact && has_contact && kin34 >= f218;
+    let (mut kin30, mut kin34) = (kin30, kin34);
     if first_contact {
         s.carving.have_made_first_contact = true;
+        if !(is_dead || s.landing.tumbling || s.landing.bail_on_landing || uber) {
+            let wiggle = s.air.outputs.spin_wiggle;
+            let curve = &c.wiggle_offset_angle_curve;
+            s.velocity = first_contact_wiggle(curve, wiggle, s.carving.initial_velocity, s.velocity, n);
+        }
+        s.kin = kinematics(&s.steering, c, q, s.alignment, s.velocity, dt, ice_blend);
+        s.lean = s.kin.lean;
+        kin30 = riding_height_target(
+            c,
+            blends,
+            s.kin.lean,
+            s.landing.stable_ticks,
+            s.carving.initialized,
+            s.traj_height_dof(),
+            forced,
+        );
+        kin34 = f210 - kin30;
+    }
+    if s.carving.have_made_first_contact {
+        s.air.outputs.spin_wiggle = 0.0;
     }
     let brake = brake_factor(
         t,
@@ -144,7 +171,7 @@ pub(super) fn ride(s: &mut RiderState, w: &World, input: &Input, flags: (bool, b
             dead_on_ground,
             board_press: pressing,
             uber,
-            grind_or_rock: s.grind.carving.state != 0 || s.landing.bailed_because_of_rock,
+            grind_or_rock: s.grind.carving.state != 0 || s.landing.is_in_rock_slide || s.landing.bailed_because_of_rock,
             vertical,
             ride_ticks: s.carving.ride_ticks,
             can_brake,
@@ -156,7 +183,6 @@ pub(super) fn ride(s: &mut RiderState, w: &World, input: &Input, flags: (bool, b
         traj: s.traj,
         velocity: s.velocity,
         speed,
-        // TODO(guess): without a graph (unit tests) the rock-bail node is not emulated; settle: run the graph (the game always does).
         in_rock_bail: s.graph.in_rock_bail,
         grinding: s.grind.carving.state != 0,
         dt,
@@ -167,7 +193,7 @@ pub(super) fn ride(s: &mut RiderState, w: &World, input: &Input, flags: (bool, b
     let l = &s.landing;
     let gc = s.grind.carving;
     let mut out = if let Some(tr) = trip {
-        s.survival.one_off_damage += tr.damage;
+        s.survival.one_off_damage = tr.apply_damage(&t.trip, s.survival.one_off_damage);
         crate::ground::GroundOutput { dp: tr.dp, v: tr.v, a: tr.a, ..Default::default() }
     } else {
         integrate_ground(&GroundInputs {
@@ -191,7 +217,7 @@ pub(super) fn ride(s: &mut RiderState, w: &World, input: &Input, flags: (bool, b
             kin34,
             f210,
             f218,
-            stick_y: stick.y,
+            stick_y: input.carve_stick_y(s.tricks.classic),
             brake,
             slip_dig: s.steering.slip_dig_angle,
             uber,
@@ -211,10 +237,11 @@ pub(super) fn ride(s: &mut RiderState, w: &World, input: &Input, flags: (bool, b
                 or_press_blend: gc.grind_or_press_blend,
                 thrust: gt.thrust_curve.eval(speed),
             },
-            wind: s.grind.wind * gt.wind_modifier + s.avalanche.wind(at, &av, alive, s.carving.air_time, n),
+            wind: s.avalanche.wind(at, &av, alive, s.carving.air_time, n, s.grind.wind * gt.wind_modifier),
             ice_axe: ice_frame,
             avalanche_drag: crate::avalanche::RiderAvalanche::drag_factor(at, &av, alive),
             avalanche_friction: s.avalanche.friction_factor(at, &av, alive, s.carving.air_time),
+            rock_weight: s.weights[crate::surface::ROCK],
             dt,
         })
     };
@@ -248,7 +275,7 @@ pub(super) fn ride(s: &mut RiderState, w: &World, input: &Input, flags: (bool, b
                 collision_steering::collision_steering(&w.collision, &t.carving, s.traj, out.v, n, mi.stick_dir, dt);
             s.carving.collision_anticipation_side = 0.0;
             if let Some(st) = steered {
-                (out.dp, out.v) = (st.dp, st.v);
+                (out.dp, out.v) = collision_steering::in_ground_plane(q, (out.dp, out.v), (st.dp, st.v));
                 s.carving.collision_anticipation_side = st.side;
             }
         }
@@ -275,15 +302,14 @@ pub(super) fn ride(s: &mut RiderState, w: &World, input: &Input, flags: (bool, b
     s.carving.uls_ticks = if s.carving.use_leg_spring { s.carving.uls_ticks + dt } else { 0.0 };
     let speed_out = out.v.length();
     rock_riding_update(s, w, rock_effects, dt);
-    let recovery = s.landing.recovery_input(&t.balance, s.kin.fwd, stick.y);
+    let (balance_y, recovery_input) = balance_inputs(input.stick().y, recovery_input, s.force_stop, can_brake);
+    let recovery = s.landing.recovery_input(&t.balance, s.kin.fwd, balance_y);
     s.survival.carving_damage += s.avalanche.balance(at, &mut s.landing.bail_on_landing, level_complete, recovery);
-    let spared = s.avalanche.bailed_because_of_avalanche || is_dead || !s.death.is_alive();
-    s.landing.landing_bail_limit(spared, dt);
-    s.landing.balance_update(
+    let clear_rock_ticks = s.landing.balance_update(
         &t.balance,
-        s.kin.fwd,
-        stick.y,
-        speed_out,
+        (s.kin.fwd, s.steering.forward_sign),
+        balance_y,
+        speed,
         recovery_input,
         s.carving.use_leg_spring,
         uber,
@@ -291,8 +317,12 @@ pub(super) fn ride(s: &mut RiderState, w: &World, input: &Input, flags: (bool, b
         is_dead,
         level_complete,
         pressing,
+        (s.carving.bounce_rotational_force.x, s.graph.in_rock_bail),
         dt,
     );
+    if clear_rock_ticks {
+        s.carving.ticks_on_rock = 0.0;
+    }
     let can_brake_now = s.landing.is_upright(&t.balance);
     crate::press::force_stop_update(&mut s.press, pt.force_stop_spring_stiffness, can_brake_now, level_complete, dt);
     if !s.death.is_alive() && !level_complete {
@@ -301,6 +331,7 @@ pub(super) fn ride(s: &mut RiderState, w: &World, input: &Input, flags: (bool, b
     let grinding = s.grind.carving.state != 0;
     let grind_spin = grinding.then_some((gt, grind_lateral));
     let dq = pid_step(&mut s.steering, c, &s.kin, &s.inputs, stopped, grind_spin, dt, ice_blend);
+    s.steering.store_kinematics(&s.kin);
     s.ice_axe.chop_update(ia, s.steering.lean_norm);
     s.nose_tail = outputs::nose_tail_factor(n, q_traj, s.goofy);
     s.board_velocity_angle = outputs::angle_between_board_and_velocity(board_axes(s).1, out.v, n);
@@ -348,8 +379,13 @@ pub(super) fn ride(s: &mut RiderState, w: &World, input: &Input, flags: (bool, b
         s.carving.on_ground_ticks += dt;
     }
     s.carving.ride_ticks += dt;
+    let j = crate::rootmotion::trajectory_joint(s.traj_orientation);
+    s.carving.traj_delta = trajectory_delta_rotation(s, c, j, n, uber);
+    s.carving.reach = outputs::carving_reach_value(s.landing.pitch, s.landing.bail_on_landing, uber);
     s.avalanche.end_of_update(s.landing.bail_on_landing, dt);
+    s.carving.ride_frames = s.carving.ride_frames.wrapping_add(1);
     s.carving.initialized = true;
+    s.alignment_frame = s.alignment;
     let request_stop = stop_test(t, speed_out, out.a.length(), &s.inputs, s.stopped, vertical, pressing);
     s.request_stop = request_stop;
     s.press.is_board_press = crate::press::is_board_press_output(pressing, s.grind.carving.grind_or_press_blend);
@@ -363,7 +399,7 @@ pub(super) fn ride(s: &mut RiderState, w: &World, input: &Input, flags: (bool, b
             }
         }
         UberRecovery::Sliding => {
-            if prev_request {
+            if seen.request_stop {
                 s.landing.uber_recovery = UberRecovery::GettingUp(0.0);
                 s.board_particle.stay_dead = should_stay_dead_once_tumbled(s);
             }
@@ -381,4 +417,8 @@ pub(super) fn ride(s: &mut RiderState, w: &World, input: &Input, flags: (bool, b
     }
     s.velocity = out.v;
     out.dp
+}
+
+pub(super) fn full_friction(ride_ticks: f32, full: f32) -> bool {
+    ride_ticks >= full || ride_ticks.is_nan() || full.is_nan()
 }

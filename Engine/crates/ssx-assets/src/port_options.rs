@@ -149,6 +149,57 @@ impl FromStr for MenuFocus {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum DiscordPresence {
+    On,
+    // PORT(choice): off is the game's default without the flag (a run that is not the launcher's, a test's or a
+    // developer's, never reaches the player's Discord); the launcher's switch is on by default and passes `on`. The
+    // console had no Discord.
+    #[default]
+    Off,
+}
+
+impl DiscordPresence {
+    pub const ALL: [DiscordPresence; 2] = [DiscordPresence::On, DiscordPresence::Off];
+    pub const MEMBER: &str = "discord_presence";
+    pub const FLAG: &str = "--discord-presence";
+
+    pub fn name(self) -> &'static str {
+        match self {
+            DiscordPresence::On => "On",
+            DiscordPresence::Off => "Off",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<DiscordPresence> {
+        DiscordPresence::ALL.into_iter().find(|d| d.name() == name)
+    }
+
+    pub fn arg(self) -> &'static str {
+        match self {
+            DiscordPresence::On => "on",
+            DiscordPresence::Off => "off",
+        }
+    }
+}
+
+impl fmt::Display for DiscordPresence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.arg())
+    }
+}
+
+impl FromStr for DiscordPresence {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        DiscordPresence::ALL.into_iter().find(|d| d.arg() == s).ok_or_else(|| {
+            let values: Vec<&str> = DiscordPresence::ALL.iter().map(|d| d.arg()).collect();
+            format!("{}: one of {}", ssx_core::text::quoted_max(s, 64), values.join(", "))
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,5 +257,21 @@ mod tests {
         }
         let e = "x\u{1b}[2J".repeat(100).parse::<MenuFocus>().unwrap_err();
         assert!(!e.contains('\u{1b}') && e.len() < 200 && e.ends_with("first-item, last-item"), "{e}");
+    }
+
+    #[test]
+    fn the_discord_presence_choices_read_back_by_name_and_by_flag_value() {
+        assert_eq!(DiscordPresence::default(), DiscordPresence::Off);
+        for d in DiscordPresence::ALL {
+            assert_eq!(DiscordPresence::from_name(d.name()), Some(d));
+            assert_eq!(d.arg().parse::<DiscordPresence>(), Ok(d));
+            assert_eq!(d.to_string(), d.arg());
+        }
+        for bad in ["", "On", "ON", "true", "1", "yes", " on", "off "] {
+            assert!(bad.parse::<DiscordPresence>().is_err(), "{bad:?}");
+        }
+        for bad in ["", "on", "off", "true", "ON"] {
+            assert_eq!(DiscordPresence::from_name(bad), None, "{bad:?}");
+        }
     }
 }

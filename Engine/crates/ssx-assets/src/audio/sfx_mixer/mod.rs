@@ -18,6 +18,18 @@ pub use direct::*;
 pub use sources::*;
 
 pub fn voice_patch_table(big_root: &std::path::Path) -> Result<HashMap<i32, (String, String)>> {
+    voice_patches(big_root).map(|v| v.voices)
+}
+
+pub struct VoicePatches {
+    pub voices: HashMap<i32, (String, String)>,
+    pub pools: HashMap<i32, String>,
+}
+
+const POOL_USER: u32 = 0x8E89_819A;
+const POOL_NAME: u32 = 0x7C56_BE4A;
+
+pub fn voice_patches(big_root: &std::path::Path) -> Result<VoicePatches> {
     use crate::vault_db::fnv1;
     use ssx_formats::attrib::{FieldData, Schema, Value, Vault, collection};
     let dir = big_root.join("bootcache/data/xenon/attribdb");
@@ -28,8 +40,22 @@ pub fn voice_patch_table(big_root: &std::path::Path) -> Result<HashMap<i32, (Str
     let schema = Schema::from_vault(&Vault::parse(&sv, &sb)?).context("reading the schema")?;
     let (v, b) = read("attribdb")?;
     let vault = Vault::parse(&v, &b)?;
-    let mut table = HashMap::new();
-    for c in collection::collections(&vault)?.iter().filter(|c| c.class == fnv1("audio_mixer_voices")) {
+    let cols = collection::collections(&vault)?;
+    let mut users = HashMap::new();
+    for c in cols.iter().filter(|c| c.class == fnv1("audio_stream_pools")) {
+        let fields = c.decode(&vault, &schema)?.fields;
+        let text = |k: u32| {
+            fields.iter().find(|f| f.key == k).and_then(|f| match &f.data {
+                FieldData::Single(Value::Text(Some(t))) => Some(t.clone()),
+                _ => None,
+            })
+        };
+        if let (Some(user), Some(pool)) = (text(POOL_USER), text(POOL_NAME)) {
+            users.insert(user, pool);
+        }
+    }
+    let (mut voices, mut pools) = (HashMap::new(), HashMap::new());
+    for c in cols.iter().filter(|c| c.class == fnv1("audio_mixer_voices")) {
         for f in c.decode(&vault, &schema)?.fields {
             let FieldData::Single(Value::Raw { bytes, pointers }) = &f.data else { continue };
             let text =
@@ -37,10 +63,13 @@ pub fn voice_patch_table(big_root: &std::path::Path) -> Result<HashMap<i32, (Str
             let (Some(patch), Some(voice)) = (text(4), text(8)) else { continue };
             let id = bytes.get(..4).map_or(0, |w| i32::from_be_bytes([w[0], w[1], w[2], w[3]]));
             let id = if c.key == fnv1("default") { -1 } else { id };
-            table.insert(id, (patch.to_string(), voice.to_string()));
+            voices.insert(id, (patch.to_string(), voice.to_string()));
+            if let Some(pool) = text(0xC).and_then(|user| users.get(&user)) {
+                pools.insert(id, pool.clone());
+            }
         }
     }
-    Ok(table)
+    Ok(VoicePatches { voices, pools })
 }
 
 struct BankAudio {
@@ -85,6 +114,7 @@ pub struct Mixer {
     pub graph: Graph,
     pub sources: Sources,
     table: HashMap<i32, (String, String)>,
+    pools: HashMap<i32, String>,
     voices: Vec<Option<AemsVoice>>,
     music_slot: Option<usize>,
     movie_slot: Option<usize>,
@@ -95,16 +125,56 @@ pub struct Mixer {
     // PORT(choice): one pool per engine — the port has a front end's and a level's engine (one plays at a time, the
     // other parked); the console has one engine and one `SfxLarge` pool for the game.
     streams: sfx_stream::Pool,
+    music_streams: sfx_stream::Pool,
+}
+
+fn stream_pools() -> (sfx_stream::Pool, sfx_stream::Pool) {
+    let sfx_large = sfx_stream::Pool::new(sfx_stream::Ring::SFX_LARGE, sfx_stream::SFX_LARGE_SLOTS);
+    (sfx_large, sfx_stream::music_pool().clone())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StreamPool {
+    SfxLarge,
+    Music,
+}
+
+fn voice_entry(
+    table: &HashMap<i32, (String, String)>,
+    pools: &HashMap<i32, String>,
+    id9: Option<i32>,
+) -> (i32, Option<StreamPool>) {
+    let key = id9.filter(|id| table.contains_key(id)).unwrap_or(-1);
+    (key, StreamPool::of(pools.get(&key).map(String::as_str)))
+}
+
+impl StreamPool {
+    fn of(pool: Option<&str>) -> Option<Self> {
+        match pool {
+            Some("SfxLarge") => Some(Self::SfxLarge),
+            Some("Music") => Some(Self::Music),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::SfxLarge => "SfxLarge",
+            Self::Music => "Music",
+        }
+    }
 }
 
 impl Mixer {
-    pub fn new(set: Arc<sfx_bus::PatchSet>, table: HashMap<i32, (String, String)>) -> Self {
+    pub fn new(set: Arc<sfx_bus::PatchSet>, patches: VoicePatches) -> Self {
+        let (streams, music_streams) = stream_pools();
         Self {
             banks: Vec::new(),
             ram: HashMap::new(),
             graph: Graph::new(set),
             sources: Sources::default(),
-            table,
+            table: patches.voices,
+            pools: patches.pools,
             voices: Vec::new(),
             music_slot: None,
             movie_slot: None,
@@ -112,7 +182,8 @@ impl Mixer {
             released: Vec::new(),
             events: Vec::new(),
             verbose: false,
-            streams: sfx_stream::Pool::new(sfx_stream::Ring::SFX_LARGE, sfx_stream::SFX_LARGE_SLOTS),
+            streams,
+            music_streams,
         }
     }
 
@@ -258,7 +329,7 @@ impl Mixer {
         (self.ram.len(), floats)
     }
 
-    fn open(&mut self, b: usize, entry: &SampleEntry) -> Result<Source> {
+    fn open(&mut self, b: usize, entry: &SampleEntry, pool: Option<StreamPool>) -> Result<Source> {
         let idx = usize::from(entry.sound_index);
         let (_, header) = self.banks[b].sounds.get(idx).cloned().flatten().context("empty S10A slot")?;
         let label = format!("{} sound {idx}", self.banks[b].name);
@@ -267,18 +338,29 @@ impl Mixer {
             Storage::Stream => {
                 let ast = self.banks[b].ast.clone().context("streamed sound without .ast")?;
                 let offset = u64::from(entry.stream_offset);
-                let cursor = StreamCursor::open(
-                    ast,
-                    header.clone(),
-                    offset,
-                    sfx_stream::BlockKind::V0,
-                    SlotFrom::Pool(&self.streams, sfx_stream::UNSTEALABLE),
-                )?;
-                if cursor.refused() {
-                    ssx_core::eprintln!(
-                        "sfx: {label}: no SfxLarge slot free ({} held), the voice stays silent until stopped",
-                        self.streams.held()
-                    );
+                let slots = pool.map(|p| match p {
+                    StreamPool::SfxLarge => (p, &self.streams),
+                    StreamPool::Music => (p, &self.music_streams),
+                });
+                let from = slots.map_or(SlotFrom::Nothing, |(_, s)| SlotFrom::Pool(s, sfx_stream::UNSTEALABLE, &label));
+                let cursor = StreamCursor::open(ast, header.clone(), offset, sfx_stream::BlockKind::V0, from)?;
+                match slots {
+                    Some((pool, slots)) => {
+                        let (name, held, holders) = (pool.name(), slots.held(), slots.holders().join(", "));
+                        if cursor.refused() {
+                            ssx_core::eprintln!(
+                                "sfx: {label}: no {name} slot free ({held} held: {holders}), the voice stays silent \
+                                 until stopped"
+                            );
+                        } else if self.verbose {
+                            self.events.push(format!("stream {label}: {name} slot taken ({held} held: {holders})"));
+                        }
+                    }
+                    // PORT(choice): a voice whose entry names no pool the game makes (only reachable with a changed
+                    // vault) streams nothing and stays silent until stopped, as a refused stream does; the console's
+                    // vault has no such entry (202 `AemsDefault`, 2 `AemsMusic`), and its stream start would read
+                    // the missing pool (0x82A1AB80 returns 0, 0x82A2DAF8 reads its +0x3C).
+                    _ => ssx_core::eprintln!("sfx: {label}: its voice names no stream pool, the voice stays silent"),
                 }
                 Frames::Stream { cursor: Box::new(cursor), buf: Vec::new(), base: 0, ended: false }
             }
@@ -377,7 +459,10 @@ impl VoiceHost for Mixer {
         params: &[(u8, i32)],
         choice: Option<&Choice>,
     ) -> Option<u32> {
-        let disc = match self.open(bank, entry) {
+        let id9 = params.iter().find(|p| p.0 == 9).map(|p| p.1);
+        let (key, pool) = voice_entry(&self.table, &self.pools, id9);
+        let (patch, voice) = self.table.get(&key).cloned()?;
+        let disc = match self.open(bank, entry, pool) {
             Ok(s) => s,
             Err(e) => {
                 ssx_core::eprintln!("sfx: {} sound {}: {e:#}", self.banks[bank].name, entry.sound_index);
@@ -410,8 +495,6 @@ impl VoiceHost for Mixer {
                 (src, sound.volume, draw.pitch, Some(sound.route.clone()))
             }
         };
-        let id9 = params.iter().find(|p| p.0 == 9).map(|p| p.1);
-        let (patch, voice) = id9.and_then(|id| self.table.get(&id)).or_else(|| self.table.get(&-1)).cloned()?;
         let channels = src.channels;
         let label = src.label.clone();
         let sid = self.sources.voices.iter().position(Option::is_none).unwrap_or(self.sources.voices.len());
@@ -543,6 +626,78 @@ mod tests {
         assert_eq!(got, [1.0, 2.0, 3.0, 4.0, 5.0, 3.0, 4.0, 5.0]);
         let one = RamSound { channels: 1, looped: false, sections: vec![vec![1.0, 2.0]] };
         assert!(one.frame(2).is_none());
+    }
+
+    fn tricky_table() -> (HashMap<i32, (String, String)>, HashMap<i32, String>) {
+        let entry = |p: &str, v: &str| (p.to_string(), v.to_string());
+        let table = HashMap::from([
+            (-1, entry("default_sfx_patch", "Default_SFX_Voice")),
+            (0x378, entry("hud_tricky_patch", "HUD_Tricky_Voice")),
+            (0x379, entry("tricky_song_patch", "Tricky_Song_Voice")),
+            (0x32D, entry("boost2_off_patch", "Boost2_Off_Voice")),
+        ]);
+        let pools = HashMap::from([
+            (-1, "SfxLarge".to_string()),
+            (0x378, "Music".to_string()),
+            (0x379, "Music".to_string()),
+            (0x32D, "SfxLarge".to_string()),
+        ]);
+        (table, pools)
+    }
+
+    #[test]
+    fn a_voice_streams_through_the_pool_its_entry_names() {
+        let (table, pools) = tricky_table();
+        assert_eq!(voice_entry(&table, &pools, Some(0x378)), (0x378, Some(StreamPool::Music)));
+        assert_eq!(voice_entry(&table, &pools, Some(0x379)), (0x379, Some(StreamPool::Music)));
+        assert_eq!(voice_entry(&table, &pools, Some(0x32D)), (0x32D, Some(StreamPool::SfxLarge)));
+        assert_eq!(voice_entry(&table, &pools, Some(12_345)), (-1, Some(StreamPool::SfxLarge)));
+        assert_eq!(voice_entry(&table, &pools, None), (-1, Some(StreamPool::SfxLarge)));
+        let none = HashMap::from([(-1, "SfxSmall".to_string())]);
+        assert_eq!(voice_entry(&table, &none, None), (-1, None));
+        assert_eq!(voice_entry(&table, &HashMap::new(), Some(0x378)), (0x378, None));
+    }
+
+    #[test]
+    fn the_tricky_voices_leave_sfx_large_to_the_effects() {
+        let _music = sfx_stream::music_pool_test_lock();
+        let (table, pools) = tricky_table();
+        let (sfx_large, music) = stream_pools();
+        let take = |owner: u64, id9: i32, label: &str| {
+            let pool = match voice_entry(&table, &pools, Some(id9)).1 {
+                Some(StreamPool::SfxLarge) => &sfx_large,
+                Some(StreamPool::Music) => &music,
+                None => panic!("no pool"),
+            };
+            pool.acquire(owner, sfx_stream::UNSTEALABLE, label).unwrap()
+        };
+        let loops: Vec<_> = (1..=4).map(|o| take(o, 0x1FD, "loop").expect("a loop's slot")).collect();
+        let stinger = take(5, 0x378, "tricky sound 0").expect("the stinger's slot");
+        let boost = take(6, 0x32D, "boost_awesome sound 6");
+        assert!(boost.is_some(), "the boost refused: {:?}", sfx_large.holders());
+        assert_eq!((sfx_large.held(), music.held()), (5, 1));
+        drop((loops, stinger, boost));
+    }
+
+    #[test]
+    fn the_tricky_voices_count_the_music_streams() {
+        let _music = sfx_stream::music_pool_test_lock();
+        let (table, pools) = tricky_table();
+        let (_, music) = stream_pools();
+        let take = |id9: i32, label: &str| {
+            assert_eq!(voice_entry(&table, &pools, Some(id9)).1, Some(StreamPool::Music));
+            music.acquire(sfx_stream::new_owner(), sfx_stream::UNSTEALABLE, label).unwrap()
+        };
+        let song = sfx_stream::music_pool().acquire(sfx_stream::new_owner(), sfx_stream::UNSTEALABLE, "musicbox");
+        let song = song.unwrap().expect("the MusicBox's slot");
+        let stinger = take(0x378, "tricky sound 0").expect("the stinger's slot");
+        let tricky_song = take(0x379, "tricky sound 7").expect("the Tricky song's slot");
+        assert!(take(0x378, "tricky sound 1").is_none(), "a fourth stream: {:?}", music.holders());
+        assert!(song.with(|_| ()).is_some(), "the MusicBox's slot taken over");
+        drop(song);
+        assert!(take(0x378, "tricky sound 1").is_some(), "the slot the song's stop freed");
+        drop((stinger, tricky_song));
+        assert_eq!(sfx_stream::music_pool().held(), 0);
     }
 
     #[test]

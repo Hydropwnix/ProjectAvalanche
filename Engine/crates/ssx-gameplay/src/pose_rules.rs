@@ -2,10 +2,13 @@ use ssx_net_proto::{NetPose, PoseFlag};
 
 use crate::tiers::SampleOrder;
 
-// PORT(choice): 20 km; the largest over the disc's 727 ghosts is 3 338 m and over eight recorded rides of every kind 3
-// 686 m (examples/pose_bounds.rs in ssx-net, 2026-10-23); tuning: the extents of the maps a server may run; the
-// original has no validation.
-pub const MAX_COORDINATE_M: f32 = 20_000.0;
+// PORT(choice): 2^18 m; over the disc's 262 events the long intro's first scene holds the rider beyond 20 km on 166
+// (153 of 171 drops' nis_intro_locator lie beyond it), at most 73 130 m out (alps0101) and 820 m from its locator, the
+// DLC's japan1101 at 34 937 m (round net4's ride_sim sweep); within the course the disc's 727 ghosts reach 3 338 m and
+// eight recorded rides 3 686 m (examples/pose_bounds.rs in ssx-net); a map's locator may lie at the world's edge and a
+// ride past it has no measured reach, hence twice the extent, not the extent and 820 m; the bound was 20 km until
+// round net4, which kept back every sample of that first scene; the original has no validation.
+pub const MAX_COORDINATE_M: f32 = 2.0 * ssx_core::WORLD_EXTENT_M;
 
 // PORT(choice): 0.001; every one of the disc's 329 230 blocks and the rides' 33 906 has length 1.000000 (the packer
 // stores the pose's unit quaternion), enough unless another client packs differently; the original has no validation.

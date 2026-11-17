@@ -203,6 +203,26 @@ fn an_honest_run_passes_every_check() {
 }
 
 #[test]
+fn samples_that_never_arrive_leave_an_honest_run_whole() {
+    let mid = time_at_y(60.0);
+    let cases: [(&str, &dyn Fn(f64) -> bool); 3] = [
+        ("a second within the run", &|t| (mid..mid + 30.0).contains(&t)),
+        ("from the middle through the finish", &|t| t >= mid),
+        ("all after the race start's", &|t| t > f64::from(S + RACE_START + 1)),
+    ];
+    for (what, lost) in cases {
+        let (findings, counts) = ride(EventType::RaceClock, Mode::Race, &mut |t, sample, _| {
+            if lost(t) {
+                *sample = None;
+            }
+        });
+        assert!(findings.is_empty(), "{what}: {findings:#?}");
+        assert!(counts.of(Measure::Finish).made > 0, "{what}: the finish measured");
+        assert_eq!(counts.check(Check::Splits).0, 2 * 9 + 1, "{what}: every split and the finish checked");
+    }
+}
+
+#[test]
 fn a_speed_beyond_the_tuning_is_found() {
     let lim = limits(EventType::RaceClock);
     let fast = Vec3::new(0.0, 0.0, lim.horizontal * 1.01);

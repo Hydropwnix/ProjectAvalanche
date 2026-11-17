@@ -128,17 +128,80 @@ impl Rival {
     }
 }
 
-struct GhostRigInfo {
-    ghost: GhostRig,
-    axes: Vec<(usize, usize, usize)>,
+pub(crate) struct GhostRigInfo {
+    pub(crate) ghost: GhostRig,
+    pub(crate) axes: Vec<(usize, usize, usize)>,
+}
+
+pub(crate) struct Hologram {
+    pub(crate) model: GhostModel,
+    pub(crate) info: GhostRigInfo,
+    pub(crate) normal: Image,
+    pub(crate) normal_source: (std::path::PathBuf, String),
+}
+
+impl Hologram {
+    pub(crate) fn load(root: &Path, track: &str) -> Result<Self> {
+        let model = ssx_assets::ghosts::load_model(root, track)?;
+        let ghost = GhostRig::new(root, &model)?;
+        let rig = &ghost.rig;
+        let axes = [("LeftAxeAux", "LeftIceAxe"), ("RightAxeAux", "RightIceAxe")]
+            .iter()
+            .filter_map(|&(s, t)| {
+                let (s, t) = (rig.find(s)?, rig.find(t)?);
+                Some((s, t, rig.nodes[t].parent?))
+            })
+            .collect();
+        let info = GhostRigInfo { ghost, axes };
+        let normal_rel = model.parts().first().and_then(|p| p.material.textures.get("normalTexture").cloned());
+        let normal_rel = normal_rel.context("ghost_character_mat has no normalTexture")?;
+        let normal = load_normal(root, &normal_rel)?;
+        Ok(Self { model, info, normal, normal_source: (root.to_path_buf(), normal_rel) })
+    }
+
+    pub(crate) fn params(&self, tint: u32, ldr: bool) -> GhostParams {
+        let mat = &self.model.parts()[0].material;
+        let vec4 =
+            |name: &str, d: Vec4| mat.vectors.get(name).filter(|v| v.len() == 4).map_or(d, |v| Vec4::from_slice(v));
+        let float = |name: &str| mat.float(name).unwrap_or(0.0);
+        GhostParams {
+            ghost_color: vec4("ghostColor", Vec4::ONE),
+            ghost_base_color: vec4("ghostBaseColor", Vec4::splat(0.35)),
+            shading: Vec4::new(
+                float("ghostIntensity"),
+                float("fresnelExponent"),
+                float("fresnelSpread"),
+                if ldr { 1.0 } else { 0.0 },
+            ),
+            tint: Vec4::from_array(tint_rgba(tint)),
+            hologlitch: Vec4::ZERO,
+        }
+    }
+
+    pub(crate) fn normal_handle(&self, images: &mut Assets<Image>) -> Handle<Image> {
+        let mut normal = self.normal.clone();
+        match crate::render::fx_states::sampler("player_ghost.fx", "translucent", "normalTextureSampler")
+            .and_then(|s| s.image_sampler())
+        {
+            Ok(s) => normal.sampler = s,
+            Err(e) => warn!("ghost normal sampler: {e:#}"),
+        }
+        let ((root, rel), sampler) = (self.normal_source.clone(), normal.sampler.clone());
+        let id = ssx_assets::content::textures::texture_id(&rel);
+        let recipe = id.map(|id| {
+            crate::render::reload::Recipe::new(vec![id], move || {
+                let mut image = load_normal(&root, &rel)?;
+                image.sampler = sampler.clone();
+                Ok(image)
+            })
+        });
+        crate::render::reload::add(images, normal, recipe)
+    }
 }
 
 pub struct LoadedGhosts {
-    model: GhostModel,
-    info: GhostRigInfo,
+    hologram: Hologram,
     rivals: Vec<(Rival, GhostAnimation)>,
-    normal: Image,
-    normal_source: (std::path::PathBuf, String),
     course: Option<Course>,
     event: String,
     riding: bool,
@@ -162,19 +225,9 @@ fn load(root: &Path, track: &str, drop_key: u32, ride: Option<&crate::ride::Ride
     if rows.is_empty() {
         return Ok(None);
     }
-    let model = ssx_assets::ghosts::load_model(root, track)?;
-    let ghost = GhostRig::new(root, &model)?;
-    let rig = &ghost.rig;
-    let axes = [("LeftAxeAux", "LeftIceAxe"), ("RightAxeAux", "RightIceAxe")]
-        .iter()
-        .filter_map(|&(s, t)| {
-            let (s, t) = (rig.find(s)?, rig.find(t)?);
-            Some((s, t, rig.nodes[t].parent?))
-        })
-        .collect();
-    let info = GhostRigInfo { ghost, axes };
+    let hologram = Hologram::load(root, track)?;
     let floats = ssx_assets::rig_anim::float_dofs(root)?;
-    let db = AssetDb::load(&root.join(ssx_assets::rig_anim::ANIM_DIR), &[ssx_assets::rig_anim::RIG_BUNDLE])?;
+    let db = AssetDb::load(root, &[ssx_assets::rig_anim::RIG_BUNDLE])?;
     let mut rivals = Vec::new();
     for (k, row) in rows.into_iter().filter(|(k, _)| *k < MEDAL_LABELS.len()) {
         let id = row.ghost_id as u32;
@@ -185,7 +238,7 @@ fn load(root: &Path, track: &str, drop_key: u32, ride: Option<&crate::ride::Ride
                 continue;
             }
         };
-        let (anim, problems) = GhostAnimation::new(root, &db, &info.ghost, &floats)?;
+        let (anim, problems) = GhostAnimation::new(root, &db, &hologram.info.ghost, &floats)?;
         if rivals.is_empty() {
             for p in problems {
                 info!("ghost animation: {p}");
@@ -193,17 +246,13 @@ fn load(root: &Path, track: &str, drop_key: u32, ride: Option<&crate::ride::Ride
         }
         rivals.push((Rival { label: MEDAL_LABELS[k], value: row.value(), replay }, anim));
     }
-    let normal_rel = model.parts.first().and_then(|p| p.material.textures.get("normalTexture").cloned());
-    let normal_rel = normal_rel.context("ghost_character_mat has no normalTexture")?;
-    let normal = load_normal(root, &normal_rel)?;
-    let normal_source = (root.to_path_buf(), normal_rel);
     let slot = ssx_physics::spawn::load_drop_starts(root, track)?
         .iter()
         .find(|s| s.drop_key == drop_key)
         .and_then(|s| s.slot(0));
     let start_y = slot.map(|(p, _)| p.y);
     let course = start_y.zip(end).map(|(start_y, e)| Course { start_y, end_y: e.y });
-    Ok(Some(LoadedGhosts { model, info, rivals, normal, normal_source, course, event: def.name.clone(), riding, slot }))
+    Ok(Some(LoadedGhosts { hologram, rivals, course, event: def.name.clone(), riding, slot }))
 }
 
 fn load_normal(root: &Path, rel: &str) -> Result<Image> {
@@ -275,9 +324,9 @@ pub fn load_level(
         "ghosts: {} rivals of {} | model {} ({} parts, {} problems) | {}",
         loaded.rivals.len(),
         loaded.event,
-        loaded.model.rig_file.display(),
-        loaded.model.parts.len(),
-        loaded.model.problems.len(),
+        loaded.hologram.model.rig_file.display(),
+        loaded.hologram.model.parts().len(),
+        loaded.hologram.model.problems.len(),
         if riding { "on the race clock" } else { "fly camera: app clock" }
     );
     for (r, _) in &loaded.rivals {
@@ -295,7 +344,7 @@ pub fn load_level(
             r.replay.rejected
         );
     }
-    for p in &loaded.model.problems {
+    for p in &loaded.hologram.model.problems {
         warn!("ghost model: {p}");
     }
     Some(loaded)
@@ -354,50 +403,14 @@ fn part_mesh(p: &ssx_assets::ghosts::GhostPart) -> Result<Mesh> {
     Ok(mesh)
 }
 
-type SpawnPart = (Handle<Mesh>, Handle<SkinnedMeshInverseBindposes>, Vec<usize>, String);
+pub(crate) type SpawnPart = (Handle<Mesh>, Handle<SkinnedMeshInverseBindposes>, Vec<usize>, String);
 
-#[allow(clippy::too_many_arguments)]
-fn spawn(
-    mut commands: Commands,
-    mut pending: ResMut<PendingGhosts>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut images: ResMut<Assets<Image>>,
-    mut materials: ResMut<Assets<GhostMaterial>>,
-    mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
-    post: Option<Res<crate::render::post::PostSettings>>,
-) {
-    let Some(loaded) = pending.0.take() else { return };
-    let mut normal = loaded.normal;
-    match crate::render::fx_states::sampler("player_ghost.fx", "translucent", "normalTextureSampler")
-        .and_then(|s| s.image_sampler())
-    {
-        Ok(s) => normal.sampler = s,
-        Err(e) => warn!("ghost normal sampler: {e:#}"),
-    }
-    let ((root, rel), sampler) = (loaded.normal_source.clone(), normal.sampler.clone());
-    let id = ssx_assets::content::textures::texture_id(&rel);
-    let recipe = id.map(|id| {
-        crate::render::reload::Recipe::new(vec![id], move || {
-            let mut image = load_normal(&root, &rel)?;
-            image.sampler = sampler.clone();
-            Ok(image)
-        })
-    });
-    let normal = crate::render::reload::add(&mut images, normal, recipe);
-    let mat = &loaded.model.parts[0].material;
-    let vec4 = |name: &str, d: Vec4| mat.vectors.get(name).filter(|v| v.len() == 4).map_or(d, |v| Vec4::from_slice(v));
-    let float = |name: &str| mat.float(name).unwrap_or(0.0);
-    let params = GhostParams {
-        ghost_color: vec4("ghostColor", Vec4::ONE),
-        ghost_base_color: vec4("ghostBaseColor", Vec4::splat(0.35)),
-        shading: Vec4::new(float("ghostIntensity"), float("fresnelExponent"), float("fresnelSpread"), 0.0),
-        tint: Vec4::from_array(tint_rgba(EXPLORE_GHOST_TINT)),
-        hologlitch: Vec4::ZERO,
-    };
-    let ldr = post.is_some();
-    let parts: Vec<SpawnPart> = loaded
-        .model
-        .parts
+pub(crate) fn spawn_parts(
+    parts: &[ssx_assets::ghosts::GhostPart],
+    meshes: &mut Assets<Mesh>,
+    bindposes: &mut Assets<SkinnedMeshInverseBindposes>,
+) -> Vec<SpawnPart> {
+    parts
         .iter()
         .filter_map(|p| match part_mesh(p) {
             Ok(m) => {
@@ -410,19 +423,34 @@ fn spawn(
                 None
             }
         })
-        .collect();
-    let bind = world_records(&loaded.info.ghost.rig, &loaded.info.ghost.bind, Vec3::ZERO);
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn(
+    mut commands: Commands,
+    mut pending: ResMut<PendingGhosts>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut images: ResMut<Assets<Image>>,
+    mut materials: ResMut<Assets<GhostMaterial>>,
+    mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
+    post: Option<Res<crate::render::post::PostSettings>>,
+) {
+    let Some(loaded) = pending.0.take() else { return };
+    let normal = loaded.hologram.normal_handle(&mut images);
+    let ldr = post.is_some();
+    let params = loaded.hologram.params(EXPLORE_GHOST_TINT, ldr);
+    let parts = spawn_parts(loaded.hologram.model.parts(), &mut meshes, &mut bindposes);
+    let info = loaded.hologram.info;
+    let bind = world_records(&info.ghost.rig, &info.ghost.bind, Vec3::ZERO);
     let mut list = Vec::new();
     for (rival, anim) in loaded.rivals {
-        let shading = Vec4::new(params.shading.x, params.shading.y, params.shading.z, if ldr { 1.0 } else { 0.0 });
-        let material =
-            materials.add(GhostMaterial { params: GhostParams { shading, ..params }, normal: normal.clone(), ldr });
+        let material = materials.add(GhostMaterial { params, normal: normal.clone(), ldr });
         let root = commands
             .spawn((Name::new(format!("ghost {}", rival.short())), Transform::default(), Visibility::Hidden))
             .id();
         let rig_root = commands.spawn((Name::new("ghost rig"), Transform::default(), ChildOf(root))).id();
-        let nodes: Vec<Entity> = loaded
-            .info
+        let nodes: Vec<Entity> = info
             .ghost
             .rig
             .nodes
@@ -450,7 +478,7 @@ fn spawn(
     }
     commands.insert_resource(Ghosts {
         list,
-        info: loaded.info,
+        info,
         course: loaded.course,
         riding: loaded.riding,
         run: GhostRun::default(),

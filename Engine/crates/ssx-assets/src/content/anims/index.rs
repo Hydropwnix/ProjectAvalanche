@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use ssx_content::{BASE_NAMESPACE, ContentId, Kind};
@@ -112,6 +112,13 @@ impl DiscClip {
     }
 }
 
+pub(super) fn disc_bundles(big_root: &Path) -> Result<BTreeMap<String, PathBuf>> {
+    Ok(crate::content::files::members(big_root, crate::rig_anim::ANIM_FOLDER, "cba")?
+        .into_iter()
+        .filter_map(|(stem, holders)| Some((stem, holders.into_iter().next()?)))
+        .collect())
+}
+
 #[derive(Debug, Default)]
 pub struct DiscAnims {
     pub clips: BTreeMap<ContentId, DiscClip>,
@@ -122,19 +129,11 @@ pub struct DiscAnims {
 
 impl DiscAnims {
     pub fn index(big_root: &Path) -> Result<Self> {
-        let dir = big_root.join(crate::rig_anim::ANIM_DIR);
-        let mut names: Vec<String> = std::fs::read_dir(&dir)
-            .with_context(|| format!("reading {}", dir.display()))?
-            .filter_map(|e| e.ok()?.file_name().into_string().ok())
-            .filter(|n| n.ends_with(".cba"))
-            .collect();
-        names.sort();
-        let mut streams = Vec::with_capacity(names.len());
-        for n in &names {
-            let p = dir.join(n);
-            let data = std::fs::read(&p).with_context(|| format!("reading {}", p.display()))?;
+        let mut streams = Vec::new();
+        for (stem, p) in disc_bundles(big_root)? {
+            let data = ssx_rules::read::read_file(&p)?;
             let s = Stream::parse(&data).with_context(|| format!("parsing {}", p.display()))?;
-            streams.push((n.trim_end_matches(".cba").to_string(), s));
+            streams.push((stem, s));
         }
         Self::of_streams(&streams)
     }

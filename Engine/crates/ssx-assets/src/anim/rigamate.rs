@@ -450,38 +450,57 @@ pub struct RigamateRig {
     pub float_names: Vec<String>,
 }
 
-fn config_overrides(streams: &[&Stream], config: &str) -> Result<HashMap<String, Guid>> {
+pub(crate) const MAX_CONFIG_CHAIN: usize = 16;
+
+fn asset_by_guid<'a>(streams: &[&'a Stream], g: &Guid) -> Option<(&'a Stream, &'a ssx_formats::ant::Object)> {
+    streams.iter().find_map(|s| s.guid_index().get(g).map(|&i| (*s, &s.assets[i].object)))
+}
+
+pub fn actor_config(stream: &Stream, actor: &str) -> Result<Guid> {
+    let a = stream
+        .assets_of_class("ActorAsset")
+        .find(|a| a.object.name(&stream.schema) == Some(actor))
+        .with_context(|| format!("no ActorAsset {actor}"))?;
+    a.object
+        .get(&stream.schema, "ConfigAsset")
+        .and_then(Value::as_guid)
+        .filter(|g| !g.is_null())
+        .with_context(|| format!("ActorAsset {actor}: no ConfigAsset"))
+}
+
+fn config_named(streams: &[&Stream], name: &str) -> Result<Guid> {
+    streams
+        .iter()
+        .find_map(|s| {
+            s.assets_of_class("AnimatableConfigAsset")
+                .find(|a| a.object.name(&s.schema) == Some(name))
+                .and_then(|a| a.object.guid(&s.schema))
+        })
+        .with_context(|| format!("no AnimatableConfigAsset {name}"))
+}
+
+fn config_overrides(streams: &[&Stream], config: Guid) -> Result<HashMap<String, Guid>> {
     let mut chain = Vec::new();
-    let mut next = Some(config.to_string());
-    while let Some(name) = next.take() {
-        let (s, a) = streams
-            .iter()
-            .find_map(|s| {
-                s.assets_of_class("AnimatableConfigAsset")
-                    .find(|a| a.object.name(&s.schema) == Some(&name))
-                    .map(|a| (*s, a))
-            })
-            .with_context(|| format!("no AnimatableConfigAsset {name}"))?;
+    let mut next = Some(config);
+    while let Some(g) = next.take() {
+        anyhow::ensure!(
+            chain.len() < MAX_CONFIG_CHAIN,
+            "AnimatableConfigAsset {config}: a parent chain of more than {MAX_CONFIG_CHAIN}"
+        );
+        let (s, a) = asset_by_guid(streams, &g).with_context(|| format!("AnimatableConfigAsset {g} not loaded"))?;
         let guids = |f: &str| -> Vec<Guid> {
-            a.object
-                .get(&s.schema, f)
+            a.get(&s.schema, f)
                 .and_then(Value::as_array)
                 .map(|v| v.iter().filter_map(Value::as_guid).collect())
                 .unwrap_or_default()
         };
         chain.push((guids("OverrideGameStateTarget"), guids("OverrideGameStateData")));
-        if let Some(p) = a.object.get(&s.schema, "Parent").and_then(Value::as_guid).filter(|g| !g.is_null()) {
-            next = streams.iter().find_map(|s| {
-                let i = *s.guid_index().get(&p)?;
-                s.assets[i].object.name(&s.schema).map(str::to_string)
-            });
-        }
+        next = a
+            .get(&s.schema, "Parent")
+            .and_then(Value::as_guid)
+            .filter(|p| !p.is_null() && asset_by_guid(streams, p).is_some());
     }
-    let name_of = |g: &Guid| {
-        streams
-            .iter()
-            .find_map(|s| s.guid_index().get(g).and_then(|&i| s.assets[i].object.name(&s.schema).map(str::to_string)))
-    };
+    let name_of = |g: &Guid| asset_by_guid(streams, g).and_then(|(s, o)| o.name(&s.schema).map(str::to_string));
     let mut out = HashMap::new();
     for (targets, data) in chain.iter().rev() {
         for (t, d) in targets.iter().zip(data) {
@@ -544,15 +563,9 @@ pub fn rig_defaults(stream: &Stream, rig: &str) -> Result<HashMap<String, Sqt>> 
 
 impl RigamateRig {
     pub fn load(big_root: &Path, rig: &SceneGraph, bind: &[Srt], character: &str) -> Result<(Self, Vec<String>)> {
-        let dir = big_root.join(crate::rig_anim::ANIM_DIR);
-        let read = |f: &str| -> Result<Stream> {
-            let p = dir.join(f);
-            let data = std::fs::read(&p).with_context(|| format!("reading {}", p.display()))?;
-            Stream::parse(&data).with_context(|| format!("parsing {}", p.display()))
-        };
         let all = crate::content::data::tuning::anim_all(big_root)?;
         let mut problems = Vec::new();
-        let own = read(&format!("{character}.cba"));
+        let own = crate::rig_anim::read_bundle(big_root, &format!("{character}.cba"));
         let streams: Vec<&Stream> = match &own {
             Ok(s) => vec![s, &all],
             Err(e) => {
@@ -560,8 +573,14 @@ impl RigamateRig {
                 vec![&all]
             }
         };
-        let config = if own.is_ok() { format!("{character}_config") } else { "Snowboarder_config".to_string() };
-        let overrides = config_overrides(&streams, &config)?;
+        let config_guid = match &own {
+            Ok(s) => actor_config(s, character)?,
+            Err(_) => config_named(&streams, "Snowboarder_config")?,
+        };
+        let config = asset_by_guid(&streams, &config_guid)
+            .and_then(|(s, o)| o.name(&s.schema).map(str::to_string))
+            .unwrap_or_else(|| config_guid.to_string());
+        let overrides = config_overrides(&streams, config_guid)?;
         let skeleton = Skeleton::of_rig(&all, "genchar_rig")?;
         let defaults = rig_defaults(&all, "genchar_rig")?;
         let node: Vec<Option<usize>> = skeleton.joints.iter().map(|j| rig.find(&j.name)).collect();

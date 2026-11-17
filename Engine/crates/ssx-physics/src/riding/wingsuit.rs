@@ -5,10 +5,13 @@ use crate::curve::Curve;
 use crate::ice_axe::tag_spline;
 use crate::rider::{TINY, drag_accel};
 use crate::steering::{Pid, twist};
-use crate::tags::{FloatTag, TagEvent, TagTracker, TagWindow};
+use crate::tags::{FloatTag, TagEvent, TagTracker};
 use crate::tuning::Bundle;
 
-#[derive(Clone, Debug, Default)]
+mod data;
+pub use data::{BlendCurve, FlowTransition, HandleTag, RetractRotation, WingsuitFlow};
+
+#[derive(Clone, Debug)]
 pub struct WingsuitTuning {
     pub roll_pid: PidGains,
     pub roll_input: Curve,
@@ -44,6 +47,7 @@ pub struct WingsuitTuning {
     pub maximum_y_velocity: f32,
     pub handle_decay_ticks: f32,
     pub base_damage_rate: f32,
+    pub flow: WingsuitFlow,
 }
 
 impl WingsuitTuning {
@@ -86,6 +90,7 @@ impl WingsuitTuning {
             maximum_y_velocity: a.f32("MaximumYVelocity")?,
             handle_decay_ticks: p.f32("WingsuitHandleDecayTicks")?,
             base_damage_rate: p.f32("BaseWingsuitDamageRate")?,
+            flow: WingsuitFlow::load(bundle)?,
         })
     }
 }
@@ -281,7 +286,7 @@ pub fn ballistic_step(
 pub enum OldSide {
     Aerial { alignment: Quat, jump: bool, first: bool },
     Wingsuit(WingsuitController),
-    Ballistic,
+    Ballistic { ticks: f32 },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -293,18 +298,18 @@ pub struct OldNode {
 #[derive(Clone, Debug, PartialEq)]
 pub struct NodeBlend {
     pub old: Box<OldNode>,
-    pub blend_time: f32,
+    pub blend: BlendCurve,
     pub elapsed: f32,
 }
 
 impl NodeBlend {
-    pub fn new(old: OldNode, blend_time: f32) -> Self {
-        Self { old: Box::new(old), blend_time, elapsed: 0.0 }
+    pub fn new(old: OldNode, blend: BlendCurve) -> Self {
+        Self { old: Box::new(old), blend, elapsed: 0.0 }
     }
 
     pub fn advance(&mut self, dt: f32) -> Option<f32> {
         self.elapsed += dt;
-        let w = ssx_assets::anim_eval::curve_weight(self.elapsed / self.blend_time.max(TINY), 0);
+        let w = ssx_assets::anim_eval::curve_weight(self.elapsed / self.blend.time.max(TINY), self.blend.curve);
         (w > 0.01).then_some(w)
     }
 }
@@ -315,19 +320,6 @@ pub enum WingsuitNode {
     Fly,
     Exit,
 }
-
-pub const DEPLOY_END_TICKS: f32 = 17.0;
-pub const RETRACT_END_TICKS: f32 = 20.0;
-pub const BLEND_DEFAULT: f32 = 8.0;
-pub const BLEND_JUMP_TO_ENTER: f32 = 12.0;
-pub const BLEND_ENTER_TO_FLY: f32 = 30.0;
-pub const BLEND_FLY_TO_EXIT: f32 = 15.0;
-pub const BLEND_EXIT_TO_AIRBORNE: f32 = 15.0;
-
-pub const HANDLE_DEPLOY_WINDOW: TagWindow = TagWindow::new(4.0, 6.0, false);
-pub const HANDLE_DEPLOY_SPLINE: [f32; 7] = [0.0, 0.137_995_81, 0.316_406_25, 0.5, 0.683_593_75, 0.862_004_16, 1.0];
-pub const HANDLE_RETRACT_WINDOW: TagWindow = TagWindow::new(10.0, 5.0, false);
-pub const HANDLE_RETRACT_SPLINE: [f32; 6] = [0.0, 0.172_361_37, 0.389_489_53, 0.610_510_47, 0.827_638_6, 1.0];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WingsuitState {
@@ -350,6 +342,7 @@ pub struct WingsuitState {
     pub hold: bool,
     pub hold_prev: bool,
     pub last: Option<ControllerOutputs>,
+    pub aerial_layer: Option<(crate::air::AirOutputs, bool)>,
 }
 
 impl Default for WingsuitState {
@@ -374,6 +367,7 @@ impl Default for WingsuitState {
             hold: false,
             hold_prev: false,
             last: None,
+            aerial_layer: None,
         }
     }
 }
@@ -400,36 +394,37 @@ impl WingsuitState {
         }
     }
 
-    pub fn handle_tags(&mut self, node: Option<WingsuitNode>, time: f32) {
+    pub fn handle_tags(&mut self, f: &WingsuitFlow, node: Option<WingsuitNode>, time: f32) {
         let seq = node.filter(|n| *n != WingsuitNode::Fly);
+        let tag = |n: WingsuitNode| if n == WingsuitNode::Enter { &f.handle_deploy } else { &f.handle_retract };
         if let Some((n, tr)) = self.handle_tags.as_mut()
             && (Some(*n) != seq || time < tr.time())
         {
             let n = *n;
             for (_, e) in tr.exit() {
-                self.handle_event(n, e);
+                self.handle_event(tag(n), e);
             }
             self.handle_tags = None;
         }
         let Some(n) = seq else { return };
-        let window = if n == WingsuitNode::Enter { HANDLE_DEPLOY_WINDOW } else { HANDLE_RETRACT_WINDOW };
-        let tr = &mut self.handle_tags.get_or_insert_with(|| (n, TagTracker::new(&[window]))).1;
+        let tr = &mut self.handle_tags.get_or_insert_with(|| (n, TagTracker::new(&[tag(n).window]))).1;
         let events = if tr.update(time) { tr.process() } else { Vec::new() };
         for (_, e) in events {
-            self.handle_event(n, e);
+            self.handle_event(tag(n), e);
         }
     }
 
-    fn handle_event(&mut self, n: WingsuitNode, e: TagEvent) {
+    fn handle_event(&mut self, tag: &HandleTag, e: TagEvent) {
         let w = match e {
             TagEvent::Apply(w) | TagEvent::Leave(w) => w,
             TagEvent::Enter => 0.0,
         };
-        let (value, spline) = match n {
-            WingsuitNode::Enter => (1.0, tag_spline(&HANDLE_DEPLOY_SPLINE, w)),
-            _ => (0.0, tag_spline(&HANDLE_RETRACT_SPLINE, w)),
-        };
-        FloatTag { value, mode: 3, reset: None, spline }.on(e, &mut self.handle_weight, &mut self.handle_saved);
+        let spline = tag_spline(&tag.spline, w);
+        FloatTag { value: tag.value, mode: tag.mode, reset: tag.reset, spline }.on(
+            e,
+            &mut self.handle_weight,
+            &mut self.handle_saved,
+        );
     }
 }
 

@@ -109,7 +109,7 @@ pub struct CarvingPress {
 
 impl CarvingPress {
     pub fn ctor(&mut self) {
-        self.blend = 0.0;
+        (self.blend, self.force_stop_mag, self.force_stop_vel) = (0.0, 0.0, 0.0);
     }
 }
 
@@ -130,7 +130,8 @@ pub fn board_press(
 
 pub fn blend_update(blend: f32, pressing: bool, gain: f32, dt: f32) -> f32 {
     let target = if pressing { 1.0 } else { 0.0 };
-    target + (blend - target) * (-gain * dt).exp()
+    let e = f64::from(-(gain * dt)).exp() as f32;
+    e.mul_add(blend - target, target)
 }
 
 pub fn grind_or_press(grind: f32, press: f32) -> f32 {
@@ -143,8 +144,9 @@ pub fn is_board_press_output(pressing: bool, grind_or_press_blend: f32) -> bool 
 
 pub fn force_stop_update(p: &mut CarvingPress, stiffness: f32, can_brake: bool, level_complete: bool, dt: f32) {
     if can_brake && level_complete {
+        let w = crate::intercept::sqrt(stiffness);
         (p.force_stop_mag, p.force_stop_vel) =
-            crate::rider::grind::damped_spring(stiffness, p.force_stop_mag, p.force_stop_vel, 1.0, dt);
+            crate::ground::critically_damped_step(w, p.force_stop_mag, p.force_stop_vel, 1.0, dt);
     } else {
         (p.force_stop_mag, p.force_stop_vel) = (0.0, 0.0);
     }

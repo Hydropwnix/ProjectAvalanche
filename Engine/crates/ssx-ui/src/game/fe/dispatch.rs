@@ -118,6 +118,7 @@ impl FrontEnd {
                 env.nav_events.push("globalpopup_open_controllerpull".into());
             }
             "raceresults" if action == "A_GameLevelUp" => hint::tutorial_action(self, env, action, param),
+            "raceresults" if action == "A_TrackUpvote" => recommend::track_upvote(self),
             #[cfg(feature = "net")]
             "raceresults" if action == "A_GameAdvanceScreen" && self.ava.session.rounds.is_some() => {
                 ava::session::players::open_over_results(self, env);

@@ -21,6 +21,7 @@ ssx-content = { workspace = true, features = ["shader"] }
 ssx-core = { workspace = true, features = ["log"] }
 ssx-files.workspace = true
 ssx-movie.workspace = true
+ssx-discord.workspace = true
 ssx-formats.workspace = true
 ssx-lua.workspace = true
 bevy = { workspace = true, features = ["default"] }
@@ -48,6 +49,7 @@ ssx-script = { workspace = true, optional = true }
 
 [dev-dependencies]
 ssx-core = { workspace = true, features = ["dev-master"] }
+ssx-formats = { workspace = true, features = ["test-fixtures"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["noop", "wgsl"] }
 
 [lints]

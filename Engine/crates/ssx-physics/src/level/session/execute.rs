@@ -30,6 +30,7 @@ impl Session {
             Some(l) => l.update(s, w, &mut self.event, &effects, dt_s),
             None => survive::SurviveStep::None,
         };
+        self.recorder.feed(self.ui_ghost_clock_ms);
         let ready_loop = s.start.as_ref().and_then(|l| l.intro.as_ref()).is_some_and(|i| i.in_ready_loop());
         let gate = self.ghost_manager.update(race_start, ready_loop);
         if let Some(b) = self.bots.as_mut() {
@@ -73,6 +74,7 @@ impl Session {
         let mut survive = survive::SurviveStep::None;
         if std::mem::take(&mut self.head_pending) {
             crate::rider::resolve_item_flags(s, w);
+            self.manager.init_count(w, s.props_resolved);
             survive = self.frame_head(s, w, false, dt, true);
         }
         let released = (Input::default(), TrickInput::default(), RewindPad::default());
@@ -107,6 +109,8 @@ impl Session {
             let ev = step_with_trigger(s, w, input, tricks, r2, dt, x);
             (ev.rider_dead, ev.race_start)
         } else {
+            s.attachment = None;
+            let dt = r.delta_ticks;
             let prev_vel = self.avalanche.inputs.vel;
             let i = crate::rider::avalanche_inputs(s, &s.spray, prev_vel, false, dt);
             self.avalanche.dispatch(&w.tuning.avalanche, i, &w.collision);
@@ -118,7 +122,7 @@ impl Session {
             (puppet_message, false)
         };
         if let Some(c) = self.controllers.as_mut() {
-            c.step_bodies(dt / crate::TICKS_PER_SECOND, &w.collision);
+            c.step_bodies(r.delta_ticks / crate::TICKS_PER_SECOND, &w.collision);
         }
         if let Some(r) = s.score.trick_update {
             self.stats_record = r;
@@ -155,23 +159,27 @@ impl Session {
             }
         }
         if race_start {
+            self.recorder.on_race_start();
             self.event.on_trigger_race_start(&mut self.timer);
             self.flow.track_finished = false;
             if let Some(t) = self.tombstones.as_mut() {
                 t.on_race_start();
             }
         }
+        actors(self, s, dt);
         let f = &self.flow;
         let flags = RecordFlags {
             track_started: s.track_started,
             track_finished: f.track_finished,
             nis_active: f.nis_active || s.start.is_some(),
+            delta_ticks: r.delta_ticks,
             ..RecordFlags::default()
         };
         let recorded = self.buffer.record_with(s, &flags);
         if let (Some(slot), Some(g)) = (recorded, graph) {
             g.record_pose(slot);
         }
+        self.recorder.sample(s.traj, s.score.score);
         if let Some(m) = &rider_dead {
             let c = &self.manager.count;
             self.event.on_rider_dead(&mut self.timer, m, c.enabled, c.rewinds_left, self.ui_rewind_count > 0);
@@ -179,7 +187,6 @@ impl Session {
         self.last_sim_dt_s = dt / TICKS_PER_SECOND;
         let event = self.score_manager(s, w, self.last_sim_dt_s, r.active && r.speed <= 1.525_878_9e-5, false);
         let timer = event.timer.unwrap_or(DeathTimerEvent::None);
-        actors(self, s, dt);
         let next = self.frame_head(s, w, race_start, dt, false);
         if next != survive::SurviveStep::None {
             survive = next;
@@ -275,8 +282,16 @@ impl Session {
                 o.runner.events.on_race_ended();
             }
         }
-        if event.results && !self.event.result.as_ref().is_some_and(|r| r.failed) {
-            self.ghost_manager.on_results();
+        if event.results {
+            if self.event.result.as_ref().is_some_and(|r| r.failed) {
+                self.recorder.on_failed();
+            } else {
+                self.ghost_manager.on_results();
+                self.recorder.on_results();
+            }
+        }
+        if let Some(ms) = event.ghost_clock_ms {
+            self.ui_ghost_clock_ms = ms;
         }
         if event.timer == Some(DeathTimerEvent::RewoundOutOfDeath) {
             self.stats.rewound_out_of_death();

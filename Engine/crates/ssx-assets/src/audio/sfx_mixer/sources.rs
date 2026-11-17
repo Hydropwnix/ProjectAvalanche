@@ -105,7 +105,7 @@ pub(super) enum Step {
 const LOOP_REQUESTS_AHEAD: usize = 2;
 
 enum Reader {
-    Own(sfx_stream::Slot),
+    Own(Box<sfx_stream::Slot>),
     Pooled(sfx_stream::Lease),
     Refused,
     Done,
@@ -113,10 +113,9 @@ enum Reader {
 
 pub(super) enum SlotFrom<'a> {
     Own(sfx_stream::Ring),
-    Pool(&'a sfx_stream::Pool, f32),
+    Pool(&'a sfx_stream::Pool, f32, &'a str),
+    Nothing,
 }
-
-static NEXT_OWNER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl StreamCursor {
     pub(super) fn open(
@@ -140,11 +139,11 @@ impl StreamCursor {
             (true, sfx_stream::BlockKind::V0) => Some(offset),
         };
         let reader = match from {
-            SlotFrom::Own(ring) => Reader::Own(sfx_stream::Slot::new(ring)?),
-            SlotFrom::Pool(pool, priority) => {
-                let owner = NEXT_OWNER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                pool.acquire(owner, priority)?.map_or(Reader::Refused, Reader::Pooled)
+            SlotFrom::Own(ring) => Reader::Own(Box::new(sfx_stream::Slot::new(ring)?)),
+            SlotFrom::Pool(pool, priority, label) => {
+                pool.acquire(sfx_stream::new_owner(), priority, label)?.map_or(Reader::Refused, Reader::Pooled)
             }
+            SlotFrom::Nothing => Reader::Refused,
         };
         let mut c = Self { reader, header, file, kind, loop_at, dec: None, tmp: Vec::new() };
         let first = (c.file.clone(), offset, kind, loop_at);

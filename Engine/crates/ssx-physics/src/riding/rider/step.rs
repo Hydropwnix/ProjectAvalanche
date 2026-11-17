@@ -39,7 +39,7 @@ pub fn avalanche_inputs(
         prev_vel,
         stopped: s.stopped,
         warped,
-        in_air: s.in_air(),
+        in_air: s.bln_in_air(),
         big_landing: s.score.is_big_landing,
         ground_valid: s.contact.is_some(),
         ground_normal: s.ground_normal,
@@ -116,17 +116,19 @@ pub fn step_with_trigger(
         return StepEvents::default();
     }
     s.audio_tags.clear();
+    s.carving.subject_update = false;
     let t = &w.tuning;
     if let Some(sig) = x.graph.as_ref().and_then(|g| g.signature()) {
         s.tricks.signature = sig;
     }
     resolve_item_flags(s, w);
     s.impacts = 0;
-    let in_air = s.in_air();
+    let in_air = s.bln_in_air();
+    let nis = x.flow.nis_active || s.start.is_some();
     let raw_stick = input.stick();
     let matched = crate::graph::stick_axes(raw_stick);
     s.pad_stick = match s.reverse_camera {
-        Some(camera) => reverse_camera_stick(matched, camera, s.alignment, s.kin.fwd, s.traj_velocity),
+        Some(camera) => reverse_camera_stick(matched, camera, s.alignment_frame, s.kin.fwd, s.traj_velocity),
         None => matched,
     };
     let input = &input.with_stick(s.pad_stick);
@@ -177,6 +179,7 @@ pub fn step_with_trigger(
             c: &w.collision,
             steering: &t.grind_steering,
             in_air,
+            nis,
             traj: s.traj,
             velocity: s.traj_velocity,
             k_h_air: r.k_h_air,
@@ -214,12 +217,8 @@ pub fn step_with_trigger(
     }
     s.uber_trigger_seen = s.uber_trigger;
     s.uber_gate_timer -= dt;
-    let running = s.track_started && !x.flow.track_finished && !(x.flow.nis_active || s.start.is_some());
-    let run_flags = crate::survival::RunFlags {
-        started: s.track_started,
-        finished: x.flow.track_finished,
-        nis: x.flow.nis_active || s.start.is_some(),
-    };
+    let running = s.track_started && !x.flow.track_finished && !nis;
+    let run_flags = crate::survival::RunFlags { started: s.track_started, finished: x.flow.track_finished, nis };
     let impact = crate::survival::ImpactInputs {
         this_frame: s.impact.impact_this_frame,
         speed: s.impact.impact_speed,
@@ -243,18 +242,19 @@ pub fn step_with_trigger(
     s.wingsuit.decay_handles(&t.wingsuit, dt);
     let carve_y = input.carve_stick_y(s.tricks.classic);
     s.stick_y_filtered = carve_y + (s.stick_y_filtered - carve_y) * (-0.11 * dt).exp();
-    let ctx = trick_context(s, in_air);
+    let ctx = trick_context(s, s.bln_in_air());
     if is_scoring_wipeout(s, in_air) {
         s.tricks.scene_op_reset(&t.tricks, tricks, &ctx, dt);
     } else {
         s.tricks.scene_op(&t.tricks, tricks, &ctx, dt);
     }
-    let flow = GameFlowFlags { nis_active: x.flow.nis_active || s.start.is_some(), ..x.flow };
+    let flow = GameFlowFlags { nis_active: nis, ..x.flow };
     let rider_dead = s.death.update_health(s.track_started, &flow, dt);
     let rider_dead = rider_dead.or(s.death.update_vitals(&vitals(s, w), dt));
     (s.wingsuit.race_proper_started, s.wingsuit.force_descent_in_air) =
         (x.flow.race_proper_started, x.flow.force_descent_in_air);
     s.air_jumped = false;
+    let dt = x.rewind.as_ref().map_or(dt, |r| r.delta_ticks);
     if let Some(sim) = x.avalanche.as_deref_mut() {
         let i = avalanche_inputs(s, &prev_spray, sim.inputs.vel, false, dt);
         sim.dispatch(&t.avalanche, i, &w.collision);
@@ -280,7 +280,7 @@ pub fn step_with_trigger(
     {
         s.landing.uber_recovery = UberRecovery::GettingUp(s.graph.recover_ticks);
         if s.graph.recover_ticks >= UBER_RECOVER_TRIGGER_CLEAR_TICKS {
-            s.landing.uber_crash = false;
+            (s.landing.uber_crash, s.uber_trigger) = (false, false);
         }
     }
     let enter_gameplay = handover || x.rewind.is_some_and(|r| r.terminating);
@@ -291,9 +291,17 @@ pub fn step_with_trigger(
     let (before, goofy_before) = (s.state, s.goofy);
     s.reentry = None;
     if enter_gameplay {
+        s.tricks.fresh_ride();
         conduit_init(s, w, dt);
     } else {
         transition(s, w, raw_stick, dt, x.graph.is_some());
+    }
+    let air_node = |st: RideState| matches!(st, RideState::Airborne | RideState::Jump);
+    if air_node(s.state) && s.heli_trick.is_none() && !s.janked.janked && (enter_gameplay || !air_node(before)) {
+        s.tricks.enter_air_node(s.state == RideState::Jump);
+    }
+    if s.janked.janked && air_node(s.state) && s.heli_trick.is_none() {
+        s.tricks.leave_air_node();
     }
     if s.state == RideState::Airborne && before != RideState::Airborne && !s.janked.janked && s.heli_trick.is_none() {
         let correcting = matches!(s.landing.uber_recovery, UberRecovery::Hop(h) if h < UBER_RECOVER_HOP_TICKS);
@@ -320,55 +328,85 @@ pub fn step_with_trigger(
             RideState::WingsuitEnter | RideState::WingsuitFly | RideState::WingsuitExit => (Vec3::ZERO, None, AERIAL),
         }
     };
-    if s.state == RideState::Jump
-        && (s.goofy != goofy_before && before == RideState::Jump || JUMP_END_WINDOW_TICKS - (s.jump_ticks - dt) < dt)
-    {
+    let mirror_rebuild =
+        s.goofy != goofy_before && air_node(before) && air_node(s.state) && !s.janked.janked && s.heli_trick.is_none();
+    if mirror_rebuild {
+        s.tricks.mirror_rebuild(s.state == RideState::Jump);
+    }
+    let jump_end = JUMP_END_WINDOW_TICKS - (s.jump_ticks - dt) < dt;
+    if s.state == RideState::Jump && !s.jump_airborne && !mirror_rebuild && jump_end {
+        s.tricks.enter_jump_airborne();
+    }
+    let air_tricks_left = if mirror_rebuild { Some(dt) } else { air_tricks_ticks(s, dt) };
+    if s.state == RideState::Jump && (mirror_rebuild || jump_end) {
         s.jump_airborne = true;
     }
+    if !s.janked.janked && s.heli_trick.is_none() && air_node(s.state) {
+        s.tricks.air_node_update(dt);
+    }
     if !s.janked.janked
-        && let Some(left) = air_tricks_ticks(s, dt)
+        && let Some(left) = air_tricks_left
     {
         let ctx = TrickContext { air_jump: s.air_jumped, ..trick_context(s, true) };
         s.tricks.flow(&ctx, left);
     }
+    if let Some(v) = s.tricks.uber_trigger_tag.take() {
+        s.uber_trigger = v;
+    }
+    s.uber_trigger = s.landing.uber_crash || (s.in_air() && s.uber_trigger);
     if s.state == RideState::Riding && !s.janked.janked && s.get_going.is_none() {
         let g = &mut s.tricks.grind;
-        if !g.is_grind_trick() && g.starting && !s.stopped && !s.landing.bail_on_landing && !s.landing.uber_crash {
+        let bailing = s.carving.subject_vars.bail_on_landing;
+        if !g.is_grind_trick() && g.starting && !s.stopped && !bailing && !s.landing.uber_crash {
             g.enter();
         }
-        let double = s.tricks.trick_type.value() > 22;
+        let double = s.tricks.double_input_gesture();
         let pad_end = s.tricks.pad_grab_end();
+        let (node, ticks) = (s.tricks.grind.node, s.tricks.grind.node_ticks);
+        let advanced = node == grind::tricks::GrindNode::Exit && grind::tricks::EXIT_END_TICKS - ticks > 0.0;
         let ev = s.tricks.grind.flow(s.grind.is_grinding(), double, pad_end, dt);
         if ev.grab_reset {
-            s.tricks.grab_reset();
+            s.tricks.enter_grind_exit();
         }
         if ev.ground_trick_reset {
-            s.tricks.ground_trick_reset();
+            s.tricks.leave_trick_grind(advanced);
             s.nested_stable = true;
         }
     } else if s.tricks.grind.abort() {
-        s.tricks.ground_trick_reset();
+        s.tricks.trick_grind_exited();
     }
-    s.uber_trigger = if s.landing.uber_crash {
-        true
-    } else {
-        s.in_air() && matches!(s.tricks.phase, TrickPhase::Enter | TrickPhase::Loop)
-    };
     if s.on_ground {
         s.ride_ticks += dt;
     } else {
         s.air_ticks += dt;
     }
     let mut audio_tags = Vec::new();
+    let aerial_layer = s.wingsuit.aerial_layer.take().map(|(o, goofy)| {
+        let mut l = o.signals().to_vec();
+        l.push(("BLN_Goofy", f32::from(u8::from(goofy))));
+        l
+    });
     let (dp, root) = match x.graph.as_deref_mut() {
         Some(g) => {
-            let physics = step_physics(s.traj_orientation, dp, rig_op_rotation(s, root), simulated);
+            let layer = aerial_layer.as_deref().unwrap_or(&[]);
+            let carving = simulated.contains(&"CarvingControllerAsset");
+            let ground =
+                g.ground_joint().filter(|_| carving).map(|j| (j, s.alignment * Vec3::Y * s.carving.riding_height));
+            let physics = step_physics(s.traj_orientation, dp, rig_op_rotation(s, root), simulated, layer, ground);
+            s.tricks.left_capture(&g.path_nodes());
             g.update_controllers(s, input, tricks, &start, dt, Some(physics));
+            s.tricks.left_step(Some(g.updated_nodes()), dt);
             audio_tags = g.take_audio_tags();
             resolve_root_motion(s, g.root_motion(), (dp, root), dt)
         }
-        None => (dp, root),
+        None => {
+            s.tricks.left_step(None, dt);
+            (dp, root)
+        }
     };
+    if let Some(v) = s.tricks.uber_trigger_tag.take() {
+        s.uber_trigger = s.landing.uber_crash || (s.in_air() && v);
+    }
     s.audio_tags.extend(audio_tags);
     if let Some(g) = s.gameplay.as_mut() {
         if g.tags.update(g.ticks) {
@@ -386,13 +424,24 @@ pub fn step_with_trigger(
         RideState::WingsuitExit => Some(crate::wingsuit::WingsuitNode::Exit),
         _ => None,
     };
-    s.wingsuit.handle_tags(node, s.wingsuit.ticks);
+    s.wingsuit.handle_tags(&w.tuning.wingsuit.flow, node, s.wingsuit.ticks);
     rig_ops(s, w, dp, root, dt);
     let was_recover = s.graph.uber_recover;
     s.graph = match x.graph.as_deref_mut() {
         Some(g) => g.finish(s),
         None => GraphFeedback::default(),
     };
+    if let Some(g) = x.graph.as_deref_mut() {
+        s.landing.is_in_rock_slide = carving::rock_slide_tags(s.landing.is_in_rock_slide, &g.take_transition_tags());
+    }
+    if let Some(g) = x.graph.as_deref_mut() {
+        crate::driver::AttachmentDriver::on_events(&mut s.attachment, &g.take_driver_events());
+        let queued = g.take_queued_queries();
+        s.queued_queries.extend(queued.iter().filter_map(|t| crate::query::QueryTask::from_name(t)));
+        if let Some(d) = s.attachment.as_mut() {
+            d.source = d.tag.source_joint.as_deref().and_then(|j| g.joint_below_trajectory(j));
+        }
+    }
     if s.graph.driven && s.graph.uber_recover {
         if !was_recover {
             s.board_particle.stay_dead = should_stay_dead_once_tumbled(s);
@@ -407,6 +456,7 @@ pub fn step_with_trigger(
         r.apply_to(&mut ctx);
     }
     score(s, w, input, &ctx, dt);
+    s.tricks.script_tags();
     spq(s, w, dt, Some(()));
     s.traj_cached_prev = s.traj_cached;
     s.traj_cached = s.traj;
@@ -424,7 +474,7 @@ pub fn vitals(s: &RiderState, w: &World) -> crate::death::Vitals {
         temperature: s.survival.temperature,
         oxygen: s.survival.oxygen,
         death_permanent: w.survival.death_permanent,
-        in_air: s.in_air(),
+        in_air: s.bln_in_air(),
     }
 }
 
@@ -452,7 +502,8 @@ pub(super) fn level_start_step(
     s.audio_tags.clear();
     let Some(ls) = s.start.as_mut() else { return StepEvents { rider_dead, ..StepEvents::default() } };
     ls.controller_update(dt, || crate::levelstart::go_pick(rm.random_seed));
-    let (phase, idle_pose) = (ls.phase, ls.idle_pose(rm));
+    let (phase, idle_pose, go_pose) = (ls.phase, ls.idle_pose(rm), ls.go_pose());
+    let attached = ls.attached_step().zip(idle_pose);
     let tags: Vec<_> = ls
         .intro
         .as_ref()
@@ -479,16 +530,25 @@ pub(super) fn level_start_step(
             _ => {}
         }
     }
+    if let Some((p, t)) = go_pose {
+        (s.traj, s.traj_orientation) = (p, t);
+    }
     let q = s.traj_orientation;
     let (dp, root) = match phase {
-        Phase::Idle { .. } => {
-            if let Some((p, t)) = idle_pose {
-                (s.traj, s.traj_orientation) = (p, t);
+        Phase::Idle { .. } => match attached {
+            Some(((dq, dt_step), _)) => {
+                let (dp, root) = world_motion(s.traj_orientation, dq.to_array(), dt_step.to_array());
+                (dp, Some(root))
             }
-            (Vec3::ZERO, Some(s.traj_orientation))
-        }
-        Phase::Go { ticks, clip } => {
-            match rm.go.as_ref().and_then(|g| g[clip].delta((ticks - dt).max(0.0), ticks).ok()) {
+            None => {
+                if let Some((p, t)) = idle_pose {
+                    (s.traj, s.traj_orientation) = (p, t);
+                }
+                (Vec3::ZERO, Some(s.traj_orientation))
+            }
+        },
+        Phase::Go { from, ticks, clip } => {
+            match rm.go.as_ref().and_then(|g| g.get(clip)).and_then(|c| c.delta(from, ticks).ok()) {
                 Some((d, r)) => (q * d, Some((q * r).normalize())),
                 None => (Vec3::ZERO, Some(q)),
             }
@@ -509,11 +569,17 @@ pub(super) fn level_start_step(
     };
     s.audio_tags.extend(audio_tags);
     rig_ops(s, w, dp, root, dt);
+    if let (Phase::Idle { .. }, Some((_, (p, t)))) = (phase, attached) {
+        (s.traj, s.traj_orientation) = (p, t);
+    }
     s.alignment = s.traj_orientation;
     s.graph = match x.graph.as_deref_mut() {
         Some(g) => g.finish(s),
         None => GraphFeedback::default(),
     };
+    if let Some(g) = x.graph.as_deref_mut() {
+        s.landing.is_in_rock_slide = carving::rock_slide_tags(s.landing.is_in_rock_slide, &g.take_transition_tags());
+    }
     if let Some(ls) = s.start.as_mut() {
         ls.tags(go);
     }

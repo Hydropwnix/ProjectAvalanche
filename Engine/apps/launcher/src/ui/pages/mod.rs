@@ -32,6 +32,7 @@ impl Launcher {
                 SettingsTab::Menus => self.menus_section(ui),
                 SettingsTab::Controls => self.controls_section(ui),
                 SettingsTab::Multiplayer => self.multiplayer_section(ui),
+                SettingsTab::Discord => self.discord_section(ui),
             }
         });
     }

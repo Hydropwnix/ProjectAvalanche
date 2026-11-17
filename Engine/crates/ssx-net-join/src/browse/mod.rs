@@ -16,5 +16,5 @@ pub use address::{Host, ServerAddress};
 pub use link::parse_link;
 pub use list::{Entry, Filters, SortKey, State, Term, ViewParams, parse_search, view};
 pub use store::{Loaded, Saved, ServersFile};
-pub use task::{ContentCheck, Failed, JoinRequest, JoinTask, Joined, ResourceJoin};
+pub use task::{ContentCheck, Failed, JoinRequest, JoinTask, Joined, Pinned, ResourceJoin};
 pub use zeroize::Zeroizing;

@@ -72,7 +72,9 @@ impl MusicSource for FeMusicBus {
     }
 
     fn finished(&self) -> bool {
-        self.0.lock().is_ok_and(|m| m.finished()) && self.1.lock().is_ok_and(|p| p.is_none())
+        self.0.lock().is_ok_and(|m| m.finished())
+            && self.1.lock().is_ok_and(|p| p.is_none())
+            && self.2.lock().is_ok_and(|m| m.is_none())
     }
 }
 

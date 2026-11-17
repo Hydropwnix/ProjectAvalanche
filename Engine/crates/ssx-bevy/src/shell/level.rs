@@ -57,6 +57,7 @@ pub struct RideOptions {
     pub input: Option<Vec3>,
     pub jump_release: Vec<u32>,
     pub air_input: Option<Vec2>,
+    pub steer_from: Option<f32>,
     pub grab: Option<Vec2>,
     pub tweak: bool,
     pub shoulders: Option<[bool; 4]>,
@@ -74,6 +75,7 @@ pub struct RideOptions {
     pub setup_presentation: Option<ssx_physics::gear::GameSetup>,
     pub intro_visits: Option<u32>,
     pub own_tombstone: Option<ssx_physics::session::tombstones::OwnRecord>,
+    pub own_ghost: Option<(usize, ssx_assets::ghosts::GhostReplay)>,
     pub live: Option<ride::live::LiveRules>,
     pub game_mode: Option<i64>,
     pub event_name: Option<String>,
@@ -445,6 +447,7 @@ pub(super) fn ride_setup(
         fixed_input,
         jump_release: cli.jump_release.clone(),
         air_input: cli.air_input,
+        steer_from: cli.steer_from,
         grab: cli.grab,
         tweak: cli.tweak,
         shoulders: cli.shoulders,
@@ -464,6 +467,7 @@ pub(super) fn ride_setup(
         setup: game_setup,
         intro_visits: cli.intro_visits,
         own_tombstone: cli.own_tombstone.clone(),
+        own_ghost: cli.own_ghost.clone(),
         live: cli.live,
         game_mode: cli.game_mode,
         sim_content_id: w.sim_content_id,
@@ -492,15 +496,28 @@ pub fn render_plugin() -> bevy::render::RenderPlugin {
 
 pub fn log_plugin() -> bevy::log::LogPlugin {
     bevy::log::LogPlugin {
-        fmt_layer: |_| {
+        fmt_layer: |app| {
+            match ssx_core::output::start() {
+                Ok(running) => {
+                    app.insert_resource(LogWriter { _running: running });
+                }
+                Err(e) => {
+                    ssx_core::eprintln!("log: the output's writer thread did not start ({e}): written where said")
+                }
+            }
             Some(Box::new(
                 bevy::log::tracing_subscriber::fmt::Layer::default()
-                    .with_writer(std::io::stderr)
+                    .with_writer(ssx_core::text::log::QueuedStderr)
                     .fmt_fields(ssx_core::text::log::EscapedFields),
             ))
         },
         ..default()
     }
+}
+
+#[derive(Resource)]
+struct LogWriter {
+    _running: ssx_core::output::Running,
 }
 
 fn log_content_notices() {
@@ -543,6 +560,7 @@ pub fn register(app: &mut App, r: Registration) {
     geotags::register(app);
     bots::register(app);
     app.add_observer(tag_transform).add_observer(tag_node);
+    crate::shell::device_loss::plugin(app);
     if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
         render.add_systems(
             bevy::render::ExtractSchedule,
@@ -697,6 +715,32 @@ fn loads_ghost_holograms(ride: Option<&ssx_physics::session::Session>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::loads_ghost_holograms;
+
+    #[cfg(target_os = "linux")]
+    fn written_by_this_thread() -> u64 {
+        let io = std::fs::read_to_string("/proc/thread-self/io").expect("/proc/thread-self/io (the task's I/O counts)");
+        io.lines()
+            .find_map(|l| l.strip_prefix("wchar:"))
+            .and_then(|v| v.trim().parse().ok())
+            .expect("a wchar line in /proc/thread-self/io")
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_thread_that_logs_writes_none_of_the_log() {
+        let mut app = bevy::prelude::App::new();
+        app.add_plugins(super::log_plugin());
+        let before = written_by_this_thread();
+        for i in 0..200 {
+            bevy::log::info!("io1: a log line {i}");
+            bevy::log::warn!("io1: a warning {i}");
+            ssx_core::eprintln!("io1: a printed line {i}");
+        }
+        let on_this_thread = written_by_this_thread() - before;
+        drop(app);
+        assert_eq!(on_this_thread, 0, "the logging thread wrote {on_this_thread} bytes of its lines itself");
+    }
+
     use ssx_physics::event::EventType;
     use ssx_physics::session::Session;
     use ssx_physics::session::bots::BotRace;

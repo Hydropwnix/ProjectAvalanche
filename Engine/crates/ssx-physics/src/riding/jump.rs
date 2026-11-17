@@ -11,6 +11,7 @@ pub struct JumpState {
     pub trigger: bool,
     pub held: bool,
     pub launch: Vec3,
+    pub intercept: Option<f32>,
     pub a_hold_filtered: f32,
     pub rstick_y_filtered: f32,
     pub compression: f32,

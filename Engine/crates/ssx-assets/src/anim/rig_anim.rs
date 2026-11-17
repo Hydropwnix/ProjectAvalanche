@@ -1,15 +1,34 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail};
+use ssx_formats::ant::Stream;
 use ssx_formats::ant_anim::{Animation, ChannelToDof, VbrBlock, dof_list, nlerp};
 use ssx_formats::crsf::{Mat4, SceneGraph};
 
 use crate::character::{Srt, mat_mul, model_matrix};
 
-pub const ANIM_DIR: &str = "cache0/data/common/anim";
+pub const ANIM_FOLDER: &str = "data/common/anim";
 pub const RIG_BUNDLE: &str = "anim_all.cba";
+pub fn bundle_file(big_root: &Path, file: &str) -> Option<PathBuf> {
+    if file.contains(['/', '\\']) {
+        return None;
+    }
+    crate::data_roots::find(big_root, &format!("{ANIM_FOLDER}/{file}"))
+}
+
+pub fn has_bundle(big_root: &Path, file: &str) -> bool {
+    bundle_file(big_root, file).is_some()
+}
+
+pub fn read_bundle(big_root: &Path, file: &str) -> Result<Stream> {
+    let path = bundle_file(big_root, file)
+        .with_context(|| format!("{ANIM_FOLDER}/{file}: in no mounted package, title update or disc archive"))?;
+    let data = ssx_rules::read::read_file(&path)?;
+    Stream::parse(&data).with_context(|| format!("parsing {}", path.display()))
+}
+
 pub const FPS: f32 = 60.0;
 pub const RIDE_CLIPS: [&str; 7] = [
     "carv_regular_lean",
@@ -97,6 +116,10 @@ impl RigClip {
 
     pub fn duration(&self) -> f32 {
         f32::from(self.end_frame) / FPS
+    }
+
+    pub fn frame(&self, scaled_time: f32) -> f32 {
+        self.anim.frame(scaled_time)
     }
 
     pub fn float_slots(&self) -> Vec<usize> {
@@ -258,7 +281,7 @@ pub fn load_clips_db(
         tables.insert(a.guid, ChannelToDof::parse(a.schema, a.obj)?);
     }
     let (mut out, mut index, mut problems) = (Vec::new(), HashMap::new(), Vec::new());
-    let tricks = crate::content::tricks::tricks_for(db.data_root());
+    let tricks = crate::content::tricks::tricks_for(Some(db.data_root()));
     for (g, name) in clips {
         if let Some(m) = tricks.as_ref().and_then(|t| t.by_guid.get(g)).filter(|_| db.get(*g).is_none()) {
             let clip = crate::anim_clip::ClipData::Mod(m.clone());
@@ -281,7 +304,8 @@ pub fn load_clips_db(
             .and_then(|anim| {
                 let table =
                     tables.get(&anim.info().channel_to_dof).with_context(|| format!("{name}: no channel table"))?;
-                let (clip, indices) = crate::content::anims::clip_for(db.data_root(), *g, anim, table.indices.clone());
+                let (clip, indices) =
+                    crate::content::anims::clip_for(Some(db.data_root()), *g, anim, table.indices.clone());
                 bind_clip(name, &clip, &indices, &dofs, rig)
             });
         match bound {
@@ -423,5 +447,35 @@ mod tests {
         assert!((frame_for_roll(&table, 22.5) - 1.5).abs() < 1e-6);
         assert_eq!(frame_for_roll(&table, 120.0), 0.0);
         assert_eq!(frame_for_roll(&table, -120.0), 4.0);
+    }
+
+    #[test]
+    fn bundles_resolve_through_the_packages_then_the_disc() {
+        let _guard = crate::OVERLAY_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!("ssx-rig-anim-bundles-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (disc, pkg) = (dir.join("big"), dir.join("dlc_paid_mnt_eddie"));
+        let write = |path: PathBuf| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"x").unwrap();
+            path
+        };
+        let disc_bundle = write(disc.join("cache0").join(ANIM_FOLDER).join("moby.cba"));
+        let pkg_bundle = write(pkg.join(ANIM_FOLDER).join("dlcmoby.cba"));
+        let pkg_boot = write(pkg.join("bootcache").join(ANIM_FOLDER).join("ghost_dlcmoby.cba"));
+        assert_eq!(bundle_file(&disc, "dlcmoby.cba"), None);
+        crate::data_roots::set_overlays(vec![pkg.clone()]);
+        let found = (
+            bundle_file(&disc, "dlcmoby.cba"),
+            bundle_file(&disc, "ghost_dlcmoby.cba"),
+            bundle_file(&disc, "moby.cba"),
+            ["../dlcmoby.cba", "x/dlcmoby.cba", "x\\dlcmoby.cba", ".."].map(|f| bundle_file(&disc, f)),
+        );
+        crate::data_roots::set_overlays(Vec::new());
+        assert_eq!(found.0, Some(pkg_bundle));
+        assert_eq!(found.1, Some(pkg_boot));
+        assert_eq!(found.2, Some(disc_bundle));
+        assert_eq!(found.3, [None, None, None, None]);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

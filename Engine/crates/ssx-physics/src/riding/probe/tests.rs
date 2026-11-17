@@ -13,6 +13,7 @@ fn on(traj: Vec3, joint: Vec3, v: Vec3, in_air: bool) -> ProbeInputs {
         grinding: false,
         uber_in_air: false,
         wind: Vec3::ZERO,
+        query_enabled: true,
     }
 }
 
@@ -57,6 +58,38 @@ fn the_first_valid_query_wins() {
     let w = world(c);
     let g = w.ground_probe(&on(Vec3::Y * 0.83, Vec3::ZERO, Vec3::Z * 0.4, false), &BallisticRay::default());
     assert!(g.expect("floor").point.y.abs() < 1e-5);
+}
+
+#[test]
+fn the_chord_is_never_a_ground_candidate() {
+    let mut c = CollisionWorld::default();
+    add_floor(&mut c, [-10.0, 10.0], [-10.0, 10.0], 0.0, 0);
+    let p = |x: f32, y: f32| Vec3::new(x, y, 1.0);
+    add_quad(&mut c, [p(-10.0, 0.0), p(-10.0, 10.0), p(10.0, 10.0), p(10.0, 0.0)], 0);
+    c.finish();
+    let w = world(c);
+    let i = on(Vec3::Y * 3.5, Vec3::Y * 2.7, Vec3::Z * 0.5, true);
+    let chord_end = Vec3::new(0.0, 3.44, 1.5);
+    let chord = w.collision.segment_query(&SegmentQuery::sphere(i.traj, chord_end, 0.4, 0));
+    assert!(chord.is_some_and(|h| h.normal.z < -0.99), "the chord reaches the wall: {chord:?}");
+    let pass = w.probe_pass(&i, 0, Some(&BallisticRay::default()));
+    assert!(pass.hit.is_none(), "pass A: {:?}", pass.hit);
+    assert!(w.ground_probe(&i, &BallisticRay::default()).is_none());
+}
+
+#[test]
+fn a_probe_starting_under_a_ceiling_publishes_its_underside() {
+    let mut c = CollisionWorld::default();
+    add_floor(&mut c, [-10.0, 10.0], [-10.0, 10.0], 0.0, 0);
+    let p = |x: f32, z: f32| Vec3::new(x, 1.2, z);
+    add_quad(&mut c, [p(-10.0, -10.0), p(10.0, -10.0), p(10.0, 10.0), p(-10.0, 10.0)], 0);
+    c.finish();
+    let w = world(c);
+    let i = on(Vec3::Y * 0.85, Vec3::Y * 0.05, Vec3::Z * 0.3, false);
+    let g = w.ground_probe(&i, &BallisticRay::default()).expect("the underside");
+    assert!(g.normal.distance(-Vec3::Y) < 1e-6 && (g.point.y - 1.2).abs() < 1e-5, "{g:?}");
+    assert!((g.distance - 0.35).abs() < 1e-5 && g.ridable_pass, "{g:?}");
+    assert!(close_to_ground(Some(&g), 0.0).is_very_close);
 }
 
 #[test]

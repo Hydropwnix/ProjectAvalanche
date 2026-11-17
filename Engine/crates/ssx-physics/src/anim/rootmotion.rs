@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail};
 use glam::{Quat, Vec3};
 use ssx_formats::ant_anim::{Animation, ChannelToDof, dof_list};
 
-use crate::tuning::Bundle;
+use crate::tuning::{AssetView, Bundle};
 
 #[derive(Clone, Debug)]
 pub struct RootClip {
@@ -29,6 +29,21 @@ impl RootClip {
         if (clip.int("DeltaTrajectory")? == 1) != delta {
             bail!("{name}: DeltaTrajectory is not {}", u8::from(delta));
         }
+        Self::of_view(bundle, &clip)?.with_context(|| format!("{name}: no AITrajectory channels"))
+    }
+
+    pub fn of_clip_controller(clip: &AssetView<'_>) -> Result<Option<Self>> {
+        if clip.class() != "ClipControllerAsset" {
+            bail!("{:?} is a {}, expected a ClipControllerAsset", clip.name(), clip.class());
+        }
+        if clip.int("DeltaTrajectory")? != 1 {
+            return Ok(None);
+        }
+        Self::of_view(clip.bundle, clip)
+    }
+
+    fn of_view(bundle: &Bundle, clip: &AssetView<'_>) -> Result<Option<Self>> {
+        let name = clip.name();
         let obj = clip.asset("Anim")?.object;
         let anim =
             Animation::from_object(bundle.schema(), obj)?.with_context(|| format!("{name}: Anim is no animation"))?;
@@ -42,12 +57,16 @@ impl RootClip {
         let channel = |d: Option<usize>| d.and_then(|d| indices.iter().position(|&x| usize::from(x) == d));
         let c = anim.counts();
         let (Some(q), Some(t)) = (channel(dof("AITrajectory.q")), channel(dof("AITrajectory.t"))) else {
-            bail!("{name}: no AITrajectory channels");
+            return Ok(None);
         };
         if q >= c.quats || t < c.quats || t - c.quats >= c.vec3s {
             bail!("{name}: AITrajectory channels {q} / {t} outside {c:?}");
         }
-        Ok(Self { anim, q, t: t - c.quats, num_ticks: clip.f32("NumTicks")?, fps_scale: clip.f32("FPSScale")? })
+        let (num_ticks, fps_scale) = (clip.f32("NumTicks")?, clip.f32("FPSScale")?);
+        if !(num_ticks.is_finite() && num_ticks >= 0.0 && fps_scale.is_finite()) {
+            bail!("{name}: NumTicks {num_ticks}, FPSScale {fps_scale}");
+        }
+        Ok(Some(Self { anim, q, t: t - c.quats, num_ticks, fps_scale }))
     }
 
     pub fn from_nis(clip: &ssx_assets::nis::NisClip) -> Result<Self> {
@@ -67,15 +86,44 @@ impl RootClip {
         self.num_ticks
     }
 
+    #[cfg(test)]
+    pub(crate) fn from_keys(keys: &[(i16, Quat, Vec3)], num_ticks: f32) -> Self {
+        use ssx_formats::ant_anim::{AnimationInfo, RawAnimation};
+        let data = keys.iter().flat_map(|(_, q, t)| q.to_array().into_iter().chain([t.x, t.y, t.z, 0.0])).collect();
+        let raw = RawAnimation {
+            info: AnimationInfo {
+                name: "test".into(),
+                codec_type: 0,
+                anim_id: 0,
+                trim_offset: 0.0,
+                end_frame: keys.last().map_or(0, |k| k.0 as u16),
+                additive: false,
+                channel_to_dof: Default::default(),
+            },
+            key_times: keys.iter().map(|k| k.0).collect(),
+            quat_count: 1,
+            vec3_count: 1,
+            float_count: 0,
+            cycle: false,
+            data,
+        };
+        let anim = ssx_assets::anim_clip::ClipData::Disc(Box::new(Animation::Raw(raw)));
+        Self { anim, q: 0, t: 0, num_ticks, fps_scale: 1.0 }
+    }
+
     pub fn sample(&self, tick: f32) -> Result<(Quat, Vec3)> {
-        let p = self.anim.sample(tick.clamp(0.0, self.num_ticks) * self.fps_scale)?;
+        let p = self.anim.sample(self.anim.frame(tick.clamp(0.0, self.num_ticks) * self.fps_scale))?;
         Ok((Quat::from_array(p.quats[self.q]).normalize(), Vec3::from_array(p.vec3s[self.t])))
     }
 
-    pub fn delta(&self, t0: f32, t1: f32) -> Result<(Vec3, Quat)> {
+    pub fn joint_delta(&self, t0: f32, t1: f32) -> Result<(Vec3, Quat)> {
         let ((q0, p0), (q1, p1)) = (self.sample(t0)?, self.sample(t1)?);
         let c = q0.conjugate();
-        let (d, r) = (c * (p1 - p0), (c * q1).normalize());
+        Ok((c * (p1 - p0), (c * q1).normalize()))
+    }
+
+    pub fn delta(&self, t0: f32, t1: f32) -> Result<(Vec3, Quat)> {
+        let (d, r) = self.joint_delta(t0, t1)?;
         let y = Quat::from_rotation_y(-FRAC_PI_2);
         Ok((y * d, (y * r * y.conjugate()).normalize()))
     }
@@ -171,18 +219,32 @@ fn rig_frame() -> Quat {
     Quat::from_rotation_y(-FRAC_PI_2)
 }
 
-pub fn step_physics(traj: Quat, dp: Vec3, root: Quat, controllers: &[&str]) -> ssx_assets::anim_pose::StepPhysics {
+pub fn step_physics(
+    traj: Quat,
+    dp: Vec3,
+    root: Quat,
+    controllers: &[&str],
+    aerial_layer: &[(&str, f32)],
+    ground: Option<(usize, Vec3)>,
+) -> ssx_assets::anim_pose::StepPhysics {
     let j = traj * rig_frame();
     let (t, q) = (j.conjugate() * dp, (j.conjugate() * root * rig_frame()).normalize());
     ssx_assets::anim_pose::StepPhysics {
         q: q.to_array(),
         t: t.to_array(),
         controllers: controllers.iter().map(|c| c.to_string()).collect(),
+        aerial_layer: aerial_layer.iter().map(|&(n, v)| (n.to_string(), v)).collect(),
+        aerial_scripts: Vec::new(),
+        ground: ground.map(|(i, g)| (i, (trajectory_joint(root).conjugate() * g).to_array())),
     }
 }
 
+pub fn trajectory_joint(traj: Quat) -> Quat {
+    traj * rig_frame()
+}
+
 pub fn world_motion(traj: Quat, q: [f32; 4], t: [f32; 3]) -> (Vec3, Quat) {
-    let j = traj * rig_frame();
+    let j = trajectory_joint(traj);
     (j * Vec3::from_array(t), (j * Quat::from_array(q) * rig_frame().conjugate()).normalize())
 }
 
@@ -216,11 +278,52 @@ mod tests {
     }
 
     #[test]
+    fn a_root_clips_step_reads_its_trimmed_frames() {
+        use ssx_formats::ant_anim::{AnimationInfo, RawAnimation};
+        let frames: [i16; 5] = [0, 10, 20, 30, 40];
+        let at = |f: i16| Vec3::new(0.0, -0.25 * f32::from(f), 0.5 * f32::from(f));
+        let raw = RawAnimation {
+            info: AnimationInfo {
+                name: "exit".into(),
+                codec_type: 0,
+                anim_id: 0,
+                trim_offset: -161.0,
+                end_frame: 40,
+                additive: false,
+                channel_to_dof: Default::default(),
+            },
+            key_times: frames.to_vec(),
+            quat_count: 1,
+            vec3_count: 1,
+            float_count: 0,
+            cycle: false,
+            data: frames.iter().flat_map(|&f| [0.0, 0.0, 0.0, 1.0, at(f).x, at(f).y, at(f).z, 0.0]).collect(),
+        };
+        let clip = ssx_assets::nis::NisClip {
+            name: "exit".into(),
+            num_ticks: 200.0,
+            fps_scale: 1.0,
+            delta_trajectory: true,
+            anim: ssx_assets::anim_clip::ClipData::Disc(Box::new(Animation::Raw(raw))),
+            channels: std::collections::HashMap::from([
+                ("AITrajectory.q".to_string(), ssx_assets::nis::Channel::Quat(0)),
+                ("AITrajectory.t".to_string(), ssx_assets::nis::Channel::Vec3(0)),
+            ]),
+        };
+        let root = RootClip::from_nis(&clip).expect("a root-motion clip");
+        let (d, r) = root.joint_delta(161.0, 163.0).expect("the step");
+        assert!((d - (at(2) - at(0))).length() < 1e-5, "frames 0 → 2: {d}");
+        assert!(r.angle_between(Quat::IDENTITY) < 1e-6);
+        let (d, _) = root.joint_delta(189.0, 191.0).expect("the step");
+        assert!((d - (at(30) - at(28))).length() < 1e-5, "frames 28 → 30: {d}");
+    }
+
+    #[test]
     fn delta_set_round_trip() {
         let traj = Quat::from_euler(glam::EulerRot::YXZ, 0.7, -0.2, 0.1);
         let root = traj * Quat::from_rotation_y(0.05);
         let dp = Vec3::new(0.3, -0.1, 0.8);
-        let p = step_physics(traj, dp, root, &["CarvingControllerAsset"]);
+        let p = step_physics(traj, dp, root, &["CarvingControllerAsset"], &[], None);
         let (d, r) = world_motion(traj, p.q, p.t);
         assert!((d - dp).length() < 1e-5 && r.angle_between(root) < 1e-4, "{d} {r}");
     }

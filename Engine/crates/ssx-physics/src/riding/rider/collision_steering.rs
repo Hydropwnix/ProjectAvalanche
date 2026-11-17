@@ -2,6 +2,7 @@ use glam::{Quat, Vec3};
 
 use crate::character::CarvingTuning;
 use crate::collision::{CollisionWorld, SegmentQuery};
+use crate::steering::{vmx_conjugate, vmx_rotate};
 
 pub const SWEEP_RADIUS: f32 = 0.4;
 pub const FAN_SEGMENTS: usize = 14;
@@ -67,6 +68,16 @@ pub fn collision_steering(
     let lim = dt * t.collision_steering_angular_vel;
     let v_out = if angle_between(v, new_v) > lim { turn(v, new_v, lim) } else { new_v };
     Some(Steered { dp: v_out * dt, v: v_out, side })
+}
+
+pub fn in_ground_plane(q: Quat, record: (Vec3, Vec3), steered: (Vec3, Vec3)) -> (Vec3, Vec3) {
+    let inv = vmx_conjugate(q);
+    let keep = |old: Vec3, new: Vec3| {
+        let mut l = vmx_rotate(inv, new);
+        l.y = vmx_rotate(inv, old).y;
+        vmx_rotate(q, l)
+    };
+    (keep(record.0, steered.0), keep(record.1, steered.1))
 }
 
 #[cfg(test)]

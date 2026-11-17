@@ -95,6 +95,9 @@ pub(super) fn pointer_system(
     level: Option<Res<crate::shell::game_level::LevelGame>>,
     capture: Option<Res<crate::script::MenuCapture>>,
 ) {
+    if shell.exiting.is_some() {
+        return;
+    }
     let captured = capture.is_some_and(|c| c.0);
     let riding =
         level.as_ref().is_some_and(|l| l.takes_input()) && !ui.fe.as_ref().is_some_and(|f| f.game_pause.paused);

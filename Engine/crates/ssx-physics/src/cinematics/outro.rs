@@ -93,7 +93,7 @@ pub struct VistaCamera {
 
 const CLASS_GAMEOBJECT: u32 = ssx_assets::vault_db::fnv1("ge_scene_gameobject");
 const FIELD_CONTROLLER: u32 = ssx_assets::vault_db::fnv1("Controller");
-pub const GAMEEXPLORER_DIR: &str = "memresident/data/xenon/gameexplorer";
+pub const GAMEEXPLORER_DIR: &str = "data/xenon/gameexplorer";
 
 pub fn camera_end_fov(name: &str, script: &str) -> Option<f32> {
     crate::controllers::script_sets(name, script).kinds.iter().find_map(|k| match k {
@@ -146,7 +146,8 @@ pub fn vista_cameras(big_root: &Path, track: &str, triggers: &crate::triggers::T
     })?;
     let mut fovs = std::collections::HashMap::new();
     for (o, path) in scripts.iter().filter(|(_, p)| p.contains("nis_cameraend_")) {
-        let file = big_root.join(GAMEEXPLORER_DIR).join(path.replace('\\', "/"));
+        let rel = format!("{GAMEEXPLORER_DIR}/{}", path.replace('\\', "/"));
+        let file = ssx_assets::data_roots::find(big_root, &rel).with_context(|| format!("{rel}: in no layer"))?;
         let text = std::fs::read_to_string(&file).with_context(|| format!("reading {}", file.display()))?;
         fovs.insert(*o, camera_end_fov(path, &text).with_context(|| format!("no NISDataToGameStateTrack in {path}"))?);
     }
@@ -177,6 +178,7 @@ pub fn prepare(big_root: &Path, event: &str, character: &str, reaction: i64) -> 
         nis,
         jump_clip: usize::MAX,
         jump_clips: Vec::new(),
+        piece_clips: Vec::new(),
         event: event.to_string(),
         heli: Err("the standard outro binds no helicopter".into()),
         loaded: None,
@@ -213,6 +215,7 @@ pub fn prepare_heli_pickup_with(
         nis,
         jump_clip: usize::MAX,
         jump_clips: Vec::new(),
+        piece_clips: Vec::new(),
         event: event.to_string(),
         heli,
         loaded: None,
@@ -315,6 +318,7 @@ pub fn prepare_heli_grab(big_root: &Path, event: &str, character: &str) -> Resul
                 nis,
                 jump_clip: usize::MAX,
                 jump_clips: Vec::new(),
+                piece_clips: Vec::new(),
                 event: event.to_string(),
                 heli: heli.clone(),
                 loaded: Some(loaded.clone()),
@@ -346,6 +350,7 @@ pub fn prepare_sequence(
         nis,
         jump_clip: usize::MAX,
         jump_clips: Vec::new(),
+        piece_clips: Vec::new(),
         event: event.to_string(),
         heli: Err(format!("{binding} binds no helicopter")),
         loaded: None,

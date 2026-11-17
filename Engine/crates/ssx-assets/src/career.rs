@@ -24,6 +24,10 @@ pub use data::{
 };
 pub use profile::{EventOutcome, EventRule, Medal, Notice, Profile, ResultReport, Rules};
 
+pub fn event_records(big_root: &Path) -> Result<Vec<ssx_rules::events::UiDropRecord>> {
+    data::ui_drop_records(&data::Vaults::load(big_root)?)
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct CareerDb {
     pub ranges: Vec<Range>,
@@ -209,6 +213,7 @@ impl CareerDb {
                     cost: e.cost,
                     peak,
                     range,
+                    ghost_drop: e.ghost_drop,
                 },
             );
         }

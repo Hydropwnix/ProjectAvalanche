@@ -198,11 +198,11 @@ pub fn parse_value(ty: ParamType, raw: &str) -> Option<(Value, bool)> {
     Some(match ty {
         ParamType::Bool => (Value::Bool(!(raw == "false" || raw == "0")), true),
         ParamType::Int => {
-            let (v, n) = c_number(raw, false)?;
+            let (v, n) = c_number(raw, false);
             (Value::Int(v as i32), raw[n..].trim().is_empty())
         }
         ParamType::Float => {
-            let (v, n) = c_number(raw, true)?;
+            let (v, n) = c_number(raw, true);
             (Value::Float(v as f32), raw[n..].trim().is_empty())
         }
         ParamType::Vector2 | ParamType::Vector3 | ParamType::Vector4 => {
@@ -210,7 +210,7 @@ pub fn parse_value(ty: ParamType, raw: &str) -> Option<(Value, bool)> {
             let mut exact = true;
             let mut comps = Vec::new();
             for c in inner.split(',') {
-                let (v, n) = c_number(c, true)?;
+                let (v, n) = c_number(c, true);
                 exact &= c[n..].trim().is_empty();
                 comps.push(v as f32);
             }
@@ -230,7 +230,7 @@ pub fn parse_value(ty: ParamType, raw: &str) -> Option<(Value, bool)> {
     })
 }
 
-fn c_number(s: &str, float: bool) -> Option<(f64, usize)> {
+fn c_number(s: &str, float: bool) -> (f64, usize) {
     let b = s.as_bytes();
     let mut i = 0;
     while i < b.len() && b[i].is_ascii_whitespace() {
@@ -264,9 +264,9 @@ fn c_number(s: &str, float: bool) -> Option<(f64, usize)> {
         }
     }
     if nd == 0 {
-        return None;
+        return (0.0, 0);
     }
-    Some((s[start..i].parse().ok()?, i))
+    s[start..i].parse().map_or((0.0, 0), |v| (v, i))
 }
 
 #[derive(Clone, Debug)]
@@ -437,7 +437,14 @@ mod tests {
         assert_eq!(parse_value(ParamType::Int, " -150 "), Some((Value::Int(-150), true)));
         assert_eq!(parse_value(ParamType::Int, "1.5"), Some((Value::Int(1), false)));
         assert_eq!(parse_value(ParamType::Float, "1e-3"), Some((Value::Float(1e-3), true)));
-        assert_eq!(parse_value(ParamType::Float, "x"), None);
+        assert_eq!(parse_value(ParamType::Float, "x"), Some((Value::Float(0.0), false)));
+        assert_eq!(parse_value(ParamType::Int, "-"), Some((Value::Int(0), false)));
+        assert_eq!(
+            parse_value(ParamType::Vector4, "{ 0, -, 0 }"),
+            Some((Value::Vector(vec![0.0, 0.0, 0.0]), false)),
+            "Mount Eddie's fx_fireworks_kicker.lnx"
+        );
+        assert_eq!(parse_value(ParamType::Vector4, "0, 1, 2"), None);
         let v = parse_value(ParamType::Vector4, "{ 1.0, 0.75, 0.25, 0.2=5 }").unwrap();
         assert_eq!(v, (Value::Vector(vec![1.0, 0.75, 0.25, 0.2]), false));
         assert_eq!(parse_value(ParamType::Vector4, "{0, -6, 0 }"), Some((Value::Vector(vec![0.0, -6.0, 0.0]), true)));

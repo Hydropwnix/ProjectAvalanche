@@ -6,6 +6,7 @@ pub struct RiderRigOps {
     legs: Option<LegRigOps>,
     lean_curve: crate::curve::Curve,
     rigamate: Option<(RigamateRig, Vec<Option<usize>>)>,
+    big_head: Option<super::BigHeadOp>,
 }
 
 impl RiderRigOps {
@@ -13,13 +14,14 @@ impl RiderRigOps {
         legs: Option<LegRigOps>,
         lean_curve: crate::curve::Curve,
         rigamate: Option<RigamateRig>,
+        big_head: Option<super::BigHeadOp>,
         floats: &[String],
     ) -> Self {
         let rigamate = rigamate.map(|r| {
             let slots = r.float_names.iter().map(|n| floats.iter().position(|f| f == n)).collect();
             (r, slots)
         });
-        Self { legs, lean_curve, rigamate }
+        Self { legs, lean_curve, rigamate, big_head }
     }
 
     pub fn load(big_root: &Path, track: &str, name: &str, graph: &RiderGraph) -> Result<(Self, Vec<String>)> {
@@ -39,13 +41,13 @@ impl RiderRigOps {
         character: &ssx_assets::character::Character,
         graph: &RiderGraph,
     ) -> Result<(Self, Vec<String>)> {
-        use ssx_assets::rig_anim::{ANIM_DIR, RIG_BUNDLE, float_dofs};
+        use ssx_assets::rig_anim::{RIG_BUNDLE, float_dofs};
         let (rig, bind, _) =
             ssx_assets::anim_rigops::extend_character_rig(big_root, &character.rig, &character.bind_pose())?;
         anyhow::ensure!(rig.nodes.len() == graph.rig.nodes.len(), "the rig ops' rig is not the graph's");
         let floats = float_dofs(big_root)?;
         let legs = LegRigOps::new(&rig, &floats).context("the rig lacks a leg or effector joint")?;
-        let db = ssx_assets::anim_db::AssetDb::load(&big_root.join(ANIM_DIR), &[RIG_BUNDLE])?;
+        let db = ssx_assets::anim_db::AssetDb::load(big_root, &[RIG_BUNDLE])?;
         let points = db
             .by_name("curve_traj_height_lean_modifier_blend_curve")
             .context("no curve_traj_height_lean_modifier_blend_curve")?
@@ -56,8 +58,10 @@ impl RiderRigOps {
                 _ => None,
             })
             .collect();
+        let big_head = super::BigHeadOp::load(&db, &rig)?;
         let (rm, problems) = RigamateRig::load(big_root, &rig, &bind, name)?;
-        Ok((Self::new(Some(legs), crate::curve::Curve::new(points), Some(rm), &floats), problems))
+        let curve = crate::curve::Curve::new(points);
+        Ok((Self::new(Some(legs), curve, Some(rm), Some(big_head), &floats), problems))
     }
 
     pub fn reset(&mut self) {
@@ -68,6 +72,10 @@ impl RiderRigOps {
 
     pub fn effectors(&self) -> Option<[ssx_assets::anim_rigops::Effector; 2]> {
         self.legs.as_ref().map(|l| l.effectors)
+    }
+
+    pub fn big_head_joints(&self) -> Option<[Option<usize>; 3]> {
+        self.big_head.map(|b| b.joints())
     }
 
     pub fn rigamate_summary(&self) -> Option<String> {
@@ -90,21 +98,13 @@ impl RiderRigOps {
         let mut pose = g.pose().clone();
         if let Some(legs) = &mut self.legs {
             let riding = g.path().first().is_some_and(|n| n == "state_riding");
-            let pitch = wrap_pi(s.landing.pitch).abs();
-            let reach = if s.landing.bail_on_landing {
-                0.0
-            } else if pitch <= FRAC_PI_2 {
-                1.0
-            } else {
-                pitch.sin()
-            };
             let c = s.kin.lean.abs().cos().max(0.0);
             let compression = riding.then_some(Compression {
                 riding_height: s.carving.riding_height,
                 lean_modifier: c + (1.0 - c) * self.lean_curve.eval(s.landing.stable_ticks),
                 chatter: s.carving.chatter_height,
                 reach_value: 1.0,
-                reach,
+                reach: s.carving.reach,
                 ground_up: s.ground_normal.to_array(),
             });
             let placement = s.board_particle.placement;
@@ -113,6 +113,9 @@ impl RiderRigOps {
                 let t = p - (s.traj - s.correction_shift);
                 legs.place_board(&g.rig, &mut pose.nodes, q.to_array(), [t.x, t.y, t.z, 0.0]);
             }
+        }
+        if let Some(b) = &self.big_head {
+            b.apply(&mut pose.nodes, s.big_head);
         }
         if let Some((rm, slots)) = &mut self.rigamate {
             let floats: Vec<f32> = slots.iter().map(|s| s.map_or(0.0, |i| pose.floats[i])).collect();

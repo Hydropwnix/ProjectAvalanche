@@ -61,6 +61,18 @@ pub struct Line {
     pub at: f64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Row {
+    pub name: String,
+    pub text: String,
+    // PORT(choice): a notice has no sender, so it is drawn across the whole row (`txtNotice0`…5 at x 44, 456 px wide,
+    // the name's column included; a line's text has 330 px from x 170), two lines of the 15 px font: the low-survival
+    // warning's TXT_EQUIP_LOW_SURVIVAL_BODY is 95–112 characters in the disc's languages, which in the text's 330 px
+    // took three lines in German and Spanish and was scaled down to about 8 px by the field's `shrink` (round net3's
+    // pictures); the game has no chat.
+    pub notice: bool,
+}
+
 #[derive(Default)]
 pub struct Chat {
     pub active: bool,
@@ -71,7 +83,7 @@ pub struct Chat {
     pub out: Vec<ChatOut>,
     pub asked: bool,
     pub dirty: bool,
-    shown: Vec<(String, String)>,
+    shown: Vec<Row>,
 }
 
 #[derive(Default)]
@@ -271,7 +283,7 @@ pub fn update(fe: &mut FrontEnd, env: &mut FeEnv) {
     }
 }
 
-fn rows(fe: &FrontEnd) -> Vec<(String, String)> {
+fn rows(fe: &FrontEnd) -> Vec<Row> {
     let s = &fe.ava.session;
     visible_rows(&s.chat.lines, &s.muted, s.quick.active || s.chat.asked, fe.time)
 }
@@ -281,17 +293,23 @@ pub fn visible_rows(
     muted: &std::collections::BTreeSet<[u8; 8]>,
     open: bool,
     now: f64,
-) -> Vec<(String, String)> {
-    let mut rows: Vec<(String, String)> = lines
+) -> Vec<Row> {
+    let mut rows: Vec<Row> = lines
         .iter()
         .rev()
         .filter(|l| l.from.is_none_or(|k| !muted.contains(&k)))
         .take(ROWS)
         .filter(|l| open || now - l.at < LINE_SECONDS)
-        .map(|l| (l.name.clone(), l.text.clone()))
+        .map(|l| Row { name: l.name.clone(), text: l.text.clone(), notice: l.from.is_none() && l.name.is_empty() })
         .collect();
     rows.reverse();
     rows
+}
+
+pub fn level_shown(session: &mut super::Session, now: f64) {
+    if let Some(text) = session.launch_notice.take() {
+        session.chat.notice(text, now);
+    }
 }
 
 pub fn activate(fe: &mut FrontEnd) {
@@ -347,10 +365,17 @@ pub fn build(fe: &FrontEnd, cx: &mut Ctx, loc: &mut Localization, dp: &str) -> O
             let o = Value::Object(cx.new_object());
             for k in 0..ROWS {
                 let at = (k + rows.len()).checked_sub(ROWS).and_then(|i| rows.get(i));
-                let (name, text) = at.map_or((String::new(), String::new()), |(n, t)| (n.clone(), t.clone()));
-                let name = if name.is_empty() || text.is_empty() { name } else { format!("{name}:") };
+                let (name, text, notice) = match at {
+                    Some(r) if r.notice => (String::new(), String::new(), r.text.clone()),
+                    Some(r) if r.name.is_empty() || r.text.is_empty() => {
+                        (r.name.clone(), r.text.clone(), String::new())
+                    }
+                    Some(r) => (format!("{}:", r.name), r.text.clone(), String::new()),
+                    None => (String::new(), String::new(), String::new()),
+                };
                 let _ = cx.set_member(&o, &format!("name{k}"), Value::str(&name));
                 let _ = cx.set_member(&o, &format!("text{k}"), Value::str(&text));
+                let _ = cx.set_member(&o, &format!("notice{k}"), Value::str(&notice));
             }
             let _ = cx.set_member(&o, "bShown", Value::Bool(!rows.is_empty()));
             let banner = &fe.ava.session.banner_shown;

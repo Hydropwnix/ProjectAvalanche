@@ -1,4 +1,6 @@
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, PoisonError};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use bevy::prelude::{error, info, warn};
@@ -7,6 +9,8 @@ use ssx_assets::career::save::{SaveExtras, SaveSchema};
 use ssx_ui::game::GameUi;
 
 use super::summary;
+
+mod writer;
 
 const MAX_REASONS_SHOWN: usize = 2048;
 
@@ -17,7 +21,16 @@ pub struct SaveSlot {
     header: Option<ssx_formats::save::Header>,
     pub(super) damaged: bool,
     pub(super) no_saving: bool,
-    state_unread: std::sync::Mutex<Option<String>>,
+    asides: Arc<writer::Asides>,
+    // PORT(choice): the profile is written on a thread of its own, the save writer (the newest save asked for, each
+    // after the one before: the file whole with `ssx_files::replace`, synced, renamed, the folder synced), so that the
+    // frames go on while the disk takes its time — on the frame's thread a boot's save stopped them for up to 1.3 s
+    // by itself (the syncs of the new folder and the file), 16–48 s with another program writing 3 GB, and 17.5 s
+    // once ended a network session (btrfs, 2026-11-16); the reads of the file and the game's exit wait for it. The
+    // console's save is a job of the save-load manager (0x82457FE8 → 0x8250B278 → 0x8244E038 → `FlowProgressSave`
+    // 0x8316C588 → `FlowAutoSave` 0x83173E60) that the frame loop runs over frames through the save library, the
+    // dock's "Saving" icon up meanwhile.
+    writer: writer::Writer,
 }
 
 struct SaveRead {
@@ -45,6 +58,9 @@ impl SaveSlot {
     }
 
     pub fn load(path: PathBuf, schema: SaveSchema) -> Result<(Self, Profile, String)> {
+        let asides = Arc::new(writer::Asides::default());
+        let writer =
+            writer::start(Arc::clone(&asides)).context("the profile's save writer (a thread) could not start")?;
         let slot = |path, schema, extras, header, damaged| SaveSlot {
             path,
             schema,
@@ -52,7 +68,8 @@ impl SaveSlot {
             header,
             damaged,
             no_saving: false,
-            state_unread: Default::default(),
+            asides,
+            writer,
         };
         match Self::read(&path, &schema)? {
             None => {
@@ -78,6 +95,7 @@ impl SaveSlot {
     }
 
     pub(super) fn describe(&self) -> String {
+        self.writer.settle();
         let state = if self.no_saving {
             "not written in this session (continue without saving)".to_string()
         } else if self.damaged {
@@ -99,7 +117,7 @@ impl SaveSlot {
 
     fn read_mod_state(&self, profile: &mut Profile) -> String {
         let state = ssx_content::profile_state::state_path(&self.path);
-        let mut unread = self.state_unread.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut unread = self.asides.state_unread.lock().unwrap_or_else(PoisonError::into_inner);
         match ssx_content::profile_state::ModState::read_file(&state) {
             Ok(Some(st)) => {
                 *unread = None;
@@ -121,6 +139,7 @@ impl SaveSlot {
     }
 
     pub(super) fn retry(&mut self) -> Option<Profile> {
+        self.writer.settle();
         match Self::read(&self.path, &self.schema) {
             Ok(Some(SaveRead { bytes: n, header, profile: Ok((mut profile, extras)) })) => {
                 let state = self.read_mod_state(&mut profile);
@@ -148,39 +167,9 @@ impl SaveSlot {
 
     // TODO(guess): the game deletes the corrupt file; the port keeps it aside under another name (its reader is unchecked against a console save); settle: a console save read by `save_verify`.
     pub(super) fn replace_damaged(&mut self) {
-        let names = (1..100).map(|n| self.path.with_extension(format!("damaged{n}")));
-        match ssx_files::move_aside(&self.path, names) {
-            Ok(Some(a)) => {
-                info!("save: the damaged file is kept as {}", a.display());
-                self.damaged = false;
-                self.state_aside_with(&a);
-            }
-            Err(e) => error!("save: the damaged {} could not be moved aside: {}", self.path.display(), e.io()),
-            Ok(None) => error!("save: a hundred damaged saves are kept already; {} stays", self.path.display()),
-        }
-    }
-
-    fn state_aside_with(&self, aside: &Path) {
-        let state = ssx_content::profile_state::state_path(&self.path);
-        if !state.exists() {
-            return;
-        }
-        let to = ssx_content::profile_state::state_path(aside);
-        let moved = ssx_files::rename_new(&state, &to).map_err(|e| match e.kind() {
-            std::io::ErrorKind::AlreadyExists => format!("{} exists", to.display()),
-            _ => e.io().to_string(),
-        });
-        let mut unread = self.state_unread.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        match moved {
-            Ok(()) => {
-                info!("save: the damaged profile's mod state is kept as {}", to.display());
-                *unread = None;
-            }
-            Err(e) => {
-                error!("save: the damaged profile's mod state {} could not be moved aside: {e}", state.display());
-                *unread = Some("the damaged profile's".to_string());
-            }
-        }
+        self.damaged = false;
+        self.asides.damaged.store(true, std::sync::atomic::Ordering::Release);
+        info!("save: {} is kept aside by the save writer before the new profile is written", self.path.display());
     }
 
     pub(super) fn profile_into(
@@ -258,26 +247,6 @@ impl SaveSlot {
         values.set_bool(0x9D, c.restart_never_show != 0);
     }
 
-    fn write_mod_state(&self, profile: &Profile) -> Result<()> {
-        let path = ssx_content::profile_state::state_path(&self.path);
-        let mut unread = self.state_unread.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(why) = unread.as_ref()
-            && path.exists()
-        {
-            let names = (1..100).map(|n| path.with_extension(format!("toml.unread{n}")));
-            let aside = ssx_files::move_aside(&path, names)?
-                .with_context(|| format!("{}: a hundred unread states are kept already", path.display()))?;
-            warn!("save: the mod state {} ({why}) is kept as {}", path.display(), aside.display());
-        }
-        *unread = None;
-        drop(unread);
-        let state = profile.state_to_write();
-        if state.entries.is_empty() && !path.exists() {
-            return Ok(());
-        }
-        state.write_file(&path).map_err(anyhow::Error::msg)
-    }
-
     pub(super) fn write(&self, profile: &Profile, why: &str) {
         if self.no_saving {
             // TODO(guess): "Continue without saving" skips every save of the session; settle: the flag's readers in the save flows (0x83160D00's callers) and what clears it (0x83160D38).
@@ -288,22 +257,44 @@ impl SaveSlot {
             warn!("save ({why}) skipped: {} is damaged and the dialog is not answered", self.path.display());
             return;
         }
-        let r = (|| -> Result<usize> {
-            let file = profile.to_save(&self.schema, &self.extras)?;
-            let bytes = match &self.header {
-                Some(header) => file.write_with_header(header),
-                None => file.write(),
-            };
-            if let Some(dir) = self.path.parent().filter(|d| !d.as_os_str().is_empty()) {
-                ssx_files::create_dir_all(dir)?;
+        let asked = Instant::now();
+        let file = match profile.to_save(&self.schema, &self.extras) {
+            Ok(file) => file,
+            Err(e) => {
+                error!("save ({why}) failed: {} — {e:#}", self.path.display());
+                return;
             }
-            ssx_files::replace(&self.path, &bytes, &ssx_files::Options::new())?;
-            self.write_mod_state(profile)?;
-            Ok(bytes.len())
-        })();
-        match r {
-            Ok(n) => info!("save ({why}): {} ({n} bytes): {}", self.path.display(), summary(profile)),
-            Err(e) => error!("save ({why}) failed: {} — {e:#}", self.path.display()),
+        };
+        let bytes = match &self.header {
+            Some(header) => file.write_with_header(header),
+            None => file.write(),
+        };
+        writer::ask(
+            &self.writer,
+            writer::Job {
+                why: why.to_string(),
+                path: self.path.clone(),
+                bytes,
+                state: profile.state_to_write(),
+                summary: summary(profile),
+                asked,
+                made: asked.elapsed(),
+            },
+        );
+    }
+
+    pub(super) fn writing(&self) -> bool {
+        self.writer.writing()
+    }
+}
+
+impl Drop for SaveSlot {
+    fn drop(&mut self) {
+        if !self.writer.finish() {
+            error!("save: the save writer stopped with a panic");
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

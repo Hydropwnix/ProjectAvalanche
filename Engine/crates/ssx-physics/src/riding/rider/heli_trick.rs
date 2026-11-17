@@ -17,11 +17,12 @@ pub(super) fn enter(s: &mut RiderState, graph: bool) -> bool {
     if !s.heli.helicopter_interaction || s.janked.janked {
         return false;
     }
-    // TODO(guess): without the rider's graph (unit tests) the node is not entered (its root motion is the graph's clip); settle: none needed in the game (a port limit of the graph-less step).
+    // PORT(choice): without the rider's graph (unit tests, `ride_sim --no-graph`) the node is not entered: its motion is
+    // the clip's root motion, which only the graph plays; the game always runs the graph.
     if !graph {
-        crate::guess_hit!();
         return false;
     }
+    s.tricks.leave_air_node();
     s.heli_trick = Some(HeliTrick::default());
     s.state = RideState::Airborne;
     true
@@ -41,7 +42,7 @@ pub(super) fn motion(
     if due < dt {
         s.heli_trick = None;
         (s.state, s.first_air_tick) = (RideState::Airborne, true);
-        s.tricks.restart_flow();
+        s.tricks.enter_air_node(false);
         return (air(s, w, input, before, dt - due), None, AERIAL);
     }
     s.heli_trick = Some(HeliTrick { ticks: h.ticks + dt * r });

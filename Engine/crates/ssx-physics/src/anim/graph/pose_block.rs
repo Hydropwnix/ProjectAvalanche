@@ -39,7 +39,7 @@ pub struct LandingRumble {
 
 impl LandingRumble {
     pub fn step(&mut self, s: &RiderState) -> f32 {
-        let in_air = s.in_air();
+        let in_air = s.bln_in_air();
         let prev = self.velocities[1].to_array();
         let moving = prev.iter().any(|c| vmx::gt(c.abs(), f32::EPSILON));
         let magnitude = if !in_air && self.prev_in_air && s.contact.is_some() && moving {

@@ -110,6 +110,16 @@ impl Animator {
 
     pub fn clear_audio_tags(&mut self) {
         self.gs.audio_tags.clear();
+        self.gs.drivers.clear();
+        self.gs.queries.clear();
+    }
+
+    pub fn take_driver_events(&mut self) -> Vec<DriverEvent> {
+        std::mem::take(&mut self.gs.drivers)
+    }
+
+    pub fn take_queued_queries(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.gs.queries)
     }
 
     pub fn update(&mut self, dt: f32) {
@@ -121,6 +131,8 @@ impl Animator {
             rig: &self.rig,
             physics: self.physics.as_ref(),
         };
+        self.gs.updated_nodes.clear();
+        self.gs.transition_tags.clear();
         self.root.update(&env, &mut self.gs, dt);
     }
 
@@ -150,10 +162,22 @@ impl Animator {
     }
 
     pub fn path_times(&self) -> Vec<(String, f32)> {
+        self.path_nodes().into_iter().map(|n| (n.name, n.time)).collect()
+    }
+
+    pub fn path_nodes(&self) -> Vec<PathNode> {
         let env = self.env();
         let mut out = Vec::new();
         self.root.path(&env, &mut out);
         out
+    }
+
+    pub fn updated_nodes(&self) -> &[u64] {
+        &self.gs.updated_nodes
+    }
+
+    pub fn take_transition_tags(&mut self) -> Vec<crate::anim_graph::GameTag> {
+        std::mem::take(&mut self.gs.transition_tags)
     }
 
     pub fn running_nodes(&self, dt: f32) -> Vec<String> {
@@ -165,5 +189,15 @@ impl Animator {
         if let Some(i) = self.graph.signal_id(name) {
             self.gs.set(i, v);
         }
+    }
+
+    pub fn set_vector(&mut self, name: &str, v: [f32; 4]) {
+        if let Some(i) = self.graph.signal_id(name) {
+            self.gs.set_vector(i, v);
+        }
+    }
+
+    pub fn vector(&self, name: &str) -> [f32; 4] {
+        self.graph.signal_id(name).map_or([0.0; 4], |i| self.gs.vector(i))
     }
 }

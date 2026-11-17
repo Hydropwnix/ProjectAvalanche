@@ -45,16 +45,19 @@ impl Default for GameProjection {
 impl GameProjection {
     pub fn tan_half(&self) -> (f32, f32) {
         let h = (self.hfov_deg.to_radians() * 0.5).tan();
-        // TODO(guess): wider than 16:9 the view widens sideways ("Hor+"): the game's aspect is the asset value 16:9
-        // (`FLT_CameraViewAspectRatio` = 1.7777778, anim_all.cba; its id 0a4bae12-3345ce4d-88e7fcc2-6ff49954 is
-        // nowhere in the executable: no code sets it from the display), the projection horizontal (`FovIsHorizontal`,
-        // 0x82DF45E0), so the game never drew wider than 16:9; narrower (4:3, 16:10) the game's width is kept and more
-        // shows above and below, where the game put the same 16:9 projection into the 960 × 720 back buffer of a 4:3
-        // display (0x82FB57A0); settle: none wider (a port choice), narrower a 4:3 console capture.
         if self.aspect > GAME_ASPECT {
+            // PORT(choice): a window wider than 16:9 widens the view sideways ("Hor+"), the 16:9 view's vertical FOV
+            // kept; the console never drew wider than 16:9: its aspect is the asset value `FLT_CameraViewAspectRatio`
+            // 1.7777778 (anim_all.cba; the asset id 0a4bae12-3345ce4d-88e7fcc2-6ff49954 is nowhere in the executable,
+            // no code sets it from the display) and the projection takes the FOV horizontally (`FovIsHorizontal`,
+            // 0x82DF45E0).
             let v = h / GAME_ASPECT;
             (v * self.aspect, v)
         } else {
+            // TODO(guess): narrower than 16:9 (4:3, 16:10) the horizontal FOV is kept and more shows above and below;
+            // the console put the same 16:9 projection (`FLT_CameraViewAspectRatio` 1.7777778) into the 960 × 720
+            // back buffer of a 4:3 display (0x82FB57A0) and how that buffer reached the screen (letterboxed or
+            // stretched) was not traced; settle: a 4:3 console capture or the video scaler setup after 0x82FB57A0.
             (h, h / self.aspect)
         }
     }

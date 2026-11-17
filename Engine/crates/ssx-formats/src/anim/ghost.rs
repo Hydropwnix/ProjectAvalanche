@@ -5,9 +5,11 @@ use crate::{Error, Result};
 
 mod pack;
 mod pose;
+mod write;
 
 pub use pack::*;
 pub use pose::*;
+pub use write::*;
 
 pub const CONTAINER_MAGIC: &[u8; 4] = b"GCMP";
 pub const MAGIC: &[u8; 4] = b"GHST";
@@ -28,22 +30,37 @@ pub fn crc32(data: &[u8]) -> u32 {
     !c
 }
 
+pub const REPLAY_BUFFER_SIZE: usize = 290_000;
+
 pub fn decompress(data: &[u8]) -> Result<Vec<u8>> {
     let mut r = Reader::be(data);
     let size = r.u32()? as usize;
     r.expect(CONTAINER_MAGIC)?;
+    if data.len() > REPLAY_BUFFER_SIZE || size > REPLAY_BUFFER_SIZE {
+        return Err(Error::invalid(format!(
+            "GCMP: {} bytes stating {size}, the replay buffer holds {REPLAY_BUFFER_SIZE}",
+            data.len()
+        )));
+    }
     let body = &data[8..];
     let mut z = flate2::read::ZlibDecoder::new(body);
     let mut out = Vec::with_capacity(size);
-    z.read_to_end(&mut out).map_err(|e| Error::Decompress(format!("GCMP zlib stream: {e}")))?;
+    (&mut z)
+        .take(size as u64 + 1)
+        .read_to_end(&mut out)
+        .map_err(|e| Error::Decompress(format!("GCMP zlib stream: {e}")))?;
+    if out.len() != size {
+        return Err(Error::invalid(format!(
+            "GCMP: inflated to {}{} bytes, header says {size}",
+            out.len(),
+            if out.len() > size { "+" } else { "" }
+        )));
+    }
     if z.total_in() as usize != body.len() {
         return Err(Error::invalid(format!(
             "GCMP: {} bytes after the zlib stream",
             body.len() - z.total_in() as usize
         )));
-    }
-    if out.len() != size {
-        return Err(Error::invalid(format!("GCMP: inflated to {} bytes, header says {size}", out.len())));
     }
     Ok(out)
 }

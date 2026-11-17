@@ -11,6 +11,11 @@ impl TrickState {
         self.is_signature = false;
     }
 
+    pub fn grab_exit(&mut self) {
+        (self.tweak_enter, self.tweak_blend) = (0.0, 0.0);
+        self.is_signature = false;
+    }
+
     pub fn ground_trick_reset(&mut self) {
         self.hand = TrickHand::None;
         self.trick_type = TrickType::None;
@@ -20,26 +25,174 @@ impl TrickState {
         self.is_tricking = false;
     }
 
-    pub fn land(&mut self) {
-        self.grab_reset();
-        self.set_node(Node::AirStates);
-        (self.phase_ticks, self.rate) = (0.0, 1.0);
-        self.is_tricking = false;
-        self.is_tweaking = false;
+    pub fn script_tags(&mut self) {
+        let c = self.scripts.take();
+        if c.grab_exit {
+            self.grab_exit();
+        }
+        if c.grab_reset {
+            self.grab_reset();
+        }
+        if c.ground_trick_reset {
+            self.ground_trick_reset();
+        }
+        if c.air_trick_enter {
+            self.input_index_on_enter = self.input_index;
+        }
+    }
+
+    pub fn begin_step(&mut self) {
+        self.node_tags.begin_step();
+        for t in [&mut self.ride_tags, &mut self.jump_tags].into_iter().flatten() {
+            t.begin_step();
+        }
+        for l in &mut self.left_sets {
+            l.tags.begin_step();
+        }
     }
 
     pub fn restart_flow(&mut self) {
+        self.node_signals = true;
+        self.set_node(Node::AirStates);
+        (self.phase_ticks, self.rate) = (0.0, 1.0);
+        self.node_tags = NodeTags::new(Node::AirStates.script());
+    }
+
+    pub fn enter_air_node(&mut self, jump: bool) {
+        self.ride_tags = Some(NodeTags::new(NodeScript::OnExit(Script::GrabExit)));
+        self.jump_tags = None;
+        if jump {
+            self.set_node(Node::AirStates);
+            (self.phase_ticks, self.rate) = (0.0, 1.0);
+            self.node_tags = NodeTags::new(NodeScript::None);
+        } else {
+            self.restart_flow();
+        }
+    }
+
+    pub fn air_node_update(&mut self, dt: f32) {
+        if let Some(t) = &mut self.ride_tags {
+            t.update(dt, &mut self.scripts.now);
+        }
+    }
+
+    pub fn enter_jump_airborne(&mut self) {
+        self.jump_tags = Some(NodeTags::new(NodeScript::OnExit(Script::GrabReset)));
+        self.restart_flow();
+    }
+
+    pub fn leave_air_node(&mut self) {
+        let Some(mut own) = self.ride_tags.take() else { return };
+        if own.updates == 0 {
+            own.update(0.0, &mut self.scripts.now);
+        }
+        own.exit(&mut self.scripts);
+        let air = self.left_air_tricks();
+        self.left_sets.push(air);
+        if let Some(j) = self.jump_tags.take() {
+            self.left_sets.push(LeftSet::new(j, LeftFlow::Jump));
+        }
         self.set_node(Node::AirStates);
         (self.phase_ticks, self.rate) = (0.0, 1.0);
     }
 
+    pub fn land(&mut self) {
+        self.scripts.now.grab_reset = true;
+        self.leave_air_node();
+    }
+
+    pub fn mirror_rebuild(&mut self, jump: bool) {
+        if self.ride_tags.is_none() {
+            return;
+        }
+        let air = self.left_air_tricks();
+        self.left_sets.push(air);
+        if let Some(j) = self.jump_tags.take() {
+            self.left_sets.push(LeftSet::new(j, LeftFlow::Jump));
+        }
+        if jump {
+            self.enter_jump_airborne();
+        } else {
+            self.restart_flow();
+        }
+    }
+
+    fn left_air_tricks(&mut self) -> LeftSet {
+        let first_update_trigger =
+            if self.node_tags.updates == 0 { self.node().uber_trigger_at_first_update() } else { None };
+        let tags = std::mem::replace(&mut self.node_tags, NodeTags::new(NodeScript::None));
+        LeftSet { first_update_trigger, ..LeftSet::new(tags, LeftFlow::AirTricks) }
+    }
+
+    pub fn left_capture(&mut self, path: &[ssx_assets::anim_eval::PathNode]) {
+        for l in self.left_sets.iter_mut().filter(|l| !l.captured) {
+            l.serial = path.iter().find(|n| n.flow == l.flow.name()).map(|n| n.serial);
+            l.captured = true;
+        }
+    }
+
+    pub fn left_step(&mut self, updated: Option<&[u64]>, dt: f32) {
+        let (scripts, trigger) = (&mut self.scripts, &mut self.uber_trigger_tag);
+        self.left_sets.retain_mut(|l| {
+            // PORT(choice): without the rider's graph (unit tests, `ride_sim --no-graph`) no node blends out, so a
+            // left set exits in the step that left it; the game always runs the graph, where the node keeps updating
+            // as the old side of a blend until the blend drops it (0x82B78B50, 0x82CD7838).
+            let running = match updated {
+                Some(u) => l.captured && l.serial.is_some_and(|x| u.contains(&x)),
+                None => false,
+            };
+            if running {
+                if l.tags.updates == 0
+                    && let Some(v) = l.first_update_trigger
+                {
+                    *trigger = Some(v);
+                }
+                l.tags.update(dt, &mut scripts.now);
+            } else {
+                l.tags.exit(scripts);
+            }
+            running
+        });
+    }
+
+    pub fn enter_grind_exit(&mut self) {
+        self.scripts.now.grab_reset = true;
+    }
+
+    pub fn leave_trick_grind(&mut self, advanced: bool) {
+        if advanced {
+            self.scripts.next.ground_trick_reset = true;
+        } else {
+            self.scripts.now.ground_trick_reset = true;
+        }
+    }
+
+    pub fn trick_grind_exited(&mut self) {
+        let tags = NodeTags { updates: 1, ..NodeTags::new(NodeScript::OnExit(Script::GroundTrickReset)) };
+        self.left_sets.push(LeftSet::new(tags, LeftFlow::RideNested));
+    }
+
+    pub fn double_input_gesture(&self) -> bool {
+        (self.gesture_len > 0 && !self.classic) || self.trick_type.value() > 22
+    }
+
+    pub fn fresh_ride(&mut self) {
+        (self.scripts, self.ride_tags, self.jump_tags) = (ScriptQueue::default(), None, None);
+        self.left_sets.clear();
+        self.set_node(Node::AirStates);
+        (self.phase_ticks, self.rate) = (0.0, 1.0);
+        self.node_tags = NodeTags::new(NodeScript::None);
+    }
+
     pub fn anticipating(&self) -> bool {
-        matches!(self.node(), Node::Anticipate | Node::Enter(TrickLevel::Normal | TrickLevel::Uber))
+        self.node_signals
+            && matches!(self.node(), Node::Anticipate | Node::Enter(TrickLevel::Normal | TrickLevel::Uber))
     }
 
     pub(super) fn in_loop(&self) -> bool {
         use TrickLevel::*;
-        matches!(self.node(), Node::Loop(_) | Node::TweakLoop(_) | Node::Enter(Uber | SuperUber | Signature))
+        self.node_signals
+            && matches!(self.node(), Node::Loop(_) | Node::TweakLoop(_) | Node::Enter(Uber | SuperUber | Signature))
     }
 
     pub fn ending(&self) -> bool {
@@ -93,40 +246,50 @@ impl TrickState {
 
     pub fn update(&mut self, t: &TrickTuning, inp: &TrickInput, ctx: &TrickContext, dt: f32) {
         self.scene_op(t, inp, ctx, dt);
-        if ctx.in_air {
-            self.flow(ctx, dt);
-        }
+        self.step_flows(ctx, dt);
     }
 
     pub fn update_reset(&mut self, t: &TrickTuning, inp: &TrickInput, ctx: &TrickContext, dt: f32) {
         self.scene_op_reset(t, inp, ctx, dt);
+        self.step_flows(ctx, dt);
+    }
+
+    fn step_flows(&mut self, ctx: &TrickContext, dt: f32) {
         if ctx.in_air {
+            self.air_node_update(dt);
             self.flow(ctx, dt);
         }
+        self.left_step(None, dt);
+        self.script_tags();
     }
 
     pub fn scene_op(&mut self, t: &TrickTuning, inp: &TrickInput, ctx: &TrickContext, dt: f32) {
+        self.begin_step();
         let pad = self.gesture_ticks(t, inp, ctx, dt);
         self.trick_scene_op(t, inp, &pad, ctx, dt);
     }
 
     pub fn scene_op_reset(&mut self, t: &TrickTuning, inp: &TrickInput, ctx: &TrickContext, dt: f32) {
+        self.begin_step();
         self.gesture_ticks(t, inp, ctx, dt);
         self.reset_trick_state();
     }
 
     pub fn flow(&mut self, ctx: &TrickContext, dt: f32) {
+        if let Some(j) = &mut self.jump_tags {
+            j.update(dt, &mut self.scripts.now);
+        }
         self.state_flow(ctx, dt);
     }
 
     pub fn reset_trick_state(&mut self) {
         (self.tweak_blend, self.tweak_enter, self.tweak_wind) = (0.0, 0.0, 0.0);
         (self.virtual_stick, self.virtual_stick_timer) = (Vec2::ZERO, 0.0);
-        (self.is_signature, self.trick_locked) = (false, false);
+        (self.is_signature, self.trick_locked, self.was_air_starting, self.node_signals) = (false, false, false, false);
         (self.trick_type, self.trick_type_locked, self.hand, self.gesture_len) =
             (TrickType::None, TrickType::None, TrickHand::None, -1);
         let g = &mut self.grind;
-        (g.group, g.group_locked, g.index, g.starting, g.enabled) = (-1, -1, -1, false, true);
+        (g.group, g.group_locked, g.gesture_len_locked, g.index, g.enabled) = (-1, -1, -1, -1, true);
     }
 
     pub(super) fn gesture_ticks(
@@ -159,7 +322,7 @@ impl TrickState {
         ctx: &TrickContext,
         dt: f32,
     ) {
-        let (air_starting_node, in_loop) = (self.anticipating(), self.in_loop());
+        let (air_starting_node, in_loop) = (ctx.in_air && self.anticipating(), self.in_loop());
         let pad_end = self.pad_grab_end();
         self.ticks_since_sig_held = if !self.is_signature || pad_end { self.ticks_since_sig_held + dt } else { 0.0 };
         if self.hand == TrickHand::None || in_loop {
@@ -174,10 +337,10 @@ impl TrickState {
             if air_starting_node {
                 self.choose_air_trick(t, inp, pad, ctx, dt);
                 if self.gesture_len == 2 {
-                    self.update_tweak_and_lock(pad, rs_mag, t, true);
+                    self.update_tweak_and_lock(pad, rs_mag, t);
                 }
             } else if in_loop {
-                self.update_tweak_and_lock(pad, rs_mag, t, false);
+                self.update_tweak_and_lock(pad, rs_mag, t);
             }
             let (valid, idx) = self.valid_air_trick_input(&t.added, ctx.goofy);
             self.has_valid_input = valid;
@@ -193,6 +356,7 @@ impl TrickState {
         self.is_signature = self.trick_type == TrickType::Signature;
         self.is_tricking = self.trick_type != TrickType::None;
         self.is_tweaking = self.tweak_blend.abs() >= TWEAK_BLEND_ACTIVE && stick_active && !self.is_signature;
+        self.was_air_starting = air_starting_node;
         let b = &self.gestures.button;
         self.valid_up_start = ctx.in_air && !b[RIGHT_UP] && !b[LEFT_UP];
         self.valid_left_start = ctx.in_air && !b[UP_LEFT] && !b[RIGHT_LEFT];
@@ -213,7 +377,7 @@ impl TrickState {
             false
         } else if !was_tricking || (!self.grind.is_grind_trick_enter() && self.has_valid_input) {
             true
-        } else if self.gesture_len <= gl_locked {
+        } else if self.classic || self.gesture_len <= gl_locked {
             false
         } else {
             self.grind.group == self.grind.group_locked || self.grind.group_locked == -1
@@ -235,7 +399,7 @@ impl TrickState {
         let table: &[crate::rider::grind::tricks::GrindEntry] =
             if self.classic { &GRIND_TRICKS_CLASSIC } else { &GRIND_TRICKS };
         for (i, e) in table.iter().enumerate() {
-            if self.grind.button[i] && (e.len > gl || (!prev_held && e.group != gg)) {
+            if self.grind.button[i] && (e.len > gl || (!prev_held && e.group != gg && (!self.classic || gl < 2))) {
                 self.trick_type = e.trick(ctx.awesome, ctx.super_awesome);
                 self.grind.group = e.group;
                 self.gesture_len = e.len;
@@ -313,7 +477,11 @@ impl TrickState {
                 }
             }
         }
-        if found && ctx.super_awesome && self.gestures.signature {
+        if !found {
+            return;
+        }
+        let signature = if self.classic { self.gestures.classic_signature } else { self.gestures.signature };
+        if ctx.super_awesome && signature {
             (self.is_signature, self.hand, self.trick_type, self.gesture_len) =
                 (true, TrickHand::Both, TrickType::Signature, 2);
         }
@@ -326,8 +494,8 @@ impl TrickState {
         if self.virtual_stick_timer < 0.0 { pad.angle } else { self.virtual_stick.y.atan2(self.virtual_stick.x) }
     }
 
-    pub(super) fn update_tweak_and_lock(&mut self, pad: &PadSample, rs_mag: f32, t: &TrickTuning, starting: bool) {
-        if starting {
+    pub(super) fn update_tweak_and_lock(&mut self, pad: &PadSample, rs_mag: f32, t: &TrickTuning) {
+        if self.was_air_starting {
             self.tweak_blend = 0.0;
             let a = self.tweak_reference_angle(pad);
             (self.tweak_enter, self.tweak_wind) = (a, a);

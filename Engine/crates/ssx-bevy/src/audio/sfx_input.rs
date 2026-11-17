@@ -559,7 +559,6 @@ mod speech_language_tests {
 
 pub struct SpeechDrop<'a> {
     pub big_root: &'a std::path::Path,
-    pub character: &'a str,
     pub rider: &'a ssx_assets::sfx::RiderAudioInfo,
     pub track: &'a ssx_assets::sfx::TrackAudioInfo,
     pub pilot: (i32, String),
@@ -573,12 +572,7 @@ pub struct SpeechDrop<'a> {
 
 impl SpeechDrop<'_> {
     pub fn setup(self) -> ssx_assets::sfx::speech::SpeechSetup {
-        let voice = ssx_assets::content::GameContent::of(self.big_root).voice_of(self.character);
-        let bank = match voice.as_str() {
-            "travisrice" => "travis",
-            "ty" => "tyler",
-            n => n,
-        };
+        let bank = self.rider.speech_name.to_ascii_lowercase();
         let big_root = self.big_root;
         ssx_assets::sfx::speech::SpeechSetup {
             lang: self.lang.code().to_string(),
@@ -610,7 +604,9 @@ pub fn nis_audio_type(name: &str) -> i32 {
 
 pub fn event_nis_audio_type(big_root: &std::path::Path, scripts: &[String]) -> i32 {
     for s in scripts.iter().filter(|s| s.contains("eventtype_")) {
-        let Ok(text) = std::fs::read_to_string(big_root.join(ssx_physics::nis::SCRIPTS_DIR).join(s)) else { continue };
+        let rel = format!("{}/{}", ssx_physics::nis::SCRIPTS_DIR, s.replace('\\', "/"));
+        let Some(file) = ssx_assets::data_roots::find(big_root, &rel) else { continue };
+        let Ok(text) = std::fs::read_to_string(file) else { continue };
         if let Some(at) = text.find("DO_SetNisAudioType(") {
             let rest = &text[at..];
             if let Some(name) = rest.split('"').nth(1) {
@@ -642,9 +638,8 @@ impl NisScenes {
         let db = match i.loaded.as_deref() {
             Some(db) => db,
             None => {
-                let dir = big_root.join(ssx_assets::rig_anim::ANIM_DIR);
                 read = ssx_assets::anim_db::AssetDb::load(
-                    &dir,
+                    big_root,
                     &i.nis.bundles.iter().map(String::as_str).collect::<Vec<_>>(),
                 )?;
                 &read

@@ -155,7 +155,7 @@ impl Controller for LayersInst {
             }
         }
     }
-    fn path(&self, env: &Env, out: &mut Vec<(String, f32)>) {
+    fn path(&self, env: &Env, out: &mut Vec<PathNode>) {
         for c in self.layers.iter().flatten() {
             c.path(env, out);
         }

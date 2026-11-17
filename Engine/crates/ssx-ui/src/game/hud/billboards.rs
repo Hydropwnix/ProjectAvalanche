@@ -423,10 +423,12 @@ mod tests {
     fn request(character: u32, name: RacerName) -> BotRequest {
         BotRequest {
             ghost_id: 7,
+            ghost_type: ssx_physics::session::bots::GHOST_TYPE_DISC,
             start_slot: 0,
             character,
             catchup: 0,
             racer_type: 2,
+            racer_kind: 1,
             collision: false,
             tint: BOT_TINT,
             score: 0,

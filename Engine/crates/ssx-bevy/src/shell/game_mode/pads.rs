@@ -64,7 +64,7 @@ pub fn pad_presses(
         let value = |b: GamepadButton| pad.get(b).unwrap_or(0.0);
         let stick = Vec2::new(value_axis(pad, GamepadAxis::LeftStickX), value_axis(pad, GamepadAxis::LeftStickY));
         let presses = state.step(stick, [value(GamepadButton::LeftTrigger2), value(GamepadButton::RightTrigger2)]);
-        out.extend(presses.into_iter().map(|b| (b, device)));
+        sticks.presses.extend(presses.into_iter().map(|b| (b, device)));
     }
     out
 }
@@ -82,6 +82,13 @@ pub struct PadState {
 #[derive(Clone, Debug, Default)]
 pub struct StickDpad {
     pads: [PadState; PADS],
+    presses: Vec<(Button, u8)>,
+}
+
+impl StickDpad {
+    pub fn take(&mut self) -> Vec<(Button, u8)> {
+        std::mem::take(&mut self.presses)
+    }
 }
 
 const STICK_DPAD: f32 = 0.4;
@@ -273,5 +280,53 @@ mod tests {
         assert_eq!(p.step(Vec2::new(-0.8, -0.8), [0.0; 2]), [Button::DpadDown]);
         assert_eq!(p.step(Vec2::ZERO, [0.6, 0.4]), [Button::LeftTrigger]);
         assert_eq!(p.step(Vec2::ZERO, [0.7, 0.5]), [Button::RightTrigger]);
+    }
+
+    fn read_pad(x: f32, dpad_right: bool) -> (Vec<(Button, u8)>, StickDpad) {
+        use bevy::ecs::system::RunSystemOnce;
+        use bevy::input::gamepad::{
+            GamepadConnection, GamepadConnectionEvent, RawGamepadAxisChangedEvent, RawGamepadButtonChangedEvent,
+            RawGamepadEvent,
+        };
+        let mut app = App::new();
+        app.add_plugins(bevy::input::InputPlugin);
+        let id = app.world_mut().spawn_empty().id();
+        app.world_mut().write_message(GamepadConnectionEvent::new(
+            id,
+            GamepadConnection::Connected { name: "test pad".into(), vendor_id: None, product_id: None },
+        ));
+        app.update();
+        let axis = RawGamepadAxisChangedEvent::new(id, GamepadAxis::LeftStickX, x);
+        app.world_mut().write_message(RawGamepadEvent::Axis(axis));
+        if dpad_right {
+            let button = RawGamepadButtonChangedEvent::new(id, GamepadButton::DPadRight, 1.0);
+            app.world_mut().write_message(RawGamepadEvent::Button(button));
+        }
+        app.update();
+        let mut slots = PadSlots { synced: true, ..Default::default() };
+        slots.update_with(&[(id, true, false)]);
+        app.world_mut()
+            .run_system_once(move |keys: Res<ButtonInput<KeyCode>>, pads: Query<(Entity, &Gamepad)>| {
+                let mut sticks = StickDpad::default();
+                let presses = pad_presses(&keys, &pads, &slots, &mut sticks, false);
+                (presses, sticks)
+            })
+            .expect("the pad read")
+    }
+
+    #[test]
+    fn the_left_stick_is_no_pad_d_pad_press() {
+        let (presses, _) = read_pad(0.9, false);
+        assert!(presses.iter().all(|p| p.0 != Button::DpadRight), "{presses:?}");
+        let (presses, _) = read_pad(0.0, true);
+        assert_eq!(presses, [(Button::DpadRight, 0)], "the D-pad itself");
+    }
+
+    #[test]
+    fn the_left_sticks_d_pad_is_kept_for_the_movies() {
+        let (presses, mut sticks) = read_pad(0.9, false);
+        assert_eq!(presses, []);
+        assert_eq!(sticks.take(), [(Button::DpadRight, 0)]);
+        assert_eq!(sticks.take(), []);
     }
 }

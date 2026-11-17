@@ -25,11 +25,12 @@ members = [
     "crates/ssx-rules",
     "crates/ssx-files",
     "crates/ssx-net-ops",
+    "crates/ssx-discord",
 ]
 exclude = ["vendor"]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 rust-version = "1.97.1"
 license = "MIT"
@@ -56,6 +57,7 @@ ssx-movie = { path = "crates/ssx-movie" }
 ssx-rules = { path = "crates/ssx-rules" }
 ssx-files = { path = "crates/ssx-files" }
 ssx-net-ops = { path = "crates/ssx-net-ops" }
+ssx-discord = { path = "crates/ssx-discord" }
 
 bevy = { version = "0.20.0", default-features = false }
 winit = { version = "=0.30.13", default-features = false, features = ["rwh_06"] }

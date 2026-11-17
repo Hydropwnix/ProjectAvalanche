@@ -2,7 +2,7 @@ mod readers;
 mod records;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use ssx_formats::attrib::collection::{self, Collection, DecodedCollection, Field, FieldData, FieldSource};
@@ -63,7 +63,6 @@ impl Vaults {
         let mut loaded = Vec::new();
         let mut dict = NameDict::new();
         let mut seen: HashSet<(u32, u32)> = HashSet::new();
-        let mut dlc_files: HashSet<String> = HashSet::new();
         let mut unknown: BTreeMap<u32, usize> = BTreeMap::new();
         let load = |name: &str,
                     (vlt, bin): (Vec<u8>, Vec<u8>),
@@ -116,28 +115,9 @@ impl Vaults {
                     &mut unknown,
                 )?;
             }
-            for root in crate::content::dlc::active_roots() {
-                let dir = root.join("data/xenon/attribdb");
-                let Ok(read) = std::fs::read_dir(&dir) else { continue };
-                let mut vlts: Vec<PathBuf> = read
-                    .flatten()
-                    .map(|e| e.path())
-                    .filter(|p| p.is_file() && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("vlt")))
-                    .collect();
-                vlts.sort();
-                for path in vlts {
-                    let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-                    if name.eq_ignore_ascii_case("ge_attribdb.vlt")
-                        || name.eq_ignore_ascii_case("attribdb.vlt")
-                        || name.to_ascii_lowercase().ends_with("_track.vlt")
-                    {
-                        continue;
-                    }
-                    if !dlc_files.insert(name.clone()) {
-                        continue;
-                    }
-                    load(&name, read_pair(&path)?, false, &mut dict, &mut loaded, &mut seen, &mut unknown)?;
-                }
+            for path in crate::vault_db::dlc_delta_vaults(big_root) {
+                let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                load(&name, read_pair(&path)?, false, &mut dict, &mut loaded, &mut seen, &mut unknown)?;
             }
         }
         let attribdb = crate::data_roots::find(big_root, "data/xenon/attribdb/attribdb.vlt")
@@ -148,6 +128,10 @@ impl Vaults {
         let ge_name = ge.file_name().unwrap_or_default().to_string_lossy().into_owned();
         load(&ge_name, read_pair(&ge)?, false, &mut dict, &mut loaded, &mut seen, &mut unknown)?;
         Ok(Vaults { loaded, dict, unknown })
+    }
+
+    pub fn ui_drops(&self) -> Result<Vec<(u32, Rec<'_>)>> {
+        self.keys_of(CLASS_UI_DROP).into_iter().map(|key| Ok((key, self.rec(CLASS_UI_DROP, key)?))).collect()
     }
 
     pub fn keys_of(&self, class: u32) -> Vec<u32> {
@@ -215,6 +199,7 @@ pub enum UnlockKind {
     Rider,
     Item,
     Geotag,
+    Ignored,
     Unknown,
 }
 
@@ -225,6 +210,8 @@ pub struct Unlockable {
     pub kind: UnlockKind,
 }
 
+pub const UNLOCK_IGNORED_PARENT: u32 = 0xB23B_906A;
+
 pub(crate) fn unlockables(v: &Vaults, read: crate::content::dlc::Unlockables) -> (Vec<Unlockable>, Vec<String>) {
     let characters: HashSet<u32> = v.keys_of(CLASS_CHARACTER).into_iter().collect();
     let equipment: HashSet<u32> = v.keys_of(CLASS_EQUIPMENT).into_iter().collect();
@@ -232,11 +219,26 @@ pub(crate) fn unlockables(v: &Vaults, read: crate::content::dlc::Unlockables) ->
     let mut out = Vec::new();
     for token in read.tokens {
         let key = fnv1(token.as_bytes());
-        let kind = if characters.contains(&key) {
+        let kind = if equipment.contains(&key) {
+            let kind = match v.rec(CLASS_EQUIPMENT, key) {
+                Ok(r) => Some(r.int(fnv1(b"type")).unwrap_or(0)),
+                Err(e) => {
+                    problems.push(format!("unlockable {token:?}: {e:#}"));
+                    None
+                }
+            };
+            if v.parent(CLASS_EQUIPMENT, key) == UNLOCK_IGNORED_PARENT {
+                UnlockKind::Ignored
+            } else {
+                match kind {
+                    Some(4) => UnlockKind::Geotag,
+                    Some(5) => UnlockKind::Rider,
+                    Some(-1) | None => UnlockKind::Ignored,
+                    Some(_) => UnlockKind::Item,
+                }
+            }
+        } else if characters.contains(&key) {
             UnlockKind::Rider
-        } else if equipment.contains(&key) {
-            let kind = v.rec(CLASS_EQUIPMENT, key).ok().and_then(|r| r.int(fnv1(b"type"))).unwrap_or(-1);
-            if kind == 4 { UnlockKind::Geotag } else { UnlockKind::Item }
         } else {
             problems.push(format!("unlockable {token:?} names no character or equipment collection"));
             UnlockKind::Unknown
@@ -269,6 +271,12 @@ fn int_of(v: &Value) -> Option<i64> {
         }
         _ => return None,
     })
+}
+
+impl<'a> Rec<'a> {
+    pub fn all_fields(&self) -> Vec<&'a Field> {
+        self.fields.iter().map(|(_, f, _)| *f).collect()
+    }
 }
 
 impl Rec<'_> {

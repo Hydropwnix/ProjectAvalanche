@@ -72,6 +72,13 @@ pub struct ProbeInputs {
     pub grinding: bool,
     pub uber_in_air: bool,
     pub wind: Vec3,
+    pub query_enabled: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GroundQuery {
+    pub published: Option<GroundContact>,
+    pub raw: Option<GroundContact>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -115,8 +122,7 @@ impl World {
         let mut hit = ends
             .iter()
             .find_map(|&(s, e)| self.probe_query(s, e, 0.0, false, mask))
-            .or_else(|| ends.iter().find_map(|&(s, e)| self.probe_query(s, e, fat, false, mask)))
-            .or(chord);
+            .or_else(|| ends.iter().find_map(|&(s, e)| self.probe_query(s, e, fat, false, mask)));
         if hit.is_none()
             && i.in_air
             && let Some(b) = aux.filter(|b| b.valid)
@@ -141,18 +147,27 @@ impl World {
         PassResult { hit, helper_normal: helper.map(|h| h.normal) }
     }
 
-    pub fn ground_probe(&self, i: &ProbeInputs, ballistic: &BallisticRay) -> Option<GroundContact> {
+    pub fn ground_query(&self, i: &ProbeInputs, ballistic: &BallisticRay) -> GroundQuery {
         let a = self.probe_pass(i, 0, Some(ballistic));
         let b = self.probe_pass(i, RIDABLE_CLASS_MASK, None);
         let cos = self.tuning.queries.cos_surface_is_horizontal_angle_threshold;
         let w = b.helper_normal.unwrap_or(Vec3::Y);
-        let use_a = i.uber_in_air || use_unfiltered(a.hit.map(|h| h.normal), b.hit.map(|h| h.normal), w, cos);
+        let gated = |p: &PassResult| p.hit.filter(|_| i.query_enabled).map(|h| h.normal);
+        let use_a = i.uber_in_air || use_unfiltered(gated(&a), gated(&b), w, cos);
         let (hit, ridable_pass) = if use_a { (a.hit, false) } else { (b.hit, true) };
-        let h = hit?;
+        let raw = hit.map(|h| self.contact(i, &h, ridable_pass));
+        GroundQuery { published: raw.filter(|_| i.query_enabled), raw }
+    }
+
+    pub fn ground_probe(&self, i: &ProbeInputs, ballistic: &BallisticRay) -> Option<GroundContact> {
+        self.ground_query(i, ballistic).published
+    }
+
+    fn contact(&self, i: &ProbeInputs, h: &Hit, ridable_pass: bool) -> GroundContact {
         let n = h.normal;
         let c = &self.collision;
         let cluster = &c.clusters[h.cluster as usize];
-        Some(GroundContact {
+        GroundContact {
             point: h.point,
             normal: n,
             face_normal: h.contact_normal,
@@ -164,7 +179,7 @@ impl World {
             class: cluster.class,
             ridable_pass,
             entity: c.cluster_entity[h.cluster as usize],
-        })
+        }
     }
 }
 

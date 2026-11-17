@@ -70,18 +70,18 @@ fn friction_opposes_the_velocity_and_never_reverses_it() {
     let t = tuning();
     let snow = t.surfaces.records[0];
     let v = Vec3::new(0.3, 0.0, 0.0);
-    let a = friction_accel(&t, &snow, v, 0.0, 0.0, 1.0, 0.0, false);
+    let a = friction_accel(&t, &snow, v, 0.0, 0.0, 1.0, 0.0, 0.0, false);
     assert!(a.distance(Vec3::new(-0.03 * 0.015, 0.0, 0.0)) < 1e-9, "{a:?}");
-    let a = friction_accel(&t, &snow, v, 0.0, 0.0, 0.25, 1.0, false);
+    let a = friction_accel(&t, &snow, v, 0.0, 0.0, 0.25, 0.0, 1.0, false);
     assert!(close(a.x, -0.7 * 0.5 * 0.015));
     let side = Vec3::new(0.3, 0.0, 0.1);
     let lean = 0.5f32;
-    let against = friction_accel(&t, &snow, side, -lean, 0.0, 1.0, 0.0, false);
+    let against = friction_accel(&t, &snow, side, -lean, 0.0, 1.0, 0.0, 0.0, false);
     let k = side.normalize();
     assert!(close(against.z, -k.z * lean.sin() * 5.6 * 0.015));
-    let towards = friction_accel(&t, &snow, side, lean, 0.0, 1.0, 0.0, false);
+    let towards = friction_accel(&t, &snow, side, lean, 0.0, 1.0, 0.0, 0.0, false);
     assert_eq!(towards.z, 0.0);
-    assert_eq!(friction_accel(&t, &snow, Vec3::ZERO, 0.0, 0.0, 1.0, 1.0, false), Vec3::ZERO);
+    assert_eq!(friction_accel(&t, &snow, Vec3::ZERO, 0.0, 0.0, 1.0, 0.0, 1.0, false), Vec3::ZERO);
     let slow = Vec3::new(1e-3, 0.0, -1e-3);
     let a = clamp_not_reversing(Vec3::new(-0.01, 0.0, 0.01), slow, 2.0);
     assert!((slow + a * 2.0).abs().max_element() < 1e-9);
@@ -149,6 +149,7 @@ fn flat_step_boost(
         ice_axe: crate::ice_axe::IceAxeFrame::default(),
         avalanche_drag: 1.0,
         avalanche_friction: 1.0,
+        rock_weight: 0.0,
         dt: 2.0,
     };
     integrate_ground(&i)
@@ -240,7 +241,8 @@ fn deceleration_keeps_the_braking_part() {
     let out = flat_step(&settled(), Vec3::new(0.2, 0.0, 0.05), 0.83, true, false);
     assert!(out.a.x < 0.0 && close(out.deceleration.x, out.a.x) && out.deceleration.y == 0.0, "{out:?}");
     assert_eq!(out.deceleration.z, 0.0, "no slip, no edge friction");
-    assert_eq!(flat_step(&settled(), Vec3::new(0.2, 0.0, 0.05), 0.83, false, false).deceleration, Vec3::ZERO);
+    let air = flat_step(&settled(), Vec3::new(0.2, 0.0, 0.05), 0.83, false, false);
+    assert!(air.a.x < 0.0 && air.deceleration == Vec3::new(air.a.x, 0.0, 0.0), "{air:?}");
     let b =
         BoostThrust { is_boosting: true, modifier: 1.0, accel_low: 0.0, accel_high: 30.0 / 3600.0, max_speed: 0.67 };
     let pushed = flat_step_boost(&settled(), Vec3::new(0.2, 0.0, 0.0), 0.83, true, false, b);
@@ -310,4 +312,348 @@ fn spray_filter_snaps_then_follows_the_spring() {
     let kept = st;
     let none = spray_filter(&mut st, &SprayInputs { contact: false, ..next });
     assert_eq!((none.carving, none.normal_acceleration, st), (Vec3::ZERO, 0.02, kept));
+}
+
+#[test]
+fn riding_height_adds_the_change_and_floors_at_the_maximum() {
+    let mut c = tuning().carving;
+    let rh = update_riding_height(&c, 0.3, -0.47, None, true, 1.0);
+    assert_eq!(rh, 0.3f32 + (-0.47f32 - 0.3));
+    assert_ne!(rh, -0.47);
+    c.riding_height_max = 0.9;
+    assert_eq!(update_riding_height(&c, -0.95, -0.95, None, false, 1.0), -0.9);
+}
+
+#[test]
+fn spray_filter_matches_the_executable() {
+    let cases: [([u32; 16], bool, [u32; 14]); 8] = [
+        (
+            [
+                0xbd43_0da8,
+                0x3d74_d3e4,
+                0x3ed9_3221,
+                0x3e8f_0c36,
+                0x3a4d_8de5,
+                0x3e34_ddfd,
+                0x3f80_0000,
+                0x3e3a_b763,
+                0x3f57_bd16,
+                0x3d8c_0859,
+                0xbf20_add8,
+                0xbdda_c123,
+                0xbf37_66a1,
+                0x3cdc_a61c,
+                0x3f85_f4c8,
+                0x3f22_3456,
+            ],
+            false,
+            [
+                0x3e94_84d7,
+                0x3c92_94bc,
+                0xbd03_43c7,
+                0x3d24_c2e6,
+                0x3e92_2a7b,
+                0xbca6_5774,
+                0x3cd0_ca09,
+                0x3e39_3987,
+                0x3f14_d934,
+                0xbdda_ab99,
+                0x3f32_f6ed,
+                0x3ba0_eec0,
+                0x3cb9_f27b,
+                0x3af1_6412,
+            ],
+        ),
+        (
+            [
+                0x0000_0000,
+                0x0000_0000,
+                0x0000_0000,
+                0x3ec7_b3a9,
+                0x3c49_bbd1,
+                0x3e7f_abcc,
+                0x3f80_0000,
+                0xbe87_4e4f,
+                0x3f41_ced9,
+                0xbe1e_8cdb,
+                0xbf70_9904,
+                0xbd93_b975,
+                0xbdf3_95a5,
+                0x3d2c_8772,
+                0x0000_0000,
+                0x3eff_d660,
+            ],
+            false,
+            [
+                0x0000_0000,
+                0x0000_0000,
+                0x0000_0000,
+                0x0000_0000,
+                0x0000_0000,
+                0x0000_0000,
+                0x0000_0000,
+                0x0000_0000,
+                0x0000_0000,
+                0x0000_0000,
+                0x0000_0000,
+                0x8000_0000,
+                0x0000_0000,
+                0x8000_0000,
+            ],
+        ),
+        (
+            [
+                0x33d5_bde1,
+                0x0000_0000,
+                0x0000_0000,
+                0x3f18_f030,
+                0x3d0b_5a30,
+                0x3e59_bd02,
+                0x4000_0000,
+                0x3e1e_8253,
+                0x3f5a_96ec,
+                0xbe90_75d0,
+                0x3e01_50bb,
+                0xbf48_bdce,
+                0xbf48_ce08,
+                0x3c6e_4ec2,
+                0xbdd9_febb,
+                0x3f7c_79d0,
+            ],
+            false,
+            [
+                0x33d5_bde1,
+                0x0000_0000,
+                0x0000_0000,
+                0x0000_0000,
+                0x0000_0000,
+                0x33d2_cc9e,
+                0x0000_0000,
+                0x0000_0000,
+                0x8000_0000,
+                0x0000_0000,
+                0x0000_0000,
+                0x0000_0000,
+                0x0000_0000,
+                0x8000_0000,
+            ],
+        ),
+        (
+            [
+                0xbeff_b893,
+                0xbe94_9feb,
+                0x3ed2_0f2a,
+                0x3e90_614e,
+                0x3d44_c149,
+                0xbc23_d70a,
+                0x4000_0000,
+                0xbd45_1ee3,
+                0x3f5e_aff7,
+                0xbe39_3f67,
+                0x3eb3_1b64,
+                0xbea7_0590,
+                0xbec1_5243,
+                0x3a46_9153,
+                0x3ebf_8646,
+                0xbc3d_7ae4,
+            ],
+            false,
+            [
+                0x7fc0_0000,
+                0xffc0_0000,
+                0x7fc0_0000,
+                0x7fc0_0000,
+                0x7fc0_0000,
+                0x7fc0_0000,
+                0x7fc0_0000,
+                0x7fc0_0000,
+                0xbe01_b725,
+                0x3d3e_385e,
+                0x3e20_ba98,
+                0xb764_c748,
+                0x3981_39c1,
+                0xb856_ffa7,
+            ],
+        ),
+        (
+            [
+                0x3e53_fc03,
+                0xbefa_641b,
+                0xbd0f_9b3c,
+                0x3e95_8d57,
+                0x3c95_2868,
+                0x3d6a_cffc,
+                0x3f80_0000,
+                0x3e95_1415,
+                0x3f6e_4c9e,
+                0xbd46_7fc7,
+                0xbe6e_138b,
+                0xbe57_571e,
+                0x3f7a_e821,
+                0x37c5_836a,
+                0x0000_0000,
+                0x3f99_396f,
+            ],
+            true,
+            [
+                0x3f08_3f0f,
+                0x0000_0000,
+                0x0000_0000,
+                0x8000_0000,
+                0x8000_0000,
+                0x3e53_fc02,
+                0xbefa_6419,
+                0xbd0f_9b3b,
+                0x0000_0000,
+                0x8000_0000,
+                0x8000_0000,
+                0x0000_0000,
+                0x0000_0000,
+                0x8000_0000,
+            ],
+        ),
+        (
+            [
+                0xbef5_f2f7,
+                0xbea0_1940,
+                0x3efd_de2e,
+                0x3eb8_f0a9,
+                0x3bfc_2e97,
+                0x3c5e_a997,
+                0x3f80_0000,
+                0xbe30_2eeb,
+                0x3f47_0925,
+                0x3e27_8a61,
+                0xbeaf_264f,
+                0xbed0_903e,
+                0xbf5a_6b81,
+                0x3b93_a5e2,
+                0x3f80_0000,
+                0x7fc0_0000,
+            ],
+            false,
+            [
+                0x3ebd_b963,
+                0x3c31_bd2a,
+                0xbe70_81a0,
+                0xbe1c_8e45,
+                0x3e78_3ffb,
+                0x7fc0_0000,
+                0x7fc0_0000,
+                0x7fc0_0000,
+                0x3ed2_294c,
+                0x3dc9_67ec,
+                0x3f49_c5da,
+                0xba4b_3a35,
+                0x3b65_9672,
+                0x3a41_420c,
+            ],
+        ),
+        (
+            [
+                0xbef8_0f32,
+                0xbe06_7a02,
+                0x3dfa_2960,
+                0x3d9c_544c,
+                0x3c0e_fc39,
+                0x3e7f_df57,
+                0x3f80_0000,
+                0x3e61_3181,
+                0x3f41_3dbd,
+                0xbe54_7fd0,
+                0x3f51_1cea,
+                0x3f22_b6f0,
+                0xbf00_41b9,
+                0x3c1b_7c16,
+                0x3f80_0000,
+                0x3f43_02f1,
+            ],
+            false,
+            [
+                0x3df8_79ab,
+                0x3d8e_19aa,
+                0xbde9_0584,
+                0xbcfc_a614,
+                0x3cea_ff12,
+                0xbdb1_81e1,
+                0xbcc0_7568,
+                0x3cb3_02fe,
+                0xbf26_22a9,
+                0xbd73_2430,
+                0x3eaf_6753,
+                0x3b08_c620,
+                0x3bea_bc18,
+                0xbb01_1063,
+            ],
+        ),
+        (
+            [
+                0xbde4_f230,
+                0xbc8f_3a2a,
+                0xbed7_cf23,
+                0x3ce8_fcfb,
+                0xbd20_225e,
+                0x3e1d_e522,
+                0x4000_0000,
+                0xbe20_b8fe,
+                0x3f69_4fcc,
+                0xbe15_4f85,
+                0x3f25_be58,
+                0x3e45_9020,
+                0xbed3_85af,
+                0x3c0f_b70d,
+                0x3f4e_f982,
+                0xbcbc_bddf,
+            ],
+            false,
+            [
+                0x3d8c_9aea,
+                0x3d5b_4e4b,
+                0xbc68_f316,
+                0xbb11_bb56,
+                0xbd5b_953a,
+                0x8000_0000,
+                0x8000_0000,
+                0x8000_0000,
+                0xbf0a_5ee1,
+                0xbd69_1e84,
+                0x3ea2_e62f,
+                0xba91_e5a4,
+                0x3bd3_ca4e,
+                0xba87_89a7,
+            ],
+        ),
+    ];
+    for (i, first_contact, want) in cases {
+        let x = i.map(f32::from_bits);
+        let mut st = CarvingState { spray_magnitude: x[3], spray_derivative: x[4], ..CarvingState::default() };
+        let inp = SprayInputs {
+            contact: true,
+            first_contact,
+            stopped: false,
+            board_x: Vec3::X,
+            board_z: Vec3::Z,
+            n: Vec3::new(x[7], x[8], x[9]),
+            velocity: Vec3::ZERO,
+            deceleration: Vec3::ZERO,
+            new_velocity: Vec3::new(x[10], x[11], x[12]),
+            normal_force: x[13],
+            snow_coverage: x[14],
+            ice_coverage: x[15],
+            responsiveness: x[5],
+            dt: x[6],
+        };
+        let sp = spray_filter_from(&mut st, &inp, Vec3::new(x[0], x[1], x[2]));
+        let got = [
+            [st.spray_magnitude, st.spray_derivative].as_slice(),
+            &sp.carving.to_array(),
+            &sp.ice.to_array(),
+            &sp.velocity.to_array(),
+            &sp.impact.to_array(),
+        ]
+        .concat();
+        for (g, w) in got.iter().zip(want.map(f32::from_bits)) {
+            assert!(g.to_bits() == w.to_bits() || (g.is_nan() && w.is_nan()), "{i:x?}: {got:?} {want:x?}");
+        }
+    }
 }

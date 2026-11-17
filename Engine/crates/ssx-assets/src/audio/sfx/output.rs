@@ -46,6 +46,7 @@ struct Lead {
     low: isize,
     since: Instant,
     pulls: [usize; PULL_WINDOW],
+    pulled: Option<Instant>,
     next_pull: usize,
     settle: u8,
 }
@@ -57,6 +58,18 @@ impl Lead {
 
     fn level(&self) -> usize {
         self.frames.len() / self.channels
+    }
+
+    // PORT(choice): the port's mixer renders ahead of the device in bursts (a PC device pulls 441…8192 frames at its own
+    // times), so a stream read of ~1 ms that the console's real-time frames would have had is waited for here, at most
+    // until the frame comes due by the lead's margin (a pull's frames are never waited on); the console's Dac renders a
+    // frame per voice buffer that ends (three buffers of 256 frames, +0xF4 = 3, 0x82A504E8) and waits for no read.
+    fn step(&self) -> Option<Instant> {
+        if self.want > 0 || !self.primed {
+            return None;
+        }
+        let beyond = self.level().checked_sub(self.margin).filter(|&f| f > 0)?;
+        Some(self.pulled? + Duration::from_nanos(beyond as u64 * 1_000_000_000 / u64::from(RATE)))
     }
 }
 
@@ -114,6 +127,7 @@ impl Output {
             low: isize::MAX,
             since: Instant::now(),
             pulls: [0; PULL_WINDOW],
+            pulled: None,
             next_pull: 0,
             settle: SETTLE_PULLS,
         };
@@ -121,6 +135,9 @@ impl Output {
         let inner = Arc::new(Inner { lead: Mutex::new(lead), room: Condvar::new(), ready: Condvar::new() });
         let thread = inner.clone();
         let scheduling = scheduling.or_env();
+        if scheduling == Scheduling::Audio {
+            crate::sfx_stream::raise_file_thread();
+        }
         std::thread::Builder::new()
             .name("ssx_audio_mixer".into())
             .spawn(move || mixer_thread(&thread, mix, inbox, scheduling))?;
@@ -150,6 +167,7 @@ impl Output {
             lead.channels = channels;
             lead.frames.clear();
             lead.primed = false;
+            lead.pulled = None;
             lead.settle = SETTLE_PULLS;
         }
         drop(lead);
@@ -195,6 +213,7 @@ impl Output {
             lead = inner.ready.wait_timeout(lead, left).unwrap_or_else(|e| e.into_inner()).0;
         }
         lead.want = 0;
+        lead.pulled = Some(Instant::now());
         let left = pull.level as isize - need as isize;
         let short = GUARD as isize - left;
         let settled = lead.settle == 0;
@@ -232,10 +251,12 @@ const DRAIN_PERIOD: Duration = Duration::from_nanos(FRAME_SAMPLES as u64 * 1_000
 fn mixer_thread(inner: &Inner, mut mix: OutputMix, inbox: MixInbox, scheduling: Scheduling) {
     let mut promotion = priority::Promotion::start(scheduling);
     crate::sfx_stream::mark_live_thread();
+    let mut frames_rendered = 0u64;
     let mut frame = Vec::new();
     let mut drains = stats::DrainLog::default();
     loop {
         promotion.check();
+        crate::sfx_stream::live_frame(frames_rendered + 1, None);
         let (t0, before) = (Instant::now(), stats::ThreadUsage::now());
         let mut longest = ("", Duration::ZERO);
         let commands = inbox.drain_each(&mut mix, |kind, took| {
@@ -255,7 +276,7 @@ fn mixer_thread(inner: &Inner, mut mix: OutputMix, inbox: MixInbox, scheduling: 
         } else {
             drains.publish();
         }
-        let ch = {
+        let (ch, step) = {
             let mut lead = inner.state();
             let level = lead.level();
             let full = level + MIX_FRAMES > lead.target();
@@ -268,9 +289,11 @@ fn mixer_thread(inner: &Inner, mut mix: OutputMix, inbox: MixInbox, scheduling: 
                 promotion.blocked();
                 continue;
             }
-            lead.channels
+            (lead.channels, lead.step())
         };
         let t1 = Instant::now();
+        frames_rendered += 1;
+        crate::sfx_stream::live_frame(frames_rendered, step);
         frame.resize(ch * MIX_FRAMES, 0.0);
         mix.render_channels(&mut frame, ch);
         let swapped = std::mem::take(&mut mix.swapped);
@@ -310,6 +333,38 @@ fn declick(queued: &mut VecDeque<f32>, next: &mut [f32], ch: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_frame_beyond_the_margin_comes_due_after_the_last_pull() {
+        let t = Instant::now();
+        let mut lead = Lead {
+            frames: vec![0.0; 2 * (MARGIN + 3 * MIX_FRAMES)].into(),
+            channels: 2,
+            want: 0,
+            stop: false,
+            primed: true,
+            margin: MARGIN,
+            floor: MARGIN,
+            low: isize::MAX,
+            since: t,
+            pulls: [0; PULL_WINDOW],
+            pulled: Some(t),
+            next_pull: 0,
+            settle: 0,
+        };
+        assert_eq!(lead.step(), Some(t + Duration::from_nanos(3 * 256 * 1_000_000_000 / 48_000)));
+        lead.want = 1;
+        assert_eq!(lead.step(), None, "a pull waits");
+        lead.want = 0;
+        lead.pulled = None;
+        assert_eq!(lead.step(), None, "no pull yet");
+        lead.pulled = Some(t);
+        lead.primed = false;
+        assert_eq!(lead.step(), None, "not primed");
+        lead.primed = true;
+        lead.frames.truncate(2 * MARGIN);
+        assert_eq!(lead.step(), None, "within the margin");
+    }
 
     #[test]
     fn a_swap_of_the_engines_is_ramped() {

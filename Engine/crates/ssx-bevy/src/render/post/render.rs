@@ -25,6 +25,7 @@ use super::adapt::{AdaptMode, HdrAdaptation};
 use super::overlay::{OverlayUniform, PostOverlay};
 use super::topogrid::{PostTopogrid, TopogridUniform};
 use super::{GamePostCamera, PostSettings, PostUniform};
+use crate::render::buffers::QueuedUniform;
 use crate::render::objects::material::{
     LDR_PIPELINE_LABEL, LDR_POST_PARTICLES_LABEL, LDR_TONEMAP_BUFFER, LDR_TONEMAP_EXPOSURE_OFFSET,
 };
@@ -210,9 +211,9 @@ struct ViewTargets {
     frame_aa: TextureView,
     adapted: Buffer,
     exposure: Buffer,
-    uniform: UniformBuffer<PostUniform>,
-    overlay: UniformBuffer<OverlayUniform>,
-    topogrid: UniformBuffer<TopogridUniform>,
+    uniform: QueuedUniform<PostUniform>,
+    overlay: QueuedUniform<OverlayUniform>,
+    topogrid: QueuedUniform<TopogridUniform>,
     fresh: bool,
     complete: bool,
 }
@@ -258,9 +259,9 @@ fn create_targets(device: &RenderDevice, size: UVec2) -> ViewTargets {
         frame_aa: sized("ssx_post_frame_aa", FRAME_FORMAT, size),
         adapted: buffer("ssx_post_adapted", (u64::from(q.x * q.y) * 2 + 64) * 4),
         exposure: buffer("ssx_post_exposure", EXPOSURE_BYTES),
-        uniform: UniformBuffer::default(),
-        overlay: UniformBuffer::default(),
-        topogrid: UniformBuffer::default(),
+        uniform: QueuedUniform::default(),
+        overlay: QueuedUniform::default(),
+        topogrid: QueuedUniform::default(),
         fresh: true,
         complete: false,
     }
@@ -315,15 +316,13 @@ fn prepare_targets(
         adapt.ran();
         u.bloom.w = mode.code();
         t.fresh = false;
-        t.uniform.set(u);
-        t.uniform.write_buffer(&device, &queue);
-        t.overlay.set(overlay.as_ref().map_or_else(OverlayUniform::default, |o| o.uniform));
-        t.overlay.write_buffer(&device, &queue);
+        t.uniform.write(&device, &queue, "ssx_post_uniform", &u);
+        let o = overlay.as_ref().map_or_else(OverlayUniform::default, |o| o.uniform);
+        t.overlay.write(&device, &queue, "ssx_post_overlay", &o);
         let mut topo = topogrid.as_ref().map_or_else(TopogridUniform::default, |g| g.uniform);
         topo.world_from_clip = extracted.world_from_view.to_matrix() * extracted.clip_from_view.inverse();
         topo.back = extracted.world_from_view.back().as_vec3().extend(0.0);
-        t.topogrid.set(topo);
-        t.topogrid.write_buffer(&device, &queue);
+        t.topogrid.write(&device, &queue, "ssx_post_topogrid", &topo);
     }
 }
 

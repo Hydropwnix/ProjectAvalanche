@@ -22,7 +22,7 @@ pub fn signed_in(fe: &mut FrontEnd, env: &mut FeEnv, device: i32) {
     profile_into_sign_in(fe, env);
     fe.note(format!("Profile_OnSignIn (controller {device}): Explore drops unlocked"));
     super::pads::sign_in(fe, device);
-    // TODO(guess): the job's step order against these writes, a failed job's callback (0x82396B58, 0x825081E8) and a profile without a file: the save step 0x825082B0 posts 0x10AD0001 and waits for 0x10AD1001 (0 → state 5: the manager's 0x8244E0A0 with the callback 0x825081E8, not traced; else the job ends with result 1);
+    // TODO(guess): the job's step order against these writes, a failed job's callback (0x82396B58) and a profile without a file: the save step 0x825082B0 posts 0x10AD0001 and waits for 0x10AD1001 (0 → state 5, the ghosts group's load with the callback 0x825081E8, `saveload::flow_ended`; else the job ends with result 1);
     // `FlowLeadProfileLoad` goes from a failed `OperationFind` to `FlowFindError` (→ state 3 or 0x17); settle: the find's failure `FlowFindError`.
     if super::saveload::lead_profile_load(fe, env, device) {
         profile_job_done(fe, env, device);
@@ -38,7 +38,7 @@ pub fn profile_job_done(fe: &mut FrontEnd, env: &mut FeEnv, _device: i32) {
     fe.busy.release(env, super::busy::LEVEL);
     fe.requests.push(super::pause::GameRequest::Save);
     fe.note("the save manager's save after the sign-in (0x82457FE8)");
-    // TODO(guess): the save completes at once in the port, so the front end's frame state begins with the request (its 0x82469EB8: the second count off, message 0xCC21B341) (the game's after the callback 0x82395F50 switched the frame state: the sign-in adds two busy-icon counts, 0x8246A020 and 0x82396D78; the job's end 0x82396B58 takes one off and asks for the save, 0x82457FE8 → job 0x8250B278;
+    // TODO(guess): the save ends at its request for the front end in the port (the shell's save writer writes the file meanwhile), so the front end's frame state begins with the request (its 0x82469EB8: the second count off, message 0xCC21B341) (the game's after the callback 0x82395F50 switched the frame state: the sign-in adds two busy-icon counts, 0x8246A020 and 0x82396D78; the job's end 0x82396B58 takes one off and asks for the save, 0x82457FE8 → job 0x8250B278;
     // its end requests frame state 2, whose begin 0x82469EB8 takes the other off); settle: the save manager's job queue and callback timing.
     front_end_frame_state_begins(fe, env);
     fe.note("the profile job's end: message 0xDDA6AD47");
@@ -73,6 +73,13 @@ pub fn launch(fe: &mut FrontEnd, env: &mut FeEnv, drop: u32, direct: bool) {
     launch_with(fe, env, l);
 }
 
+pub fn launch_session(fe: &mut FrontEnd, env: &mut FeEnv, drop: u32) {
+    super::equipment::launch_loadout(fe, env, drop);
+    #[cfg(feature = "net")]
+    super::equipment::session_low_survival(fe, env, drop);
+    launch(fe, env, drop, true);
+}
+
 pub fn launch_free_ride(fe: &mut FrontEnd, env: &mut FeEnv, drop: u32, direct: bool) {
     fe.free_ride_drop = Some(drop);
     launch(fe, env, drop, direct);
@@ -81,6 +88,11 @@ pub fn launch_free_ride(fe: &mut FrontEnd, env: &mut FeEnv, drop: u32, direct: b
 pub const MAP_GAME_MODE: i64 = 2;
 
 pub fn launch_map(fe: &mut FrontEnd, env: &mut FeEnv, map: super::MapLaunch, event_type: i64) {
+    super::equipment::launch_loadout(fe, env, 0);
+    #[cfg(feature = "net")]
+    {
+        fe.ava.session.launch_notice = None;
+    }
     env.values.set_int(0xB4, 0);
     let l = Launch {
         event: map.title.clone(),

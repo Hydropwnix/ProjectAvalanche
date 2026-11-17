@@ -9,6 +9,7 @@ pub mod loc;
 pub mod nav;
 pub mod pointer;
 pub mod port;
+pub mod presence;
 pub mod prompts;
 pub mod ride;
 pub mod session_board;

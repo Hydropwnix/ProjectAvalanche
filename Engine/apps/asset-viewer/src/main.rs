@@ -87,6 +87,11 @@ struct Cli {
     #[arg(long, value_name = "SPIN,FLIP", value_parser = parse_vec2, allow_hyphen_values = true, requires = "ride_input")]
     ride_air: Option<Vec2>,
 
+    /// With --ride-input: its stick x only from this ride second on, centred before (as `ride_sim --steer-from`: a
+    /// turn off a line ridden straight, e.g. off the dam's crest on Mount Wakefield).
+    #[arg(long, value_name = "S", requires = "ride_input")]
+    ride_steer_from: Option<f32>,
+
     /// With --ride-input: hold the right stick in this direction in the air (a grab: up = Rocket,
     /// left = Melon, right = Indy, down = Truckdriver for a regular rider).
     #[arg(long, value_name = "DIR", value_enum, requires = "ride_input")]
@@ -176,6 +181,7 @@ fn run(cli: Cli) -> Result<AppExit> {
         input: cli.ride_input,
         jump_release: cli.ride_jump.clone(),
         air_input: cli.ride_air,
+        steer_from: cli.ride_steer_from,
         grab: cli.ride_grab.map(GrabDir::stick),
         tweak: cli.ride_tweak,
         shoulders: cli.ride_shoulders,

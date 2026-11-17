@@ -1,4 +1,6 @@
 use super::*;
+use crate::character::CarvingTuning;
+use ssx_formats::vmx;
 
 pub(super) fn trick_context(s: &RiderState, in_air: bool) -> TrickContext {
     TrickContext {
@@ -32,28 +34,54 @@ pub(super) fn air_tricks_ticks(s: &RiderState, dt: f32) -> Option<f32> {
     }
 }
 
-pub(super) fn ground_trajectory(s: &RiderState) -> Quat {
-    if s.landing.uber_crash {
-        return s.alignment;
+pub(super) fn trajectory_delta_rotation(s: &RiderState, c: &CarvingTuning, j: Quat, n: Vec3, uber: bool) -> Quat {
+    if uber {
+        return uber_slide_delta(j, n, c.uber_crash_traj_angle_max_delta, s.carving.ride_frames);
     }
     let st = &s.steering;
     let f0 = st.slip_angle * s.kin.fwd;
-    let c = s.kin.slip;
+    let k = s.kin.slip;
     let slip_vis = if f0 >= 0.0 {
-        if c >= 0.0 { (f0 - c).max(0.0) } else { f0 }
-    } else if c >= 0.0 {
+        if k >= 0.0 { (f0 - k).max(0.0) } else { f0 }
+    } else if k >= 0.0 {
         f0
     } else {
-        (f0 - c).min(0.0)
+        (f0 - k).min(0.0)
     };
     let l = &s.landing;
-    let stance = Quat::from_rotation_y((1.0 - st.stance_override_sign) * FRAC_PI_2);
-    (Quat::from_axis_angle(s.ground_normal, slip_vis)
-        * s.alignment
-        * Quat::from_rotation_z(l.pitch)
-        * Quat::from_rotation_y(l.spin)
-        * stance)
-        .normalize()
+    let stance = -(c.stance_angle_sideways_value * st.stance_override_sign);
+    ground_delta(j, s.alignment, [l.pitch, l.spin, stance], crate::steering::vmx_wrap_pi(slip_vis), n)
+}
+
+pub(super) fn ground_delta(j: Quat, a: Quat, angles: [f32; 3], slip: f32, n: Vec3) -> Quat {
+    use crate::steering::{vmx_axis_angle as axis_angle, vmx_conjugate as conj, vmx_quat_mul as mul, vmx_rotate};
+    let m1 = mul(conj(j), a);
+    let qz = axis_angle([0.0, 0.0, 1.0], angles[0]);
+    let qy = axis_angle([0.0, 1.0, 0.0], angles[1]);
+    let qs = axis_angle([0.0, 1.0, 0.0], angles[2]);
+    let p = mul(mul(mul(mul(j, m1), qz), qy), qs);
+    let n_p = vmx_rotate(conj(p), n);
+    mul(mul(mul(mul(m1, qz), qy), qs), axis_angle(n_p.to_array(), slip))
+}
+
+pub(super) fn uber_slide_delta(j: Quat, n: Vec3, max: f32, ride_frames: i32) -> Quat {
+    use crate::steering::{vmx_conjugate, vmx_cross, vmx_rotate};
+    const X: [f32; 3] = [1.0, 0.0, 0.0];
+    let nl = vmx_rotate(vmx_conjugate(j), n).to_array();
+    let x = vmx::dot3(X, nl);
+    let axis = vmx_cross(X, nl);
+    if ride_frames <= 1 || !vmx::gt(vmx::abs(vmx::sub(vmx::abs(x), 1.0)), TINY) {
+        return Quat::IDENTITY;
+    }
+    let y = vmx::rsqrt(vmx::dot3(axis, axis));
+    let angle = vmx::min(max, vmx::max(-max, vmx::acos(x)));
+    let (sin, cos) = vmx::sin_cos(vmx::mul(angle, 0.5));
+    let [ax, ay, az] = axis.map(|v| vmx::mul(vmx::mul(v, y), sin));
+    Quat::from_xyzw(ax, ay, az, cos)
+}
+
+pub(super) fn carving_trajectory(s: &RiderState) -> Quat {
+    world_motion(s.traj_orientation, s.carving.traj_delta.to_array(), [0.0; 3]).1
 }
 
 pub(super) fn rig_ops(s: &mut RiderState, _w: &World, dp: Vec3, root: Option<Quat>, dt: f32) {
@@ -75,7 +103,7 @@ pub(super) fn rig_ops(s: &mut RiderState, _w: &World, dp: Vec3, root: Option<Qua
 pub(super) fn rig_op_rotation(s: &RiderState, root: Option<Quat>) -> Quat {
     match root {
         Some(q) => q,
-        None if s.state == RideState::Riding => ground_trajectory(s),
+        None if s.state == RideState::Riding => carving_trajectory(s),
         None => s.alignment,
     }
 }

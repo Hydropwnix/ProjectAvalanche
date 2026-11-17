@@ -575,10 +575,10 @@ web-time 1.1.0 — MIT
 wesl 0.6.0 — MIT
 wesl-core 0.1.0 — MIT
 wesl-macros 0.6.0 — MIT
-wgpu 30.0.1 — MIT
-wgpu-core 30.0.1 — MIT
+wgpu 30.0.2 — MIT
+wgpu-core 30.0.2 — MIT
 wgpu-core-deps-windows-linux-android 30.0.1 — MIT
-wgpu-hal 30.0.1 — MIT
+wgpu-hal 30.0.2 — MIT
 wgpu-naga-bridge 30.0.1 — MIT
 wgpu-types 30.0.1 — MIT
 wgsl-parse 0.6.0 — MIT
@@ -22466,7 +22466,7 @@ Repository: https://github.com/webgpu-tools/wesl-rs
 [the standard MIT text (the package ships none): shared text 14]
 
 ----------------------------------------------------------------------------------------------------
---- wgpu 30.0.1 ---
+--- wgpu 30.0.2 ---
 ----------------------------------------------------------------------------------------------------
 License: MIT OR Apache-2.0 (used: MIT)
 Authors: gfx-rs developers
@@ -22475,7 +22475,7 @@ Repository: https://github.com/gfx-rs/wgpu
 [LICENSE.MIT: shared text 16]
 
 ----------------------------------------------------------------------------------------------------
---- wgpu-core 30.0.1 ---
+--- wgpu-core 30.0.2 ---
 ----------------------------------------------------------------------------------------------------
 License: MIT OR Apache-2.0 (used: MIT)
 Authors: gfx-rs developers
@@ -22493,7 +22493,7 @@ Repository: https://github.com/gfx-rs/wgpu
 [LICENSE.MIT: shared text 16]
 
 ----------------------------------------------------------------------------------------------------
---- wgpu-hal 30.0.1 ---
+--- wgpu-hal 30.0.2 ---
 ----------------------------------------------------------------------------------------------------
 License: MIT OR Apache-2.0 (used: MIT)
 Authors: gfx-rs developers

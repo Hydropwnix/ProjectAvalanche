@@ -70,14 +70,33 @@ pub fn descent_and_height_left(start_y: f32, end_y: f32, y: f32) -> (f32, f32) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BotRequest {
     pub ghost_id: i32,
+    pub ghost_type: u32,
     pub start_slot: i32,
     pub character: u32,
     pub catchup: u32,
     pub racer_type: u32,
+    pub racer_kind: u32,
     pub collision: bool,
     pub tint: u32,
     pub score: u32,
     pub name: RacerName,
+}
+
+pub const GHOST_TYPE_DISC: u32 = 5;
+pub const GHOST_TYPE_SAVED: u32 = 4;
+
+impl BotRequest {
+    pub fn identity_kind(&self) -> u32 {
+        match self.racer_kind {
+            1 => 1,
+            2 => 3,
+            _ => 2,
+        }
+    }
+
+    pub fn is_rival(&self) -> bool {
+        matches!(self.identity_kind(), 1 | 2)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,10 +156,12 @@ pub fn bot_requests(
             let generic = !known(r.character);
             BotRequest {
                 ghost_id: r.ghost_id,
+                ghost_type: GHOST_TYPE_DISC,
                 start_slot: r.starting_idx,
                 character: if generic { GENERIC_CHARACTER } else { r.character },
                 catchup: r.catchup,
                 racer_type: 1,
+                racer_kind: 1,
                 collision: true,
                 tint: if generic { GENERIC_TINT } else { BOT_TINT },
                 score: r.score,
@@ -160,10 +181,12 @@ pub fn explore_requests(def: &crate::event::EventDef) -> Vec<BotRequest> {
             let row = g.row.and_then(|i| def.rivals.get(i));
             BotRequest {
                 ghost_id: row.map_or(-1, |r| r.ghost_id),
+                ghost_type: GHOST_TYPE_DISC,
                 start_slot: row.map_or(0, |r| r.starting_idx),
                 character: g.character,
                 catchup: row.map_or(0, |r| r.catchup),
                 racer_type: EXPLORE_RACER_TYPE,
+                racer_kind: 1,
                 collision: false,
                 tint: BOT_TINT,
                 score: row.map_or(0, |r| r.score),
@@ -171,6 +194,24 @@ pub fn explore_requests(def: &crate::event::EventDef) -> Vec<BotRequest> {
             }
         })
         .collect()
+}
+
+pub const OWN_GHOST_CHARACTER: u32 = fnv1(b"elise");
+
+pub fn own_ghost_request(slot: usize) -> BotRequest {
+    BotRequest {
+        ghost_id: i32::try_from(slot).unwrap_or(-1),
+        ghost_type: GHOST_TYPE_SAVED,
+        start_slot: 0,
+        character: OWN_GHOST_CHARACTER,
+        catchup: 0,
+        racer_type: 0,
+        racer_kind: 0,
+        collision: false,
+        tint: GENERIC_TINT,
+        score: 0,
+        name: RacerName::Text("TXT_PERSONAL_BEST"),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -315,6 +356,37 @@ pub struct Bot {
     pub wipeout: Option<wipeout::Wipeout>,
 }
 
+impl Bot {
+    pub fn new(
+        request: BotRequest,
+        curve: Option<CatchUpCurve>,
+        replay: ssx_assets::ghosts::GhostReplay,
+        flow: Option<&wipeout::WipeoutFlow>,
+    ) -> Self {
+        let position = Vec3::from_array(replay.position(0.0));
+        Self {
+            request,
+            curve,
+            replay,
+            clock: BotClock::default(),
+            position,
+            velocity: Vec3::ZERO,
+            factor: 1.0,
+            lead: 0.0,
+            finish_ms: None,
+            removed: false,
+            trigger_wipeout: false,
+            in_air: false,
+            player_is_grinding: false,
+            avoid_grind_collision: false,
+            player_location: Vec3::ZERO,
+            player_velocity: Vec3::ZERO,
+            contacts: 0,
+            wipeout: flow.map(wipeout::Wipeout::new),
+        }
+    }
+}
+
 pub const GHOST_GRINDING_DISTANCE: f32 = 20.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -386,6 +458,11 @@ impl BotRace {
         }
     }
 
+    pub fn add_own_ghost(&mut self, request: BotRequest, replay: ssx_assets::ghosts::GhostReplay) {
+        let bot = Bot::new(request, None, replay, self.wipeout.as_deref());
+        self.bots.insert(0, bot);
+    }
+
     pub fn load_requests(
         big_root: &Path,
         reqs: Vec<BotRequest>,
@@ -394,8 +471,7 @@ impl BotRace {
         course: Option<crate::event::Course>,
     ) -> (Self, Vec<String>) {
         let (mut bots, mut problems) = (Vec::new(), Vec::new());
-        let dir = big_root.join(ssx_assets::rig_anim::ANIM_DIR);
-        let flow = ssx_assets::anim_db::AssetDb::load(&dir, &[ssx_assets::rig_anim::RIG_BUNDLE])
+        let flow = ssx_assets::anim_db::AssetDb::load(big_root, &[ssx_assets::rig_anim::RIG_BUNDLE])
             .and_then(|db| wipeout::WipeoutFlow::load(&db));
         let flow = match flow {
             Ok(f) => Some(std::sync::Arc::new(f)),
@@ -406,29 +482,7 @@ impl BotRace {
         };
         for r in reqs {
             match ssx_assets::ghosts::GhostReplay::load(big_root, r.ghost_id as u32) {
-                Ok(replay) => {
-                    let p0 = Vec3::from_array(replay.position(0.0));
-                    bots.push(Bot {
-                        request: r,
-                        curve: data.curves.get(&r.catchup).cloned(),
-                        replay,
-                        clock: BotClock::default(),
-                        position: p0,
-                        velocity: Vec3::ZERO,
-                        factor: 1.0,
-                        lead: 0.0,
-                        finish_ms: None,
-                        removed: false,
-                        trigger_wipeout: false,
-                        in_air: false,
-                        player_is_grinding: false,
-                        avoid_grind_collision: false,
-                        player_location: Vec3::ZERO,
-                        player_velocity: Vec3::ZERO,
-                        contacts: 0,
-                        wipeout: flow.as_deref().map(wipeout::Wipeout::new),
-                    });
-                }
+                Ok(replay) => bots.push(Bot::new(r, data.curves.get(&r.catchup).cloned(), replay, flow.as_deref())),
                 Err(e) => problems.push(format!("bot ghost {}: {e:#}", r.ghost_id)),
             }
         }

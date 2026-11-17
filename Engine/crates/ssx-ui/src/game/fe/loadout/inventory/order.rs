@@ -11,6 +11,10 @@ pub(super) fn requirement_met_by_slot(slot: i64, requirement: i64) -> bool {
     }
 }
 
+pub(super) fn meets_requirement(drop: Option<&DropInfo>, slot: i64) -> bool {
+    drop.is_some_and(|d| d.required.iter().any(|&r| requirement_met_by_slot(slot, r)))
+}
+
 const GEAR_ORDER: [i64; 7] = [1, 3, 2, 4, 5, 7, 6];
 
 fn slot_weight(drop: Option<&DropInfo>, slot: i64) -> i64 {

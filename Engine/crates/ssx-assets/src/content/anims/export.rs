@@ -12,11 +12,10 @@ use crate::anim_clip::float_dof_name;
 use crate::content::GameContent;
 
 pub fn disc_animation(big: &Path, dc: &DiscClip) -> Result<(Animation, ChannelToDof)> {
-    let dir = big.join(crate::rig_anim::ANIM_DIR);
+    let bundles = super::index::disc_bundles(big)?;
     let read = |name: &str| -> Result<Stream> {
-        let p = dir.join(format!("{name}.cba"));
-        Stream::parse(&std::fs::read(&p).with_context(|| format!("reading {}", p.display()))?)
-            .with_context(|| format!("parsing {}", p.display()))
+        let p = bundles.get(name).with_context(|| format!("{name}.cba: no bundle of the disc"))?;
+        Stream::parse(&ssx_rules::read::read_file(p)?).with_context(|| format!("parsing {}", p.display()))
     };
     let find = |s: &Stream, g| s.guid_index().get(&g).map(|&i| s.assets[i].object.clone());
     let s = read(&dc.bundle)?;

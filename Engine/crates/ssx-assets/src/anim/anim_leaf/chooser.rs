@@ -264,7 +264,7 @@ impl Controller for ChooserInst {
             b.old.label(env, weight * wo, out);
         }
     }
-    fn path(&self, env: &Env, out: &mut Vec<(String, f32)>) {
+    fn path(&self, env: &Env, out: &mut Vec<PathNode>) {
         if let Some(c) = &self.child {
             c.path(env, out);
         }

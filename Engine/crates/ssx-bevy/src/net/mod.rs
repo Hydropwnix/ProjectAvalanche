@@ -2,6 +2,7 @@ mod chat;
 mod errors;
 mod racers;
 mod round;
+pub(crate) use round::Rounds;
 mod send;
 mod session;
 mod spectate;

@@ -10,6 +10,7 @@ mod loadout;
 mod menus;
 pub mod pads;
 pub mod progression;
+pub mod recommend;
 mod ridernet;
 pub mod screens;
 pub mod scripts;
@@ -174,6 +175,8 @@ pub struct FrontEnd {
     pub loop_fade_in: bool,
     pub busy: busy::BusyIcon,
     pub post_race: postrace::PostRaceMenu,
+    pub explore_list: explore::ExploreList,
+    pub recommend: recommend::Recommend,
     pub settings: settings::Settings,
     pub unlocks: Vec<unlocks::UnlockItem>,
     pub results_hint_wait: bool,
@@ -211,6 +214,14 @@ pub fn screen_sound(from: u32, to: u32) -> Option<i32> {
 }
 
 impl FrontEnd {
+    pub fn files_writing(&self) -> bool {
+        #[cfg(feature = "net")]
+        let servers = self.ava.browser.saver.as_ref().is_some_and(|w| w.writing());
+        #[cfg(not(feature = "net"))]
+        let servers = false;
+        servers || self.ava.options.writer.as_ref().is_some_and(|w| w.writing())
+    }
+
     pub fn reload_riders(&mut self, big_root: &Path) -> Result<()> {
         let career = CareerDb::load(big_root)?;
         let mut rules = career.rules();
@@ -299,6 +310,8 @@ impl FrontEnd {
             loop_fade_in: false,
             busy: busy::BusyIcon::default(),
             post_race: postrace::PostRaceMenu::default(),
+            explore_list: explore::ExploreList::default(),
+            recommend: recommend::Recommend::default(),
             settings: settings::Settings::default(),
             unlocks: Vec::new(),
             results_hint_wait: false,
@@ -422,6 +435,7 @@ impl FrontEnd {
             ava::session::chat::update(self, env);
             ava::session::players::update(self);
         }
+        ava::options::saved(self, env);
         ava::maps::update(self, env);
         flow::level_start_update(self, env);
         if !self.fader_by_ride {

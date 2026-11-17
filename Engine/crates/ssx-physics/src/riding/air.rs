@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 use anyhow::{Result, bail};
@@ -9,6 +10,8 @@ use crate::curve::Curve;
 use crate::tuning::{AssetView, Bundle};
 
 const EPS: f32 = 1.192_092_9e-7;
+
+const ROTATE_EPS: f32 = 1.525_879e-5;
 
 #[derive(Clone, Debug, Default)]
 pub struct AerialVariant {
@@ -201,6 +204,22 @@ pub struct AirOutputs {
     pub spin_wiggle: f32,
 }
 
+impl AirOutputs {
+    pub fn signals(&self) -> [(&'static str, f32); 9] {
+        [
+            ("FLT_FlipMagnitude", self.flip_magnitude),
+            ("FLT_SpinMagnitude", self.spin_magnitude),
+            ("FLT_FlipSpeed", self.flip_speed),
+            ("FLT_SpinSpeed", self.spin_speed),
+            ("FLT_FlipAngleDegrees", self.flip_angle_degrees),
+            ("FLT_FlipWiggleAngle", self.flip_wiggle),
+            ("FLT_SpinWiggleAngle", self.spin_wiggle),
+            ("FLT_AirIdleTime", self.air_idle_time),
+            ("BLN_AirIdle", f32::from(u8::from(self.air_idle))),
+        ]
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Assist {
     pub flip: f32,
@@ -223,6 +242,7 @@ pub struct AirRotation {
     pub spin: Actuator,
     pub flip_input: f32,
     pub spin_input: f32,
+    pub input: Vec2,
     pub flip_idle: f32,
     pub spin_idle: f32,
     pub air_idle: f32,
@@ -235,14 +255,31 @@ pub struct AirRotation {
     pub ticks_to_land: f32,
     pub target_valid: bool,
     pub prediction: Option<LandingPrediction>,
+    pub intercept_ticks: f32,
+    pub intercept: bool,
+    pub correction: bool,
     pub flip_wiggle: [f32; 3],
     pub spin_wiggle: [f32; 3],
     pub outputs: AirOutputs,
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct TakeoffInputs {
+    pub board: Quat,
+    pub wf: Quat,
+    pub velocity: Vec3,
+    pub ground_normal: Vec3,
+    pub prewind: f32,
+    pub trigger: bool,
+    pub prediction: Option<LandingPrediction>,
+    pub intercept: Option<f32>,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct AirInputs {
     pub stick: Vec2,
+    pub lstick: Vec2,
+    pub classic: bool,
     pub velocity: Vec3,
     pub allow_stance_switch: bool,
     pub grind_steering: Option<f32>,
@@ -251,27 +288,54 @@ pub struct AirInputs {
 }
 
 impl AirRotation {
-    #[allow(clippy::too_many_arguments)]
     pub fn takeoff(
         t: &AerialTuning,
         r: &ResolvedCharacterProperties,
-        takeoff: Takeoff,
-        board: Quat,
-        wf: Quat,
-        velocity: Vec3,
-        ground_normal: Vec3,
+        kind: Takeoff,
         stick: Vec2,
-        prewind: f32,
-        prediction: Option<LandingPrediction>,
+        i: &TakeoffInputs,
     ) -> Self {
-        let variant = if takeoff == Takeoff::Jump { &t.jump } else { &t.airborne };
+        let mut a = Self::activate(stick);
+        a.init_takeoff(t, r, kind, i);
+        a.idle_timers(t, 0.0);
+        a
+    }
+
+    pub fn air_jump(&mut self, t: &AerialTuning, r: &ResolvedCharacterProperties, i: &TakeoffInputs) {
+        self.init_takeoff(t, r, Takeoff::AirJump, i);
+    }
+
+    fn activate(stick: Vec2) -> Self {
+        Self {
+            first_tick: true,
+            q_ref: Quat::IDENTITY,
+            q_land: Quat::IDENTITY,
+            q_res: Quat::IDENTITY,
+            flip_dir: Vec3::X,
+            flip_axis: Vec3::X,
+            swivel: true,
+            input: stick,
+            flip_idle: NO_LANDING,
+            spin_idle: NO_LANDING,
+            land_flip_period: TAU,
+            land_spin_period: PI,
+            ticks_to_land: NO_LANDING,
+            intercept_ticks: NO_LANDING,
+            ..Self::default()
+        }
+    }
+
+    fn init_takeoff(&mut self, t: &AerialTuning, r: &ResolvedCharacterProperties, kind: Takeoff, i: &TakeoffInputs) {
+        (self.intercept_ticks, self.intercept) = i.intercept.map_or((NO_LANDING, false), |t| (t, true));
+        let (board, wf, velocity, prediction) = (i.board, i.wf, i.velocity, i.prediction);
+        let variant = if kind == Takeoff::Jump { &t.jump } else { &t.airborne };
         let q_ref = frame_from_velocity(velocity, board);
         let q_land = frame_heading_normal(velocity, Vec3::Y, board);
         let (theta0, phi0, q_res) = decompose(q_ref.conjugate() * board, 0.0);
         let (d_theta, d_phi, _) = decompose((q_ref.conjugate() * wf * q_ref).normalize(), 0.0);
-        let prewind = if takeoff == Takeoff::AirJump || variant.enable_prewind_by_default { prewind } else { 0.0 };
-        let (mut x, mut y) = (stick.x, stick.y);
-        let tilt0 = up_tilt_about_x(q_land.conjugate() * ground_normal);
+        let prewind = if i.trigger || variant.enable_prewind_by_default { i.prewind } else { 0.0 };
+        let (mut x, mut y) = (self.input.x, self.input.y);
+        let tilt0 = up_tilt_about_x(q_land.conjugate() * i.ground_normal);
         let tilt_pred = up_tilt_about_x(q_land.conjugate() * (board * Vec3::Y))
             + t.roll_threshold_velocity_scale * up_tilt_about_x(q_land.conjugate() * (wf * Vec3::Y));
         let roll = tilt0.abs() > t.roll_threshold_angle
@@ -293,7 +357,7 @@ impl AirRotation {
             _ => 1.0,
         };
         let (sf, ss) = (strength(&variant.takeoff_flip_strength), strength(&variant.takeoff_spin_strength));
-        let flip = Actuator::new(
+        self.flip = Actuator::new(
             r.flip_actuator_strength,
             theta0,
             flip_v,
@@ -302,7 +366,7 @@ impl AirRotation {
             r.flip_max_velocity,
             t.flip_max_assist_velocity,
         );
-        let spin = Actuator::new(
+        self.spin = Actuator::new(
             r.spin_actuator_strength,
             phi0,
             spin_v,
@@ -311,25 +375,10 @@ impl AirRotation {
             r.spin_max_velocity,
             t.spin_max_assist_velocity,
         );
-        Self {
-            takeoff,
-            first_tick: true,
-            q_ref,
-            q_land,
-            q_res,
-            flip_dir,
-            flip_axis: Vec3::X,
-            swivel,
-            flip,
-            spin,
-            flip_input: y,
-            spin_input: x,
-            land_flip_period: TAU,
-            land_spin_period: PI,
-            ticks_to_land: NO_LANDING,
-            prediction,
-            ..Self::default()
-        }
+        (self.takeoff, self.q_ref, self.q_land, self.q_res) = (kind, q_ref, q_land, q_res);
+        (self.swivel, self.flip_dir) = (swivel, flip_dir);
+        (self.flip_wiggle[0], self.flip_wiggle[1], self.spin_wiggle[0], self.spin_wiggle[1]) = (0.0, 0.0, 0.0, 0.0);
+        self.prediction = prediction;
     }
 
     pub fn orientation(&self) -> Quat {
@@ -347,15 +396,15 @@ impl AirRotation {
         goofy: &mut bool,
         dt: f32,
     ) -> Quat {
-        self.air_time += dt;
         if self.first_tick {
             self.first_tick = false;
         } else {
-            self.select_landing_target(t, inp);
+            self.air_time += dt;
+            self.select_landing_target(t, inp, dt);
         }
         self.drift_reference_frame(t, dt);
-        self.read_stick_inputs(t, inp.stick);
-        self.step_actuators(t, r, inp.stick, board, dt);
+        self.read_stick_inputs(t, inp.stick, inp.classic);
+        self.step_actuators(t, r, inp.lstick, board, dt);
         if self.air_idle.abs() > EPS && inp.allow_stance_switch {
             let z = (self.q_ref.conjugate() * board) * Vec3::Z;
             if z.z.abs() > EPS {
@@ -367,12 +416,28 @@ impl AirRotation {
         self.orientation()
     }
 
-    fn select_landing_target(&mut self, t: &AerialTuning, inp: &AirInputs) {
+    fn select_landing_target(&mut self, t: &AerialTuning, inp: &AirInputs, dt: f32) {
         let (v, grind_steering, tutorial_mode) = (inp.velocity, inp.grind_steering, inp.tutorial_mode);
         (self.land_flip_period, self.land_flip_offset, self.land_spin_period, self.land_spin_offset) =
             (TAU, 0.0, PI, 0.0);
         self.land_weight = 0.0;
-        if let Some(left) = inp.heli_interact {
+        if self.intercept {
+            match self.prediction {
+                Some(p) if matches!(p.ticks.partial_cmp(&self.intercept_ticks), Some(Ordering::Less) | None) => {
+                    (self.intercept, self.intercept_ticks) = (false, NO_LANDING);
+                }
+                _ => {
+                    let left = self.intercept_ticks - dt;
+                    self.intercept_ticks = if left >= 0.0 { left } else { 0.0 };
+                }
+            }
+        }
+        if self.intercept {
+            self.q_land = frame_from_velocity(v, self.q_land);
+            self.ticks_to_land = self.intercept_ticks;
+            self.land_weight = 1.0;
+            self.target_valid = true;
+        } else if let Some(left) = inp.heli_interact {
             self.q_land = frame_heading_normal(v, Vec3::Y, self.q_land);
             (self.land_spin_period, self.land_spin_offset) = (TAU, if left { 0.0 } else { PI });
             self.ticks_to_land = 0.0;
@@ -414,25 +479,32 @@ impl AirRotation {
 
     fn drift_reference_frame(&mut self, t: &AerialTuning, dt: f32) {
         let d = (self.q_ref.conjugate() * self.q_land).normalize();
-        let (axis, angle) = d.to_axis_angle();
-        let angle = wrap_angle(angle);
-        let step = (t.wobble_adjustment_ratio * self.flip.vel * dt).abs().min(t.wobble_max_velocity);
-        if axis.is_finite() && angle.abs() > EPS {
-            self.q_ref = (self.q_ref * Quat::from_axis_angle(axis, angle.clamp(-step, step))).normalize();
-        }
+        let sin2 = 1.0 - d.w * d.w;
+        let axis = if sin2 >= ROTATE_EPS { Vec3::new(d.x, d.y, d.z) / sin2.sqrt() } else { Vec3::X };
+        let f = 2.0 * d.w.clamp(-1.0, 1.0).acos() / TAU;
+        let f = f - f.floor();
+        let angle = (if f > 0.5 { f - 1.0 } else { f }) * TAU;
+        let limit = 2.0 * self.wobble_step(t, dt);
+        self.q_ref = (self.q_ref * Quat::from_axis_angle(axis, angle.clamp(-limit, limit))).normalize();
     }
 
-    fn read_stick_inputs(&mut self, t: &AerialTuning, stick: Vec2) {
+    fn wobble_step(&self, t: &AerialTuning, dt: f32) -> f32 {
+        (t.wobble_adjustment_ratio * self.flip.vel * dt).abs().max(t.wobble_max_velocity)
+    }
+
+    fn read_stick_inputs(&mut self, t: &AerialTuning, stick: Vec2, classic: bool) {
         let ttl = self.prediction.map_or(NO_LANDING, |p| p.ticks);
-        let x = if ttl < t.input_x_dead_zone_time && self.spin_idle != 0.0 { 0.0 } else { stick.x };
-        let y = if ttl < t.input_y_dead_zone_time && self.flip_idle != 0.0 { 0.0 } else { stick.y };
+        let x = if !classic && ttl < t.input_x_dead_zone_time && self.spin_idle.abs() > EPS { 0.0 } else { stick.x };
+        let y = if !classic && ttl < t.input_y_dead_zone_time && self.flip_idle.abs() > EPS { 0.0 } else { stick.y };
+        self.input = Vec2::new(x, y);
         if self.flip_idle >= t.flip_idle_time_threshold && self.spin_idle >= t.spin_idle_time_threshold {
             self.swivel = false;
         }
         if self.swivel {
             let d = Vec3::new(y, 0.0, x);
-            self.flip_axis = d.try_normalize().unwrap_or(self.flip_dir);
-            (self.flip_input, self.spin_input) = (d.length(), 0.0);
+            let len = d.length();
+            (self.flip_axis, self.flip_input) = if len > EPS { (d / len, len) } else { (self.flip_dir, 0.0) };
+            self.spin_input = 0.0;
         } else {
             (self.flip_axis, self.flip_input, self.spin_input) = (Vec3::X, y, x);
         }
@@ -450,7 +522,7 @@ impl AirRotation {
         if self.flip_input.abs() > EPS {
             let target = self.flip_axis * (self.flip.stick_scale * self.flip_input).abs();
             let d = target + (self.flip_dir * self.flip.vel.abs() - target) * (-t.swivel_convergence * dt).exp();
-            self.flip_dir = d.try_normalize().unwrap_or(self.flip_dir);
+            self.flip_dir = if d.abs().max_element() > EPS { d.normalize() } else { self.flip_axis };
         }
         let psi = swivel_angle(self.flip_dir);
         (self.flip.angle, self.spin.angle, self.q_res) = decompose(rel, psi);
@@ -467,20 +539,20 @@ impl AirRotation {
             let (e, rate) = crit_damped(w[0] - w[2], w[1], resp.max(0.0).sqrt(), dt);
             (w[0], w[1]) = (e + w[2], rate);
         }
-        let wobble = (t.wobble_adjustment_ratio * self.flip.vel * dt).abs().min(t.wobble_max_velocity);
-        self.q_res = towards_identity(self.q_res, wobble);
+        self.q_res = towards_identity(self.q_res, self.wobble_step(t, dt));
     }
 
     pub fn assist(&self, t: &AerialTuning, r: &ResolvedCharacterProperties) -> Assist {
         let w = self.land_weight;
+        let no_spin = |a: Assist| if self.correction { Assist { spin: 0.0, ..a } } else { a };
         if !(self.target_valid || w > 0.0) {
-            return Assist { flip: w, flip_ticks: NO_LANDING, spin: w, spin_ticks: NO_LANDING };
+            return no_spin(Assist { flip: w, flip_ticks: NO_LANDING, spin: w, spin_ticks: NO_LANDING });
         }
         let lerp = |a: f32, b: f32, s: f32| a + (b - a) * s;
         let flip = w
             .max(lerp(r.flip_max_assist_factor, r.flip_min_assist_factor, self.flip_input.abs()))
             .max(t.flip_assist_curve.eval(self.air_time));
-        let s = self.flip_dir.x * sign(self.flip.vel);
+        let s = self.flip_dir.x * if self.flip.vel >= 0.0 { 1.0 } else { -1.0 };
         let flip_ticks = (self.ticks_to_land
             + t.flip_forward_balance_compensation_time * s.max(0.0)
             + t.flip_backward_balance_compensation_time * (-s).max(0.0))
@@ -489,7 +561,7 @@ impl AirRotation {
             .max(lerp(r.spin_max_assist_factor, r.spin_min_assist_factor, self.spin_input.abs()))
             .max(t.spin_assist_curve.eval(self.air_time));
         let spin_ticks = (self.ticks_to_land + t.spin_balance_compensation_time).max(1.0);
-        Assist { flip, flip_ticks, spin, spin_ticks }
+        no_spin(Assist { flip, flip_ticks, spin, spin_ticks })
     }
 
     fn idle_timers(&mut self, t: &AerialTuning, dt: f32) {
@@ -538,16 +610,6 @@ impl AirRotation {
         } else {
             0.0
         }
-    }
-}
-
-fn sign(x: f32) -> f32 {
-    if x > 0.0 {
-        1.0
-    } else if x < 0.0 {
-        -1.0
-    } else {
-        0.0
     }
 }
 

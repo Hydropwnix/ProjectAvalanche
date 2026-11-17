@@ -4,9 +4,9 @@ macro_rules! println {
         $crate::println!("")
     };
     ($($arg:tt)*) => {{
-        use ::std::io::Write as _;
         let line = $crate::text::Text::new(::std::format_args!($($arg)*));
-        if let Err(e) = ::std::writeln!(::std::io::stdout().lock(), "{line}") {
+        let bytes = ::std::format!("{line}\n").into_bytes();
+        if let Err(e) = $crate::output::line($crate::output::Stream::Out, $crate::output::Keep::Always, bytes) {
             ::std::panic!("failed printing to stdout: {e}");
         }
     }};
@@ -18,18 +18,19 @@ macro_rules! eprintln {
         $crate::eprintln!("")
     };
     ($($arg:tt)*) => {{
-        use ::std::io::Write as _;
         let line = $crate::text::Text::new(::std::format_args!($($arg)*));
-        if let Err(e) = ::std::writeln!(::std::io::stderr().lock(), "{line}") {
+        let bytes = ::std::format!("{line}\n").into_bytes();
+        if let Err(e) = $crate::output::line($crate::output::Stream::Err, $crate::output::Keep::Always, bytes) {
             ::std::panic!("failed printing to stderr: {e}");
         }
     }};
 }
 
 pub fn row(fields: &[&dyn std::fmt::Display]) {
-    use std::io::Write as _;
     let line = row_line(fields);
-    if let Err(e) = writeln!(std::io::stdout().lock(), "{line}") {
+    if let Err(e) =
+        crate::output::line(crate::output::Stream::Out, crate::output::Keep::Always, format!("{line}\n").into())
+    {
         panic!("failed printing to stdout: {e}");
     }
 }

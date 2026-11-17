@@ -197,6 +197,8 @@ pub struct Snapshot {
     pub lead: u64,
     pub stream_first: u64,
     pub stream_dry: u64,
+    pub waited_first: u64,
+    pub waited_dry: u64,
 }
 
 pub fn snapshot() -> Snapshot {
@@ -215,6 +217,8 @@ pub fn snapshot() -> Snapshot {
         lead: LEAD.load(Relaxed),
         stream_first: crate::sfx_stream::LATE_FIRST.load(Relaxed),
         stream_dry: crate::sfx_stream::LATE_DRY.load(Relaxed),
+        waited_first: crate::sfx_stream::WAITED_FIRST.load(Relaxed),
+        waited_dry: crate::sfx_stream::WAITED_DRY.load(Relaxed),
     }
 }
 
@@ -257,8 +261,23 @@ impl Reporter {
         );
         count(d(now.silent, l.silent), "frames of silence inserted");
         count(d(now.errors, l.errors), "stream errors");
-        count(d(now.stream_dry, l.stream_dry), "times a running stream ran dry (its next block not read yet)");
-        count(d(now.stream_first, l.stream_first), "times a new stream waited for its first block");
+        let ms = |frames: u64| frames as f64 * 1000.0 / f64::from(RATE);
+        let (dry, first) = (d(now.stream_dry, l.stream_dry), d(now.stream_first, l.stream_first));
+        if dry > 0 {
+            parts.push(format!(
+                "{dry} times a running stream ran dry (its next block not read yet; {:.1} ms of its sound late)",
+                ms(d(now.waited_dry, l.waited_dry))
+            ));
+        }
+        if first > 0 {
+            parts.push(format!(
+                "{first} times a new stream waited for its first block ({:.1} ms late in all)",
+                ms(d(now.waited_first, l.waited_first))
+            ));
+        }
+        if let Some(w) = crate::sfx_stream::take_longest().filter(|w| w.frames > 0 || dry > 0 || first > 0) {
+            parts.push(format!("the longest wait {w}"));
+        }
         let late = d(now.late, l.late);
         if late > 0 {
             parts.push(format!("{late} pulls waited for the mixer (longest {:.1} ms)", wait_max as f64 * 1e-6));

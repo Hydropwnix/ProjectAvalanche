@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use ssx_physics::DT_TICKS;
 use ssx_physics::event::{Course, EventManager, EventSetup, level_event};
-use ssx_physics::rewind::RewindPad;
+use ssx_physics::rewind::{LiveRewindRule, RewindPad};
 use ssx_physics::rider::{RiderState, TrickInput, World as PhysicsWorld};
 use ssx_physics::session::Session;
 
@@ -179,13 +179,13 @@ impl Ride {
         }
         if let Some(rules) = setup.live {
             session.bots = Some(live_rivals(&setup.big_root, def.as_ref(), rules, session.event.setup.course));
-            let count = &mut session.manager.count;
+            let m = &mut session.manager;
             match rules.rewinds {
                 super::live::LiveRewinds::Event => {}
-                super::live::LiveRewinds::Off => count.enabled = false,
-                super::live::LiveRewinds::Limit(n) => (count.infinite, count.rewinds_left) = (false, i32::from(n)),
+                super::live::LiveRewinds::Off => m.set_live_rule(LiveRewindRule::Off),
+                super::live::LiveRewinds::Limit(n) => m.set_live_rule(LiveRewindRule::Limit(i32::from(n))),
             }
-            info!("live: rewinds {:?} ({count:?})", rules.rewinds);
+            info!("live: rewinds {:?} ({:?}, rule {:?})", rules.rewinds, m.count, m.live_rule);
         }
         if let Some(d) = def.as_ref().filter(|d| {
             setup.live.is_none() && d.event_type.is_some() && !crate::render::post::env_is("SSX_GHOSTS", "off")
@@ -207,6 +207,22 @@ impl Ride {
                 }
                 Err(e) => warn!("bots unavailable: {e:#}"),
             }
+        }
+        if let Some((slot, replay)) = setup.own_ghost.take()
+            && let Some(race) = session.bots.as_mut()
+            && !setup.free_ride
+            && def.as_ref().and_then(|d| d.event_type).is_some_and(|t| {
+                matches!(t, ssx_physics::event::EventType::RaceGhosts | ssx_physics::event::EventType::TrickGhosts)
+            })
+        {
+            info!(
+                "own ghost: slot {slot}, {} samples over {:.2} s (gear {:#x}, score {})",
+                replay.times.len(),
+                replay.duration(),
+                replay.header.gear_flags,
+                replay.header.score
+            );
+            race.add_own_ghost(ssx_physics::session::bots::own_ghost_request(slot), replay);
         }
         if let Some(b) = session.bots.as_mut() {
             b.explore_mode = explore_game_mode(setup.game_mode, def.as_ref());
@@ -449,6 +465,7 @@ impl Ride {
             fixed_input: setup.fixed_input,
             jump_release: setup.jump_release,
             air_input: setup.air_input,
+            steer_from: setup.steer_from,
             grab: setup.grab,
             tweak: setup.tweak,
             shoulders: setup.shoulders,
@@ -486,6 +503,7 @@ impl Ride {
             wingsuit_script: wingsuit_script(),
             ws_pressed: None,
             ws_deployed: None,
+            oxygen_held: false,
             hold: setup.game,
             paused: false,
             back_held: false,
@@ -504,6 +522,7 @@ impl Ride {
             pads_held: false,
             chat_held: false,
             pose_blocks: setup.live.map(|_| ssx_physics::graph::LiveBlocks::default()),
+            ghost_rumble: ssx_physics::graph::LandingRumble::default(),
             start_gate: super::live::StartGate::Free,
             go_step: None,
             unlimited_gear: 0,

@@ -142,3 +142,57 @@ pub fn one_collection_pair(name: &str) -> (Vec<u8>, Vec<u8>) {
     b.ptr(FILE_VLT, at + 0x1c, layout);
     b.build()
 }
+
+pub const UI_DROP: u32 = fnv1(b"ui_drop");
+pub const UI_DROP_NAME: u32 = 0xAF27_A974;
+pub const UI_DROP_GE_DROP: u32 = 0xB9C2_CFC5;
+
+pub fn ui_drop_schema_pair() -> (Vec<u8>, Vec<u8>) {
+    let mut b = Builder::new(&[]);
+    let names: Vec<u8> = TYPES.iter().flat_map(|t| t.0.bytes().chain([0])).collect();
+    let names_at = b.bin(&names);
+    let mut db = be(&[207, 216, TYPES.len() as u32, 0]);
+    db.extend(be(&TYPES.map(|t| t.1)));
+    let db_at = b.export(EXPORT_DATABASE ^ 1, EXPORT_DATABASE, &db);
+    b.ptr(FILE_VLT, db_at + 12, names_at);
+    let defs = be(&[
+        UI_DROP_NAME,
+        th(1),
+        4,
+        (1 << 16) | (0x04 << 8) | 2,
+        UI_DROP_GE_DROP,
+        th(3),
+        12,
+        (1 << 16) | (0x24 << 8) | 2,
+    ]);
+    let defs_at = b.bin(&defs);
+    let class_at = b.export(UI_DROP, EXPORT_CLASS, &be(&[UI_DROP, 2, 2, 0, 0, 0, 0, 0]));
+    b.ptr(FILE_VLT, class_at + 12, defs_at);
+    b.build()
+}
+
+pub fn ui_drops_pair(drops: &[(&str, Option<&str>, Option<u32>)]) -> (Vec<u8>, Vec<u8>) {
+    let names: Vec<&str> = drops.iter().map(|d| d.0).collect();
+    let mut b = Builder::new(&names);
+    let mut pointers = Vec::new();
+    for &(name, parent, ge_drop) in drops {
+        let count = 1 + u32::from(ge_drop.is_some());
+        let parent = parent.map_or(0, |p| fnv1(p.as_bytes()));
+        let mut col = be(&[fnv1(name.as_bytes()), UI_DROP, parent, count, 0, count, (count << 16) | 2, 0, th(1)]);
+        col.extend(be(&[if ge_drop.is_some() { th(3) } else { 0 }]));
+        col.extend(be(&[UI_DROP_NAME, 0, (ENTRY_INLINE as u32) << 8]));
+        let refspec = ge_drop.map(|g| {
+            col.extend(be(&[UI_DROP_GE_DROP, 0, (1 << 16) | (super::collection::ENTRY_REFERENCE as u32) << 8]));
+            b.bin(&be(&[fnv1(b"ge_drop"), g, 0]))
+        });
+        let at = b.export(fnv1(format!("ui_drop/{name}").as_bytes()), EXPORT_COLLECTION, &col);
+        pointers.push((at + 0x28 + 4, b.string_at(name)));
+        if let Some(r) = refspec {
+            pointers.push((at + 0x28 + 12 + 4, r));
+        }
+    }
+    for (slot, target) in pointers {
+        b.ptr(FILE_VLT, slot, target);
+    }
+    b.build()
+}

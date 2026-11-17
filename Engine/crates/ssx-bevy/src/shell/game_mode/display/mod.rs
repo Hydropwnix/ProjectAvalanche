@@ -213,6 +213,17 @@ impl DisplayState {
     pub fn effective(&self) -> Option<WindowMode> {
         self.applied.as_ref().map(|r| r.effective)
     }
+
+    pub(super) fn keep_at_exit(&mut self) {
+        if let Some(keeper) = &self.keeper {
+            keeper.keep(self.settings.clone());
+            self.kept = self.settings.clone();
+        }
+    }
+
+    pub(super) fn writing(&self) -> bool {
+        self.keeper.as_ref().is_some_and(keeper::Keeper::writing)
+    }
 }
 
 pub fn register(app: &mut App, spec: &WindowSpec, keep: bool, follow_focus: bool) {

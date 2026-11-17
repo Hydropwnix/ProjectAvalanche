@@ -41,7 +41,7 @@ HeliUpdateSceneOp's desired position over the height grid, HeliMovementControlle
 spring, HeliGoToEnd to the outro locator), the disc geotags (session::geotags: the drop's placement — collected ones \
 skipped, the 100 m spacing, 25 kept at random —, the GeoCache controller's spin, bounce, touch, flight to the rider and \
 pickup, GEOCACHE_ResultList into the results); port choices: the riding start of tests, the uber-crash landing's pivot \
-blend, a stopped rider's grind veering, the finish message's exit, the medal rule, the trick flow left by a deploy, \
+blend, the finish message's exit, the medal rule, the trick flow left by a deploy, \
 the sunlight ray headless (the viewer hands in its shadow read-back), the Explore drops' gear (the player's profile), \
 a stopped rider's board angle, the helicopter's chase-target velocity source, the bots' and the geotags' seeds; not modelled: the long / \
 medium cabin intros, the helicopter's tilt and heli tricks";

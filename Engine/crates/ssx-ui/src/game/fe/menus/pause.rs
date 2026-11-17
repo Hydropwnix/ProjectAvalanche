@@ -248,7 +248,7 @@ pub fn nav_action(fe: &mut FrontEnd, env: &mut FeEnv, name: &str) -> bool {
     true
 }
 
-// TODO(guess): the save (0x82405FB0 → 0x82457FE8, end 0x82405F50) completes at once in the port; settle: the save manager's job queue and its callback timing.
+// TODO(guess): the save (0x82405FB0 → 0x82457FE8, end 0x82405F50) ends at its request for the front end in the port (the shell's save writer writes the file meanwhile); settle: the save manager's job queue and its callback timing.
 fn save_and_leave(fe: &mut FrontEnd, env: &mut FeEnv) {
     fe.note("pause menu: save (FE manager +0xC0, +0xC4)");
     crate::game::fe::flow::store_camera_type(fe);

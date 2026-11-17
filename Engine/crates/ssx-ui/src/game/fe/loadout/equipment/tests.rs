@@ -363,3 +363,129 @@ fn a_bought_item_is_owned_once_after_the_rider_is_chosen_again() {
     let reused = inv.store_list.iter().find(|u| u.key == bought).expect("the offer with the bought id is on sale");
     assert!(!reused.has(flag::AVAILABLE), "an offer, not owned");
 }
+
+fn tuner_progression() -> (Vec<i64>, Vec<i64>) {
+    let thresholds = [
+        6_000, 12_000, 24_000, 100_000, 200_000, 350_000, 650_000, 1_000_000, 2_500_000, 5_000_000, 7_500_000,
+        10_000_000, 12_500_000, 15_000_000, 17_500_000,
+    ];
+    let mut prices = vec![0; 15];
+    prices[10..].copy_from_slice(&[1_000_000, 2_500_000, 5_000_000, 7_500_000, 10_000_000]);
+    (thresholds.to_vec(), prices)
+}
+
+#[test]
+fn x_buys_the_highlighted_riders_next_level_not_the_equipped_ones() {
+    use ssx_assets::career::profile::{RiderStats, update_rider_level};
+    let (thresholds, prices) = tuner_progression();
+    let mut db = CareerDb { riders: (1..=14).map(|k| rider(k, false)).collect(), ..Default::default() };
+    (db.progression.level_thresholds, db.progression.level_prices) = (thresholds.clone(), prices.clone());
+    let rules = ssx_assets::career::Rules {
+        level_thresholds: thresholds.clone(),
+        level_prices: prices.clone(),
+        ..Default::default()
+    };
+    let mut profile = Profile::default();
+    profile.add_credits(50_000_000, true);
+    for r in &db.riders {
+        profile.riders.insert(r.key, RiderStats { money_earned: 6_000_000, ..Default::default() });
+    }
+    let mut loc = Localization::empty(Language::English);
+    let mut inv = Inventory::new(&db);
+    inv.select_rider(&db, &profile, 0, 1);
+    let ctx = inv.store_context(&db, &profile, None);
+    inv.build_lists(&db, &profile, &mut loc, None, &ctx, inventory::RIDER);
+    let list = inv.owned_list.clone();
+    assert_eq!(list.len(), 14);
+    let at = list.iter().position(|u| u.key == 9).expect("rider 9 listed");
+    assert!(list[at].has(flag::LEVEL_PURCHASEABLE) && list[at].level == 10 && list[at].cost == 1_000_000);
+    assert_eq!(level_purchase(&list, at, 50_000_000), LevelPurchase::Buy { rider: 9, level: 10 });
+    for (i, u) in list.iter().enumerate() {
+        assert_eq!(level_purchase(&list, i, 50_000_000), LevelPurchase::Buy { rider: u.key, level: 10 });
+    }
+    assert_eq!(profile.purchase_rider_level(&rules, 9, 10), Ok(1_000_000));
+    assert_eq!(profile.credits(), 49_000_000);
+    let bought = profile.riders.get_mut(&9).expect("rider 9");
+    assert_eq!(bought.max_purchased_level, 10);
+    assert_eq!(update_rider_level(bought, &thresholds, &prices), (9, 0), "access to level 11: its bar at 0 %");
+    assert_eq!(profile.riders[&1].max_purchased_level, 0, "the equipped rider keeps its levels");
+    inv.build_lists(&db, &profile, &mut loc, None, &ctx, inventory::RIDER);
+    let list = inv.owned_list.clone();
+    let at = list.iter().position(|u| u.key == 9).expect("rider 9 listed");
+    assert!(!list[at].has(flag::LEVEL_PURCHASEABLE));
+    assert_eq!(level_purchase(&list, at, 50_000_000), LevelPurchase::NotOffered);
+    let other = list.iter().position(|u| u.key == 2).expect("rider 2 listed");
+    assert_eq!(level_purchase(&list, other, 999_999), LevelPurchase::NotEnoughMoney);
+    assert_eq!(level_purchase(&list, 14, i32::MAX), LevelPurchase::NoEntry);
+    assert_eq!(level_purchase(&list, usize::MAX, i32::MAX), LevelPurchase::NoEntry);
+}
+
+const TUNER_SLOTS: [[u8; 5]; 15] = [
+    [1, 1, 1, 0, 0],
+    [1, 1, 1, 0, 0],
+    [1, 1, 1, 1, 0],
+    [1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1],
+    [1, 1, 1, 2, 1],
+    [1, 1, 1, 2, 2],
+    [1, 1, 1, 2, 2],
+    [1, 1, 2, 2, 2],
+    [1, 1, 2, 3, 3],
+    [1, 1, 2, 3, 4],
+    [1, 1, 2, 4, 4],
+    [1, 1, 3, 4, 4],
+    [1, 1, 3, 4, 4],
+];
+
+#[test]
+fn a_level_for_sale_describes_the_slots_it_adds() {
+    let mut loc = Localization::empty(Language::English);
+    for (k, t) in [
+        ("TXT_EQUIP_BUY_LVL_0", "Buy Access to Level %1d!\n"),
+        ("TXT_EQUIP_BUY_LVL_1", "Buy Access to Level %1d!\n%2s"),
+        ("TXT_EQUIP_BUY_LVL_2", "Buy Access to Level %1d!\n%2s, %3s"),
+        ("TXT_EQUIP_BUY_LVL_3", "Buy Access to Level %1d!\n%2s, %3s, %4s"),
+        ("TXT_EQUIP_BUY_LVL_BOOST", "+%1d Mod slots"),
+        ("TXT_EQUIP_BUY_LVL_GEAR", "+%1d Gear slots"),
+        ("TXT_EQUIP_BUY_LVL_GEOTAG", "+%1d Geotag slots"),
+    ] {
+        loc.add_port_string(k, t).expect("a free key");
+    }
+    let rows = TUNER_SLOTS;
+    let text =
+        |loc: &mut Localization, rows: &[[u8; 5]], level| inventory::level_purchase_description(loc, rows, level);
+    assert_eq!(text(&mut loc, &rows, 9), "Buy Access to Level 11!\n+1 Mod slots, +1 Geotag slots");
+    assert_eq!(text(&mut loc, &rows, 10), "Buy Access to Level 12!\n+1 Geotag slots");
+    assert_eq!(text(&mut loc, &rows, 12), "Buy Access to Level 14!\n+1 Gear slots");
+    assert_eq!(text(&mut loc, &rows, 13), "Buy Access to Level 15!\n", "no slot grows");
+    assert_eq!(text(&mut loc, &rows, 14), "", "no row after the last: nothing written");
+    assert_eq!(text(&mut loc, &rows, -1), "");
+    let pair = [[1, 1, 3, 1, 1], [3, 1, 2, 5, 1]];
+    assert_eq!(text(&mut loc, &pair, 0), "Buy Access to Level 2!\n, +4 Mod slots");
+    let pair = [[0, 0, 0, 0, 0], [1, 1, 1, 1, 0]];
+    assert_eq!(text(&mut loc, &pair, 0), "");
+    let pair = [[0, 0, 0, 0, 0], [0, 1, 1, 1, 0]];
+    assert_eq!(text(&mut loc, &pair, 0), "Buy Access to Level 2!\n, +1 Gear slots, +1 Mod slots");
+}
+
+#[test]
+fn the_low_survival_popup_comes_below_30_without_the_never_show_flag() {
+    let mut loc = Localization::empty(Language::English);
+    let body = "Your current gear selection gives you a %1s chance of survival.  Do you still want to proceed?";
+    loc.add_port_string("TXT_EQUIP_LOW_SURVIVAL_BODY", body).expect("the text");
+    let mut values = UiValues::new();
+    assert_eq!(
+        low_survival_body(&mut loc, &values, 4).as_deref(),
+        Some("Your current gear selection gives you a 4% chance of survival.  Do you still want to proceed?")
+    );
+    assert!(low_survival_body(&mut loc, &values, 29).is_some_and(|b| b.contains(" 29% ")));
+    assert!(low_survival_body(&mut loc, &values, -1).is_some_and(|b| b.contains(" -1% ")));
+    for score in [30, 31, 46, 100] {
+        assert_eq!(low_survival_body(&mut loc, &values, score), None, "{score}");
+    }
+    values.set_bool(LOW_SURVIVE_NEVER_SHOW, true);
+    for score in [-1, 0, 4, 29] {
+        assert_eq!(low_survival_body(&mut loc, &values, score), None, "{score}: never show again");
+    }
+}

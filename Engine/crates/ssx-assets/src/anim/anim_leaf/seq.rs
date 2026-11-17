@@ -1,6 +1,6 @@
 use super::*;
-use crate::anim_graph::GameTag;
-use crate::tags::{BoolTag, FloatTag, TagEvent, TagTracker, TagWindow};
+use crate::anim_graph::{GameTag, GameTagValue};
+use crate::tags::{BoolTag, FloatTag, IntTag, TagEvent, TagTracker, TagWindow, Vector3Tag};
 
 struct Elem {
     sub: Box<dyn Controller>,
@@ -53,6 +53,14 @@ impl Elem {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct SavedValue {
+    boolean: bool,
+    float: f32,
+    int: i32,
+    vector: [f32; 3],
+}
+
 pub struct SeqInst {
     ctrl: CtrlId,
     time: f32,
@@ -62,7 +70,9 @@ pub struct SeqInst {
     delta: Option<Delta>,
     tags: crate::tags::TagTracker,
     game: TagTracker,
-    game_saved: Vec<(bool, f32)>,
+    game_saved: Vec<SavedValue>,
+    drivers: TagTracker,
+    queries: TagTracker,
 }
 
 fn seq_anims<'a>(env: &Env<'a>, ctrl: CtrlId) -> &'a [crate::anim_graph::SeqAnim] {
@@ -80,7 +90,9 @@ impl SeqInst {
         };
         let windows = Self::audio_windows(env, ctrl);
         let game_windows = Self::game_windows(env, ctrl);
-        let game_saved = Self::game_tags(env, ctrl).iter().map(|_| (false, 0.0)).collect();
+        let game_saved = Self::game_tags(env, ctrl).iter().map(|_| SavedValue::default()).collect();
+        let driver_windows: Vec<TagWindow> = Self::driver_tags(env, ctrl).iter().map(|t| t.window).collect();
+        let query_windows: Vec<TagWindow> = Self::query_tags(env, ctrl).iter().map(|t| t.window).collect();
         let mut s = SeqInst {
             ctrl,
             time: 0.0,
@@ -91,6 +103,8 @@ impl SeqInst {
             tags: crate::tags::TagTracker::new(&windows),
             game: TagTracker::new(&game_windows),
             game_saved,
+            drivers: TagTracker::new(&driver_windows),
+            queries: TagTracker::new(&query_windows),
         };
         s.jump(env, gs, start);
         // TODO(guess): a start tick above 0 (`DefaultInitParam.StartTick`) moves the trackers there with the
@@ -101,6 +115,8 @@ impl SeqInst {
         if s.time > 0.0 {
             s.tags.set_time(s.time);
             s.game.set_time(s.time);
+            s.drivers.set_time(s.time);
+            s.queries.set_time(s.time);
         }
         s
     }
@@ -116,6 +132,44 @@ impl SeqInst {
         match &env.g.ctrls[ctrl].1 {
             Ctrl::Sequence { game_tags, .. } => game_tags,
             _ => &[],
+        }
+    }
+
+    fn driver_tags<'a>(env: &Env<'a>, ctrl: CtrlId) -> &'a [crate::anim_graph::DriverTag] {
+        match &env.g.ctrls[ctrl].1 {
+            Ctrl::Sequence { drivers, .. } => drivers,
+            _ => &[],
+        }
+    }
+
+    fn drivers_entered(&mut self, env: &Env, gs: &mut GameState) {
+        let tags = Self::driver_tags(env, self.ctrl);
+        if tags.is_empty() || !self.drivers.update(self.time) {
+            return;
+        }
+        for (i, event) in self.drivers.process() {
+            if let Some(t) = tags.get(i) {
+                gs.drivers.push(crate::anim_eval::DriverEvent { tag: t.clone(), event });
+            }
+        }
+    }
+
+    fn query_tags<'a>(env: &Env<'a>, ctrl: CtrlId) -> &'a [crate::anim_graph::QueryTag] {
+        match &env.g.ctrls[ctrl].1 {
+            Ctrl::Sequence { queries, .. } => queries,
+            _ => &[],
+        }
+    }
+
+    fn queries_applied(&mut self, env: &Env, gs: &mut GameState) {
+        let tags = Self::query_tags(env, self.ctrl);
+        if tags.is_empty() || !self.queries.update(self.time) {
+            return;
+        }
+        for (i, event) in self.queries.process() {
+            if let (Some(t), crate::tags::TagEvent::Apply(_)) = (tags.get(i), event) {
+                gs.queries.push(t.task.clone());
+            }
         }
     }
 
@@ -156,28 +210,41 @@ impl SeqInst {
     fn game_event(&mut self, tags: &[GameTag], i: usize, e: TagEvent, gs: &GameState) {
         let Some(t) = tags.get(i) else { return };
         if *TAG_TRACE {
-            eprintln!("game tag {} (signal {}) {e:?} at {:.2}", t.name, t.signal, self.time);
+            ssx_core::eprintln!("game tag {} (signal {}) {e:?} at {:.2}", t.name, t.signal, self.time);
         }
-        let saved = &mut self.game_saved[i];
-        if t.boolean {
-            let mut var = gs.bool(t.signal);
-            let mut saved_bool = saved.0;
-            let reset = t.reset_on_leave.then_some(t.default != 0.0);
-            BoolTag { value: t.value != 0.0, mode: t.mode, reset }.on(e, &mut var, &mut saved_bool);
-            saved.0 = saved_bool;
-            gs.set(t.signal, f32::from(u8::from(var)));
-        } else {
-            let mut var = gs.get(t.signal);
-            let mut saved_float = saved.1;
-            let weight = match e {
-                TagEvent::Apply(w) | TagEvent::Leave(w) => w,
-                TagEvent::Enter => 1.0,
-            };
-            let spline = crate::tags::tag_spline(&t.spline, weight);
-            let reset = t.reset_on_leave.then_some(t.default);
-            FloatTag { value: t.value, mode: t.mode, reset, spline }.on(e, &mut var, &mut saved_float);
-            saved.1 = saved_float;
-            gs.set(t.signal, var);
+        let Some(saved) = self.game_saved.get_mut(i) else { return };
+        let weight = match e {
+            TagEvent::Apply(w) | TagEvent::Leave(w) => w,
+            TagEvent::Enter => 1.0,
+        };
+        match &t.value {
+            GameTagValue::Bool(value) => {
+                let mut var = gs.bool(t.signal);
+                let reset = t.reset_on_leave.then_some(t.default != 0.0);
+                BoolTag { value: *value, mode: t.mode, reset }.on(e, &mut var, &mut saved.boolean);
+                gs.set(t.signal, f32::from(u8::from(var)));
+            }
+            GameTagValue::Float { value, spline } => {
+                let mut var = gs.get(t.signal);
+                let spline = crate::tags::tag_spline(spline, weight);
+                let reset = t.reset_on_leave.then_some(t.default);
+                FloatTag { value: *value, mode: t.mode, reset, spline }.on(e, &mut var, &mut saved.float);
+                gs.set(t.signal, var);
+            }
+            GameTagValue::Int(value) => {
+                let mut var = gs.get(t.signal) as i32;
+                let reset = t.reset_on_leave.then_some(t.default as i32);
+                IntTag { value: *value, mode: t.mode, reset }.on(e, &mut var, &mut saved.int);
+                gs.set(t.signal, var as f32);
+            }
+            GameTagValue::Vector3 { value, splines } => {
+                let [x, y, z, w] = gs.vector(t.signal);
+                let mut var = [x, y, z];
+                let spline = crate::tags::tag_spline3(splines, weight);
+                let tag = Vector3Tag { value: *value, mode: t.mode, reset_on_leave: t.reset_on_leave, spline };
+                tag.on(e, &mut var, &mut saved.vector);
+                gs.set_vector(t.signal, [var[0], var[1], var[2], w]);
+            }
         }
     }
 
@@ -246,6 +313,8 @@ impl Controller for SeqInst {
             .then(|| parts.into_iter().reduce(|a, b| Delta::accumulate(a, b, env.physics)).unwrap_or(Delta::None));
         self.audio_entered(env, gs);
         self.game_entered(env, gs);
+        self.drivers_entered(env, gs);
+        self.queries_applied(env, gs);
     }
     fn delta(&self, env: &Env, gs: &GameState) -> Delta {
         self.delta.unwrap_or_else(|| self.current.as_ref().map_or(Delta::None, |e| e.delta(env, gs)))
@@ -269,6 +338,8 @@ impl Controller for SeqInst {
         self.jump(env, gs, t);
         self.tags.set_time(self.time);
         self.game.set_time(self.time);
+        self.drivers.set_time(self.time);
+        self.queries.set_time(self.time);
     }
     fn windows(&self, env: &Env) -> Vec<Window> {
         match &env.g.ctrls[self.ctrl].1 {
@@ -294,7 +365,7 @@ impl Controller for SeqInst {
             }
         }
     }
-    fn path(&self, env: &Env, out: &mut Vec<(String, f32)>) {
+    fn path(&self, env: &Env, out: &mut Vec<PathNode>) {
         if let Some(e) = &self.current {
             e.sub.path(env, out);
         }

@@ -2,7 +2,7 @@ use std::sync::mpsc::TryRecvError;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use bevy::prelude::{Assets, Camera, Commands, Image, Query, Sprite, Vec2, Visibility, default, error, info};
+use bevy::prelude::{Assets, Camera, Commands, Image, Query, Sprite, Vec2, Visibility, default, error, info, warn};
 use ssx_ui::game::GameUi;
 
 use super::world::speech_block;
@@ -229,7 +229,10 @@ impl Shell {
                 }
                 let started = match launch.map.clone() {
                     Some(map) => self.start_map_load(ui, &launch, &map, rules),
-                    None => self.start_load(ui, &launch, rules),
+                    None => {
+                        let Some(own_ghost) = self.own_ghost_load(ui, &launch, rules.is_some()) else { return };
+                        self.start_load(ui, &launch, rules, own_ghost)
+                    }
                 };
                 match started {
                     Ok(()) => {
@@ -395,11 +398,109 @@ impl Shell {
         }
     }
 
+    // TODO(guess): the icon for the writers' time alone (from the frame of the request to the first frame after the write); settle: whether the save library's flow holds the icon longer by a frame count (`FlowAutoSave`'s update 0x83173EE0 → `FlowSave`'s 22-state switch 0x831745B8 over the vtable 0x821B77A8; tried 2026-11-16: its handlers call no clock and compare no float, the library's one time-base read 0x83177F38 has no direct caller, the icon's code 0x82586170 no timer).
+    pub(super) fn update_save_icon(&mut self, ui: &mut GameUi) {
+        let writing = self.save.writing() || self.ghosts.writing() || self.exit_writing;
+        if writing != self.save_icon {
+            self.save_icon = writing;
+            ui.fe_call(|fe, env| fe.busy.set_saving(env, writing));
+        }
+    }
+
+    pub(super) fn keep_ghost(&mut self, g: game_level::KeptGhost) {
+        if self.live_profile.is_some() {
+            info!("ghosts: not kept (a network session's level)");
+            return;
+        }
+        if self.save.no_saving {
+            match self.ghosts.keep_in_memory(g.drop, g.score) {
+                Ok(slot) => info!(
+                    "ghosts: drop {:#010x}'s run (best {}) kept in slot {slot} in memory: the player continues \
+                     without saving, the file is not written",
+                    g.drop, g.score
+                ),
+                Err(e) => error!("ghosts: drop {:#010x}'s run is not kept: {e:#}", g.drop),
+            }
+            return;
+        }
+        if self.save.damaged {
+            warn!("ghosts: not kept: the profile file is damaged and its dialog is not answered");
+            return;
+        }
+        let Some(file) = g.file else {
+            warn!("ghosts: drop {:#010x}'s run is not kept: a pose sample of its recording had no block", g.drop);
+            return;
+        };
+        match self.ghosts.keep(g.drop, g.score, &file) {
+            Ok(slot) => info!(
+                "ghosts: drop {:#010x}'s run (best {}, {} samples) kept in slot {slot}",
+                g.drop,
+                g.score,
+                file.streams.first().map_or(0, |s| s.count)
+            ),
+            Err(e) => error!("ghosts: drop {:#010x}'s run is not kept: {e:#}", g.drop),
+        }
+    }
+
+    pub(super) fn new_ghosts(&mut self) {
+        if self.save.no_saving {
+            info!("ghosts: the group's save is skipped: the player continues without saving");
+            return;
+        }
+        match self.ghosts.write_new() {
+            Ok(()) => info!("ghosts: the sign-in's load failed: the ghosts group is saved anew"),
+            Err(e) => error!("ghosts: the ghosts group is not saved: {e:#}"),
+        }
+    }
+
+    fn own_ghost_load(
+        &mut self,
+        ui: &mut GameUi,
+        l: &ssx_ui::game::fe::Launch,
+        live: bool,
+    ) -> Option<Option<(usize, ssx_assets::ghosts::GhostReplay)>> {
+        let fe = ui.fe.as_ref()?;
+        if fe.saveload.dialog == Some(0xB) {
+            return None;
+        }
+        if std::mem::take(&mut self.own_ghost_cancelled) {
+            return Some(None);
+        }
+        // PORT(choice): a network session's ride shows no own ghost; the console has no such session (the port's
+        // online play rides the server's rules).
+        let best = fe.profile.explore_scores.get(&l.drop).map(|e| e.score).filter(|&s| s != u32::MAX);
+        let slot = match best {
+            Some(best) if !live && !l.free_ride => self.ghosts.own_slot(l.drop, best),
+            _ => None,
+        };
+        let Some(slot) = slot else { return Some(None) };
+        match self.ghosts.load_slot(slot, &self.save.schema) {
+            super::ghosts::SlotLoad::Loaded(g) => {
+                info!("shell: drop {:#010x}'s own ghost: slot {slot}, score {}", l.drop, g.header.score);
+                Some(Some((slot, g)))
+            }
+            super::ghosts::SlotLoad::Missing => {
+                info!("shell: drop {:#010x}'s own ghost (slot {slot}): no ghosts file, none shown", l.drop);
+                Some(None)
+            }
+            super::ghosts::SlotLoad::Refused(why) => {
+                warn!("shell: drop {:#010x}'s own ghost is not shown: {why}", l.drop);
+                Some(None)
+            }
+            super::ghosts::SlotLoad::Damaged(why) => {
+                warn!("shell: drop {:#010x}'s own ghost (slot {slot}) failed its load ({why}): dialog 0xB", l.drop);
+                ui.fe_call(ssx_ui::game::fe::saveload::own_ghost_damaged);
+                None
+            }
+        }
+    }
+
     fn start_load(
         &mut self,
         ui: &mut GameUi,
         l: &ssx_ui::game::fe::Launch,
         live: Option<crate::ride::live::LiveRules>,
+        own_ghost: Option<(usize, ssx_assets::ghosts::GhostReplay)>,
     ) -> Result<()> {
         let visits = ui.fe.as_mut().and_then(|fe| ssx_ui::game::fe::flow::count_range_visit(fe, l));
         info!("shell: {} counts visit {visits:?} of its range by {} (the intro's path)", l.event, l.rider);
@@ -432,6 +533,7 @@ impl Shell {
                 setup_presentation: l.setup.presentation.as_deref().map(ssx_ui::game::ride::game_setup),
                 intro_visits: visits,
                 own_tombstone: ssx_ui::game::ride::own_tombstone_for(ui, l.drop),
+                own_ghost,
                 live,
                 event_name: Some(l.event.clone()),
                 game_mode: Some(l.game_mode),

@@ -152,8 +152,13 @@ fn input_index_and_scan_order() {
     let mut s = TrickState::default();
     assert_eq!((s.input_index, s.input_index_on_enter), (0, 0));
     s.update(&t, &stick(0.0), &air(), 2.0);
-    assert_eq!((s.has_valid_input, s.input_index, s.input_index_on_enter), (true, -1, -1));
+    assert_eq!((s.has_valid_input, s.input_index, s.input_index_on_enter), (true, -1, 0));
     assert_eq!(s.phase, TrickPhase::Anticipate);
+    assert!(s.pad_grab_end(), "the anticipation's PadGrabEnd: the old latch");
+    while s.phase == TrickPhase::Anticipate {
+        s.update(&t, &stick(0.0), &air(), 2.0);
+    }
+    assert_eq!((s.phase, s.input_index_on_enter), (TrickPhase::Enter, -1));
     s.update(&t, &TrickInput { y: true, ..stick(0.0) }, &air(), 2.0);
     assert_eq!(s.input_index, 0);
     assert!(s.pad_grab_end());
@@ -171,7 +176,7 @@ fn enter_exits_on_lost_input_before_tweaking() {
     assert_eq!(until_change(&mut s, &a, &ctx, 1), 1);
     assert_eq!(until_change(&mut s, &a, &ctx, 10), 7);
     assert_eq!((s.phase, s.level, s.trick_type), (TrickPhase::Enter, TrickLevel::Normal, TrickType::Truckdriver));
-    let mut released = s;
+    let mut released = s.clone();
     released.update(&t, &TrickInput { tweak: true, ..none() }, &ctx, 2.0);
     assert!(released.is_tweaking && !released.has_valid_input);
     assert_eq!((released.phase, released.tweak_node), (TrickPhase::Exit, false));
@@ -259,6 +264,7 @@ fn right_stick_magnitude_is_rescaled() {
         hand: TrickHand::Forehand,
         gesture_len: 1,
         virtual_stick_timer: -1.0,
+        node_tags: NodeTags::new(Node::Loop(TrickLevel::Normal).script()),
         ..TrickState::default()
     };
     for (raw, tweaking) in [(0.45, false), (0.5, true)] {
@@ -280,7 +286,7 @@ fn reset_trick_state_keeps_inputs_and_freezes_the_sig_counter() {
     let mut s = TrickState::default();
     (0..10).for_each(|_| s.update(&t, &sig, &ctx, 2.0));
     (0..3).for_each(|_| s.update(&t, &none(), &ctx, 2.0));
-    let before = s;
+    let before = s.clone();
     assert!(before.ticks_since_sig_held > 0.0 && before.is_tricking);
     s.reset_trick_state();
     assert_eq!(
@@ -350,7 +356,7 @@ fn double_gesture_upgrades_during_the_anticipation() {
     assert_eq!(s.phase, TrickPhase::Anticipate);
     s.update(&t, &up, &air(), 2.0);
     assert_eq!(s.trick_type, TrickType::Rocket);
-    let mut via_centre = s;
+    let mut via_centre = s.clone();
     s.update(&t, &left, &air(), 2.0);
     assert_eq!((s.trick_type, s.gesture_len), (TrickType::FlyingSquirrel, 2));
     assert!(s.trick_locked && s.trick_type_locked == TrickType::FlyingSquirrel);

@@ -40,7 +40,7 @@ impl ClipInst {
 
     fn trajectory_at(&self, env: &Env, c: usize, t: usize, tick: f32) -> ([f32; 4], [f32; 3]) {
         let mut nodes = env.bind.nodes.clone();
-        env.clips[c].sample_into(tick * self.fps_scale, &mut nodes);
+        env.clips[c].sample_into(env.clips[c].frame(tick * self.fps_scale), &mut nodes);
         (ssx_formats::ant_anim::normalize(nodes[t].rotation), nodes[t].translation)
     }
 }
@@ -57,7 +57,7 @@ impl Controller for ClipInst {
                 .trajectory
                 .filter(|_| self.delta_trajectory)
                 .map(|t| (t, out.pose.nodes[t], out.valid_nodes[t]));
-            env.clips[c].sample_anim_into(self.time * self.fps_scale, out);
+            env.clips[c].sample_anim_into(env.clips[c].frame(self.time * self.fps_scale), out);
             if let Some((t, srt, valid)) = keep {
                 (out.pose.nodes[t], out.valid_nodes[t]) = (srt, valid);
             }
@@ -158,7 +158,7 @@ impl Controller for LoopingInst {
             s.label(env, weight, out);
         }
     }
-    fn path(&self, env: &Env, out: &mut Vec<(String, f32)>) {
+    fn path(&self, env: &Env, out: &mut Vec<PathNode>) {
         if let Some(s) = &self.sub {
             s.path(env, out);
         }
@@ -225,7 +225,7 @@ macro_rules! forward_timeline {
                 s.label(env, weight, out);
             }
         }
-        fn path(&self, env: &Env, out: &mut Vec<(String, f32)>) {
+        fn path(&self, env: &Env, out: &mut Vec<PathNode>) {
             if let Some(s) = &self.sub {
                 s.path(env, out);
             }
@@ -304,11 +304,24 @@ pub struct PassInst {
     pub sub: Sub,
     pub class: Option<String>,
     pub exited: bool,
+    layer: Vec<(SigId, f32)>,
+    ground: Option<(usize, [f32; 3])>,
 }
 
 impl PassInst {
     pub fn new(sub: Sub, class: Option<String>) -> Self {
-        PassInst { sub, class, exited: false }
+        PassInst { sub, class, exited: false, layer: Vec::new(), ground: None }
+    }
+
+    fn subject_state(&self, gs: &GameState) -> Option<GameState> {
+        if self.layer.is_empty() {
+            return None;
+        }
+        let local = gs.clone();
+        for &(id, v) in &self.layer {
+            local.set(id, v);
+        }
+        Some(local)
     }
 
     fn frozen_carving(&self) -> bool {
@@ -319,13 +332,46 @@ impl PassInst {
 impl Controller for PassInst {
     fn update(&mut self, env: &Env, gs: &mut GameState, dt: f32) {
         let dt = if self.frozen_carving() { 0.0 } else { dt };
-        if let Some(s) = &mut self.sub {
-            s.update(env, gs, dt);
+        self.ground = match (self.class.as_deref(), env.physics) {
+            (Some(c @ "CarvingControllerAsset"), Some(p))
+                if !self.exited && dt.abs() > 1.525_878_9e-5 && p.controllers.iter().any(|x| x == c) =>
+            {
+                p.ground
+            }
+            _ => None,
+        };
+        if self.exited
+            && self.class.as_deref() == Some("AerialControllerAsset")
+            && let Some(p) = env.physics.filter(|p| !p.aerial_layer.is_empty())
+        {
+            let values = p.aerial_layer.iter().chain(&p.aerial_scripts);
+            self.layer = values.filter_map(|(n, v)| env.g.signal_id(n).map(|id| (id, *v))).collect();
         }
+        let local = self.subject_state(gs);
+        let Some(s) = &mut self.sub else { return };
+        let Some(mut local) = local else {
+            s.update(env, gs, dt);
+            return;
+        };
+        s.update(env, &mut local, dt);
+        let keep: Vec<SigId> = self.layer.iter().map(|&(id, _)| id).collect();
+        gs.merge_from(&local, &keep);
+        gs.audio_tags.append(&mut local.audio_tags);
+        gs.drivers.append(&mut local.drivers);
+        gs.queries.append(&mut local.queries);
     }
     fn pose(&self, env: &Env, gs: &GameState, out: &mut AnimPose) {
         if let Some(s) = &self.sub {
-            s.pose(env, gs, out);
+            match self.subject_state(gs) {
+                Some(local) => s.pose(env, &local, out),
+                None => s.pose(env, gs, out),
+            }
+        }
+        if let Some((j, t)) = self.ground
+            && let (Some(node), Some(valid)) = (out.pose.nodes.get_mut(j), out.valid_nodes.get_mut(j))
+        {
+            node.translation = t;
+            *valid |= crate::anim_pose::VALID_T;
         }
     }
     forward_timeline!(no_exit);
@@ -382,5 +428,166 @@ impl RefPoseInst {
             r
         });
         RefPoseInst { sub, reference, weight, offset }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::anim_graph::{Graph, Signal, SignalKind};
+
+    #[test]
+    fn an_exited_aerial_writes_its_outputs_into_its_own_layer() {
+        let mut g = Graph::default();
+        let float = |name: &str| Signal { name: name.into(), kind: SignalKind::Float(0.0), trigger: false };
+        g.signals = vec![float("FLT_FlipSpeed"), float("FLT_SpinWiggleAngle")];
+        g.ctrls.push(("aerial".into(), Ctrl::Physics { class: "AerialControllerAsset".into(), subject: Some(1) }));
+        g.ctrls.push((
+            "rate".into(),
+            Ctrl::PlaybackRate { subject: Some(2), signal: Some(0), scale: 1.0, range: [0.0, 10.0] },
+        ));
+        let seq = Ctrl::Sequence {
+            anims: Vec::new(),
+            length: 100.0,
+            windows: Vec::new(),
+            start_tick: 0.0,
+            audio_tags: Vec::new(),
+            game_tags: Vec::new(),
+            drivers: Vec::new(),
+            queries: Vec::new(),
+        };
+        g.ctrls.push(("seq".into(), seq));
+        let rig = crate::anim_pose::PoseRig::new(&ssx_formats::crsf::SceneGraph { nodes: Vec::new() }, &[], &[]);
+        let bind = crate::rig_anim::RigPose { nodes: Vec::new(), floats: Vec::new() };
+        let clip_index = std::collections::HashMap::new();
+        let physics = crate::anim_pose::StepPhysics {
+            q: [0.0, 0.0, 0.0, 1.0],
+            t: [0.0; 3],
+            controllers: vec!["AerialControllerAsset".into()],
+            aerial_layer: vec![("FLT_FlipSpeed".into(), 3.0), ("FLT_SpinWiggleAngle".into(), 0.5)],
+            aerial_scripts: Vec::new(),
+            ground: None,
+        };
+        let env = Env { g: &g, clips: &[], clip_index: &clip_index, bind: &bind, rig: &rig, physics: Some(&physics) };
+        let mut gs = GameState::new(&g);
+        gs.set(0, 1.0);
+        let mut aerial = instantiate(&env, &gs, 0);
+        aerial.update(&env, &mut gs, 2.0);
+        assert_eq!(aerial.time(), 2.0, "before the exit the subject reads the entity's 1");
+        aerial.exit(&env, &gs);
+        aerial.update(&env, &mut gs, 2.0);
+        assert_eq!(aerial.time(), 8.0, "after it the layer's 3");
+        assert_eq!((gs.get(0), gs.get(1)), (1.0, 0.0), "the entity keeps its values");
+        let env = Env { physics: None, ..env };
+        aerial.update(&env, &mut gs, 1.0);
+        assert_eq!(aerial.time(), 11.0);
+    }
+
+    #[test]
+    fn an_exited_aerials_subject_reads_the_scripts_on_its_layer() {
+        let mut g = Graph::default();
+        let script = Signal {
+            name: "FLTX_Rate".into(),
+            kind: SignalKind::Script { script: "s".into(), ordinal: 0, float: true, function: "Rate".into() },
+            trigger: false,
+        };
+        let float = Signal { name: "FLT_FlipMagnitude".into(), kind: SignalKind::Float(0.0), trigger: false };
+        g.signals = vec![script, float];
+        g.ctrls.push(("aerial".into(), Ctrl::Physics { class: "AerialControllerAsset".into(), subject: Some(1) }));
+        g.ctrls.push((
+            "rate".into(),
+            Ctrl::PlaybackRate { subject: Some(2), signal: Some(0), scale: 1.0, range: [0.0, 10.0] },
+        ));
+        let seq = Ctrl::Sequence {
+            anims: Vec::new(),
+            length: 100.0,
+            windows: Vec::new(),
+            start_tick: 0.0,
+            audio_tags: Vec::new(),
+            game_tags: Vec::new(),
+            drivers: Vec::new(),
+            queries: Vec::new(),
+        };
+        g.ctrls.push(("seq".into(), seq));
+        let rig = crate::anim_pose::PoseRig::new(&ssx_formats::crsf::SceneGraph { nodes: Vec::new() }, &[], &[]);
+        let bind = crate::rig_anim::RigPose { nodes: Vec::new(), floats: Vec::new() };
+        let clip_index = std::collections::HashMap::new();
+        let physics = crate::anim_pose::StepPhysics {
+            q: [0.0, 0.0, 0.0, 1.0],
+            t: [0.0; 3],
+            controllers: vec!["AerialControllerAsset".into()],
+            aerial_layer: vec![("FLT_FlipMagnitude".into(), 0.25)],
+            aerial_scripts: vec![("FLTX_Rate".into(), 4.0)],
+            ground: None,
+        };
+        let env = Env { g: &g, clips: &[], clip_index: &clip_index, bind: &bind, rig: &rig, physics: Some(&physics) };
+        let mut gs = GameState::new(&g);
+        gs.set(0, 1.0);
+        gs.set(1, 0.5);
+        let mut aerial = instantiate(&env, &gs, 0);
+        aerial.exit(&env, &gs);
+        aerial.update(&env, &mut gs, 2.0);
+        assert_eq!(aerial.time(), 8.0, "the subject reads the script value on the layer");
+        assert_eq!((gs.get(0), gs.get(1)), (1.0, 0.5), "the entity keeps its own");
+    }
+
+    #[test]
+    fn a_running_carving_writes_the_ground_joint_over_its_subject() {
+        let mut g = Graph::default();
+        g.ctrls.push(("carve".into(), Ctrl::Physics { class: "CarvingControllerAsset".into(), subject: Some(1) }));
+        let seq = Ctrl::Sequence {
+            anims: Vec::new(),
+            length: 100.0,
+            windows: Vec::new(),
+            start_tick: 0.0,
+            audio_tags: Vec::new(),
+            game_tags: Vec::new(),
+            drivers: Vec::new(),
+            queries: Vec::new(),
+        };
+        g.ctrls.push(("seq".into(), seq));
+        let node = |n: &str| ssx_formats::crsf::SceneNode {
+            parent: None,
+            child_count: 0,
+            name: n.into(),
+            unk_a: 0,
+            flags: 0,
+            attributes: None,
+            unk_group_flag: 0,
+            kind: ssx_formats::crsf::NodeKind::Group,
+        };
+        let sg = ssx_formats::crsf::SceneGraph { nodes: vec![node("AITrajectory"), node("Ground")] };
+        let rig = crate::anim_pose::PoseRig::new(&sg, &[], &[]);
+        let srt = crate::character::Srt { scale: [1.0; 3], rotation: [0.0, 0.0, 0.0, 1.0], translation: [0.0; 3] };
+        let bind = crate::rig_anim::RigPose { nodes: vec![srt; 2], floats: Vec::new() };
+        let clip_index = std::collections::HashMap::new();
+        let step = |class: &str| crate::anim_pose::StepPhysics {
+            q: [0.0, 0.0, 0.0, 1.0],
+            t: [0.0; 3],
+            controllers: vec![class.into()],
+            aerial_layer: Vec::new(),
+            aerial_scripts: Vec::new(),
+            ground: Some((1, [0.1, -0.8, 0.3])),
+        };
+        let (carving, aerial) = (step("CarvingControllerAsset"), step("AerialControllerAsset"));
+        let env = Env { g: &g, clips: &[], clip_index: &clip_index, bind: &bind, rig: &rig, physics: Some(&carving) };
+        let mut gs = GameState::new(&g);
+        let mut carve = instantiate(&env, &gs, 0);
+        let ground = |c: &dyn Controller, env: &Env, gs: &GameState| {
+            let mut out = AnimPose::empty(&bind);
+            c.pose(env, gs, &mut out);
+            (out.valid_nodes[1] & crate::anim_pose::VALID_T != 0).then_some(out.pose.nodes[1].translation)
+        };
+        carve.update(&env, &mut gs, 2.0);
+        assert_eq!(ground(carve.as_ref(), &env, &gs), Some([0.1, -0.8, 0.3]));
+        carve.update(&env, &mut gs, 0.0);
+        assert_eq!(ground(carve.as_ref(), &env, &gs), None, "a zero update writes nothing");
+        let env_air = Env { physics: Some(&aerial), ..env };
+        carve.update(&env_air, &mut gs, 2.0);
+        assert_eq!(ground(carve.as_ref(), &env_air, &gs), None, "the step simulated no carving");
+        carve.update(&env, &mut gs, 2.0);
+        carve.exit(&env, &gs);
+        carve.update(&env, &mut gs, 2.0);
+        assert_eq!(ground(carve.as_ref(), &env, &gs), None, "an exited carving updates with dt 0");
     }
 }

@@ -5,10 +5,18 @@ pub(super) struct Builder<'a> {
     pub(super) g: Graph,
     pub(super) overrides: HashMap<String, Guid>,
     pub(super) banks: HashMap<String, Guid>,
+    pub(super) rigs: HashMap<&'static str, Option<crate::nis::Rig>>,
 }
 
 fn f(a: &Asset, name: &str) -> f32 {
     a.f32(name).unwrap_or(0.0)
+}
+
+pub(super) fn vector2(v: Option<&Value>) -> Option<[f32; 2]> {
+    match v? {
+        Value::Vector2(p) => Some(*p),
+        _ => None,
+    }
 }
 
 impl Builder<'_> {
@@ -39,7 +47,11 @@ impl Builder<'_> {
                 .unwrap_or_default();
             SignalKind::Script { script, ordinal, float: a.is("FloatScriptExpressionAsset"), function }
         } else if a.is("Vector3Asset") || a.is("QuaternionAsset") || a.is("Vector4Asset") {
-            SignalKind::Vector
+            SignalKind::Vector(match a.value("Default") {
+                Some(Value::Vector3(v)) => [v[0], v[1], v[2], 0.0],
+                Some(Value::Vector4(v) | Value::Quaternion(v)) => *v,
+                _ => [0.0; 4],
+            })
         } else {
             SignalKind::Other(a.class().to_string())
         };
@@ -316,15 +328,13 @@ impl<'a> Builder<'a> {
             return Ctrl::Other("BlendSpace (no VoronoiDiagram)".into());
         };
         let list = |v: &'a Value, name: &str| field(sch, v, name).and_then(Value::as_array).unwrap_or_default();
-        let vec2 = |v: Option<&Value>| -> [f32; 2] {
-            let a = v.and_then(Value::as_array).unwrap_or_default();
-            [a.first().and_then(Value::as_f32).unwrap_or(0.0), a.get(1).and_then(Value::as_f32).unwrap_or(0.0)]
-        };
         let mut items = Vec::new();
         let mut snap = Vec::new();
         for it in list(diagram, "Items") {
             let c = field(sch, it, "BlendAsset").and_then(Value::as_guid).filter(|g| !g.is_null());
-            let pos = vec2(field(sch, it, "Position"));
+            let Some(pos) = vector2(field(sch, it, "Position")) else {
+                return Ctrl::Other("BlendSpace (an item without a Vector2 Position)".into());
+            };
             let c = self.ctrl(c);
             items.push((pos, c));
             snap.push(matches!(field(sch, it, "Snap"), Some(Value::Bool(true))));
@@ -344,13 +354,16 @@ impl<'a> Builder<'a> {
                 [0, 1, 2].map(|k| v.get(k).and_then(Value::as_i64).unwrap_or(0).max(0) as usize)
             })
             .collect();
-        let hull = list(diagram, "Edges")
+        let hull: Option<Vec<_>> = list(diagram, "Edges")
             .iter()
             .map(|e| {
                 let t = field(sch, e, "TriangleIndex").and_then(Value::as_i64).unwrap_or(0).max(0) as usize;
-                (vec2(field(sch, e, "PosBegin")), vec2(field(sch, e, "PosEnd")), t)
+                Some((vector2(field(sch, e, "PosBegin"))?, vector2(field(sch, e, "PosEnd"))?, t))
             })
             .collect();
+        let Some(hull) = hull else {
+            return Ctrl::Other("BlendSpace (a hull edge without Vector2 ends)".into());
+        };
         let (x, y) = (self.signal(a.guid("SignalAssetX")), self.signal(a.guid("SignalAssetY")));
         Ctrl::BlendSpace { x, y, axes, items, triangles, inverse_area, hull, snap, snap_tolerance }
     }
@@ -457,6 +470,7 @@ impl<'a> Builder<'a> {
                 branch_in_phase: t.int("BranchInPhase").unwrap_or(0) as u8,
                 destination_phase: f(&t, "DestinationPhase"),
                 branch_in_any: t.bool("BranchInAny").unwrap_or(false),
+                game_tags: self.game_tags(&t),
             });
         }
         let mut nodes = Vec::new();
@@ -594,32 +608,137 @@ impl<'a> Builder<'a> {
             .unwrap_or(0.0);
         let audio_tags = self.audio_tags(actor);
         let game_tags = self.game_tags(actor);
-        Ctrl::Sequence { anims, length: f(actor, "Length"), windows, start_tick, audio_tags, game_tags }
+        let drivers = self.driver_tags(actor);
+        let queries = self.query_tags(actor);
+        Ctrl::Sequence {
+            anims,
+            length: f(actor, "Length"),
+            windows,
+            start_tick,
+            audio_tags,
+            game_tags,
+            drivers,
+            queries,
+        }
+    }
+
+    fn query_tags(&self, a: &Asset) -> Vec<crate::anim_graph::QueryTag> {
+        let db = self.db;
+        let mut out = Vec::new();
+        let Some(set) = a.guid("TagCollectionSet").and_then(|g| db.get(g)) else { return out };
+        for c in set.guids("TagCollectionKeys").into_iter().filter_map(|g| db.get(g)) {
+            for t in c.guids("TagKeys").into_iter().filter_map(|g| db.get(g)) {
+                if !t.is("QueryTaskTag") {
+                    continue;
+                }
+                let num = |field: &str| t.f32(field).or_else(|| t.int(field).map(|v| v as f32)).unwrap_or(0.0);
+                out.push(crate::anim_graph::QueryTag {
+                    window: crate::tags::TagWindow::new(
+                        num("Time"),
+                        num("Duration"),
+                        t.bool("AlwaysActive").unwrap_or(false),
+                    ),
+                    task: t
+                        .guid("QueryTaskAsset")
+                        .and_then(|g| db.get(g))
+                        .map(|x| x.name().to_string())
+                        .unwrap_or_default(),
+                });
+            }
+        }
+        out
+    }
+
+    fn driver_tags(&mut self, a: &Asset) -> Vec<crate::anim_graph::DriverTag> {
+        use crate::nis::{HELI_RIG, RIDER_RIG};
+        let db = self.db;
+        let mut out = Vec::new();
+        let Some(set) = a.guid("TagCollectionSet").and_then(|g| db.get(g)) else { return out };
+        for c in set.guids("TagCollectionKeys").into_iter().filter_map(|g| db.get(g)) {
+            for t in c.guids("TagKeys").into_iter().filter_map(|g| db.get(g)) {
+                if !t.is("JointToJointAttachmentDriverTag") {
+                    continue;
+                }
+                let num = |field: &str| t.f32(field).or_else(|| t.int(field).map(|v| v as f32)).unwrap_or(0.0);
+                let name = |field: &str| t.guid(field).and_then(|g| db.get(g)).map(|x| x.name().to_string());
+                let (source, target) = (t.guid("SourceJoint"), t.guid("TargetJoint"));
+                let source_joint = self.template_joint(RIDER_RIG, source);
+                let target_joints = [RIDER_RIG, HELI_RIG]
+                    .into_iter()
+                    .filter_map(|r| Some((r.to_string(), self.template_joint(r, target)?)))
+                    .collect();
+                let v3 = |field: &str| match t.value(field) {
+                    Some(Value::Vector3(v)) => *v,
+                    Some(Value::Vector4(v)) => [v[0], v[1], v[2]],
+                    _ => [0.0; 3],
+                };
+                let offset_q = match t.value("OffsetRotation") {
+                    Some(Value::Quaternion(v) | Value::Vector4(v)) => *v,
+                    _ => [0.0, 0.0, 0.0, 1.0],
+                };
+                out.push(crate::anim_graph::DriverTag {
+                    window: crate::tags::TagWindow::new(
+                        num("Time"),
+                        num("Duration"),
+                        t.bool("AlwaysActive").unwrap_or(false),
+                    ),
+                    target: name("TargetAnimatableIdAsset").unwrap_or_default(),
+                    source_template: name("SourceJoint").unwrap_or_default(),
+                    source_joint,
+                    target_template: name("TargetJoint").unwrap_or_default(),
+                    target_joints,
+                    offset_t: v3("OffsetTranslation"),
+                    offset_q,
+                    blend_in: num("BlendInTicks"),
+                });
+            }
+        }
+        out
+    }
+
+    fn template_joint(&mut self, rig: &'static str, id: Option<Guid>) -> Option<String> {
+        let db = self.db;
+        let id = db.get(id?)?;
+        let rig = self
+            .rigs
+            .entry(rig)
+            .or_insert_with(|| {
+                let all = &db.streams.iter().find(|(n, _)| n == crate::rig_anim::RIG_BUNDLE)?.1;
+                crate::nis::Rig::load(all, rig).ok()
+            })
+            .as_ref()?;
+        crate::nis::template_joint(db, rig, &id)
     }
 
     fn game_tags(&mut self, a: &Asset) -> Vec<crate::anim_graph::GameTag> {
+        use crate::anim_graph::GameTagValue;
         let mut out = Vec::new();
         let Some(set) = a.guid("TagCollectionSet").and_then(|g| self.db.get(g)) else { return out };
         for c in set.guids("TagCollectionKeys").into_iter().filter_map(|g| self.db.get(g)) {
             for t in c.guids("TagKeys").into_iter().filter_map(|g| self.db.get(g)) {
-                // TODO(guess): `Vector3GameStateTag`s are not applied — 27 on the disc, 4 on the rider actors (each
-                // `VEC_carving_bounce_rotational_force` = (−0.125, 0, 0), Mode 1, Time 0, Duration 0, on
-                // SEQ_bail_ground_nose2_180 / _nose2_0 / _fwd2_90R / _bck2_90L); the carving controller binds that
-                // variable as `BounceRotationalForce` (CarvingControllerAsset field 0x4E, asset +0x150) and reads and
-                // writes it as frame +0x160 (0x82CC436C / 0x82CC38FC), but its use in the carving update was not found
-                // (the port has no bounce force); `IntGameStateTag`s (0 on the disc) are not applied either; settle:
-                // the reads of the carving frame's +0x160 and the Vector3 tag's Enter / Apply / Leave.
-                if !t.is("BoolGameStateTag") && !t.is("FloatGameStateTag") {
+                let v3 = |v: &Value| match v {
+                    Value::Vector3(v) => Some(*v),
+                    _ => None,
+                };
+                let value = if t.is("BoolGameStateTag") {
+                    GameTagValue::Bool(t.bool("Value").unwrap_or(false))
+                } else if t.is("FloatGameStateTag") {
+                    GameTagValue::Float {
+                        value: t.f32("Value").unwrap_or(0.0),
+                        spline: t.array("Spline").iter().filter_map(Value::as_f32).collect(),
+                    }
+                } else if t.is("IntegerGameStateTag") {
+                    GameTagValue::Int(t.int("Value").and_then(|v| i32::try_from(v).ok()).unwrap_or(0))
+                } else if t.is("Vector3GameStateTag") {
+                    GameTagValue::Vector3 {
+                        value: t.value("Value").and_then(v3).unwrap_or([0.0; 3]),
+                        splines: t.array("Splines").iter().filter_map(v3).collect(),
+                    }
+                } else {
                     continue;
-                }
+                };
                 let Some(signal) = self.signal(t.guid("ValueAsset")) else { continue };
                 let num = |field: &str| t.f32(field).or_else(|| t.int(field).map(|v| v as f32)).unwrap_or(0.0);
-                let boolean = t.is("BoolGameStateTag");
-                let value = if boolean {
-                    f32::from(u8::from(t.bool("Value").unwrap_or(false)))
-                } else {
-                    t.f32("Value").unwrap_or(0.0)
-                };
                 out.push(crate::anim_graph::GameTag {
                     name: t
                         .guid("ValueAsset")
@@ -633,11 +752,9 @@ impl<'a> Builder<'a> {
                         t.bool("AlwaysActive").unwrap_or(false),
                     ),
                     value,
-                    boolean,
                     mode: t.int("Mode").unwrap_or(0) as u32,
                     reset_on_leave: t.bool("ResetOnLeave").unwrap_or(false),
                     default: self.g.signals.get(signal).map_or(0.0, |s| s.kind.default_value()),
-                    spline: t.array("Spline").iter().filter_map(Value::as_f32).collect(),
                 });
             }
         }
@@ -722,5 +839,17 @@ impl<'a> Builder<'a> {
             });
         }
         Ctrl::Layers(layers)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn voronoi_positions_are_vector2_values() {
+        assert_eq!(vector2(Some(&Value::Vector2([0.9, -0.4]))), Some([0.9, -0.4]));
+        assert_eq!(vector2(Some(&Value::Array(vec![Value::Float(0.9), Value::Float(-0.4)]))), None);
+        assert_eq!(vector2(None), None);
     }
 }

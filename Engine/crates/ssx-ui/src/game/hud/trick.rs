@@ -160,9 +160,32 @@ impl Component for TrickIndicator {
         self.bound = true;
     }
 
-    fn unbind(&mut self, _name: &str) {
-        // TODO(guess): the unbind 0x82625F98 clears the one binding; the port stops the update instead; settle: track each binding's pointer.
+    fn unbind(&mut self, name: &str) {
         self.bound = false;
+        if let Some(k) = name.strip_prefix("db_hud_trick_combo_name").and_then(|s| s.chars().next()?.to_digit(10)) {
+            let k = k as usize;
+            let t = if name.ends_with("_norm_txt") { self.names.get_mut(k) } else { self.fails.get_mut(k) };
+            if let Some(t) = t {
+                *t = Text::default();
+            }
+            return;
+        }
+        match name {
+            "db_hud_trick_grabindicator" => self.grab = None,
+            "db_hud_trick_grabname_txt" => self.grab_name = Text::default(),
+            "db_hud_trick_metric_description_txt" => self.metric = Text::default(),
+            "db_hud_trick_duplicate_txt" => self.duplicate = Text::default(),
+            "db_hud_trick_combo" => self.combo = None,
+            "db_hud_trick_combo_count" => self.count = None,
+            "db_hud_trick_combo_count_txt" => self.count_txt = Text::default(),
+            "db_hud_trick_combo_deposit_title_txt" => self.deposit_title = Text::default(),
+            "db_hud_trick_combo_deposit_value" => self.deposit_value = None,
+            "db_hud_trick_combo_deposit_value_txt" => self.deposit_txt = Text::default(),
+            "db_hud_trick_wingsuit_timer" => self.wingsuit = None,
+            "db_hud_trick_wingsuit_timer_fill" => self.wingsuit_fill = None,
+            "db_hud_trick_wingsuit_timer_decay" => self.wingsuit_decay = None,
+            _ => {}
+        }
     }
 
     fn update(&mut self, cx: &mut Ctx, env: &mut HudEnv, _dt: f64) {
@@ -486,5 +509,29 @@ impl TrickIndicator {
                 w.set_visible(cx, false);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shown(s: &str) -> Text {
+        Text { clip: None, last: Some(s.into()), visible: Some(true) }
+    }
+
+    #[test]
+    fn unbinding_clears_the_one_binding() {
+        let mut t =
+            TrickIndicator { bound: true, grab_name: shown("Indy"), metric: shown("Spin"), ..Default::default() };
+        t.names[3] = shown("Melon");
+        t.fails[3] = shown("x");
+        t.unbind("db_hud_trick_grabname_txt");
+        assert!(!t.bound);
+        assert_eq!((t.grab_name.last.as_deref(), t.grab_name.visible), (None, None));
+        assert_eq!(t.metric.last.as_deref(), Some("Spin"));
+        t.unbind("db_hud_trick_combo_name3_norm_txt");
+        assert_eq!((t.names[3].last.as_deref(), t.fails[3].last.as_deref()), (None, Some("x")));
+        t.unbind("db_hud_trick_combo_name9_norm_txt");
     }
 }

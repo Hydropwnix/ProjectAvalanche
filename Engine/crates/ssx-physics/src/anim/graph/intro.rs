@@ -40,8 +40,8 @@ impl IntroGraph {
         bind: Vec<Srt>,
         floats: &[String],
     ) -> Result<Self> {
-        let dir = big_root.join(ssx_assets::rig_anim::ANIM_DIR);
-        let db = ssx_assets::anim_db::AssetDb::load(&dir, &nis.bundles.iter().map(String::as_str).collect::<Vec<_>>())?;
+        let db =
+            ssx_assets::anim_db::AssetDb::load(big_root, &nis.bundles.iter().map(String::as_str).collect::<Vec<_>>())?;
         Self::from_db(&db, nis, rig, bind, floats)
     }
 
@@ -60,7 +60,7 @@ impl IntroGraph {
             None => vec![new(&nis.ready.sequence)?],
         };
         let jump = match rider(&nis.jump).filter(|a| a.choices.len() > 1) {
-            Some(a) => a.choices.iter().map(|(clip, _)| new(&clip.name)).collect::<Result<Vec<_>>>()?,
+            Some(a) => a.choices.iter().map(|(clip, ..)| new(&clip.name)).collect::<Result<Vec<_>>>()?,
             None => vec![new(&nis.jump.sequence)?],
         };
         Ok(Self { cabin, ready, jump, shown: Vec::new(), blends: Vec::new(), entry_blend: nis.entry_blend.clone() })

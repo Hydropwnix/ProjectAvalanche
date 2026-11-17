@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
-use bevy::math::Affine3A;
-use bevy::prelude::{IVec2, Quat, Vec2, Vec3};
+use bevy::math::{Affine3A, DVec2};
+use bevy::prelude::{IVec2, Quat, UVec2, Vec2, Vec3};
 use ssx_assets::light_script::LightBehaviour;
 use ssx_assets::track_lights::text::Strings;
 use ssx_assets::track_lights::{LightNode, LightShape, load_track_lights};
@@ -241,25 +241,63 @@ pub(super) fn bounds(p: &Placed) -> [f32; 4] {
     [centre.x, centre.y, centre.z, if ends && radius.is_finite() { radius } else { f32::MAX }]
 }
 
-pub(super) fn encode(placed: &[Placed], slots: u32, light: &GameLightUniform) -> (Words, usize) {
+const MAX_CELLS: u32 = 1024;
+
+// PORT(choice): a 2-D cell grid of light lists, 32 m cells, at most 1024 per side, sized once per level by the lights
+// as placed, with an outside list; any light that can reach a fragment is in the list the fragment reads, and the
+// shader's bounds test skips the rest, so the lists change no result. The console drew each visible light's volume
+// into the L-buffer (DL_LightBufferPass) and had no such lists.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Grid {
+    lo: Vec2,
+    cell: f32,
+    dims: UVec2,
+}
+
+impl Grid {
+    pub(super) fn around(placed: &[Placed]) -> Self {
+        let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+        for (_, _, c, r, _) in placed.iter().map(constants) {
+            let (a, b) = (Vec2::new(c.x - r, c.z - r), Vec2::new(c.x + r, c.z + r));
+            if a.is_finite() && b.is_finite() {
+                (lo, hi) = (lo.min(a), hi.max(b));
+            }
+        }
+        if lo.x > hi.x {
+            return Self { lo: Vec2::ZERO, cell: CELL, dims: UVec2::ONE };
+        }
+        let span = hi.as_dvec2() - lo.as_dvec2();
+        let cell = (span.max_element() / f64::from(MAX_CELLS)).max(f64::from(CELL));
+        let dims = (span / cell).ceil().max(DVec2::ONE).min(DVec2::splat(f64::from(MAX_CELLS))).as_uvec2();
+        Self { lo, cell: cell as f32, dims }
+    }
+
+    fn cover(&self, min: Vec2, max: Vec2) -> (IVec2, IVec2, bool) {
+        let last = self.dims.as_ivec2() - 1;
+        if !(min.is_finite() && max.is_finite()) {
+            return (IVec2::ZERO, last, true);
+        }
+        let a = ((min - self.lo) / self.cell).floor().as_ivec2();
+        let b = ((max - self.lo) / self.cell).floor().as_ivec2();
+        let beyond = a.cmplt(IVec2::ZERO).any() || b.cmpgt(last).any();
+        (a.max(IVec2::ZERO), b.min(last), beyond)
+    }
+}
+
+pub(super) fn encode(placed: &[Placed], grid: &Grid, slots: u32, light: &GameLightUniform) -> (Words, usize) {
     let records: Vec<_> = placed.iter().map(constants).collect();
-    let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
-    for (_, _, c, r, _) in &records {
-        lo = lo.min(Vec2::new(c.x - r, c.z - r));
-        hi = hi.max(Vec2::new(c.x + r, c.z + r));
-    }
-    if records.is_empty() {
-        (lo, hi) = (Vec2::ZERO, Vec2::ZERO);
-    }
-    let dims = ((hi - lo) / CELL).ceil().max(Vec2::ONE).as_uvec2();
-    let mut cells: Vec<Vec<u32>> = vec![Vec::new(); (dims.x * dims.y) as usize];
+    let dims = grid.dims;
+    let outside = (dims.x * dims.y) as usize;
+    let mut cells: Vec<Vec<u32>> = vec![Vec::new(); outside + 1];
     for (i, (_, _, c, r, _)) in records.iter().enumerate() {
-        let a = ((Vec2::new(c.x - r, c.z - r) - lo) / CELL).floor().as_ivec2().max(IVec2::ZERO);
-        let b = ((Vec2::new(c.x + r, c.z + r) - lo) / CELL).floor().as_ivec2().min(dims.as_ivec2() - 1);
+        let (a, b, beyond) = grid.cover(Vec2::new(c.x - r, c.z - r), Vec2::new(c.x + r, c.z + r));
         for z in a.y..=b.y {
             for x in a.x..=b.x {
                 cells[(z as u32 * dims.x + x as u32) as usize].push(i as u32);
             }
+        }
+        if beyond {
+            cells[outside].push(i as u32);
         }
     }
     let planes = sphere_planes();
@@ -267,7 +305,7 @@ pub(super) fn encode(placed: &[Placed], slots: u32, light: &GameLightUniform) ->
     let cells_off = lights_off + RECORD * placed.len() as u32;
     let list_off = cells_off + cells.len() as u32;
     let mut w = Words::default();
-    w.u([lo.x.to_bits(), lo.y.to_bits(), CELL.to_bits(), placed.len() as u32]);
+    w.u([grid.lo.x.to_bits(), grid.lo.y.to_bits(), grid.cell.to_bits(), placed.len() as u32]);
     w.u([dims.x, dims.y, cells_off, list_off]);
     w.u([lights_off, HEADER, sphere_cos().to_bits(), 0]);
     w.u([0; 4]);
@@ -345,11 +383,11 @@ mod tests {
 
     #[test]
     fn buffer_header_without_lights() {
-        let (w, dynamic_at) = encode(&[], DYNAMIC_SLOTS, &GameLightUniform::default());
+        let (w, dynamic_at) = encode(&[], &Grid::around(&[]), DYNAMIC_SLOTS, &GameLightUniform::default());
         assert_eq!(w.0[0][3], 0);
         assert_eq!(w.0[2][0], HEADER + STACKS * SLICES);
-        assert_eq!(dynamic_at as u32, HEADER + STACKS * SLICES + 1);
-        let light_at = HEADER + STACKS * SLICES + 1 + RECORD * DYNAMIC_SLOTS;
+        assert_eq!(dynamic_at as u32, HEADER + STACKS * SLICES + 2);
+        let light_at = HEADER + STACKS * SLICES + 2 + RECORD * DYNAMIC_SLOTS;
         assert_eq!(w.0[3], [dynamic_at as u32, 0, 0, light_at]);
         assert_eq!(w.0.len(), light_at as usize + LIGHT_WORDS + DYNAMIC_SLOTS as usize);
     }
@@ -416,6 +454,75 @@ mod tests {
         assert_eq!(bounds(&placed(Affine3A::IDENTITY, point(2.0, 3.0)))[3], f32::MAX);
         let turned = Affine3A::from_scale_rotation_translation(Vec3::splat(3.0), Quat::from_rotation_y(0.7), Vec3::ONE);
         assert!((bounds(&placed(turned, point(2.0, 2.0)))[3] - 6.0).abs() < 2e-3);
+    }
+
+    fn list_at(w: &Words, p: Vec2) -> Vec<u32> {
+        let (h0, h1) = (w.0[0], w.0[1]);
+        let (lo, cell) = (Vec2::new(f32::from_bits(h0[0]), f32::from_bits(h0[1])), f32::from_bits(h0[2]));
+        let c = ((p - lo) / cell).floor().as_ivec2();
+        let inside = c.cmpge(IVec2::ZERO).all() && c.cmplt(IVec2::new(h1[0] as i32, h1[1] as i32)).all();
+        let entry = if inside { c.y as u32 * h1[0] + c.x as u32 } else { h1[0] * h1[1] };
+        let [start, len, ..] = w.0[(h1[2] + entry) as usize];
+        (start..start + len).map(|at| w.0[(h1[3] + at / 4) as usize][(at % 4) as usize]).collect()
+    }
+
+    fn check_lists(w: &Words, placed: &[Placed], points: impl Iterator<Item = Vec2>) -> usize {
+        let mut reached = 0;
+        for p in points {
+            let list = list_at(w, p);
+            assert!(list.windows(2).all(|i| i[0] < i[1]), "{p}: {list:?}");
+            for (i, (_, _, c, r, _)) in placed.iter().map(constants).enumerate() {
+                if (p.x - c.x).abs() <= r && (p.y - c.z).abs() <= r {
+                    assert!(list.contains(&(i as u32)), "light {i} at {c} (r {r}) misses {p}: {list:?}");
+                    reached += 1;
+                }
+            }
+        }
+        reached
+    }
+
+    fn point(x: f32, z: f32, radius: f32) -> Placed {
+        let shape = LightShape::Point { outer_radius: radius, inner_radius: 0.5 * radius };
+        placed(Affine3A::from_translation(Vec3::new(x, 10.0, z)), shape)
+    }
+
+    #[test]
+    fn a_light_carried_away_keeps_the_grid() {
+        let mut lights = vec![point(0.0, 0.0, 6.0), point(150.0, 40.0, 12.0), point(-70.0, 300.0, 4.0)];
+        let grid = Grid::around(&lights);
+        assert_eq!((grid.lo, grid.cell, grid.dims), (Vec2::new(-74.0, -6.0), CELL, UVec2::new(8, 10)));
+        let (before, _) = encode(&lights, &grid, DYNAMIC_SLOTS, &GameLightUniform::default());
+        let mut seed = 0x9e37_79b9_u32;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as f32 / u32::MAX as f32
+        };
+        for (i, far) in [(1, Vec3::new(31_000.0, -3.9e6, -27_000.0)), (0, Vec3::new(-180.0, -50.0, 120.0))] {
+            lights[i].world.translation = far.into();
+            let (w, _) = encode(&lights, &grid, DYNAMIC_SLOTS, &GameLightUniform::default());
+            assert_eq!(w.0[..2], before.0[..2], "the grid's header");
+            assert!(w.0.len() <= before.0.len() + 1, "{} → {} words", before.0.len(), w.0.len());
+            let mut points: Vec<Vec2> =
+                (0..4000).map(|_| Vec2::new(next() * 600.0 - 300.0, next() * 600.0 - 200.0)).collect();
+            points.extend((0..1000).map(|_| Vec2::new(far.x, far.z) + Vec2::new(next(), next()) * 30.0 - 15.0));
+            assert!(check_lists(&w, &lights, points.into_iter()) > 100);
+        }
+    }
+
+    #[test]
+    fn wide_and_unbounded_lights() {
+        let mut lights = vec![point(-2.0e6, 0.0, 5.0), point(3.0e6, 1.0e5, 5.0), point(0.0, 0.0, 5.0)];
+        lights.push(point(10.0, 10.0, f32::INFINITY));
+        let grid = Grid::around(&lights);
+        assert_eq!(grid.dims.x, MAX_CELLS);
+        assert!(grid.dims.y < MAX_CELLS && grid.cell > CELL, "{grid:?}");
+        let (w, _) = encode(&lights, &grid, DYNAMIC_SLOTS, &GameLightUniform::default());
+        let points = [(-2.0e6, 0.0), (3.0e6, 1.0e5), (1.0, 2.0), (-1.0e9, 4.0e8), (2.5e6, -3.0e7)];
+        let points = points.map(|(x, z)| Vec2::new(x, z));
+        assert!(check_lists(&w, &lights, points.iter().copied()) >= points.len() + 3);
+        assert!(points.iter().all(|&p| list_at(&w, p).contains(&3)));
     }
 
     fn placed(world: Affine3A, shape: LightShape) -> Placed {

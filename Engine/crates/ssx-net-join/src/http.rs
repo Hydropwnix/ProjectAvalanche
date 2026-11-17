@@ -13,7 +13,7 @@ use ureq::Agent;
 use zeroize::Zeroizing;
 
 use crate::identity::PlayerIdentity;
-use crate::known::{KnownError, KnownServers, Trust};
+use crate::known::{KnownError, KnownServers, PinWrite, Trust};
 
 // PORT(choice): 10 s per request, 5 s to connect; tuning: the join over real links from the server browser's connecting
 // popup (phases F2 and 5); the original has no real-time multiplayer.
@@ -134,7 +134,15 @@ pub fn join(
     known: &mut KnownServers,
     params: &JoinParams,
 ) -> Result<Granted, JoinFailure> {
-    run(server, identity, Pin::Known(known), params, &|_| {})
+    written(run(server, identity, Pin::Known(known), params, &|_| {}))
+}
+
+fn written(result: Result<(Granted, Option<PinWrite>), JoinFailure>) -> Result<Granted, JoinFailure> {
+    let (granted, pin) = result?;
+    if let Some(pin) = pin {
+        pin.write()?;
+    }
+    Ok(granted)
 }
 
 pub fn join_showing(
@@ -144,6 +152,16 @@ pub fn join_showing(
     params: &JoinParams,
     on_held: &dyn Fn(&str),
 ) -> Result<Granted, JoinFailure> {
+    written(run(server, identity, Pin::Known(known), params, on_held))
+}
+
+pub fn join_showing_then_pin(
+    server: SocketAddr,
+    identity: &PlayerIdentity,
+    known: &mut KnownServers,
+    params: &JoinParams,
+    on_held: &dyn Fn(&str),
+) -> Result<(Granted, Option<PinWrite>), JoinFailure> {
     run(server, identity, Pin::Known(known), params, on_held)
 }
 
@@ -153,7 +171,7 @@ pub fn join_listed(
     listed: &ServerKey,
     params: &JoinParams,
 ) -> Result<Granted, JoinFailure> {
-    run(server, identity, Pin::Listed(listed), params, &|_| {})
+    written(run(server, identity, Pin::Listed(listed), params, &|_| {}))
 }
 
 pub fn join_listed_showing(
@@ -163,7 +181,7 @@ pub fn join_listed_showing(
     params: &JoinParams,
     on_held: &dyn Fn(&str),
 ) -> Result<Granted, JoinFailure> {
-    run(server, identity, Pin::Listed(listed), params, on_held)
+    written(run(server, identity, Pin::Listed(listed), params, on_held))
 }
 
 enum Pin<'a> {
@@ -177,7 +195,7 @@ fn run(
     mut pin: Pin,
     params: &JoinParams,
     on_held: &dyn Fn(&str),
-) -> Result<Granted, JoinFailure> {
+) -> Result<(Granted, Option<PinWrite>), JoinFailure> {
     let name = player_name(params.name)?;
     let agent = agent();
     params.go_on()?;
@@ -225,13 +243,21 @@ fn run(
     let answer = JoinAnswer::open(&answer, &reply).map_err(|e| JoinFailure::Malformed(e.to_string()))?;
     let answer = follow_hold(server, &agent, &key, &reply, answer, params, on_held)?;
     params.go_on()?;
-    if let Pin::Known(known) = pin {
-        known.trust(&address, key)?;
-    }
+    let pin = match pin {
+        Pin::Known(known) => known.pin(&address, key)?,
+        Pin::Listed(_) => None,
+    };
     match answer {
-        JoinAnswer::Accepted(token) => Ok(Granted { token, info, trust }),
-        JoinAnswer::Refused(refusal) => Err(JoinFailure::Refused(refusal)),
-        JoinAnswer::Held(_) => Err(JoinFailure::Malformed("a held join without its final word".into())),
+        JoinAnswer::Accepted(token) => Ok((Granted { token, info, trust }, pin)),
+        answer => {
+            if let Some(pin) = pin {
+                pin.write()?;
+            }
+            match answer {
+                JoinAnswer::Refused(refusal) => Err(JoinFailure::Refused(refusal)),
+                _ => Err(JoinFailure::Malformed("a held join without its final word".into())),
+            }
+        }
     }
 }
 

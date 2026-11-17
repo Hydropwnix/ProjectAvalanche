@@ -197,6 +197,7 @@ mod tests {
             cost: 0,
             peak: 0,
             range: 0,
+            ghost_drop: false,
         };
         r.events.insert(7, rule);
         r

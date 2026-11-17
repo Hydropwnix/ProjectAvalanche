@@ -223,11 +223,10 @@ impl DistanceScale {
     }
 }
 
-pub const GEOTAG_EFFECT: &str = "cache1/data/xenon/shaders/object_geotag.fxo";
+pub const GEOTAG_EFFECT: &str = "object_geotag";
 
 pub fn distance_scale(big_root: &Path) -> Result<DistanceScale> {
-    let path = big_root.join(GEOTAG_EFFECT);
-    let data = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+    let (path, data) = crate::shaders::read_effect(big_root, GEOTAG_EFFECT)?;
     let fx = ssx_formats::fxo::Effect::parse(&data).with_context(|| path.display().to_string())?;
     let image = data.get(12..).context("effect without an image")?;
     let word = |o: usize| -> Result<u32> {

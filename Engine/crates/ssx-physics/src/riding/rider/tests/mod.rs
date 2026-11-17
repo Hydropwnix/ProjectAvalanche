@@ -5,6 +5,8 @@ use crate::{DT_TICKS, KMH_PER_M_PER_TICK};
 
 mod air;
 mod boost_press;
+mod carving_decode;
+mod level_start;
 mod prewind;
 mod reverse_camera;
 
@@ -33,6 +35,7 @@ fn moving(w: &World, at: Vec3, dir: Vec3, v: f32) -> RiderState {
         ..CarvingState::default()
     };
     (s.landing.stable, s.landing.stable_ticks, s.nested_stable) = (true, 60.0, true);
+    s.carving.subject_vars = read_subject_vars(&s);
     (s.velocity, s.traj_velocity) = (s.heading * v, s.heading * v);
     s.level_start = s.traj + Vec3::Y * 100.0;
     spq(&mut s, w, DT_TICKS, None);
@@ -73,8 +76,8 @@ fn decelerates_by_friction_then_stops_on_flat_ground() {
     let dv = v0 - speeds[29];
     assert!((0.034..0.044).contains(&dv), "Δv in 1 s = {dv}");
     let stop = speeds.iter().position(|&v| v == 0.0).expect("stops");
-    assert!(speeds[stop - 1] <= kmh(5.0) + 1e-6, "{} km/h before the stop", speeds[stop - 1] * KMH_PER_M_PER_TICK);
-    assert!(speeds[stop - 2] > kmh(5.0), "the first step under the threshold requests the stop");
+    assert!(speeds[stop - 2] <= kmh(5.0) + 1e-6, "{} km/h at the request", speeds[stop - 2] * KMH_PER_M_PER_TICK);
+    assert!(speeds[stop - 3] > kmh(5.0), "the first step under the threshold requests the stop");
     assert!((stop as f32 / 30.0) < 12.0, "stopped after {} s", stop as f32 / 30.0);
     assert!(speeds[stop..].iter().all(|&v| v == 0.0));
 }
@@ -177,6 +180,7 @@ fn ridable_filter_on_steep_surfaces() {
             grinding: false,
             uber_in_air: false,
             wind: Vec3::ZERO,
+            query_enabled: true,
         };
         let g = w.ground_probe(&probe, &BallisticRay::default());
         if ridable {
@@ -234,6 +238,23 @@ fn jump_launch_speed_and_direction_from_the_curves() {
 }
 
 #[test]
+fn jump_launch_off_a_rail_turns_at_most_the_max_lateral_angle() {
+    let w = world(plane(10.0, 0.0));
+    let max = w.tuning.queries.jump_launch_max_lateral_angle;
+    let v = Vec3::Z * (100.0 / KMH_PER_M_PER_TICK);
+    let turn = |stick_angle: f32, stick_mag: f32| {
+        let i = LaunchInputs { grinding: true, stick_angle, stick_mag, ..launch_at(v, false, 0.0) };
+        let t = v + jump_launch(&w, &i).expect("moving");
+        (-t.x).atan2(t.z)
+    };
+    for side in [1.0f32, -1.0] {
+        assert!((turn(side * std::f32::consts::FRAC_PI_2, 1.0) - side * max).abs() < 1e-5, "side {side}");
+        assert!((turn(side * 0.05, 1.0) - side * 0.05).abs() < 1e-5, "side {side}");
+    }
+    assert!(turn(std::f32::consts::FRAC_PI_2, 0.0).abs() < 1e-6, "no stick: along v");
+}
+
+#[test]
 fn jump_launch_fan_steers_around_an_obstacle() {
     let mut c = CollisionWorld::default();
     let wall = |x0: f32, x1: f32| {
@@ -248,6 +269,48 @@ fn jump_launch_fan_steers_around_an_obstacle() {
     let fan = jump_launch(&w, &base).expect("moving");
     assert!((v + fan).length() - (v + free).length() < 1e-4, "the fan keeps the speed");
     assert!(fan.distance(free) > 1e-3, "blocked target replaced: {fan:?} vs {free:?}");
+}
+
+#[test]
+fn collision_steering_turns_the_move_only_within_the_ground_plane() {
+    let theta = 10f32.to_radians();
+    let free = world(plane(3000.0, theta));
+    let mut s0 = moving(&free, Vec3::new(0.0, 2000.0 * theta.tan() + 1.0, -2000.0), Vec3::Z, 0.2);
+    let n = s0.ground_normal;
+    let ahead = (s0.heading - n * s0.heading.dot(n)).normalize();
+    s0.velocity = ahead * 0.2 + n * 0.03;
+    let (f, x) = (s0.traj + ahead * 2.4, n.cross(ahead));
+    let mut c = plane(3000.0, theta);
+    add_quad(&mut c, [f - x * 0.3 - n, f - x * 0.3 + n * 3.0, f + x * 2.0 + n * 3.0, f + x * 2.0 - n], 1);
+    c.finish();
+    let blocked = world(c);
+    let (mut a, mut b) = (s0.clone(), s0);
+    let dp_a = super::ride::ride(&mut a, &blocked, &Input::default(), (false, false), DT_TICKS);
+    let dp_b = super::ride::ride(&mut b, &free, &Input::default(), (false, false), DT_TICKS);
+    assert_eq!(b.carving.collision_anticipation_side, 0.0, "nothing to steer for without the block");
+    assert_eq!(a.carving.collision_anticipation_side, 1.0, "the free side is −x: (v × v')·n < 0");
+    assert_eq!(a.grind.carving.state, 0);
+    let (dv, dd) = (a.velocity - b.velocity, dp_a - dp_b);
+    assert!(dv.length() > 1e-3 && dd.length() > 2e-3, "steered: {dv:?} {dd:?}");
+    assert!(dv.dot(n).abs() < 1e-6, "velocity along n: {}", dv.dot(n));
+    assert!(dd.dot(n).abs() < 1e-6, "displacement along n: {}", dd.dot(n));
+}
+
+#[test]
+fn a_graph_driven_riders_probe_joint_is_the_poses_ground_joint() {
+    let theta = 10f32.to_radians();
+    let w = world(plane(3000.0, theta));
+    let mut s = moving(&w, Vec3::new(0.0, 2000.0 * theta.tan() + 1.0, -2000.0), Vec3::Z, 0.2);
+    assert!(!s.in_air() && s.start.is_none());
+    let n = s.ground_normal;
+    let offset = n * -0.8 + Vec3::X * 0.3;
+    (s.graph.driven, s.graph.ground_offset) = (true, offset);
+    assert_eq!(s.board_point(), s.traj + offset);
+    super::spq::spq(&mut s, &w, DT_TICKS, None);
+    let c = s.contact.expect("ground");
+    let j = s.traj + offset;
+    assert!(c.contact.distance(j - n * (j - c.point).dot(n)) < 1e-4, "{:?}", c.contact);
+    assert!((c.contact - s.traj).dot(Vec3::X) > 0.29, "under the pose's joint: {:?}", c.contact - s.traj);
 }
 
 #[test]
@@ -420,13 +483,13 @@ fn the_classic_carve_adds_the_dpad_to_the_left_stick() {
     assert_eq!(dpad.carve_stick(false), Vec2::ZERO);
     assert_eq!(dpad.carve_stick_y(false), 0.0);
     assert!((stick.carve_stick(false) - Vec2::new(1.0, 0.5).normalize()).length() < 1e-6);
-    assert_eq!(stick.carve_stick_y(false), 0.5);
+    assert_eq!(stick.carve_stick_y(false), stick.carve_stick(false).y);
     assert_eq!(stick.carve_stick(true), stick.carve_stick(false));
     assert!((dpad.carve_stick(true) - Vec2::new(1.0, 1.0).normalize()).length() < 1e-6);
     assert_eq!(dpad.carve_stick_y(true), 1.0);
     assert!((both.carve_stick(true) - Vec2::new(1.0, 1.0).normalize()).length() < 1e-6);
     assert_eq!(both.carve_stick_y(true), 1.0, "the disc clamp does not reach the y axis function");
-    let cancel = Input { dpad: Vec2::new(-1.0, -0.5), ..stick };
+    let cancel = Input { steer: 1.0, dpad: Vec2::new(-1.0, 0.0), ..Input::default() };
     assert!(cancel.carve_stick(true).length() < 1e-6 && cancel.carve_stick_y(true) == 0.0);
 }
 

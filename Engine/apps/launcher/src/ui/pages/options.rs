@@ -1,5 +1,5 @@
 use eframe::egui::{self, RichText, Ui};
-use ssx_assets::port_options::{BootMovie, MenuFocus, RangeMovies};
+use ssx_assets::port_options::{BootMovie, DiscordPresence, MenuFocus, RangeMovies};
 
 use crate::app::Launcher;
 use crate::settings::{Music, Shading};
@@ -266,6 +266,30 @@ impl Launcher {
         widgets::note(ui, "Set in the game: Options, Player Name.");
     }
 }
+
+impl Launcher {
+    pub fn discord_section(&mut self, ui: &mut Ui) {
+        let s = &mut self.settings;
+        widgets::heading(ui, "Discord Rich Presence");
+        let mut on = s.discord_presence == DiscordPresence::On;
+        let changed = ui
+            .checkbox(&mut on, "Show what you are playing on your Discord profile")
+            .on_hover_text("Your Discord friends see Project Avalanche on your profile while you play.")
+            .changed();
+        if changed {
+            s.discord_presence = if on { DiscordPresence::On } else { DiscordPresence::Off };
+        }
+        ui.add_space(8.0);
+        widgets::note(ui, DISCORD_NOTE);
+    }
+}
+
+const DISCORD_NOTE: &str = "While the game runs and the Discord app is open on this computer, your Discord profile \
+     shows what you are doing in Project Avalanche: the menus, the mode and event you ride, the drop and its mountain \
+     or the map, a timer and your result, with buttons to get the game and to join its Discord server. The game talks \
+     only to the Discord app on this computer and sends nothing else: not your name, your save, your rider or the \
+     server you play on. Off: the game does not connect to Discord at all. A change takes effect the next time the \
+     game starts.";
 
 const LINK_NOTE: &str = if cfg!(windows) {
     "For your user only: the key HKCU\\Software\\Classes\\avalanche with the command \"<this launcher>\" --link \"%1\". \

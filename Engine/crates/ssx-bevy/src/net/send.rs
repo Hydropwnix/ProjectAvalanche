@@ -130,9 +130,9 @@ pub fn sample(
         }
     }
     if outbox.implausible > 0 && !std::mem::replace(&mut sent.implausible_said, true) {
-        info!(
-            "network: samples the server's rules refuse are not sent (the other players do not see this rider until \
-             it is within them): {}",
+        error!(
+            "network: a sample the server's rules refuse was not sent (the port's fault; the other players miss this \
+             rider's samples like it): {}",
             outbox.implausible_why.as_deref().unwrap_or("?")
         );
     }

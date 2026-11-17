@@ -26,6 +26,20 @@ impl ClipData {
         }
     }
 
+    pub fn frame(&self, scaled_time: f32) -> f32 {
+        scaled_time + self.trim_offset()
+    }
+
+    pub fn trim_offset(&self) -> f32 {
+        match self {
+            ClipData::Disc(a) => a.info().trim_offset,
+            // PORT(choice): a package's clip is keyed on the controller's own clip time (its format has no
+            // `TrimOffset`), so a package clip in a trimmed disc clip's place is sampled untrimmed; the disc's
+            // animation assets each carry their own `TrimOffset`.
+            ClipData::Mod(_) => 0.0,
+        }
+    }
+
     pub fn end_frame(&self) -> u16 {
         match self {
             ClipData::Disc(a) => a.info().end_frame,

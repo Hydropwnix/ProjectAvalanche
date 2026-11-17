@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
 pub const MAX_PATH_BYTES: usize = 512;
@@ -26,6 +26,7 @@ impl TunerVault {
 }
 
 static TUNER: OnceLock<RwLock<Option<Arc<TunerVault>>>> = OnceLock::new();
+static TUNER_HELD: AtomicBool = AtomicBool::new(false);
 
 pub fn set_tuner(vault: Option<TunerVault>) {
     let lock = TUNER.get_or_init(|| RwLock::new(None));
@@ -34,7 +35,24 @@ pub fn set_tuner(vault: Option<TunerVault>) {
 }
 
 pub fn tuner() -> Option<Arc<TunerVault>> {
+    if TUNER_HELD.load(Ordering::Acquire) {
+        return None;
+    }
+    player_tuner()
+}
+
+pub fn player_tuner() -> Option<Arc<TunerVault>> {
     TUNER.get().and_then(|l| l.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone())
+}
+
+pub fn hold_tuner(held: bool) {
+    if TUNER_HELD.swap(held, Ordering::AcqRel) != held {
+        GENERATION.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+pub fn tuner_held() -> bool {
+    TUNER_HELD.load(Ordering::Acquire)
 }
 
 static OVERLAYS: OnceLock<RwLock<Vec<PathBuf>>> = OnceLock::new();

@@ -3,7 +3,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use ssx_formats::attrib::collection;
-use ssx_formats::attrib::{Schema, Value, Vault};
+use ssx_formats::attrib::{Schema, Vault};
 
 use crate::gear::GearDb;
 
@@ -152,6 +152,7 @@ pub struct EventUpdate {
     pub results: bool,
     pub looped: bool,
     pub rewind_enabled: Option<bool>,
+    pub ghost_clock_ms: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -200,6 +201,7 @@ pub struct EventManager {
     pub setup: EventSetup,
     pub state: EventState,
     pub clock: EventClock,
+    pub ghost_clock: EventClock,
     pub waiting: bool,
     pub split: i32,
     pub split_times: Vec<(i32, u32)>,
@@ -254,6 +256,7 @@ impl EventManager {
             }
         }
         self.clock.restart();
+        self.ghost_clock.restart();
         self.track_finished = false;
         self.state = EventState::Running;
     }
@@ -262,6 +265,7 @@ impl EventManager {
         self.track_finished = false;
         timer.rewinding = false;
         self.clock.clear();
+        self.ghost_clock.clear();
         (self.split, self.progress, self.finish_ms) = (-1, 0.0, None);
         self.split_times.clear();
         self.finish_message = None;

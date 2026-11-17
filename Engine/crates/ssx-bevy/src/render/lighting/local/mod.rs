@@ -9,7 +9,7 @@ use ssx_physics::controllers::{Controllers, LightUpdate, OfflineHost};
 
 use crate::render::lighting::game::GameLightUniform;
 use crate::render::lighting::{BigRoot, GameLighting};
-use encode::{Words, assign_layers, bin_of, bounds, collect, encode, record};
+use encode::{Grid, Words, assign_layers, bin_of, bounds, collect, encode, record};
 use textures::{blank_array, texture_array};
 
 mod encode;
@@ -100,7 +100,9 @@ struct LocalLightBytes {
     words: Words,
     dynamic_at: usize,
     slots: u32,
+    grid: Grid,
     last_count: usize,
+    reported_count: usize,
     last_clock: (u32, u32),
     animated: bool,
     placed: Vec<Placed>,
@@ -210,7 +212,8 @@ fn setup_local_lights(
     };
     let slots = DYNAMIC_SLOTS + reserve.0;
     let light = lighting.as_deref().map_or_else(GameLightUniform::viewer_default, GameLightUniform::from_preset);
-    let (words, dynamic_at) = encode(&placed, slots, &light);
+    let grid = Grid::around(&placed);
+    let (words, dynamic_at) = encode(&placed, &grid, slots, &light);
     if let Err(e) =
         buffers.insert(LOCAL_LIGHT_BUFFER.id(), ShaderBuffer::new(words.bytes(), RenderAssetUsages::default()))
     {
@@ -234,7 +237,9 @@ fn setup_local_lights(
         words,
         dynamic_at,
         slots,
+        grid,
         last_count: 0,
+        reported_count: 0,
         last_clock: (0, 0),
         animated: false,
         placed,
@@ -313,15 +318,7 @@ fn follow_controllers(
         }
     }
     if changed {
-        let (mut words, dynamic_at) = encode(&bytes.placed, bytes.slots, &bytes.light);
-        let tracks = (live.clock.0.to_bits(), live.clock.1);
-        (words.0[2][3], words.0[3][2]) = tracks;
-        let animated = bytes
-            .placed
-            .iter()
-            .any(|p| matches!(p.behaviour, Some(LightBehaviour::Flicker { .. } | LightBehaviour::Blink { .. })));
-        (bytes.words, bytes.dynamic_at, bytes.last_clock, bytes.animated) = (words, dynamic_at, tracks, animated);
-        bytes.last_count = usize::MAX;
+        bytes.reencode((live.clock.0.to_bits(), live.clock.1));
         if let Some(mut buffer) = buffers.get_mut(&LOCAL_LIGHT_BUFFER) {
             buffer.clear();
             buffer.extend_from_slice(&bytes.words.bytes());
@@ -342,47 +339,16 @@ fn upload_dynamic_lights(
     let off = *DYNAMIC_OFF.get_or_init(|| crate::render::post::env_is("SSX_DYNAMIC_LIGHTS", "off"));
     let none: &[DynamicLight] = &[];
     let requested = if off { none } else { &dynamic.lights[..] };
-    if requested.is_empty() && bytes.last_count == 0 && (!bytes.animated || tracks == bytes.last_clock) {
+    if !bytes.write_dynamic(requested, tracks) {
         return;
     }
-    (bytes.words.0[2][3], bytes.words.0[3][2]) = tracks;
-    bytes.last_clock = tracks;
-    let mut lights: Vec<Placed> = requested
-        .iter()
-        .take(bytes.slots as usize)
-        .map(|d| Placed {
-            world: d.world,
-            light: d.light.clone(),
-            factor: Some(d.factor),
-            ctrl: None,
-            node: Affine3A::IDENTITY,
-            scale: Vec3::ONE,
-            order: (0, 1, 0, 0, 0),
-            behaviour: None,
-            entity: 0,
-            texture: None,
-            texture_layer: 0,
-        })
-        .collect();
-    lights.sort_by_key(bin_of);
-    let mut w = Words::default();
-    lights.iter().for_each(|p| record(&mut w, p));
-    let bounds_at = bytes.words.0[3][3] as usize + LIGHT_WORDS + bytes.words.0[0][3] as usize;
-    for (k, p) in lights.iter().enumerate() {
-        bytes.words.0[bounds_at + k] = bounds(p).map(f32::to_bits);
-    }
-    let at = bytes.dynamic_at;
-    if lights.len() != bytes.last_count {
+    if let Some(count) = bytes.count_to_report() {
         info!(
-            "local lights: {} dynamic record(s) of {} reserved ({} requested)",
-            lights.len(),
+            "local lights: {count} dynamic record(s) of {} reserved ({} requested)",
             bytes.slots,
             dynamic.lights.len()
         );
     }
-    bytes.words.0[3][1] = lights.len() as u32;
-    bytes.words.0[at..at + w.0.len()].copy_from_slice(&w.0);
-    bytes.last_count = lights.len();
     if let Some(mut buffer) = buffers.get_mut(&LOCAL_LIGHT_BUFFER) {
         buffer.clear();
         buffer.extend_from_slice(&bytes.words.bytes());
@@ -395,7 +361,7 @@ fn upload_dynamic_lights(
 /// level left in them: the menus' rider showcase, opened again after a run (a night drop's lighting otherwise
 /// stays on the riders).
 pub fn reset_empty(buffers: &mut Assets<ShaderBuffer>, images: &mut Assets<Image>) {
-    let (words, _) = encode(&[], DYNAMIC_SLOTS, &GameLightUniform::viewer_default());
+    let (words, _) = encode(&[], &Grid::around(&[]), DYNAMIC_SLOTS, &GameLightUniform::viewer_default());
     if let Err(e) =
         buffers.insert(LOCAL_LIGHT_BUFFER.id(), ShaderBuffer::new(words.bytes(), RenderAssetUsages::default()))
     {
@@ -408,7 +374,7 @@ pub fn reset_empty(buffers: &mut Assets<ShaderBuffer>, images: &mut Assets<Image
 
 pub fn ensure_empty(buffers: &mut Assets<ShaderBuffer>, images: &mut Assets<Image>) {
     if buffers.get(LOCAL_LIGHT_BUFFER.id()).is_none() {
-        let (words, _) = encode(&[], DYNAMIC_SLOTS, &GameLightUniform::viewer_default());
+        let (words, _) = encode(&[], &Grid::around(&[]), DYNAMIC_SLOTS, &GameLightUniform::viewer_default());
         if let Err(e) =
             buffers.insert(LOCAL_LIGHT_BUFFER.id(), ShaderBuffer::new(words.bytes(), RenderAssetUsages::default()))
         {
@@ -419,5 +385,129 @@ pub fn ensure_empty(buffers: &mut Assets<ShaderBuffer>, images: &mut Assets<Imag
         && let Err(e) = images.insert(LOCAL_LIGHT_TEXTURES.id(), blank_array())
     {
         warn!("local light texture array: {e:?}");
+    }
+}
+
+impl LocalLightBytes {
+    fn reencode(&mut self, tracks: (u32, u32)) {
+        let (mut words, dynamic_at) = encode(&self.placed, &self.grid, self.slots, &self.light);
+        (words.0[2][3], words.0[3][2]) = tracks;
+        self.animated = self
+            .placed
+            .iter()
+            .any(|p| matches!(p.behaviour, Some(LightBehaviour::Flicker { .. } | LightBehaviour::Blink { .. })));
+        (self.words, self.dynamic_at, self.last_clock, self.last_count) = (words, dynamic_at, tracks, 0);
+    }
+
+    fn write_dynamic(&mut self, requested: &[DynamicLight], tracks: (u32, u32)) -> bool {
+        if requested.is_empty() && self.last_count == 0 && (!self.animated || tracks == self.last_clock) {
+            return false;
+        }
+        (self.words.0[2][3], self.words.0[3][2]) = tracks;
+        self.last_clock = tracks;
+        let mut lights: Vec<Placed> = requested
+            .iter()
+            .take(self.slots as usize)
+            .map(|d| Placed {
+                world: d.world,
+                light: d.light.clone(),
+                factor: Some(d.factor),
+                ctrl: None,
+                node: Affine3A::IDENTITY,
+                scale: Vec3::ONE,
+                order: (0, 1, 0, 0, 0),
+                behaviour: None,
+                entity: 0,
+                texture: None,
+                texture_layer: 0,
+            })
+            .collect();
+        lights.sort_by_key(bin_of);
+        let mut w = Words::default();
+        lights.iter().for_each(|p| record(&mut w, p));
+        let bounds_at = self.words.0[3][3] as usize + LIGHT_WORDS + self.words.0[0][3] as usize;
+        for (k, p) in lights.iter().enumerate() {
+            self.words.0[bounds_at + k] = bounds(p).map(f32::to_bits);
+        }
+        let at = self.dynamic_at;
+        self.words.0[3][1] = lights.len() as u32;
+        self.words.0[at..at + w.0.len()].copy_from_slice(&w.0);
+        self.last_count = lights.len();
+        true
+    }
+
+    fn count_to_report(&mut self) -> Option<usize> {
+        (self.last_count != self.reported_count).then(|| {
+            self.reported_count = self.last_count;
+            self.last_count
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ssx_assets::track_lights::LightShape;
+
+    use super::*;
+
+    fn bytes() -> LocalLightBytes {
+        let light = GameLightUniform::default();
+        let grid = Grid::around(&[]);
+        let (words, dynamic_at) = encode(&[], &grid, DYNAMIC_SLOTS, &light);
+        LocalLightBytes {
+            words,
+            dynamic_at,
+            slots: DYNAMIC_SLOTS,
+            grid,
+            last_count: 0,
+            reported_count: 0,
+            last_clock: (0, 0),
+            animated: false,
+            placed: Vec::new(),
+            light,
+        }
+    }
+
+    fn dynamic(x: f32) -> DynamicLight {
+        DynamicLight {
+            world: Affine3A::from_translation(Vec3::new(x, 0.0, 0.0)),
+            light: SceneLight {
+                name: String::new(),
+                debug_name: String::new(),
+                color: [1.0; 4],
+                diffuse_intensity: 1.0,
+                specular_intensity: 0.0,
+                fall_off: 1.0,
+                enable_specular: false,
+                enable: true,
+                shape: LightShape::Point { outer_radius: 5.0, inner_radius: 1.0 },
+            },
+            factor: 1.0,
+        }
+    }
+
+    #[test]
+    fn reencoding_rewrites_the_dynamic_records_and_reports_count_changes_only() {
+        let mut b = bytes();
+        let two = [dynamic(1.0), dynamic(2.0)];
+        assert!(b.write_dynamic(&two, (0, 0)));
+        assert_eq!(b.words.0[3][1], 2);
+        assert_eq!(b.count_to_report(), Some(2));
+        let written = b.words.0.clone();
+        for frame in 1..5 {
+            b.reencode((0, 0));
+            assert_eq!(b.words.0[3][1], 0, "the encoded buffer holds no dynamic record");
+            assert!(b.write_dynamic(&two, (0, 0)));
+            assert_eq!(b.words.0, written, "frame {frame}: the same buffer as before the encode");
+            assert_eq!(b.count_to_report(), None, "frame {frame}: the count did not change");
+        }
+        assert!(b.write_dynamic(&two[..1], (4, 4)));
+        assert_eq!(b.count_to_report(), Some(1));
+        assert!(b.write_dynamic(&[], (4, 4)));
+        assert_eq!((b.words.0[3][1], b.count_to_report()), (0, Some(0)));
+        assert!(!b.write_dynamic(&[], (5, 5)));
+        b.reencode((6, 6));
+        assert!(!b.write_dynamic(&[], (6, 6)));
+        assert_eq!(b.count_to_report(), None);
     }
 }

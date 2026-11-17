@@ -8,6 +8,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+ssx-core.workspace = true
 ssx-net-proto.workspace = true
 ssx-formats.workspace = true
 ssx-rules.workspace = true

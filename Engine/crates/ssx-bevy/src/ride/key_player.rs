@@ -467,7 +467,7 @@ mod tests {
             assert!(r.l2 == 1.0 && !t.y, "L2: Ctrl (standard) / Z (classic), classic={classic}");
             let rewind = Buttons { rewind: true, ..Buttons::default() };
             let (_, t, r) = read(keys_for(&none.0, &none.1, rewind, classic), classic);
-            let rewound = if classic { t.b } else { r.rewind && !t.b };
+            let rewound = r.rewind && if classic { t.b } else { !t.b };
             assert!(rewound, "the rewind: Backspace (L1) / L (B), classic={classic}");
         }
         let classic = TrickInput { rt: true, lb: true, x: true, tweak: true, ..TrickInput::default() };

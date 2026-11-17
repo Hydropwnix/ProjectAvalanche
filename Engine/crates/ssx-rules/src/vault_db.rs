@@ -106,33 +106,29 @@ pub fn with_local_attribdb<R>(root: &Path, f: impl FnOnce(&Db) -> Result<R>) -> 
     with_vaults(root, &[Pair::File(dir.join("ge_attribdb.vlt")), Pair::File(dir.join("attribdb_schema.vlt"))], f)
 }
 
-pub fn dlc_vaults(big_root: &Path) -> Vec<PathBuf> {
-    let mut out = dlc_delta_vaults();
-    if let Some(ge) = ge_attribdb_vault(big_root) {
-        out.push(ge);
-    }
-    out
-}
-
 pub fn ge_attribdb_vault(big_root: &Path) -> Option<PathBuf> {
     crate::data_roots::find(big_root, "data/xenon/attribdb/ge_attribdb.vlt")
 }
 
-pub fn dlc_delta_vaults() -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    let mut names = std::collections::BTreeSet::new();
+pub fn dlc_delta_vaults(big_root: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
     for root in crate::data_roots::overlays() {
-        for path in crate::data_roots::files_in(&root, "data/xenon/attribdb", "vlt") {
-            let name = path.file_name().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
-            if name == "ge_attribdb.vlt" || name == "attribdb.vlt" || name.ends_with("_track.vlt") {
-                continue;
-            }
-            if names.insert(name) {
-                out.push(path);
-            }
+        let Some(name) = mount_name(&root) else { continue };
+        let Some(path) = crate::data_roots::find(big_root, &format!("data/xenon/attribdb/{name}.vlt")) else {
+            continue;
+        };
+        if !out.contains(&path) {
+            out.push(path);
         }
     }
     out
+}
+
+fn mount_name(root: &Path) -> Option<String> {
+    let cap = ssx_formats::dlc::MAX_INFO_BYTES as u64;
+    let bytes = crate::read::read_file_at_most(&root.join("info.dlc"), cap).ok()?;
+    let name = ssx_formats::dlc::DlcInfo::parse(&bytes).ok()?.name;
+    (!name.is_empty() && !name.contains(['/', '\\'])).then_some(name)
 }
 
 pub fn with_track_db<R>(big_root: &Path, track: &str, f: impl FnOnce(&Db) -> Result<R>) -> Result<R> {
@@ -142,7 +138,7 @@ pub fn with_track_db<R>(big_root: &Path, track: &str, f: impl FnOnce(&Db) -> Res
     pairs.extend(tuner_pair());
     let dlc = !crate::data_roots::overlays().is_empty();
     if dlc {
-        pairs.extend(dlc_delta_vaults().into_iter().map(Pair::File));
+        pairs.extend(dlc_delta_vaults(big_root).into_iter().map(Pair::File));
     }
     let ge = ge_attribdb_vault(big_root).with_context(|| format!("{}: no ge_attribdb vault", big_root.display()))?;
     pairs.push(Pair::File(ge));
@@ -163,7 +159,7 @@ pub fn with_attribdb<R>(big_root: &Path, f: impl FnOnce(&Db) -> Result<R>) -> Re
     pairs.extend(tuner_pair());
     let dlc = !crate::data_roots::overlays().is_empty();
     if dlc {
-        pairs.extend(dlc_delta_vaults().into_iter().map(Pair::File));
+        pairs.extend(dlc_delta_vaults(big_root).into_iter().map(Pair::File));
     }
     let ge = ge_attribdb_vault(big_root).with_context(|| format!("{}: no ge_attribdb vault", big_root.display()))?;
     pairs.push(Pair::File(ge));
@@ -177,7 +173,7 @@ pub fn with_all_db<R>(big_root: &Path, f: impl FnOnce(&Db) -> Result<R>) -> Resu
     pairs.extend(tuner_pair());
     let dlc = !crate::data_roots::overlays().is_empty();
     if dlc {
-        pairs.extend(dlc_delta_vaults().into_iter().map(Pair::File));
+        pairs.extend(dlc_delta_vaults(big_root).into_iter().map(Pair::File));
     }
     pairs.push(Pair::File(
         crate::data_roots::find(big_root, "data/xenon/attribdb/attribdb.vlt")
@@ -195,7 +191,7 @@ pub fn with_career_db<R>(big_root: &Path, f: impl FnOnce(&Db) -> Result<R>) -> R
     pairs.extend(tuner_pair());
     let dlc = !crate::data_roots::overlays().is_empty();
     if dlc {
-        pairs.extend(dlc_delta_vaults().into_iter().map(Pair::File));
+        pairs.extend(dlc_delta_vaults(big_root).into_iter().map(Pair::File));
     }
     pairs.push(Pair::File(disc_attribdb(big_root).join("attribdb.vlt")));
     pairs.push(Pair::File(schema_path(big_root)));

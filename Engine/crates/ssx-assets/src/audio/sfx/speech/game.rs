@@ -472,6 +472,19 @@ mod tests {
     }
 
     #[test]
+    fn the_tutorials_speak_their_own_line() {
+        for (t, line) in [(0, "trigger_RUN_START"), (1, "trigger_TUTORIAL"), (2, "trigger_TUTORIAL")] {
+            let (mut g, mut vars, mut out) = (SpeechGame::new(1, 2, 0, EventKind::Race), Vars::default(), Vec::new());
+            g.tutorial = t;
+            g.race_start(&mut vars, 0.0, 0, &mut out);
+            assert_eq!(out.first().map(|x| x.name), Some(line), "presentation {t}");
+            assert_eq!(g.intro().name == "trigger_TUTORIAL", t != 0);
+            g.trick_message(&mut vars, 1.0, &TrickMsg::default());
+            assert_eq!(g.landing_at.is_none(), t == 1, "the trick message at {t}");
+        }
+    }
+
+    #[test]
     fn the_goals_go_to_the_pair_of_the_events_kind() {
         let read = |kind| {
             let (mut g, mut vars) = (SpeechGame::new(1, 2, 0, kind), Vars::default());

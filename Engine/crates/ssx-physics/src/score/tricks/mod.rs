@@ -11,9 +11,11 @@ mod added;
 mod flow;
 mod gestures;
 mod scene_op;
+pub mod script_tags;
 
 pub use added::*;
 pub use gestures::*;
+use script_tags::{LeftFlow, LeftSet, NodeScript, NodeTags, Script, ScriptQueue};
 
 pub const RSTICK_ACTIVE: f32 = 0.3;
 pub const TWEAK_STICK_DEAD_ZONE: f32 = 0.1;
@@ -280,6 +282,7 @@ pub struct GrabGestures {
     pub stick: [bool; 15],
     pub signature: bool,
     pub tweak: bool,
+    pub classic_signature: bool,
     pub added: AddedGestures,
 }
 
@@ -294,6 +297,7 @@ impl GrabGestures {
         self.added.tick(added, gates, &prev, &cur);
         self.signature = gates.in_air && cur.l2_r2;
         self.tweak = gates.in_air && cur.r2;
+        self.classic_signature = classic && cur.lb && cur.rb && cur.lt && cur.rt;
     }
 
     pub fn any(&self, i: usize) -> bool {
@@ -410,7 +414,7 @@ impl Default for SignatureTiming {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TrickState {
     pub classic: bool,
     pub gestures: GrabGestures,
@@ -445,6 +449,15 @@ pub struct TrickState {
     pub rate: f32,
     pub signature: SignatureTiming,
     pub grind: GrindTricks,
+    pub was_air_starting: bool,
+    pub node_signals: bool,
+    pub node_choice: u8,
+    pub uber_trigger_tag: Option<bool>,
+    pub node_tags: NodeTags,
+    pub ride_tags: Option<NodeTags>,
+    pub jump_tags: Option<NodeTags>,
+    pub left_sets: Vec<LeftSet>,
+    pub scripts: ScriptQueue,
 }
 
 impl Default for TrickState {
@@ -483,6 +496,15 @@ impl Default for TrickState {
             rate: 1.0,
             signature: SignatureTiming::default(),
             grind: GrindTricks::default(),
+            was_air_starting: false,
+            node_signals: true,
+            node_choice: 0,
+            uber_trigger_tag: None,
+            node_tags: NodeTags::new(Node::AirStates.script()),
+            ride_tags: None,
+            jump_tags: None,
+            left_sets: Vec::new(),
+            scripts: ScriptQueue::default(),
         }
     }
 }
@@ -502,6 +524,8 @@ enum Node {
     TweakExit(TrickLevel),
 }
 
+#[cfg(test)]
+mod tag_tests;
 #[cfg(test)]
 mod tests;
 

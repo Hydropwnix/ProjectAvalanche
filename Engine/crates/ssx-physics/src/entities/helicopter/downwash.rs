@@ -13,8 +13,8 @@ pub const ID_DOWNWASH_GROUND_AO: u16 = 159;
 pub const ID_DOWNWASH_VISUAL_STRENGTH: u16 = 161;
 
 pub fn wash_joints(big_root: &Path) -> Result<(String, String)> {
-    use ssx_assets::rig_anim::{ANIM_DIR, RIG_BUNDLE};
-    let db = ssx_assets::anim_db::AssetDb::load(&big_root.join(ANIM_DIR), &[RIG_BUNDLE])?;
+    use ssx_assets::rig_anim::RIG_BUNDLE;
+    let db = ssx_assets::anim_db::AssetDb::load(big_root, &[RIG_BUNDLE])?;
     let all = &db.streams.first().context("no anim_all.cba")?.1;
     let rig = ssx_assets::nis::Rig::load(all, ssx_assets::nis::HELI_RIG)?;
     let op = db.by_name("HeliPhysicsQueriesSceneOp").context("no HeliPhysicsQueriesSceneOp")?;

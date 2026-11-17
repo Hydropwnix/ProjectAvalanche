@@ -20,6 +20,7 @@ pub struct SnapshotInputs {
     pub wingsuit_audio: bool,
     pub script_song: bool,
     pub tricky_clip: bool,
+    pub presentation: i32,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -30,9 +31,13 @@ pub struct SnapshotDirector {
 
 impl SnapshotDirector {
     pub fn frame(&mut self, g: &mut Graph, s: &SnapshotInputs) {
+        self.select(&mut g.selectors, s);
+    }
+
+    fn select(&mut self, selectors: &mut [Selector; 5], s: &SnapshotInputs) {
         let bit = |b: u32| s.flags >> b & 1 != 0;
         let on = |c: bool| u8::from(c);
-        let [_, layer1, layer2, reverb, _] = &mut g.selectors;
+        let [_, layer1, layer2, reverb, _] = selectors;
         let room = if !s.reverb {
             0
         } else if bit(17) {
@@ -49,6 +54,8 @@ impl SnapshotDirector {
                 layer1.set(k, on(!nis && s.mode == m));
                 layer2.set(k, on(!nis && s.mode == m));
             }
+            layer1.set(6, on(s.presentation == crate::sfx::presentation::GROUND));
+            layer1.set(7, on(s.presentation == crate::sfx::presentation::SKYDROP));
         }
         layer1.set(4, on(s.deadly_descent));
         if nis {
@@ -98,7 +105,7 @@ impl SnapshotDirector {
         layer2.set(21, on(self.landing > 0));
         let mut big_air = false;
         let (ms_in_air, ms_to_land) = s.big_air_times.unwrap_or((-1, -1));
-        if !bit(19) && !s.rewinding {
+        if !bit(19) && !s.rewinding && s.presentation != crate::sfx::presentation::SKYDROP {
             if ms_in_air > tuning::BIG_AIR_SNAP_MIN_AIR && ms_to_land > tuning::BIG_AIR_SNAP_START {
                 (big_air, self.big_air) = (true, true);
             }
@@ -112,5 +119,27 @@ impl SnapshotDirector {
             layer2.set(k, on(s.avalanche_distance < tuning::AVALANCHE_SNAP_DISTANCE && s.avalanche_mass > m));
         }
         layer2.set(22, on(s.rewinding));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sfx::presentation::{GROUND, SKYDROP};
+    use crate::sfx_game::tuning;
+
+    #[test]
+    fn the_presentation_type_selects_the_tutorial_snapshots_and_holds_big_air() {
+        let air = Some((tuning::BIG_AIR_SNAP_MIN_AIR + 1, tuning::BIG_AIR_SNAP_START + 1));
+        for (presentation, tutorial, sky, big_air) in
+            [(0, false, false, true), (GROUND, true, false, true), (SKYDROP, false, true, false)]
+        {
+            let mut sel = snapshot_selectors();
+            let s = SnapshotInputs { mode: 3, big_air_times: air, presentation, ..Default::default() };
+            SnapshotDirector::default().select(&mut sel, &s);
+            assert_eq!(sel[1].is_set(6), tutorial, "Tutorial at {presentation}");
+            assert_eq!(sel[1].is_set(7), sky, "Tutorial_Sky at {presentation}");
+            assert_eq!(sel[2].is_set(10), big_air, "Big_Air at {presentation}");
+        }
     }
 }

@@ -67,6 +67,7 @@ struct AudioFrame {
     emitters: [ssx_assets::sfx_dsp::sound3d::Emitter; 2],
     kind: i32,
     time: f32,
+    presentation: i32,
 }
 
 type Lines = Vec<(bool, String)>;
@@ -93,6 +94,8 @@ impl RideSide {
         self.heli.shutdown(engine);
         engine.kill_level_banks();
         self.speech.respawn(engine);
+        self.rider.remix_events_reset();
+        engine.remix_restart();
     }
 
     fn frame(&mut self, engine: &mut SfxEngine, mut f: AudioFrame, log: &mut Lines, parts: &mut [f32; 3]) {
@@ -105,6 +108,7 @@ impl RideSide {
             }
         };
         f.r.deadly_descent = engine.remix_event_type == 3;
+        engine.set_presentation(f.presentation);
         if f.paused {
             self.rider.paused_frame(engine, &f.r);
         } else {
@@ -164,7 +168,11 @@ impl RideSide {
             engine.aems.log.drain(..2048);
         }
         self.log_from = engine.aems.log.len();
-        engine.mixer.events.clear();
+        for l in engine.mixer.events.drain(..) {
+            if self.verbose {
+                log.push((false, format!("sfx voice {l}")));
+            }
+        }
         stats::VOICES.store(engine.mixer.graph.voice_count() as u64, std::sync::atomic::Ordering::Relaxed);
         if engine.mixer.graph.profiling() {
             self.profile_t += dt;
@@ -201,7 +209,6 @@ struct Carried {
 
 struct SpeechPending {
     big_root: std::path::PathBuf,
-    character: String,
     rider: RiderAudioInfo,
     track: TrackAudioInfo,
     speech: bool,
@@ -410,10 +417,9 @@ pub fn start_level(world: &mut World, level: Option<SfxLevel>) {
             (m.sfx_volume, m.swapped) = (volume, true);
         });
     }
-    let character = l.character.clone();
+    let character = l.character;
     let pending = Some(SpeechPending {
         big_root: l.big_root.clone(),
-        character: l.character,
         rider: l.rider.clone(),
         track: l.info.clone(),
         speech: speech_enabled(),
@@ -526,7 +532,6 @@ impl FirstFrameLoads {
             let pilot = speech_pilot(&p.big_root, heli)?;
             let setup = SpeechDrop {
                 big_root: &p.big_root,
-                character: &p.character,
                 rider: &p.rider,
                 track: &p.track,
                 pilot,
@@ -720,6 +725,7 @@ fn drive_sfx(
             emitters: [board_emitter(&ride.state), rider_voice_emitter(&ride.state)],
             kind,
             time: sfx.speech_time,
+            presentation: ride.session.presentation,
         });
     }
     sfx.carried = Carried { speech: speech_events, trick_update, rider_dead, geotags: geotag_pickups };

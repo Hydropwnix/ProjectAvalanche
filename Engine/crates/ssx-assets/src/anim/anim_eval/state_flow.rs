@@ -6,7 +6,10 @@ pub struct NodeInst {
     pub blend: Option<BlendInst>,
     pub frozen: bool,
     pub active: Vec<SigId>,
+    pub serial: u64,
 }
+
+static NODE_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 pub struct SfInst {
     pub ctrl: CtrlId,
@@ -76,7 +79,8 @@ impl NodeInst {
         {
             s.set_time(env, gs, n.start_tick);
         }
-        NodeInst { node, subject, blend: None, frozen: false, active: n.active_signals.clone() }
+        let serial = NODE_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        NodeInst { node, subject, blend: None, frozen: false, active: n.active_signals.clone(), serial }
     }
 
     pub(super) fn time(&self) -> f32 {
@@ -136,6 +140,7 @@ impl NodeInst {
         if self.frozen {
             return;
         }
+        gs.updated_nodes.push(self.serial);
         if self.blend.as_ref().is_some_and(|b| b.done(dt)) {
             self.blend = None;
         }
@@ -277,6 +282,7 @@ impl SfInst {
         if self.exited {
             self.current.exit(env, gs);
         }
+        gs.transition_tags.extend(tr.game_tags.iter().cloned());
         self.taken.push(tr.name.clone());
     }
 }
@@ -346,8 +352,13 @@ impl Controller for SfInst {
     fn label(&self, env: &Env, weight: f32, out: &mut Vec<(String, f32)>) {
         self.current.label(env, weight, out);
     }
-    fn path(&self, env: &Env, out: &mut Vec<(String, f32)>) {
-        out.push((flow(env, self.ctrl).nodes[self.current.node].name.clone(), self.current.time()));
+    fn path(&self, env: &Env, out: &mut Vec<PathNode>) {
+        out.push(PathNode {
+            flow: env.g.ctrls[self.ctrl].0.clone(),
+            name: flow(env, self.ctrl).nodes[self.current.node].name.clone(),
+            time: self.current.time(),
+            serial: self.current.serial,
+        });
         if let Some(s) = &self.current.subject {
             s.path(env, out);
         }

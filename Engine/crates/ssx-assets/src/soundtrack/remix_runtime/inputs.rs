@@ -12,6 +12,7 @@ pub struct GameInputs {
     pub health: f32,
     pub race_event_type: i32,
     pub enabled: bool,
+    pub skydrop: bool,
     pub(super) rewind_latch: bool,
     pub armed: bool,
     pub(super) dead_flag: bool,
@@ -36,6 +37,7 @@ impl Default for GameInputs {
             health: 1.0,
             race_event_type: -1,
             enabled: false,
+            skydrop: false,
             rewind_latch: false,
             armed: false,
             dead_flag: false,
@@ -89,6 +91,22 @@ pub(super) const EVENT_ORDER: [&str; 26] = [
     "Music Ducker Stop",
 ];
 
+const RESET_EVENTS: [&str; 13] = [
+    "Land",
+    "Wingsuit Close",
+    "Time Dilation Stop",
+    "Boost Stop",
+    "Tumble Stop",
+    "Awesome Mode Stop",
+    "Super Awesome Mode Stop",
+    "Awesome Land Stop",
+    "Grinding Stop",
+    "Tunnel Stop",
+    "Player Death Stop",
+    "Rewind Stop",
+    "Music Ducker Stop",
+];
+
 impl GameInputs {
     pub fn pending_events(&self) -> &[&'static str] {
         &self.events
@@ -104,12 +122,34 @@ impl GameInputs {
         self.flag(if on { "Music Ducker Start" } else { "Music Ducker Stop" });
     }
 
+    pub fn reset_wrapper(&mut self) {
+        self.events = RESET_EVENTS.to_vec();
+        (self.land_intensity, self.carve, self.tunnel_size, self.pitch) = (0.0, 0.01, 0, 1.0);
+        (self.ms_in_air, self.ms_to_land) = (0, 0);
+        (self.oxygen, self.temperature, self.health) = (1.0, 1.0, 1.0);
+        self.race_event_type = -1;
+    }
+
+    pub fn reset_messages(&mut self) {
+        (self.armed, self.dead_flag, self.ended_flag, self.death_latch, self.death_timer) =
+            (false, false, false, false, 0.0);
+        self.enabled = false;
+    }
+
+    pub fn level_end(&mut self) {
+        self.rewind_latch = false;
+    }
+
+    fn open(&self) -> bool {
+        self.enabled && !self.skydrop
+    }
+
     pub fn post(&mut self, name: &str, value: f32) {
         if name == "RaceEventType" {
             self.race_event_type = value as i32;
             return;
         }
-        if !self.enabled {
+        if !self.open() {
             return;
         }
         let ev = match name {
@@ -154,7 +194,7 @@ impl GameInputs {
     }
 
     pub fn frame(&mut self, f: &FrameInputs) {
-        if self.enabled {
+        if self.open() {
             (self.ms_in_air, self.ms_to_land) = (f.ms_in_air, f.ms_to_land);
             (self.oxygen, self.temperature, self.health) = (f.oxygen, f.temperature, f.health);
             if f.rewinding && !self.rewind_latch {

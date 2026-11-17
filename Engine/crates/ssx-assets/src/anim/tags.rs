@@ -29,7 +29,20 @@ pub fn tag_spline(s: &[f32], w: f32) -> f32 {
         return last;
     }
     let f = x - i as f32;
-    (1.0 - f) * s[i] + s[i + 1] * f
+    (1.0 - f).mul_add(s[i], s[i + 1] * f)
+}
+
+pub fn tag_spline3(s: &[[f32; 3]], w: f32) -> [f32; 3] {
+    if s.is_empty() {
+        return [0.0; 3];
+    }
+    let x = (s.len() - 1) as f32 * w;
+    let i = (x as usize).min(s.len() - 1);
+    if i + 1 >= s.len() {
+        return s[i];
+    }
+    let f = x - i as f32;
+    std::array::from_fn(|k| s[i][k].mul_add(1.0 - f, s[i + 1][k] * f))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -205,15 +218,82 @@ impl FloatTag {
                 *var = match self.mode {
                     1 => v,
                     2 => v * *saved,
-                    3 => v + (1.0 - s) * *saved,
-                    4 => v + *saved,
-                    5 => *saved - v,
+                    3 => (1.0 - s).mul_add(*saved, v),
+                    4 => self.value.mul_add(s, *saved),
+                    5 => (-self.value).mul_add(s, *saved),
                     _ => 0.0,
                 }
             }
             TagEvent::Leave(_) => {
                 if let Some(default) = self.reset {
                     *var = default;
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct IntTag {
+    pub value: i32,
+    pub mode: u32,
+    pub reset: Option<i32>,
+}
+
+impl IntTag {
+    pub fn on(&self, ev: TagEvent, var: &mut i32, saved: &mut i32) {
+        if self.mode == 0 {
+            return;
+        }
+        match ev {
+            TagEvent::Enter => *saved = *var,
+            TagEvent::Apply(_) => {
+                *var = match self.mode {
+                    1 => self.value,
+                    2 => self.value.wrapping_add(*saved),
+                    3 => saved.wrapping_sub(self.value),
+                    4 => self.value.wrapping_mul(*saved),
+                    _ => 0,
+                }
+            }
+            TagEvent::Leave(_) => {
+                if let Some(default) = self.reset {
+                    *var = default;
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Vector3Tag {
+    pub value: [f32; 3],
+    pub mode: u32,
+    pub reset_on_leave: bool,
+    pub spline: [f32; 3],
+}
+
+impl Vector3Tag {
+    pub fn on(&self, ev: TagEvent, var: &mut [f32; 3], saved: &mut [f32; 3]) {
+        if self.mode == 0 {
+            return;
+        }
+        let v: [f32; 3] = std::array::from_fn(|k| self.value[k] * self.spline[k]);
+        match ev {
+            TagEvent::Enter => *saved = *var,
+            TagEvent::Apply(_) => {
+                *var = std::array::from_fn(|k| match self.mode {
+                    1 => v[k],
+                    2 => v[k] * saved[k],
+                    3 => saved[k].mul_add(1.0 - self.spline[k], v[k]),
+                    4 => saved[k] + v[k],
+                    5 => saved[k] - v[k],
+                    _ => 0.0,
+                })
+            }
+            TagEvent::Leave(_) => {
+                if self.reset_on_leave {
+                    *var = *saved;
                 }
             }
         }
@@ -291,6 +371,67 @@ mod tests {
             air.on(e, &mut b, &mut bs);
         }
         assert!(b && !bs, "the default true, not the saved false");
+    }
+
+    #[test]
+    fn a_vector_tag_writes_its_value_and_a_reset_restores_the_saved_one() {
+        let spline = tag_spline3(&[[1.0, 1.0, 1.0]], 1.0);
+        assert_eq!(spline, [1.0; 3]);
+        let bounce = Vector3Tag { value: [-0.125, 0.0, 0.0], mode: 1, reset_on_leave: false, spline };
+        let (mut var, mut saved) = ([0.0; 3], [9.0; 3]);
+        for e in [Enter, Apply(1.0), Leave(1.0)] {
+            bounce.on(e, &mut var, &mut saved);
+        }
+        assert_eq!((var, saved), ([-0.125, 0.0, 0.0], [0.0; 3]));
+        let reset = Vector3Tag { reset_on_leave: true, ..bounce };
+        let mut v = [0.5, 0.25, 0.0];
+        reset.on(Enter, &mut v, &mut saved);
+        reset.on(Apply(1.0), &mut v, &mut saved);
+        assert_eq!(v, [-0.125, 0.0, 0.0]);
+        reset.on(Leave(1.0), &mut v, &mut saved);
+        assert_eq!(v, [0.5, 0.25, 0.0]);
+        let blend = Vector3Tag { value: [1.0, 2.0, 4.0], mode: 3, reset_on_leave: false, spline: [0.5; 3] };
+        let mut b = [2.0, 2.0, 2.0];
+        blend.on(Enter, &mut b, &mut saved);
+        blend.on(Apply(0.5), &mut b, &mut saved);
+        assert_eq!(b, [1.5, 2.0, 3.0]);
+        assert_eq!(tag_spline3(&[[0.0, 1.0, 2.0], [2.0, 3.0, 4.0]], 0.25), [0.5, 1.5, 2.5]);
+        assert_eq!(tag_spline3(&[], 0.5), [0.0; 3]);
+    }
+
+    #[test]
+    fn the_integer_modes() {
+        let apply = |mode, value, saved: i32| {
+            let tag = IntTag { value, mode, reset: Some(7) };
+            let (mut var, mut s) = (saved, 0);
+            tag.on(Enter, &mut var, &mut s);
+            tag.on(Apply(1.0), &mut var, &mut s);
+            let after = var;
+            tag.on(Leave(1.0), &mut var, &mut s);
+            (after, var)
+        };
+        assert_eq!(apply(1, 3, 10), (3, 7));
+        assert_eq!(apply(2, 3, 10), (13, 7));
+        assert_eq!(apply(3, 3, 10), (7, 7));
+        assert_eq!(apply(4, 3, 10), (30, 7));
+        assert_eq!(apply(5, 3, 10), (0, 7));
+        assert_eq!(apply(2, i32::MAX, 1), (i32::MIN, 7));
+    }
+
+    #[test]
+    fn the_float_blend_modes_are_fused() {
+        let (value, s, saved) = (0.1f32, 0.3f32, 0.7f32);
+        let apply = |mode| {
+            let tag = FloatTag { value, mode, reset: None, spline: s };
+            let (mut var, mut sv) = (saved, 0.0);
+            tag.on(Enter, &mut var, &mut sv);
+            tag.on(Apply(1.0), &mut var, &mut sv);
+            var
+        };
+        assert_eq!(apply(3), (1.0 - s).mul_add(saved, value * s));
+        assert_eq!(apply(4), value.mul_add(s, saved));
+        assert_eq!(apply(5), (-value).mul_add(s, saved));
+        assert_eq!(tag_spline(&[0.1, 0.7], 0.3), (1.0f32 - 0.3).mul_add(0.1, 0.7 * 0.3));
     }
 
     #[test]

@@ -284,12 +284,45 @@ pub fn follow_mount(
     }
 }
 
+// PORT(choice): a network session leaves the player's tuner pack (a level-15 save's chunk 7 or `--tuner`: 150
+// `ui_drop`s, 25 `ge_drop`s and `equipment/info`'s 15-level table) out of everything it reads, so every peer rides what
+// the dedicated server validates: the server loads no tuner, and a tuner client launched the tuner's `ge_drop`
+// 0xA524FAFF for `exp_himwest_everest_drop_1_trick` where the server checks the disc's 0x5C63C9A0 (its `Ready` 2.581 m
+// from the hand-over, invalidated at execution 39 every round); the four moved himwest events, 25 drops' lighting and
+// the level table differ. The console had no live sessions; online, every signed-in player had the tuner EA's service
+// sent (message 0xEB75AC33 `updates\updates`, 0x824B5160), which the port cannot hand out.
+pub fn hold_tuner_for_session(
+    mut was: Local<bool>,
+    live: Option<Res<LiveSession>>,
+    root: Option<Res<SessionRoot>>,
+    mut game: Option<ResMut<crate::shell::game_mode::GameUiRes>>,
+) {
+    let session = live.is_some();
+    if std::mem::replace(&mut *was, session) == session {
+        return;
+    }
+    ssx_assets::data_roots::hold_tuner(session);
+    let Some(tuner) = ssx_assets::data_roots::player_tuner() else { return };
+    info!(
+        "session: the player's tuner pack ({}) {}",
+        tuner.source,
+        if session { "is left out while the session lasts" } else { "is back" }
+    );
+    if let (Some(root), Some(fe)) = (root, game.as_mut().and_then(|g| g.fe.as_mut())) {
+        match fe.reload_riders(&root.0) {
+            Ok(()) => info!("session: the career's records read again ({} events)", fe.career.events.len()),
+            Err(e) => warn!("session: the career's records not read again: {e:#}"),
+        }
+    }
+}
+
 pub struct SessionContentPlugin;
 
 impl Plugin for SessionContentPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<super::session_follow::Follow>();
         app.add_systems(Last, end_with_session).add_systems(Update, follow_mount);
+        app.add_systems(Update, hold_tuner_for_session.before(follow_mount));
         app.add_systems(Update, note_data_folder.run_if(resource_added::<SessionRoot>));
         app.add_systems(Update, super::session_follow::follow_changes.before(follow_mount));
     }
@@ -493,5 +526,47 @@ mod tests {
         assert_eq!(to_follow(Some(4), true, 4, true), Follow::Nothing);
         assert_eq!(to_follow(Some(4), true, 6, true), Follow::Since(4), "a restarted resource");
         assert_eq!(to_follow(Some(6), true, 7, false), Follow::Everything, "the session's end");
+    }
+
+    #[test]
+    fn a_session_rides_without_the_players_tuner() {
+        use ssx_assets::data_roots::{TunerVault, set_tuner};
+        use ssx_formats::attrib::fixtures::{ui_drop_schema_pair, ui_drops_pair};
+        use ssx_formats::attrib::fnv1;
+
+        let write_pair = |dir: &Path, stem: &str, (vlt, bin): (Vec<u8>, Vec<u8>)| {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join(format!("{stem}.vlt")), vlt).unwrap();
+            std::fs::write(dir.join(format!("{stem}.bin")), bin).unwrap();
+        };
+        let dir = std::env::temp_dir().join(format!("ssx-session-tuner-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let big = dir.join("big");
+        let disc = big.join("bootcache/data/xenon/attribdb");
+        write_pair(&disc, "attribdb_schema", ui_drop_schema_pair());
+        let (a, b) = ("session_tuner_a", "session_tuner_b");
+        write_pair(&disc, "attribdb", ui_drops_pair(&[(a, None, Some(0x1111)), (b, None, Some(0x2222))]));
+        write_pair(&disc, "ge_attribdb", ui_drops_pair(&[]));
+        let (vlt, bin) = ui_drops_pair(&[(b, None, Some(0x6666))]);
+        set_tuner(Some(TunerVault { vlt: Arc::from(vlt), bin: Arc::from(bin), version: 4, source: "test".into() }));
+        let drops = || {
+            let events = ssx_physics::event::load_events(&big).expect("the ride's events load");
+            [a, b].map(|n| events.iter().find(|e| e.key == fnv1(n.as_bytes())).map(|e| e.drop_key))
+        };
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins).add_plugins(SessionContentPlugin);
+        app.update();
+        assert_eq!(drops(), [Some(0x1111), Some(0x6666)], "single player: the tuner's `ge_drop`");
+        app.insert_resource(LiveSession::default());
+        app.update();
+        let in_session = drops();
+        app.world_mut().remove_resource::<LiveSession>();
+        app.update();
+        let after = drops();
+        set_tuner(None);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(in_session, [Some(0x1111), Some(0x2222)], "the session: the disc's `ge_drop`, the server's");
+        assert_eq!(after, [Some(0x1111), Some(0x6666)], "the session's end: the tuner's again");
     }
 }

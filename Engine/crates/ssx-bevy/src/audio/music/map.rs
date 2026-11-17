@@ -46,12 +46,7 @@ fn load(
     }
     let kind = u32::try_from(event_type).map_or(6, ssx_assets::sfx_game::event_kind);
     let race = RaceType::from_event(0, kind);
-    let remix_type = match race {
-        Some(RaceType::RaceIt) => 1,
-        Some(RaceType::TrickIt) => 0,
-        Some(RaceType::SurviveIt) => 2,
-        Some(RaceType::Menu) | None => -1,
-    };
+    let remix_type = ssx_assets::sfx_game::race_event_type(kind);
     let named = music.map(|id| (id, songs_of(&mb, &plan.music, id)));
     let (engine, label) = match (named, race) {
         (Some((id, Ok(ids))), _) => {

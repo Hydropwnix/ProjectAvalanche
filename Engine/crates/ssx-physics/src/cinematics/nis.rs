@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-pub const SCRIPTS_DIR: &str = "memresident/data/common/scripts";
+pub const SCRIPTS_DIR: &str = "data/common/scripts";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SceneOrigin {
@@ -74,7 +74,7 @@ pub fn intro_of_scripts(big_root: &Path, scripts: &[String]) -> Result<Option<In
 mod pose;
 mod side;
 
-pub use side::{SceneFade, SceneRef, Side, random_pick};
+pub use side::{Element, SceneFade, SceneRef, Side, random_pick};
 
 use std::sync::Arc;
 
@@ -90,6 +90,7 @@ pub struct IntroAssets {
     pub nis: IntroNis,
     pub jump_clip: usize,
     pub jump_clips: Vec<usize>,
+    pub piece_clips: Vec<usize>,
     pub event: String,
     pub heli: Result<ssx_assets::helicopter::HeliChoice, String>,
     pub loaded: Option<Arc<ssx_assets::anim_db::AssetDb>>,
@@ -164,7 +165,15 @@ pub fn prepare_choice(
     }
     let first = clips.iter().position(|c| c.name == rider.clip.name).unwrap_or(0);
     let jump_clip = jump_clips[first];
-    Ok(Arc::new(IntroAssets { choice, nis, jump_clip, jump_clips, event: event.to_string(), heli, loaded: None }))
+    let mut piece_clips = Vec::with_capacity(rider.pieces.len());
+    for p in &rider.pieces {
+        piece_clips.push(match p.clip.delta_trajectory {
+            true => world.tuning.root_motion.push_go(crate::rootmotion::RootClip::from_nis(&p.clip)?),
+            false => usize::MAX,
+        });
+    }
+    let event = event.to_string();
+    Ok(Arc::new(IntroAssets { choice, nis, jump_clip, jump_clips, piece_clips, event, heli, loaded: None }))
 }
 
 pub fn profile_path(
@@ -188,12 +197,12 @@ pub fn snow_picks(nis: &mut IntroNis) -> Result<()> {
     let pick = |state: &mut u32, a: &NisActor| random_pick(state, &a.choices.iter().map(|c| c.1).collect::<Vec<_>>());
     let ready = nis.ready.actors.iter_mut().find(|a| a.role == ROLE_CHARACTER1).context("no Character1")?;
     let k = pick(&mut state, ready);
-    ready.clip = ready.choices[k].0.clone();
+    (ready.clip, ready.clock) = (ready.choices[k].0.clone(), ready.choices[k].2);
     ready.length = ready.sequences[k].1;
     nis.ready.sequence = ready.sequences[k].0.clone();
     if let Some(go) = nis.jump.actors.iter_mut().find(|a| a.role == ROLE_CHARACTER1 && a.choices.len() > 1) {
         let k = pick(&mut state, go);
-        go.clip = go.choices[k].0.clone();
+        (go.clip, go.clock) = (go.choices[k].0.clone(), go.choices[k].2);
         nis.jump.sequence = go.clip.name.clone();
     }
     Ok(())
@@ -449,7 +458,7 @@ impl IntroState {
     pub fn root_motion(&self) -> bool {
         matches!(self.scene, Scene::Jump { .. })
             && !self.attached
-            && self.actor(ROLE_CHARACTER1).is_some_and(|a| a.clip.delta_trajectory)
+            && self.actor(ROLE_CHARACTER1).is_some_and(|a| self.side_element(&self.side(), a).clip.delta_trajectory)
     }
 
     pub fn transition(&mut self) {

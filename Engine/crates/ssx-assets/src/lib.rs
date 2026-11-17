@@ -9,6 +9,8 @@ pub mod career;
 #[cfg(feature = "pipeline")]
 pub mod content;
 pub use ssx_rules::data_roots;
+#[cfg(test)]
+pub(crate) static OVERLAY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 mod disc;
 pub mod display;
 #[cfg(feature = "pipeline")]
@@ -40,7 +42,8 @@ pub use disc::folder;
 pub use disc::{exe, setup, subset};
 #[cfg(feature = "pipeline")]
 pub use effects::{
-    light_script, particle_script, particles, postfx, postfx_overlay, postfx_state, postfx_topogrid, track_particles,
+    light_script, particle_script, particles, postfx, postfx_overlay, postfx_state, postfx_topogrid, shaders,
+    track_particles,
 };
 #[cfg(feature = "pipeline")]
 pub use landscape::{subdiv, terrain, terrain_material, terrain_vertex};

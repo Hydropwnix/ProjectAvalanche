@@ -64,6 +64,7 @@ pub struct BoundaryWind {
     pub force_timer: f32,
     pub force_strength: f32,
     pub force_direction: Vec3,
+    pub correction_off: bool,
 }
 
 impl BoundaryWind {
@@ -74,6 +75,7 @@ impl BoundaryWind {
             self.out_of_bounds = true;
             f
         } else {
+            let grid = grid.filter(|_| !self.correction_off);
             let cell = grid.map(|g| g.cell(position)).filter(|c| c & 0xC000 != 0);
             self.out_of_bounds = cell.is_some();
             let Some(cell) = cell else {

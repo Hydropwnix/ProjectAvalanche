@@ -140,6 +140,7 @@ pub struct LevelGame {
     stick_dpad: game_mode::StickDpad,
     requests: Vec<GameRequest>,
     restart_at: Option<u32>,
+    restarts: u32,
     ui_frames: u32,
     script: Vec<(f64, Step)>,
     clock: f64,
@@ -148,6 +149,7 @@ pub struct LevelGame {
     stopped: bool,
     ride_seconds: f32,
     save_due: bool,
+    ghost_due: Vec<(u32, u32)>,
     paused: bool,
     sim_hold: Option<ssx_ui::game::sim_hold::SimHold>,
     autoplay: bool,
@@ -163,6 +165,41 @@ pub struct LevelGame {
     live_rounds: bool,
 }
 
+pub struct KeptGhost {
+    pub drop: u32,
+    pub score: u32,
+    pub file: Option<ssx_formats::ghost::GhostFile>,
+}
+
+fn header_gamertag(name: &str) -> String {
+    let name = name.split('\0').next().unwrap_or_default();
+    // PORT(choice): the name is cut at a character boundary at most 0x30 bytes long, so the header holds valid UTF-8;
+    // an Xbox gamertag is at most 15 ASCII characters, and the console cuts the bytes.
+    let mut end = name.len().min(ssx_formats::ghost::GAMERTAG_MAX - 1);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    name[..end].to_string()
+}
+
+fn header_gear(setup: &ssx_ui::game::fe::setup::GameSetup) -> u16 {
+    const HEAD_LAMP: usize = 6;
+    const ICE_AXE: usize = 2;
+    u16::from(!setup.gear[HEAD_LAMP].is_cleared()) | u16::from(!setup.gear[ICE_AXE].is_cleared()) << 1
+}
+
+// PORT(choice): a restart never ends the wait: the kept run's save waits on into the restarted run and takes its
+// recording at that run's first halt (a pause, the failed results, the stop 3 s after its results) or at the level's
+// exit, under the first run's score. The console's task polls +0x3C every 1 ms on a worker (0x82540F80…0x82540F9C:
+// `FUN_82356C38` → SleepEx) while the restart (`GhostManager_OnRestart` 0x824B5B90) sets it to −1 (`FUN_82538200`) and
+// back to 0 within one handler (`FUN_82538150`, after clearing the streams); the port's frame has no such thread, so
+// the poll never lands between the two. Two kept runs waiting at once (the restarted run's own new best) take the same
+// halt's recording and are saved in the order kept. The console had a thread race whose rare other side deflates the
+// buffer while it is being cleared, and the two deflate jobs in its scheduler's (`[0x838AB2E4]`+4) worker order.
+fn ghost_saves_due(due: &mut Vec<(u32, u32)>, halted: bool, leaving: bool) -> Vec<(u32, u32)> {
+    if halted || leaving { std::mem::take(due) } else { Vec::new() }
+}
+
 impl LevelGame {
     pub fn is_up(&self) -> bool {
         self.up
@@ -174,6 +211,14 @@ impl LevelGame {
 
     pub fn results_shown(&self) -> bool {
         self.results_posted
+    }
+
+    pub fn result(&self) -> Option<&EventResult> {
+        self.result.as_ref()
+    }
+
+    pub fn restarts(&self) -> u32 {
+        self.restarts
     }
 
     pub fn test_run_done(&self) -> bool {
@@ -190,8 +235,31 @@ impl LevelGame {
         self.feed.session = hud;
     }
 
+    pub fn ghost_pending(&self) -> bool {
+        !self.ghost_due.is_empty()
+    }
+
     pub fn take_save(&mut self) -> bool {
         std::mem::take(&mut self.save_due)
+    }
+
+    pub fn take_ghost(&mut self, ride: &Ride, gamertag: &str, leaving: bool) -> Vec<KeptGhost> {
+        let rec = &ride.session.recorder;
+        let due = ghost_saves_due(&mut self.ghost_due, rec.halted(), leaving);
+        if leaving && !rec.halted() && !due.is_empty() {
+            info!("level: the level is left before the ghost recorder stops: its recording is kept as it stands");
+        }
+        due.into_iter()
+            .map(|(drop, score)| {
+                let header = ssx_formats::ghost::UserHeader {
+                    gamertag: header_gamertag(gamertag),
+                    gear_flags: header_gear(&self.launch.setup),
+                    score,
+                    build: ssx_formats::ghost::RECORDER_BUILD,
+                };
+                KeptGhost { drop, score, file: rec.recording(header) }
+            })
+            .collect()
     }
 
     pub fn popup_presses(&self) -> u32 {
@@ -225,11 +293,16 @@ impl LevelGame {
                 )
             },
         );
-        let on = if self.launch.track.is_empty() { "a new track" } else { self.launch.track.as_str() };
         format!(
-            "{} on {on}: ride {:.1} s, {result}; frame time {avg:.2} ms average over {n} frames, the UI's CPU {ui:.2} ms",
-            self.launch.event, self.ride_seconds
+            "{}: ride {:.1} s, {result}; frame time {avg:.2} ms average over {n} frames, the UI's CPU {ui:.2} ms",
+            self.place(),
+            self.ride_seconds
         )
+    }
+
+    pub fn place(&self) -> String {
+        let on = if self.launch.track.is_empty() { "a new track" } else { self.launch.track.as_str() };
+        format!("{} on {on}", self.launch.event)
     }
 }
 
@@ -321,8 +394,15 @@ pub fn start(world: &mut World, load: LevelLoad) {
     };
     let mut feed = HudFeed::new(&opts.launch.rider);
     feed.explore.rivals = rivals.rivals;
-    if let Some(fe) = world.resource::<GameUiRes>().0.fe.as_ref() {
+    if let Some(fe) = world.resource_mut::<GameUiRes>().0.fe.as_mut() {
         feed.explore.pictures = fe.career.riders.iter().map(|r| (r.title.clone(), r.icon.clone())).collect();
+        // PORT(choice): a launch that passed no Explore drop screen (the hub's, a network session's round, the
+        // `--launch` test option) has the game mode's leaderboard list built here as the drop screen builds it
+        // (0x82481A50: 0x8247C308 empties it, 0x82481540 the medal ghosts, 0x82480D70 the own best of 0x824A7B90);
+        // the console launches an Explore drop only from its drop screen, whose selection built the list for it.
+        if fe.explore_list.drop != opts.launch.drop {
+            fe.explore_list = ssx_ui::game::fe::explore::ExploreList::build(&fe.profile, opts.launch.drop);
+        }
     }
     feed.rider_titles = rivals.rider_titles;
     let mut ghosts = ssx_ui::game::ride::RivalGhosts::new(rivals.replays);
@@ -397,6 +477,7 @@ pub fn start(world: &mut World, load: LevelLoad) {
         stick_dpad: Default::default(),
         requests: Vec::new(),
         restart_at: None,
+        restarts: 0,
         ui_frames: 0,
         script,
         clock: 0.0,
@@ -405,6 +486,7 @@ pub fn start(world: &mut World, load: LevelLoad) {
         stopped: false,
         ride_seconds: 0.0,
         save_due: false,
+        ghost_due: Vec::new(),
         paused: false,
         sim_hold: None,
         autoplay: opts.autoplay,
@@ -437,5 +519,23 @@ fn sync_ui_camera(
             (false, true) => _ = commands.entity(e).remove::<Hdr>(),
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod ghost_tests {
+    use super::ghost_saves_due;
+
+    #[test]
+    fn a_kept_ghost_waits_for_the_halt_through_a_restart() {
+        let mut due = vec![(0xA1, 500)];
+        assert!(ghost_saves_due(&mut due, false, false).is_empty());
+        assert_eq!(due, vec![(0xA1, 500)]);
+        due.push((0xA1, 700));
+        assert_eq!(ghost_saves_due(&mut due, true, false), vec![(0xA1, 500), (0xA1, 700)]);
+        assert!(due.is_empty());
+        let mut due = vec![(0xB2, 9)];
+        assert_eq!(ghost_saves_due(&mut due, false, true), vec![(0xB2, 9)]);
+        assert!(ghost_saves_due(&mut due, true, true).is_empty());
     }
 }

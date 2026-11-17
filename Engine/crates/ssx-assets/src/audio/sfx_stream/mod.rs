@@ -2,18 +2,24 @@ mod io;
 mod parse;
 mod pool;
 mod slot;
+mod strm;
+mod wait;
 
 use std::cell::Cell;
 use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::time::Instant;
 
 use anyhow::{Context as _, Result};
 
 pub use parse::{BlockKind, BlockType};
-pub use pool::{Lease, Pool, UNSTEALABLE};
+#[cfg(test)]
+pub(crate) use pool::music_pool_test_lock;
+pub use pool::{Lease, Pool, UNSTEALABLE, music_pool, new_owner};
 pub use slot::{Block, Next, Slot};
+pub use wait::{WAITED_DRY, WAITED_FIRST, WaitRecord, take_longest};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ring {
@@ -38,6 +44,8 @@ impl Ring {
 }
 
 pub const SFX_LARGE_SLOTS: usize = 5;
+
+pub const MUSIC_SLOTS: usize = 3;
 
 const MAX_HEADER: usize = 32;
 
@@ -191,16 +199,32 @@ pub fn spawn(name: &'static str, work: impl FnOnce() + Send + 'static) -> bool {
 
 thread_local! {
     static LIVE: Cell<bool> = const { Cell::new(false) };
+    static FRAME: Cell<(u64, Option<Instant>)> = const { Cell::new((0, None)) };
+}
+
+pub(crate) fn raise_file_thread() {
+    if let Some(io) = io::sender() {
+        let _ = io.send(io::Msg::Raise);
+    }
 }
 
 // PORT(choice): offline renders (`sfx_ride`, `music_mix`, the probes) wait for a stream's reads so their output is
-// byte-exact from run to run; only the device's mixer thread never waits. The console has only the live mixer.
+// byte-exact from run to run; only the device's mixer thread waits no longer than its frame comes due. The console has
+// only the live mixer.
 pub fn mark_live_thread() {
     LIVE.with(|l| l.set(true));
 }
 
 pub(crate) fn live_thread() -> bool {
     LIVE.with(Cell::get)
+}
+
+pub fn live_frame(n: u64, step: Option<Instant>) {
+    FRAME.with(|f| f.set((n, step)));
+}
+
+pub(crate) fn frame() -> (u64, Option<Instant>) {
+    FRAME.with(Cell::get)
 }
 
 pub static LATE_FIRST: AtomicU64 = AtomicU64::new(0);

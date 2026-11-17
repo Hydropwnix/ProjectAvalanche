@@ -23,6 +23,17 @@ impl Scheduling {
     }
 }
 
+pub(crate) fn raise_file_thread() {
+    static RAISED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if RAISED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    #[cfg(target_os = "linux")]
+    linux::raise_file_thread();
+    #[cfg(windows)]
+    windows::raise_file_thread();
+}
+
 pub(super) struct Promotion {
     #[cfg(target_os = "linux")]
     grant: Option<linux::Grant>,

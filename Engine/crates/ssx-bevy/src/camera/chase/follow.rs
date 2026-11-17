@@ -3,7 +3,7 @@ use std::f32::consts::FRAC_PI_2;
 use bevy::prelude::*;
 use ssx_physics::SIM_HZ;
 
-use super::{CameraNoise, Chase, ChaseCamera, NisRig, Snapshot, inputs, render_blend};
+use super::{CameraNoise, Chase, ChaseCamera, NisRig, Snapshot, StepContext, inputs, render_blend};
 use crate::camera::{CameraMode, FlyCam, GAME_FAR, GAME_NEAR, GAME_REST_HFOV_DEG, GameProjection};
 use crate::ride::Ride;
 use crate::rider::skin::RiderRig;
@@ -80,7 +80,7 @@ fn catch_up(
     if let Some((rider, i)) = target {
         match camera.0.as_mut() {
             Some(c) if c.spectating == Some(rider) && fresh == Some(1) => {
-                let s = c.update(ride, &i, ride.step().1, clip);
+                let s = c.update(StepContext::of(ride), &i, ride.step().1, clip);
                 (c.prev, c.curr, c.steps) = (c.curr, s, ride.steps);
             }
             _ => {
@@ -121,7 +121,7 @@ fn catch_up(
     }
     match camera.0.as_mut() {
         Some(c) if fresh == Some(1) => {
-            let s = c.update(ride, &i, ride.step().1, clip);
+            let s = c.update(StepContext::of(ride), &i, ride.step().1, clip);
             (c.prev, c.curr, c.steps) = (c.curr, s, ride.steps);
         }
         _ => camera.0 = Some(Chase::new(ride, &i, view(), clip)),

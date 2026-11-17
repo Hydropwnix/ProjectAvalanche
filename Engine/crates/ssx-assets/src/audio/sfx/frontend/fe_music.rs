@@ -309,6 +309,7 @@ impl FrontEndMusic {
 
     pub fn gameplay_start(&mut self) {
         self.module.gameplay_start(&mut self.music.rt);
+        self.music.sync_slots();
     }
 
     pub fn finished(&self) -> bool {

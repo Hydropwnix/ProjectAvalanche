@@ -9,11 +9,15 @@ use anyhow::{Context, Result, bail};
 pub const MAX_FILE_BYTES: u64 = 64 << 20;
 
 pub fn read_file(path: &Path) -> Result<Vec<u8>> {
+    read_file_at_most(path, MAX_FILE_BYTES)
+}
+
+pub fn read_file_at_most(path: &Path, cap: u64) -> Result<Vec<u8>> {
     let file = open_regular(path)?;
     let mut buf = Vec::new();
-    file.take(MAX_FILE_BYTES + 1).read_to_end(&mut buf).with_context(|| format!("reading {}", path.display()))?;
-    if buf.len() as u64 > MAX_FILE_BYTES {
-        bail!("{}: larger than {MAX_FILE_BYTES} bytes", path.display());
+    file.take(cap.saturating_add(1)).read_to_end(&mut buf).with_context(|| format!("reading {}", path.display()))?;
+    if buf.len() as u64 > cap {
+        bail!("{}: larger than {cap} bytes", path.display());
     }
     Ok(buf)
 }
