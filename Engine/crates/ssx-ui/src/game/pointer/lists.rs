@@ -277,7 +277,9 @@ pub(super) fn read_equipment(cx: &mut Ctx, view: InstanceId) -> Option<(List, Ve
     }
     let start = cx.get_member(&slots, "mcAdvance").ok().and_then(|a| cx.display_of(&a))?;
     let menu_obj = Value::Object(cx.object_for(menu));
-    if !flag(cx, &menu_obj, "mIsActive") {
+    // (a port mod: with Start Run selected the options' menu isn't active, but its options are still the pointer's:
+    // a step from Start Run goes into them)
+    if !flag(cx, &menu_obj, "mIsActive") && !cx.to_bool(&selected_start) {
         return None;
     }
     let mut list = menu_cells(cx, menu)?;
