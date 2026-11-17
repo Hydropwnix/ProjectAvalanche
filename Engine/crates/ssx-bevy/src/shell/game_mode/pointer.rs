@@ -33,6 +33,11 @@ pub(super) struct PointerShell {
     rider_quick: bool,
     /// The rider a click asked for, and how many moves have gone toward it (the list moves till it's highlighted).
     rider_target: Option<(String, u32)>,
+    /// Where the asked-for card was drawn before the last move toward it (cards from the highlighted one), and
+    /// whether the list's moves go the other way from the button's side (a move that took it further away turns
+    /// them round).
+    rider_last_offset: Option<i32>,
+    rider_flip: bool,
 }
 
 /// The most moves toward a clicked card before giving up (it's never more than half the list).
@@ -162,6 +167,7 @@ pub(super) fn pointer_system(
             }
             RiderMouse::Target(r) => {
                 p.state.rider_steps = 0;
+                p.state.rider_last_offset = None;
                 p.state.rider_target = Some((r, 0));
                 p.state.rider_next.get_or_insert_with(std::time::Instant::now);
             }
@@ -177,14 +183,29 @@ pub(super) fn pointer_system(
         && !ssx_core::rider_showcase::menu_animating()
         && p.state.rider_next.is_none_or(|t| std::time::Instant::now() >= t)
     {
-        match ssx_core::rider_showcase::steps_to(&rider) {
+        // (where its card is drawn now: the way to move is toward it; a move that took it further away means the
+        // list goes the other way from the button's side, and the moves turn round)
+        let offset = ssx_core::rider_showcase::rider_offset(&rider)
+            .or_else(|| ssx_core::rider_showcase::steps_to(&rider));
+        if let (Some(now), Some(before)) = (offset, p.state.rider_last_offset)
+            && now.abs() > before.abs()
+        {
+            p.state.rider_flip = !p.state.rider_flip;
+        }
+        match offset {
             Some(n) if n != 0 && moves < MAX_TARGET_MOVES => {
                 p.state.rider_quick = n.abs() > 1 || moves > 0;
-                p.state.rider_steps = n.signum();
+                // (a card to the right comes in with the left move (the list's moves, as the game makes them, go the
+                // other way from the cards' side); turned round should a move ever take it further away)
+                p.state.rider_steps = if p.state.rider_flip { n.signum() } else { -n.signum() };
+                p.state.rider_last_offset = Some(n);
                 p.state.rider_target = Some((rider, moves + 1));
                 p.state.rider_next = Some(std::time::Instant::now());
             }
-            _ => p.state.rider_target = None,
+            _ => {
+                p.state.rider_target = None;
+                p.state.rider_last_offset = None;
+            }
         }
     }
     // (where the pointer is on the rider step: the card under it shows it)
@@ -198,7 +219,12 @@ pub(super) fn pointer_system(
     ssx_core::rider_showcase::set_pointer(at);
     let now = std::time::Instant::now();
     // (several cards to go: the slides quick, each move as soon as the last slide's done)
-    let far = p.state.rider_target.as_ref().and_then(|(r, _)| ssx_core::rider_showcase::steps_to(r)).is_some_and(|n| n.abs() > 1);
+    let far = p
+        .state
+        .rider_target
+        .as_ref()
+        .and_then(|(r, _)| ssx_core::rider_showcase::rider_offset(r))
+        .is_some_and(|n| n.abs() > 1);
     ssx_core::rider_showcase::set_quick_scroll(p.state.rider_steps.abs() > 1 || p.state.rider_quick || far);
     if p.state.rider_steps != 0
         && p.state.rider_next.is_some_and(|t| now >= t)

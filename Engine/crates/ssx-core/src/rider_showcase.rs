@@ -124,6 +124,28 @@ pub fn rider_at(x: f32, y: f32) -> Option<String> {
         .map(|(_, n)| n.clone())
 }
 
+/// Where `rider`'s card is drawn, from the highlighted one: 0 when it's the highlighted one, then how many cards to the
+/// right (or, below 0, to the left), as the list shows them. `None` when its card isn't drawn.
+pub fn rider_offset(rider: &str) -> Option<i32> {
+    if highlight_portrait() == rider {
+        return Some(0);
+    }
+    let c = CARDS_SHOWN.lock().ok()?.clone();
+    let h = c.highlighted?;
+    let mid = |r: &[f32; 4]| (r[0] + r[2]) * 0.5;
+    let hx = mid(&h);
+    let r = c.others.iter().zip(&c.names).find(|(_, n)| *n == rider).map(|(r, _)| *r)?;
+    let at = mid(&r);
+    let mut xs: Vec<f32> = c.others.iter().map(mid).collect();
+    xs.sort_by(f32::total_cmp);
+    xs.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
+    Some(if at > hx {
+        xs.iter().filter(|&&m| m > hx && m <= at + 1e-4).count() as i32
+    } else {
+        -(xs.iter().filter(|&&m| m < hx && m >= at - 1e-4).count() as i32)
+    })
+}
+
 /// How many cards the list must move to bring `rider` to the highlighted place, the shorter way round: right of 0
 /// (the cards coming in from the right), left below it. `None` when it's not in the list.
 pub fn steps_to(rider: &str) -> Option<i32> {
