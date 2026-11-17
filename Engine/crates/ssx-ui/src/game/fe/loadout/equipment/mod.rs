@@ -242,6 +242,7 @@ fn loadout_refresh(fe: &mut FrontEnd, env: &mut FeEnv) {
 
 pub fn activate(fe: &mut FrontEnd, env: &mut FeEnv) {
     fe.equipment.new_view();
+    bought_levels_reached(fe);
     env.values.set_bool(0xEF, true);
     let eq = &mut fe.equipment;
     eq.state = env.values.int(0x62);
@@ -716,12 +717,46 @@ fn purchase_rider_level(fe: &mut FrontEnd, env: &mut FeEnv, argument: i32) {
     publish_list(fe, "dp_playable_characters");
 }
 
+/// The Custom Event Menus mod: a rider with a level bought but not yet reached (bought as the game sells them, its XP
+/// still to earn) put at that level, as a level bought with the mod on is.
+fn bought_levels_reached(fe: &mut FrontEnd) {
+    if !ssx_core::rider_showcase::enabled() {
+        return;
+    }
+    let (thresholds, prices) = (&fe.rules.level_thresholds, &fe.rules.level_prices);
+    let mut notes = Vec::new();
+    for (key, stats) in fe.profile.riders.iter_mut() {
+        let bought = stats.max_purchased_level;
+        let paid = usize::try_from(bought).ok().and_then(|i| prices.get(i)).is_some_and(|&p| p > 0);
+        let now = ssx_assets::career::profile::update_rider_level(&mut stats.clone(), thresholds, prices).0;
+        if paid && now < bought {
+            let reached = ssx_assets::career::profile::set_rider_level(stats, bought, thresholds, prices);
+            notes.push(format!("equipment: rider {key:#010x} put at its bought level {}", reached + 1));
+        }
+    }
+    for n in notes {
+        fe.note(n);
+    }
+}
+
 fn rider_purchase_level(fe: &mut FrontEnd, env: &mut FeEnv, rider: u32, level: i64) {
     match fe.profile.purchase_rider_level(&fe.rules, rider, level) {
         Ok(price) => {
             if let Some(stats) = fe.profile.riders.get_mut(&rider) {
                 ssx_assets::career::profile::update_rider_level(
                     stats,
+                    &fe.rules.level_thresholds,
+                    &fe.rules.level_prices,
+                );
+            }
+            // (the Custom Event Menus mod: a bought level is reached at once (its XP given), so the next can be
+            // bought straight after, up to the last)
+            if ssx_core::rider_showcase::enabled()
+                && let Some(stats) = fe.profile.riders.get_mut(&rider)
+            {
+                ssx_assets::career::profile::set_rider_level(
+                    stats,
+                    level,
                     &fe.rules.level_thresholds,
                     &fe.rules.level_prices,
                 );
