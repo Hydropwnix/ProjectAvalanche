@@ -213,6 +213,31 @@ impl Renderer {
     }
 
     fn instance(&mut self, lib: &Library, player: &Player, id: InstanceId, inh: Inherited, out: &mut Vec<Command>) {
+        // (Start Run highlighted (the 3D Rider Select mod): its highlight and glow drawn red)
+        if START_RUN_LIT.load(std::sync::atomic::Ordering::Relaxed)
+            && !inh.mask
+            && player.get(id).is_some_and(|i| start_run_lit_part(player, i))
+        {
+            let from = out.len();
+            self.instance_drawn(lib, player, id, inh, out);
+            for c in &mut out[from..] {
+                if let Command::Draw(d) = c {
+                    reddened(d);
+                }
+            }
+            return;
+        }
+        self.instance_drawn(lib, player, id, inh, out);
+    }
+
+    fn instance_drawn(
+        &mut self,
+        lib: &Library,
+        player: &Player,
+        id: InstanceId,
+        inh: Inherited,
+        out: &mut Vec<Command>,
+    ) {
         let Some(inst) = player.get(id) else { return };
         if !inst.visible && !inh.mask {
             return;
@@ -1638,6 +1663,62 @@ fn test_peak_path(player: &Player, id: InstanceId, inst: &Instance, inh: &Inheri
     }));
 }
 
+/// Start Run's highlight on the gear steps: the selection highlight (`mcHighlight` among the options) and Start Run's
+/// own backing and title glow.
+fn start_run_lit_part(player: &Player, inst: &Instance) -> bool {
+    let parent = inst.parent.and_then(|p| player.get(p));
+    match inst.name.as_str() {
+        "mcHighlight" => {
+            HIGHLIGHT_ON_START.load(std::sync::atomic::Ordering::Relaxed)
+                && parent.is_some_and(|p| {
+                    p.name == "mcSlots"
+                        && p.parent.and_then(|g| player.get(g)).is_some_and(|g| g.name == "mcEquipmentRoot")
+                })
+        }
+        "mcBackerContainer" | "mcGlow" => parent.is_some_and(|p| p.name == "mcAdvance"),
+        _ => false,
+    }
+}
+
+/// A colour as red: as bright as its brightest channel, its colour turned to red (greys and white stay).
+fn red_of(c: [f32; 4]) -> [f32; 4] {
+    let (hi, lo) = (c[0].max(c[1]).max(c[2]), c[0].min(c[1]).min(c[2]));
+    if hi - lo < 0.08 {
+        return c;
+    }
+    [hi, lo * 0.3, lo * 0.3, c[3]]
+}
+
+/// A drawing turned red: its colours (with its colour transform, which is then left plain) as red.
+fn reddened(d: &mut DrawItem) {
+    let cx = d.cxform;
+    match &mut d.paint {
+        Paint::Solid(c) => {
+            *c = red_of(cx.apply(*c));
+            d.cxform = Cxform::IDENTITY;
+        }
+        Paint::Gradient(g) => {
+            let mut n = (**g).clone();
+            for s in &mut n.stops {
+                s.1 = red_of(cx.apply(s.1));
+            }
+            *g = Arc::new(n);
+            d.cxform = Cxform::IDENTITY;
+        }
+        Paint::Glyph { color, .. } => {
+            *color = red_of(cx.apply(*color));
+            d.cxform = Cxform::IDENTITY;
+        }
+        Paint::Bitmap { .. } => {
+            // (a picture: its colour transform turned red)
+            let m = cx.mult;
+            let (hi, lo) = (m[0].max(m[1]).max(m[2]), m[0].min(m[1]).min(m[2]));
+            d.cxform.mult = [hi, lo * 0.3, lo * 0.3, m[3]];
+            d.cxform.add = red_of(cx.add);
+        }
+    }
+}
+
 /// Whether the loading screen is up (set by the menus each frame).
 pub static LOADING_SCREEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -2428,8 +2509,15 @@ fn frame_returning() -> bool {
     FRAME_NOW.lock().is_ok_and(|f| f.is_some()) && GEAR_FRAME.lock().is_ok_and(|g| g.is_none())
 }
 
+/// Start Run highlighted on the gear steps (drawn red there).
+static START_RUN_LIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The selection highlight on Start Run (and not still on an option) as laid out this frame.
+static HIGHLIGHT_ON_START: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn gear_layout(lib: &Library, player: &Player, stage: &Mat2d) {
     static ROOT: std::sync::Mutex<Option<InstanceId>> = std::sync::Mutex::new(None);
+    START_RUN_LIT.store(false, std::sync::atomic::Ordering::Relaxed);
+    HIGHLIGHT_ON_START.store(false, std::sync::atomic::Ordering::Relaxed);
     if let Ok(mut f) = GEAR_FRAME.lock() {
         *f = None;
     }
@@ -2531,6 +2619,7 @@ fn gear_layout(lib: &Library, player: &Player, stage: &Mat2d) {
         // The options: each one's own cell (its backing, its button).
         let option_part = |clip: InstanceId, name: &str| child(child(child(clip, "mcCell")?, "mcCell")?, name);
         let mut widths: Vec<f32> = Vec::new();
+        let mut lit_clip: Option<(f32, InstanceId)> = None;
         let mut option_icons: Vec<(f32, InstanceId)> = Vec::new();
         let mut options_bottom = f32::MIN;
         for clip in kids(menu) {
@@ -2539,6 +2628,9 @@ fn gear_layout(lib: &Library, player: &Player, stage: &Mat2d) {
                 && b.x1 - b.x0 > 1.0
             {
                 widths.push(b.x1 - b.x0);
+                if lit_clip.is_none_or(|(w, _)| b.x1 - b.x0 > w) {
+                    lit_clip = Some((b.x1 - b.x0, clip));
+                }
                 if let Some(icons) = option_part(clip, "mcSlots") {
                     option_icons.push((b.x1 - b.x0, icons));
                 }
@@ -2567,6 +2659,16 @@ fn gear_layout(lib: &Library, player: &Player, stage: &Mat2d) {
         // The selection highlight goes with the options. (While the menu comes on (back from the full list, say) it waits
         // off to the left, where the options used to be, till the menu puts it on its option: not shown till then.)
         let mut highlight_waiting = false;
+        let narrow = widths.iter().copied().fold(f32::MAX, f32::min);
+        let wide = widths.iter().copied().fold(0.0f32, f32::max);
+        let option_lit = !widths.is_empty() && wide > narrow * 1.02;
+        // (the option highlighted is the Suit or the Board: the plain ones, whose highlight Start Run's matches)
+        let plain_lit = option_lit
+            && lit_clip
+                .and_then(|(_, c)| player.get(c))
+                .is_some_and(|i| i.name == "clipInstance_0" || i.name == "clipInstance_1");
+        let start_lit = !widths.is_empty() && !option_lit;
+        START_RUN_LIT.store(start_lit, std::sync::atomic::Ordering::Relaxed);
         if let Some(h) = child(slots, "mcHighlight") {
             // (on any of an option's slots: the Gear and Mods options' last slots are well right of the menu's left)
             let on_options = win(h).is_none_or(|b| {
@@ -2574,7 +2676,25 @@ fn gear_layout(lib: &Library, player: &Player, stage: &Mat2d) {
                 mid > men.x0 - u * 0.25 && mid < men.x1.max(men.x0 + u * 0.6) + u * 0.5
             });
             if on_options {
-                moved.push((h, menu_dx, 0.0, 1.0, 1.0));
+                // (on Start Run: as long as on the Suit or the Board, so Start Run highlighted is as long as they are)
+                static PLAIN_HIGHLIGHT: std::sync::Mutex<Option<f32>> = std::sync::Mutex::new(None);
+                let mut kx = 1.0;
+                if let Some(b) = win(h)
+                    && b.x1 - b.x0 > 1.0
+                {
+                    let mid_y = (b.y0 + b.y1) * 0.5;
+                    if plain_lit {
+                        if let Ok(mut w) = PLAIN_HIGHLIGHT.lock() {
+                            *w = Some(b.x1 - b.x0);
+                        }
+                    } else if start_lit && mid_y > adv.y0 && mid_y < adv.y1 {
+                        HIGHLIGHT_ON_START.store(true, std::sync::atomic::Ordering::Relaxed);
+                        if let Some(w) = PLAIN_HIGHLIGHT.lock().ok().and_then(|w| *w) {
+                            kx = w / (b.x1 - b.x0);
+                        }
+                    }
+                }
+                moved.push((h, menu_dx, 0.0, kx, 1.0));
             } else {
                 highlight_waiting = true;
                 hidden.push(h);
@@ -2598,18 +2718,16 @@ fn gear_layout(lib: &Library, player: &Player, stage: &Mat2d) {
         }
         // Start Run as wide as an option: as a plain option while an option is highlighted, as a highlighted one (they
         // grow a little) while it is.
+        // (as the Suit or the Board grow: the Gear and Mods options grow longer, with their slots)
         static LIT_GROW: std::sync::Mutex<f32> = std::sync::Mutex::new(1.05);
-        let narrow = widths.iter().copied().fold(f32::MAX, f32::min);
-        let wide = widths.iter().copied().fold(0.0f32, f32::max);
         if !widths.is_empty()
             && let Some(bk) = child(advance, "mcBackerContainer")
             && let Some(b) = win(bk)
             && b.x1 - b.x0 > 1.0
         {
-            let option_lit = wide > narrow * 1.02;
             let grow = match LIT_GROW.lock() {
                 Ok(mut g) => {
-                    if option_lit {
+                    if plain_lit {
                         *g = wide / narrow;
                     }
                     *g
