@@ -424,11 +424,30 @@ impl Renderer {
             let e = button_hover();
             let b = LEVEL_BUTTON.lock().ok().and_then(|b| *b);
             if let Some(b) = b.filter(|b| e > 0.0 && b.x1 - b.x0 > 2.0 && b.y1 - b.y0 > 2.0) {
-                let pulse = INNER_PULSE.lock().map_or(1.0, |p| p.0);
-                let (cx, cy) = ((b.x0 + b.x1) * 0.5, (b.y0 + b.y1) * 0.5);
-                let (w, h) = (b.x1 - b.x0, b.y1 - b.y0);
-                let layers = 12;
-                let reach = 3.0 + 9.0 * e;
+                let pulse = card_pulse();
+                // (its backing only (its largest part), not its icon and words: the glow is the backing's shape)
+                let xf = inh.xf.mul(&matrix);
+                let backing = match &inst.kind {
+                    InstanceKind::Sprite(sp) => sp
+                        .children
+                        .values()
+                        .copied()
+                        .filter_map(|k| {
+                            let c = player.get(k)?;
+                            let bb = player.local_bounds(lib, k).transform(&xf.mul(&c.matrix));
+                            (!bb.is_empty() && c.visible).then_some((k, bb, (bb.x1 - bb.x0) * (bb.y1 - bb.y0)))
+                        })
+                        .max_by(|a, b| a.2.total_cmp(&b.2)),
+                    _ => None,
+                };
+                let (part, bb) = match backing {
+                    Some((k, bb, _)) => (Some(k), bb),
+                    None => (None, b),
+                };
+                let (cx, cy) = ((bb.x0 + bb.x1) * 0.5, (bb.y0 + bb.y1) * 0.5);
+                let (w, h) = ((bb.x1 - bb.x0).max(1.0), (bb.y1 - bb.y0).max(1.0));
+                let layers = 20;
+                let reach = 4.0 + 8.0 * e;
                 BUTTON_GLOWING.store(true, std::sync::atomic::Ordering::Relaxed);
                 for i in (1..=layers).rev() {
                     let d = reach * i as f32 / layers as f32;
@@ -436,10 +455,18 @@ impl Renderer {
                     let grow = Mat2d::translate(cx, cy)
                         .mul(&Mat2d::scale(1.0 + 2.0 * d / w, 1.0 + 2.0 * d / h))
                         .mul(&Mat2d::translate(-cx, -cy));
-                    let a = 0.35 * f * f * e * pulse * inh.cx.mult[3].clamp(0.0, 1.0);
+                    let a = 0.22 * f * f * e * pulse * inh.cx.mult[3].clamp(0.0, 1.0);
                     let tint = Cxform { mult: [0.0, 0.0, 0.0, a], add: [CARD_GLOW[0], CARD_GLOW[1], CARD_GLOW[2], 0.0] };
-                    let glow = Inherited { xf: grow.mul(&inh.xf), cx: tint, ..inh };
-                    self.instance(lib, player, id, glow, out);
+                    match part {
+                        Some(k) => {
+                            let glow = Inherited { xf: grow.mul(&xf), cx: tint, ..inh };
+                            self.instance(lib, player, k, glow, out);
+                        }
+                        None => {
+                            let glow = Inherited { xf: grow.mul(&inh.xf), cx: tint, ..inh };
+                            self.instance(lib, player, id, glow, out);
+                        }
+                    }
                 }
                 BUTTON_GLOWING.store(false, std::sync::atomic::Ordering::Relaxed);
             }
@@ -768,6 +795,16 @@ impl Renderer {
         if let Ok(mut p) = INNER_PULSE.lock() {
             p.1 = p.1.max(bright) * 0.999 + bright * 0.001;
             p.0 = if p.1 > 1e-3 { (bright / p.1).clamp(0.0, 1.0) } else { 1.0 };
+        }
+        // (the Custom Event Menus mod: the line pulses on a steady beat of its own (the menu's own pulse doesn't run
+        // while the card's kept lit), the card's glow with it)
+        if ssx_core::rider_showcase::enabled() {
+            let pulse = card_pulse();
+            if let Ok(mut p) = INNER_PULSE.lock() {
+                p.0 = pulse;
+            }
+            cx = here.cx;
+            cx.mult[3] *= pulse;
         }
         // (where it is (window pixels) and its colour: the rider's view's frame on the gear steps grows from it)
         if let Ok(mut last) = INNER_LAST.lock() {
@@ -1808,19 +1845,15 @@ fn grown_card(inh: &Inherited, out: &mut Vec<Command>) {
     let pulse = INNER_PULSE.lock().map_or(1.0, |p| p.0);
     // the glow outside the edge: fading out smoothly
     let scale = ((r.y1 - r.y0).abs() / 760.0).max(0.5);
-    // (spreading wider and a little brighter under the mouse: the same rings, each a little wider, so it grows
-    // smoothly)
+    // (spreading wider and a little brighter under the mouse; rounded round the corners, as a glow spreads)
     let hover = card_hover();
-    let outer = (16.0 * scale).round().max(4.0) as i32;
-    let spread = 1.0 + 0.8 * hover;
-    for i in (0..outer).rev() {
-        let t = 1.0 - (i as f32 + 0.5) / outer as f32;
+    let reach = 16.0 * scale * (1.0 + 0.8 * hover);
+    let layers = 24;
+    for i in (0..layers).rev() {
+        let (d0, d1) = (reach * i as f32 / layers as f32, reach * (i + 1) as f32 / layers as f32);
+        let t = 1.0 - (i as f32 + 0.5) / layers as f32;
         let a = (0.55 + 0.15 * hover) * t * t * alpha * pulse;
-        if hover > 0.0 {
-            glow_ring(out, [r.x0, r.y0, r.x1, r.y1], i as f32 * spread, spread, [CARD_GLOW[0], CARD_GLOW[1], CARD_GLOW[2], a]);
-        } else {
-            ring(out, i as f32, CARD_GLOW, a);
-        }
+        soft_ring(out, [r.x0, r.y0, r.x1, r.y1], d0, d1, [CARD_GLOW[0], CARD_GLOW[1], CARD_GLOW[2], a]);
     }
     // the card: solid
     {
@@ -3231,6 +3264,51 @@ fn button_hover() -> f32 {
 /// The level's X button's glow under the mouse: the button's own shape drawn again behind it, a little larger each
 /// time and fainter, in the card's glow green (so the glow follows its edge).
 static BUTTON_GLOWING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The highlighted card's pulse (the Custom Event Menus mod): its inner line's and glow's brightness, 0.7 to 1, on a
+/// steady slow beat.
+fn card_pulse() -> f32 {
+    let t = PULSE_START.get_or_init(std::time::Instant::now).elapsed().as_secs_f32();
+    0.7 + 0.3 * (0.5 + 0.5 * (t * std::f32::consts::TAU / 1.6).sin())
+}
+
+/// A band round `rect` (the drawing's pixels) from `d0` to `d1` pixels outside its edge, its corners rounded (as an
+/// edge's glow spreads round a corner).
+fn soft_ring(out: &mut Vec<Command>, rect: [f32; 4], d0: f32, d1: f32, c: [f32; 4]) {
+    if c[3] <= 0.0 || d1 <= d0 {
+        return;
+    }
+    let [x0, y0, x1, y1] = rect;
+    const ARC: usize = 8;
+    // (the outline `d` outside the rectangle: its corners quarter circles about the rectangle's own)
+    let outline = |d: f32| {
+        let mut pts = Vec::with_capacity(4 * (ARC + 1));
+        let corners = [(x1, y0, -0.5f32), (x1, y1, 0.0), (x0, y1, 0.5), (x0, y0, 1.0)];
+        for (cx, cy, start) in corners {
+            for k in 0..=ARC {
+                let a = (start + 0.5 * k as f32 / ARC as f32) * std::f32::consts::PI;
+                pts.push([cx + d * a.cos(), cy + d * a.sin()]);
+            }
+        }
+        pts
+    };
+    let (inner, outer) = (outline(d0), outline(d1));
+    let n = inner.len() as u32;
+    let mut mesh = Mesh::default();
+    mesh.vertices.extend(inner);
+    mesh.vertices.extend(outer);
+    for i in 0..n {
+        let j = (i + 1) % n;
+        mesh.indices.extend([i, j, n + j, i, n + j, n + i]);
+    }
+    out.push(Command::Draw(DrawItem {
+        mesh: Arc::new(mesh),
+        paint: Paint::Solid(c),
+        transform: Mat2d::IDENTITY,
+        cxform: Cxform::IDENTITY,
+        blend: BlendMode::Normal,
+    }));
+}
 
 /// How far the highlighted card's glow has grown under the mouse (0 to 1, eased).
 fn card_hover() -> f32 {
