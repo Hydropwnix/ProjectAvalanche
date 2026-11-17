@@ -317,10 +317,10 @@ impl Renderer {
             out.extend([Command::MaskPopBegin, Command::Draw(clip), Command::MaskPopEnd]);
             if inst.name == "mcBacker" && inst.visible {
                 // (where it is for the mouse: the card's frame, down to the cut)
-                // (its frame: as wide as its bottom edge's line (the bar and a little either side), its top as far in
-                // from the backing's as its sides are)
+                // (its frame: as wide as its bottom edge's line (the bar and a little either side), its top a little
+                // under the backing's)
                 let side = (bar.x1 - bar.x0) * 0.083;
-                let m = (bar.x0 - side - b.x0).max(0.0);
+                let m = (cut - b.y0).max(0.0) * 0.02;
                 let w = RectF { x0: bar.x0 - side, y0: b.y0 + m, x1: bar.x1 + side, y1: cut }.transform(&inh.xf);
                 if inh.cx.mult[3] * inst.cxform.mult[3] > 0.02 {
                     ssx_core::rider_showcase::found_card([w.x0, w.y0, w.x1, w.y1], false);
