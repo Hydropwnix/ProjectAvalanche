@@ -347,7 +347,8 @@ impl GameUi {
                 };
                 // (once each time the slot (or the reason) changes)
                 let key = line.split(" (x ").next().unwrap_or(&line).to_string();
-                if let Ok(mut l) = LAST.lock()
+                if !line.ends_with("not an equipment option")
+                    && let Ok(mut l) = LAST.lock()
                     && *l != key
                 {
                     *l = key;
@@ -755,6 +756,16 @@ fn equipment_slot_under(
 ) -> Result<(i32, usize, String), String> {
     let list = reach.lists.iter().find(|l| l.clip == e.menu).ok_or("no list")?;
     let cell = list.cells.iter().find(|c| c.item == e.item).ok_or("no cell")?;
+    // (only the gear steps' options: not the rider list's cards, say)
+    let in_options = cx
+        .player
+        .get(cell.clip)
+        .and_then(|i| i.parent)
+        .and_then(|p| cx.player.get(p))
+        .is_some_and(|p| p.name == "mcCategoryMenu");
+    if !in_options {
+        return Err("not an equipment option".into());
+    }
     // (the option's icons: its `mcSlots`, wherever it is in the option)
     let mut icons = find_named(cx.player, cell.clip, "mcSlots", 6)
         .ok_or_else(|| format!("no mcSlots under {}", cx.player.path(cell.clip)))?;
