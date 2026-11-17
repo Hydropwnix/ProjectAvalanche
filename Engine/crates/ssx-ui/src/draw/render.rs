@@ -2568,9 +2568,10 @@ fn gear_layout(lib: &Library, player: &Player, stage: &Mat2d) {
         // off to the left, where the options used to be, till the menu puts it on its option: not shown till then.)
         let mut highlight_waiting = false;
         if let Some(h) = child(slots, "mcHighlight") {
+            // (on any of an option's slots: the Gear and Mods options' last slots are well right of the menu's left)
             let on_options = win(h).is_none_or(|b| {
                 let mid = (b.x0 + b.x1) * 0.5;
-                mid > men.x0 - u * 0.25 && mid < men.x0 + u * 0.6
+                mid > men.x0 - u * 0.25 && mid < men.x1.max(men.x0 + u * 0.6) + u * 0.5
             });
             if on_options {
                 moved.push((h, menu_dx, 0.0, 1.0, 1.0));
