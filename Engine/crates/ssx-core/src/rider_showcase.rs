@@ -183,3 +183,15 @@ pub fn view_step(cur: [f32; 4], to: [f32; 4], dt: f32, far: f32, rate: f32, mv: 
     let k = 1.0 - (-dt * rate).exp();
     std::array::from_fn(|i| cur[i] + (to[i] - cur[i]) * k)
 }
+
+/// The rider step's highlighted rider has a level for sale (the equipment screen's X "Purchase Level" prompt and price
+/// show): drawn at the highlighted card's bottom right, the rider's description under them.
+static LEVEL_OFFER: AtomicBool = AtomicBool::new(false);
+
+pub fn set_level_offer(on: bool) {
+    LEVEL_OFFER.store(on, Ordering::Relaxed);
+}
+
+pub fn level_offer() -> bool {
+    LEVEL_OFFER.load(Ordering::Relaxed)
+}

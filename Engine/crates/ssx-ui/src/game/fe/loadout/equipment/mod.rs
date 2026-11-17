@@ -437,6 +437,11 @@ pub fn update(fe: &mut FrontEnd, env: &mut FeEnv) {
         fe.equipment.preview = None;
     }
     if ssx_core::rider_showcase::enabled() {
+        // (the highlighted rider's level for sale: its prompt and price placed by the highlighted card)
+        let at = fe.equipment.highlight.or_else(|| usize::try_from(fe.equipment.rider_index).ok());
+        let offer = showcase::active(fe)
+            && at.and_then(|i| fe.equipment.list.get(i)).is_some_and(|u| u.has(flag::LEVEL_PURCHASEABLE));
+        ssx_core::rider_showcase::set_level_offer(offer);
         ssx_core::rider_showcase::set_full_list_view(fe.screen == 0x31 && fe.equipment.state == state::INVENTORY);
         // (the favourite suits' stars: which of the gear list's items, and of the full list's (with its highlighted one))
         let stars = |l: &[UiItem]| -> Vec<bool> {

@@ -3030,9 +3030,22 @@ fn stretched(matrix: Mat2d, cx: f32, cy: f32, kx: f32, ky: f32) -> Mat2d {
     Mat2d::translate(cx, cy).mul(&Mat2d::scale(kx, ky)).mul(&Mat2d::translate(-cx, -cy)).mul(&matrix)
 }
 
+/// The highlighted rider's level for sale (the rider step's X prompt and price, in its bio's units): their move to the
+/// highlighted card's bottom right, worked out with the bio's place (drawn just before them).
+static LEVEL_PROMPT_SHIFT: std::sync::Mutex<Option<(f32, f32)>> = std::sync::Mutex::new(None);
+
 fn grown_card_part(lib: &Library, player: &Player, id: InstanceId, inst: &Instance, parent: &Mat2d, matrix: Mat2d) -> Mat2d {
     if ghosting() {
         return matrix;
+    }
+    if matches!(inst.name.as_str(), "mcPrompt" | "mcPrice")
+        && ssx_core::rider_showcase::enabled()
+        && inst.parent.and_then(|p| player.get(p)).is_some_and(|p| p.name == "mcBioPrompt")
+    {
+        return match LEVEL_PROMPT_SHIFT.lock().ok().and_then(|p| *p) {
+            Some((x, y)) => Mat2d::translate(x, y).mul(&matrix),
+            None => matrix,
+        };
     }
     if inst.name == "mcSurvival" {
         let px = grow_now_or_prev().map_or(0.0, |g| g.by_px);
@@ -3058,7 +3071,42 @@ fn grown_card_part(lib: &Library, player: &Player, id: InstanceId, inst: &Instan
             return matrix;
         }
         let d = d.transform(&parent.mul(&matrix).mul(&child.matrix));
-        let (dx, dy) = (card.x0 - d.x0, card.y1 + 8.0 - d.y0);
+        let (dx, mut dy) = (card.x0 - d.x0, card.y1 + 8.0 - d.y0);
+        // (a level for sale: its X prompt and price at the card's bottom right, just under it, the description under
+        // them)
+        let mut shift = None;
+        if ssx_core::rider_showcase::level_offer() && !ssx_core::rider_showcase::gear_view() {
+            let world = parent.mul(&Mat2d::translate(dx / parent.a, dy / parent.d).mul(&matrix));
+            let mut u: Option<RectF> = None;
+            for name in ["mcPrompt", "mcPrice"] {
+                let Some((c, ch)) =
+                    s.children.values().find_map(|&c| player.get(c).filter(|ch| ch.name == name).map(|ch| (c, ch)))
+                else {
+                    continue;
+                };
+                let b = player.local_bounds(lib, c);
+                if b.is_empty() || !ch.visible {
+                    continue;
+                }
+                let b = b.transform(&world.mul(&ch.matrix));
+                u = Some(match u {
+                    Some(a) => RectF { x0: a.x0.min(b.x0), y0: a.y0.min(b.y0), x1: a.x1.max(b.x1), y1: a.y1.max(b.y1) },
+                    None => b,
+                });
+            }
+            if let Some(u) = u
+                && world.a.abs() > 1e-6
+                && world.d.abs() > 1e-6
+            {
+                let extra = (u.y1 - u.y0) + 6.0;
+                // (the prompt and price go with the description, moved down by `extra`: their own move takes that off)
+                shift = Some(((card.x1 - u.x1) / world.a, (card.y1 + 8.0 - u.y0 - extra) / world.d));
+                dy += extra;
+            }
+        }
+        if let Ok(mut p) = LEVEL_PROMPT_SHIFT.lock() {
+            *p = shift;
+        }
         return Mat2d::translate(dx / parent.a, dy / parent.d).mul(&matrix);
     }
     let Some(g) = GROW.lock().ok().and_then(|g| *g) else { return matrix };
