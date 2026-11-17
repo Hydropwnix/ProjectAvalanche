@@ -143,6 +143,27 @@ pub fn card_at(x: f32, y: f32) -> Option<i32> {
     (n != 0).then_some(n)
 }
 
+/// The mouse pointer on the rider step (fractions of the screen), while it's shown there.
+static POINTER: Mutex<Option<(f32, f32)>> = Mutex::new(None);
+
+pub fn set_pointer(at: Option<(f32, f32)>) {
+    if let Ok(mut p) = POINTER.lock() {
+        *p = at;
+    }
+}
+
+/// The rider list's card (not the highlighted one) under the mouse pointer, as last drawn (fractions of the screen):
+/// it's drawn a little larger, edged in a blue glow.
+pub fn hovered_card() -> Option<[f32; 4]> {
+    let (x, y) = POINTER.lock().ok().and_then(|p| *p)?;
+    let c = CARDS_SHOWN.lock().ok()?.clone();
+    if c.highlighted.is_some_and(|h| inside(&h, x, y)) {
+        return None;
+    }
+    let mid = |r: &[f32; 4]| (r[0] + r[2]) * 0.5;
+    c.others.into_iter().filter(|r| inside(r, x, y)).min_by(|a, b| (mid(a) - x).abs().total_cmp(&(mid(b) - x).abs()))
+}
+
 /// Whether a point of the screen (fractions) is on the level for sale's X prompt and price.
 pub fn on_prompt(x: f32, y: f32) -> bool {
     level_offer() && CARDS_SHOWN.lock().ok().and_then(|c| c.prompt).is_some_and(|r| inside(&r, x, y))

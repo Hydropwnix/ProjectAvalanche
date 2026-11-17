@@ -154,6 +154,15 @@ pub(super) fn pointer_system(
     if !rider_step {
         (p.state.rider_steps, p.state.rider_next) = (0, None);
     }
+    // (where the pointer is on the rider step: the card under it shows it)
+    let size = p.window.single().map(|w| Vec2::new(w.width(), w.height())).ok();
+    let at = p
+        .state
+        .last
+        .zip(size)
+        .filter(|(_, s)| rider_step && p.state.shown && s.x > 0.0 && s.y > 0.0)
+        .map(|(a, s)| (a.x / s.x, a.y / s.y));
+    ssx_core::rider_showcase::set_pointer(at);
     let now = std::time::Instant::now();
     if p.state.rider_steps != 0
         && p.state.rider_next.is_some_and(|t| now >= t)

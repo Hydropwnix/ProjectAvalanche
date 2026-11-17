@@ -167,6 +167,9 @@ impl Renderer {
             (stage.apply(movie.stage.x0, movie.stage.y0), stage.apply(movie.stage.x1, movie.stage.y1));
         out.stage = Some([x0, y0, x1, y1]);
         ssx_core::rider_showcase::begin_frame(viewport.0, viewport.1);
+        if let Ok(mut f) = FRAME_SIZE.lock() {
+            *f = Some((viewport.0.max(1) as f32, viewport.1.max(1) as f32));
+        }
         RENDER_FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         grow_begin_frame();
         gear_layout(lib, player, &stage);
@@ -444,7 +447,26 @@ impl Renderer {
                             self.instance(lib, player, child, here, out);
                         } else {
                             let start = out.len();
-                            self.instance(lib, player, child, here, out);
+                            // (the card under the mouse: a little larger, edged in a blue glow)
+                            let hover = hovered_card_px().filter(|h| {
+                                let b = player.local_bounds(lib, child).transform(&here.xf.mul(&c.matrix));
+                                let (bx, hx) = ((b.x0 + b.x1) * 0.5, (h.x0 + h.x1) * 0.5);
+                                !b.is_empty() && (h.x0..=h.x1).contains(&bx) && (b.x0..=b.x1).contains(&hx)
+                            });
+                            match hover {
+                                Some(h) => {
+                                    let (cx, cy) = ((h.x0 + h.x1) * 0.5, (h.y0 + h.y1) * 0.5);
+                                    let grow = Mat2d::translate(cx, cy)
+                                        .mul(&Mat2d::scale(HOVER_GROW, HOVER_GROW))
+                                        .mul(&Mat2d::translate(-cx, -cy));
+                                    let bigger = Inherited { xf: grow.mul(&here.xf), ..here };
+                                    self.instance(lib, player, child, bigger, out);
+                                    let (hw, hh) = ((h.x1 - h.x0) * HOVER_GROW * 0.5, (h.y1 - h.y0) * HOVER_GROW * 0.5);
+                                    let alpha = (here.cx.mult[3] * c.cxform.mult[3]).clamp(0.0, 1.0);
+                                    hover_glow(out, [cx - hw, cy - hh, cx + hw, cy + hh], alpha);
+                                }
+                                None => self.instance(lib, player, child, here, out),
+                            }
                             // (only as it's fully shown: not fading in at the list's end)
                             if c.visible && c.cxform.mult[3] >= 0.99 {
                                 remember_card(lib, player, child, c, &here.xf, start, out);
@@ -2087,6 +2109,54 @@ const FRAME_FADE_RATE: f32 = 1.25;
 static FRAME_ALPHA: std::sync::Mutex<f32> = std::sync::Mutex::new(0.0);
 
 /// The rider's view's frame drawn: its line and glow, pulsing.
+/// A card of the rider list under the mouse is drawn this much larger (about its middle).
+const HOVER_GROW: f32 = 1.04;
+
+/// The rider list's card under the mouse, in the drawing's pixels (as last drawn).
+fn hovered_card_px() -> Option<RectF> {
+    if !ssx_core::rider_showcase::enabled() || ssx_core::rider_showcase::gear_view() {
+        return None;
+    }
+    let [x0, y0, x1, y1] = ssx_core::rider_showcase::hovered_card()?;
+    let (w, h) = FRAME_SIZE.lock().ok().and_then(|s| *s)?;
+    Some(RectF { x0: x0 * w, y0: y0 * h, x1: x1 * w, y1: y1 * h })
+}
+
+/// The drawing's size this frame (pixels).
+static FRAME_SIZE: std::sync::Mutex<Option<(f32, f32)>> = std::sync::Mutex::new(None);
+
+/// The blue glow round the rider list's card under the mouse (`rect`, the drawing's pixels): a bright line and a
+/// soft glow outside it.
+fn hover_glow(out: &mut Vec<Command>, rect: [f32; 4], alpha: f32) {
+    let [x0, y0, x1, y1] = rect;
+    if alpha <= 0.0 || x1 - x0 < 4.0 || y1 - y0 < 4.0 {
+        return;
+    }
+    let ring = |out: &mut Vec<Command>, d: f32, w: f32, c: [f32; 4]| {
+        let (a0, b0, a1, b1) = (x0 - d - w, y0 - d - w, x1 + d + w, y1 + d + w);
+        let (i0, j0, i1, j1) = (x0 - d, y0 - d, x1 + d, y1 + d);
+        let mut mesh = Mesh::default();
+        for [qx0, qy0, qx1, qy1] in [[a0, b0, a1, j0], [a0, j1, a1, b1], [a0, j0, i0, j1], [i1, j0, a1, j1]] {
+            let base = mesh.vertices.len() as u32;
+            mesh.vertices.extend([[qx0, qy0], [qx1, qy0], [qx1, qy1], [qx0, qy1]]);
+            mesh.indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+        }
+        out.push(Command::Draw(DrawItem {
+            mesh: Arc::new(mesh),
+            paint: Paint::Solid(c),
+            transform: Mat2d::IDENTITY,
+            cxform: Cxform::IDENTITY,
+            blend: BlendMode::Normal,
+        }));
+    };
+    let glow = 12;
+    for i in (0..glow).rev() {
+        let f = 1.0 - (i as f32 + 0.5) / glow as f32;
+        ring(out, 2.0 + i as f32, 1.0, [0.2, 0.55, 1.0, 0.55 * f * f * alpha]);
+    }
+    ring(out, 0.0, 2.0, [0.6, 0.85, 1.0, alpha]);
+}
+
 fn draw_frame(out: &mut Vec<Command>, rect: [f32; 4], alpha: f32, inner: Option<([f32; 4], [f32; 4])>, now: std::time::Instant) {
     let [x0, y0, x1, y1] = rect;
     if alpha <= 0.0 || x1 - x0 < 4.0 || y1 - y0 < 4.0 {

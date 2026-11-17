@@ -331,6 +331,14 @@ impl GameUi {
 
     fn pointer_press(&mut self, b: Button, why: &str) {
         self.pointer.note(format!("pointer: {why} → {b:?}"));
+        // (a port mod (the test peak): Y (a click on its "Switch Event" prompt) turns its events, as the pad's Y does)
+        if b == Button::DigitalThree {
+            let mut taken = false;
+            self.fe_call(|fe, _| taken = crate::game::fe::globe::take_test_peak_press(fe, b));
+            if taken {
+                return;
+            }
+        }
         self.input.push_from(Input::Button { button: b, down: true }, KEYBOARD_DEVICE);
         self.pointer.release.push(b);
         if matches!(b, Button::DpadLeft | Button::DpadRight) {
