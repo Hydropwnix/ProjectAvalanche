@@ -3032,6 +3032,8 @@ fn stretched(matrix: Mat2d, cx: f32, cy: f32, kx: f32, ky: f32) -> Mat2d {
 
 /// The highlighted rider's level for sale (the rider step's X prompt and price, in its bio's units): their move to the
 /// highlighted card's bottom right, worked out with the bio's place (drawn just before them).
+/// …this many window pixels right of the highlighted card's edge.
+const LEVEL_PROMPT_GAP_PX: f32 = 14.0;
 static LEVEL_PROMPT_SHIFT: std::sync::Mutex<Option<(f32, f32)>> = std::sync::Mutex::new(None);
 
 fn grown_card_part(lib: &Library, player: &Player, id: InstanceId, inst: &Instance, parent: &Mat2d, matrix: Mat2d) -> Mat2d {
@@ -3071,9 +3073,9 @@ fn grown_card_part(lib: &Library, player: &Player, id: InstanceId, inst: &Instan
             return matrix;
         }
         let d = d.transform(&parent.mul(&matrix).mul(&child.matrix));
-        let (dx, mut dy) = (card.x0 - d.x0, card.y1 + 8.0 - d.y0);
-        // (a level for sale: its X prompt and price at the card's bottom right, just under it, the description under
-        // them)
+        let (dx, dy) = (card.x0 - d.x0, card.y1 + 8.0 - d.y0);
+        // (a level for sale: its X prompt and price right of the card, centred between its bottom and the plain cards'
+        // (its own before it grew))
         let mut shift = None;
         if ssx_core::rider_showcase::level_offer() && !ssx_core::rider_showcase::gear_view() {
             let world = parent.mul(&Mat2d::translate(dx / parent.a, dy / parent.d).mul(&matrix));
@@ -3098,10 +3100,10 @@ fn grown_card_part(lib: &Library, player: &Player, id: InstanceId, inst: &Instan
                 && world.a.abs() > 1e-6
                 && world.d.abs() > 1e-6
             {
-                let extra = (u.y1 - u.y0) + 6.0;
-                // (the prompt and price go with the description, moved down by `extra`: their own move takes that off)
-                shift = Some(((card.x1 - u.x1) / world.a, (card.y1 + 8.0 - u.y0 - extra) / world.d));
-                dy += extra;
+                let plain_bottom = card.y1 - grow_now_or_prev().map_or(0.0, |g| g.by_px.max(0.0));
+                let mid = (card.y1 + plain_bottom) * 0.5;
+                let (x, y) = (card.x1 + LEVEL_PROMPT_GAP_PX - u.x0, mid - (u.y0 + u.y1) * 0.5);
+                shift = Some((x / world.a, y / world.d));
             }
         }
         if let Ok(mut p) = LEVEL_PROMPT_SHIFT.lock() {

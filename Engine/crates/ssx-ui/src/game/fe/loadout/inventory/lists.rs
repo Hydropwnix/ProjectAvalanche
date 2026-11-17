@@ -238,26 +238,20 @@ impl Inventory {
             if !ssx_core::rider_showcase::enabled() {
                 return riders.iter().map(|r| r.key).collect();
             }
-            // (the Custom Event Menus mod: Travis right after Eddie, and the retro riders (`dlc…`) right after Travis)
-            let id = |r: &ssx_assets::career::data::Rider| r.portrait.to_ascii_lowercase();
-            let retro = |r: &&ssx_assets::career::data::Rider| id(r).starts_with("dlc");
-            let travis = riders.iter().copied().find(|r| id(r) == "travis");
-            let retros: Vec<_> = riders.iter().copied().filter(retro).collect();
-            let mut out: Vec<u32> = Vec::with_capacity(riders.len());
-            let mut placed = false;
-            for r in riders.iter().copied().filter(|r| !retro(r) && Some(r.key) != travis.map(|t| t.key)) {
-                out.push(r.key);
-                if id(r) == "eddie" {
-                    out.extend(travis.map(|t| t.key));
-                    out.extend(retros.iter().map(|r| r.key));
-                    placed = true;
-                }
-            }
-            if !placed {
-                out.extend(travis.map(|t| t.key));
-                out.extend(retros.iter().map(|r| r.key));
-            }
-            return out;
+            // (the Custom Event Menus mod: the riders in a set order, the retro riders (`dlc…`) after the rest; any
+            // others (a package's) after them, as the career lists them)
+            const ORDER: [&str; 19] = [
+                "zoe", "alex", "elise", "kaori", "tane", "moby", "mac", "psymon", "tyler", "griff", "eddie", "travis",
+                "dlczoe", "dlcelise", "dlckaori", "dlcmoby", "dlcmac", "dlcpsymon", "dlceddie",
+            ];
+            let place = |r: &ssx_assets::career::data::Rider| {
+                let (portrait, name) = (r.portrait.to_ascii_lowercase(), r.name.to_ascii_lowercase());
+                let name = if name == "ty" { "tyler".to_string() } else { name };
+                ORDER.iter().position(|&o| o == portrait || o == name).unwrap_or(ORDER.len())
+            };
+            let mut riders = riders;
+            riders.sort_by_key(|r| place(r));
+            return riders.iter().map(|r| r.key).collect();
         }
         let level = Self::rider_level(db, profile, self.rider).0;
         // (the Custom Event Menus mod: a retro rider (`dlc…`) has the default board of the rider it's a retro version
@@ -446,7 +440,8 @@ impl Inventory {
                     it.flags |= flag::EQUIPPED;
                 }
             }
-        } else {
+        } else if !ssx_core::rider_showcase::enabled() {
+            // (the Custom Event Menus mod: the riders kept in its order)
             self.owned_list.sort_by(super::order::by_value);
         }
         self.survival = self.survival_score(db, profile, drop);
