@@ -3252,6 +3252,9 @@ pub fn test_peak_callout(cx: &mut crate::avm1::Ctx, show: bool) {
         }
         if show && freeride {
             wrap_callout_bar(cx, &bar, x, y);
+            if ours {
+                callout_order(cx, &bar, x, y);
+            }
         }
         if show && freeride && !ours {
             if let Ok((f, _)) = cx.get_method(&bar, "AddButton") {
@@ -3332,8 +3335,45 @@ fn callout_add(
         let style = args.get(2).cloned().unwrap_or_default();
         let ours = [Value::Number(y), Value::str(TEST_PEAK_LABEL), style, Value::Undefined, Value::Undefined];
         cx.call(&orig, this, &ours, Value::Undefined)?;
+    } else if on && icon == x {
+        // (X put back after ours (it goes in at the end): swapped back, so Freeride stays first)
+        callout_order(cx, &this, x, y);
     }
     Ok(out)
+}
+
+/// Freeride (X) kept before ours (Y) on the bar: if the screen put X back after it (it does as Y switches the event),
+/// the two swapped in the bar's lists (its buttons' info and their clips) and the bar laid out again, without loading
+/// either button again (no blink).
+fn callout_order(cx: &mut crate::avm1::Ctx, bar: &crate::avm1::value::Value, x: f64, y: f64) {
+    use crate::avm1::value::Value;
+    let Ok(infos) = cx.get_member(bar, "mButtonInfoArray") else { return };
+    let n = cx.get_member(&infos, "length").map(|v| cx.to_number(&v)).unwrap_or(0.0);
+    let n = if n.is_finite() { n.clamp(0.0, 16.0) as usize } else { 0 };
+    let at = |cx: &mut crate::avm1::Ctx, icon: f64| {
+        (0..n).find(|i| {
+            let info = cx.get_member(&infos, &i.to_string()).unwrap_or_default();
+            cx.get_member(&info, "iconId").is_ok_and(|v| cx.to_number(&v) == icon)
+        })
+    };
+    let (Some(xi), Some(yi)) = (at(cx, x), at(cx, y)) else { return };
+    if xi < yi {
+        return;
+    }
+    for list in ["mButtonInfoArray", "mButtonArray"] {
+        let Ok(arr) = cx.get_member(bar, list) else { continue };
+        if !matches!(arr, Value::Object(_)) {
+            continue;
+        }
+        let (a, b) = (xi.to_string(), yi.to_string());
+        let va = cx.get_member(&arr, &a).unwrap_or_default();
+        let vb = cx.get_member(&arr, &b).unwrap_or_default();
+        let _ = cx.set_member(&arr, &a, vb);
+        let _ = cx.set_member(&arr, &b, va);
+    }
+    if let Ok((f, _)) = cx.get_method(bar, "AdjustPosition") {
+        let _ = cx.call(&f, bar.clone(), &[], Value::Undefined);
+    }
 }
 
 fn callout_remove(
