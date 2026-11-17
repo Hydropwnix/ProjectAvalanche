@@ -62,7 +62,12 @@ struct SlotFocus {
     slot: i32,
     step: Step<i32>,
     click: bool,
+    /// Reads still to wait with the option selected before the first step (the option's own slot settles first).
+    settle: u32,
 }
+
+/// Reads waited, the option selected, before stepping to a slot.
+const SLOT_SETTLE: u32 = 2;
 
 /// At most this many left / right steps to a slot.
 const MAX_SLOT_STEPS: u32 = 8;
@@ -329,26 +334,31 @@ impl GameUi {
         if moved {
             let on_equipment = self.fe.as_ref().is_some_and(|fe| fe.screen == super::fe::screens::id::EQUIPMENT);
             let hovered = under.entry.filter(|_| !under.preview && on_equipment).and_then(|(e, _)| {
-                match equipment_slot_under(cx, &reach, e, raw) {
-                    Ok(slot) => Some((e, slot)),
-                    Err(why) => {
-                        // (why not, in the log, as it changes)
-                        static LAST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
-                        let line = format!("pointer: no slots of option {}: {why}", e.item);
-                        if let Ok(mut l) = LAST.lock()
-                            && *l != line
-                        {
-                            l.clone_from(&line);
-                            self.pointer.note(line);
-                        }
-                        None
-                    }
+                let found = equipment_slot_under(cx, &reach, e, raw);
+                // (what was found, in the log, as it changes)
+                static LAST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+                let line = match &found {
+                    Ok((slot, n)) => format!("pointer: option {} slot {slot} of {n}", e.item),
+                    Err(why) => format!("pointer: no slots of option {}: {why}", e.item),
+                };
+                if let Ok(mut l) = LAST.lock()
+                    && *l != line
+                {
+                    l.clone_from(&line);
+                    self.pointer.note(line);
                 }
+                found.ok().map(|(slot, _)| (e, slot))
             });
             match hovered {
                 Some((e, slot)) => {
                     if self.pointer.slot.is_none_or(|f| f.entry != e || f.slot != slot) {
-                        self.pointer.slot = Some(SlotFocus { entry: e, slot, step: Step::default(), click: false });
+                        self.pointer.slot = Some(SlotFocus {
+                            entry: e,
+                            slot,
+                            step: Step::default(),
+                            click: false,
+                            settle: SLOT_SETTLE,
+                        });
                     }
                 }
                 None => self.pointer.slot = None,
@@ -655,6 +665,8 @@ impl GameUi {
         let Some(mut f) = self.pointer.slot else { return };
         // (the option itself first)
         if self.pointer.focus.is_some_and(|x| x.entry == f.entry) {
+            f.settle = SLOT_SETTLE;
+            self.pointer.slot = Some(f);
             return;
         }
         let Some(menu) = reach.lists.iter().find(|m| m.clip == f.entry.menu) else {
@@ -664,6 +676,11 @@ impl GameUi {
         if menu.selected != f.entry.item {
             // (the option never came to be selected: nothing to do)
             self.pointer.slot = None;
+            return;
+        }
+        if f.settle > 0 {
+            f.settle -= 1;
+            self.pointer.slot = Some(f);
             return;
         }
         let Some(current) = self.fe.as_ref().map(|fe| fe.equipment.slot) else { return };
@@ -696,7 +713,7 @@ impl GameUi {
 
 /// The equipment screen's Gear and Mods options (a port addition): which of the option's slots (its icons, left to
 /// right) the pointer is over, for an option of more than one. (`Err`: why not, for the log.)
-fn equipment_slot_under(cx: &mut Ctx, reach: &Reach, e: Entry, raw: (f32, f32)) -> Result<i32, String> {
+fn equipment_slot_under(cx: &mut Ctx, reach: &Reach, e: Entry, raw: (f32, f32)) -> Result<(i32, usize), String> {
     let list = reach.lists.iter().find(|l| l.clip == e.menu).ok_or("no list")?;
     let cell = list.cells.iter().find(|c| c.item == e.item).ok_or("no cell")?;
     // (the option's icons: its `mcSlots`, wherever it is in the option)
@@ -733,7 +750,7 @@ fn equipment_slot_under(cx: &mut Ctx, reach: &Reach, e: Entry, raw: (f32, f32)) 
         })
         .map(|(i, _)| i)
         .ok_or("no slot")?;
-    i32::try_from(i).map_err(|e| e.to_string())
+    Ok((i32::try_from(i).map_err(|e| e.to_string())?, slots.len()))
 }
 
 fn visible_kids(player: &crate::display::Player, id: InstanceId) -> Vec<InstanceId> {
@@ -745,9 +762,11 @@ fn visible_kids(player: &crate::display::Player, id: InstanceId) -> Vec<Instance
     }
 }
 
-/// The visible parts of `id` that draw something, by their left and right edges in its own space, left to right.
+/// The slots the visible parts of `id` draw, by their left and right edges in its own space, left to right: parts
+/// drawn over one another (an icon, its empty mark, the highlight's frame) are one slot, and a part as wide as more
+/// than one slot (a backing) isn't one.
 fn side_by_side(cx: &mut Ctx, id: InstanceId) -> Vec<(f32, f32)> {
-    let mut slots: Vec<(f32, f32)> = visible_kids(cx.player, id)
+    let mut parts: Vec<(f32, f32)> = visible_kids(cx.player, id)
         .into_iter()
         .filter_map(|k| {
             let m = cx.player.get(k)?.matrix;
@@ -755,7 +774,20 @@ fn side_by_side(cx: &mut Ctx, id: InstanceId) -> Vec<(f32, f32)> {
             (!r.is_empty() && r.x1 - r.x0 > 1.0).then_some((r.x0, r.x1))
         })
         .collect();
-    slots.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let Some(narrowest) = parts.iter().map(|p| p.1 - p.0).min_by(f32::total_cmp) else { return parts };
+    parts.retain(|p| p.1 - p.0 <= narrowest * 1.6);
+    parts.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut slots: Vec<(f32, f32)> = Vec::new();
+    for p in parts {
+        match slots.last_mut() {
+            // (overlapping the slot before by more than half the narrower of the two: the same slot)
+            Some(last) if last.1.min(p.1) - p.0 > 0.5 * (p.1 - p.0).min(last.1 - last.0) => {
+                last.0 = last.0.min(p.0);
+                last.1 = last.1.max(p.1);
+            }
+            _ => slots.push(p),
+        }
+    }
     slots
 }
 
