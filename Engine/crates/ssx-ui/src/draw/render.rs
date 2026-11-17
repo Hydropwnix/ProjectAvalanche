@@ -2509,6 +2509,21 @@ fn frame_returning() -> bool {
     FRAME_NOW.lock().is_ok_and(|f| f.is_some()) && GEAR_FRAME.lock().is_ok_and(|g| g.is_none())
 }
 
+/// The mouse moving the equipment options' highlight across to a slot (a port addition): when it last said so. The
+/// highlight isn't drawn meanwhile (it would show on the option's first slot, then slide across).
+static SLOT_STEPPING: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+/// The mouse is (or isn't) moving the equipment options' highlight across to a slot.
+pub fn set_slot_stepping(on: bool) {
+    if let Ok(mut s) = SLOT_STEPPING.lock() {
+        *s = on.then(std::time::Instant::now);
+    }
+}
+
+fn slot_stepping() -> bool {
+    SLOT_STEPPING.lock().ok().and_then(|s| *s).is_some_and(|t| t.elapsed().as_secs_f32() < 0.5)
+}
+
 /// Start Run highlighted on the gear steps (drawn red there).
 static START_RUN_LIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// The selection highlight on Start Run (and not still on an option) as laid out this frame.
@@ -2619,7 +2634,9 @@ fn gear_layout(lib: &Library, player: &Player, stage: &Mat2d) {
         // The options: each one's own cell (its backing, its button).
         let option_part = |clip: InstanceId, name: &str| child(child(child(clip, "mcCell")?, "mcCell")?, name);
         let mut widths: Vec<f32> = Vec::new();
-        let mut lit_clip: Option<(f32, InstanceId)> = None;
+        // (each option's box (its backing) as drawn, by its clip's name: the Suit and the Board are clipInstance_0
+        // and _1)
+        let mut rows: Vec<(String, RectF)> = Vec::new();
         let mut option_icons: Vec<(f32, InstanceId)> = Vec::new();
         let mut options_bottom = f32::MIN;
         for clip in kids(menu) {
@@ -2628,8 +2645,8 @@ fn gear_layout(lib: &Library, player: &Player, stage: &Mat2d) {
                 && b.x1 - b.x0 > 1.0
             {
                 widths.push(b.x1 - b.x0);
-                if lit_clip.is_none_or(|(w, _)| b.x1 - b.x0 > w) {
-                    lit_clip = Some((b.x1 - b.x0, clip));
+                if let Some(i) = player.get(clip) {
+                    rows.push((i.name.clone(), b));
                 }
                 if let Some(icons) = option_part(clip, "mcSlots") {
                     option_icons.push((b.x1 - b.x0, icons));
@@ -2659,16 +2676,57 @@ fn gear_layout(lib: &Library, player: &Player, stage: &Mat2d) {
         // The selection highlight goes with the options. (While the menu comes on (back from the full list, say) it waits
         // off to the left, where the options used to be, till the menu puts it on its option: not shown till then.)
         let mut highlight_waiting = false;
-        let narrow = widths.iter().copied().fold(f32::MAX, f32::min);
-        let wide = widths.iter().copied().fold(0.0f32, f32::max);
-        let option_lit = !widths.is_empty() && wide > narrow * 1.02;
-        // (the option highlighted is the Suit or the Board: the plain ones, whose highlight Start Run's matches)
-        let plain_lit = option_lit
-            && lit_clip
-                .and_then(|(_, c)| player.get(c))
-                .is_some_and(|i| i.name == "clipInstance_0" || i.name == "clipInstance_1");
-        let start_lit = !widths.is_empty() && !option_lit;
+        // Which box is highlighted (a highlighted box is drawn a little longer): the Suit or the Board, by the two
+        // side by side (one of them plain); the Gear and Mods options (longer, with their slots) and Start Run, each
+        // by the shortest it's been seen.
+        // (worked out afresh for another size of screen)
+        #[allow(clippy::type_complexity)]
+        static SHORTEST: std::sync::Mutex<(Option<(i32, i32)>, Vec<(String, f32)>)> =
+            std::sync::Mutex::new((None, Vec::new()));
+        let plain_rows: Vec<f32> = rows
+            .iter()
+            .filter(|(n, _)| n == "clipInstance_0" || n == "clipInstance_1")
+            .map(|(_, b)| b.x1 - b.x0)
+            .collect();
+        let plain_w = plain_rows.iter().copied().fold(f32::MAX, f32::min);
+        let plain_lit_w = plain_rows.iter().copied().filter(|&w| w > plain_w * 1.02).fold(0.0f32, f32::max);
+        let plain_lit = plain_rows.len() == 2 && plain_lit_w > 0.0;
+        let start_box = child(advance, "mcBackerContainer").and_then(|b| Some((b, win(b)?)));
+        let mut other_lit = false;
+        let mut start_grown = false;
+        if let Ok(mut kept) = SHORTEST.lock() {
+            if kept.0 != Some(key) {
+                *kept = (Some(key), Vec::new());
+            }
+            let shortest = &mut kept.1;
+            let mut grown = |name: &str, w: f32| -> bool {
+                match shortest.iter_mut().find(|(n, _)| n == name) {
+                    Some((_, s)) => {
+                        *s = s.min(w);
+                        w > *s * 1.02
+                    }
+                    None => {
+                        shortest.push((name.to_string(), w));
+                        false
+                    }
+                }
+            };
+            for (n, b) in &rows {
+                if n != "clipInstance_0" && n != "clipInstance_1" && grown(n, b.x1 - b.x0) {
+                    other_lit = true;
+                }
+            }
+            if let Some((_, b)) = start_box {
+                start_grown = grown("start run", b.x1 - b.x0);
+            }
+        }
+        let start_lit = !rows.is_empty() && (start_grown || (!plain_lit && !other_lit));
         START_RUN_LIT.store(start_lit, std::sync::atomic::Ordering::Relaxed);
+        // (the Suit's or the Board's box as long as it's drawn highlighted, for Start Run's)
+        static PLAIN_LIT_W: std::sync::Mutex<Option<f32>> = std::sync::Mutex::new(None);
+        if plain_lit && let Ok(mut w) = PLAIN_LIT_W.lock() {
+            *w = Some(plain_lit_w);
+        }
         if let Some(h) = child(slots, "mcHighlight") {
             // (on any of an option's slots: the Gear and Mods options' last slots are well right of the menu's left)
             let on_options = win(h).is_none_or(|b| {
@@ -2695,6 +2753,9 @@ fn gear_layout(lib: &Library, player: &Player, stage: &Mat2d) {
                     }
                 }
                 moved.push((h, menu_dx, 0.0, kx, 1.0));
+                if slot_stepping() {
+                    hidden.push(h);
+                }
             } else {
                 highlight_waiting = true;
                 hidden.push(h);
@@ -2716,25 +2777,14 @@ fn gear_layout(lib: &Library, player: &Player, stage: &Mat2d) {
                 }
             }
         }
-        // Start Run as wide as an option: as a plain option while an option is highlighted, as a highlighted one (they
-        // grow a little) while it is.
-        // (as the Suit or the Board grow: the Gear and Mods options grow longer, with their slots)
-        static LIT_GROW: std::sync::Mutex<f32> = std::sync::Mutex::new(1.05);
-        if !widths.is_empty()
-            && let Some(bk) = child(advance, "mcBackerContainer")
-            && let Some(b) = win(bk)
+        // Start Run as long as the Suit and the Board: as they are plain while it isn't highlighted, as they are
+        // highlighted (they grow a little) while it is.
+        if plain_w < f32::MAX
+            && let Some((bk, b)) = start_box
             && b.x1 - b.x0 > 1.0
         {
-            let grow = match LIT_GROW.lock() {
-                Ok(mut g) => {
-                    if plain_lit {
-                        *g = wide / narrow;
-                    }
-                    *g
-                }
-                Err(_) => 1.05,
-            };
-            let w = if option_lit { narrow } else { narrow * grow };
+            let w =
+                if start_lit { PLAIN_LIT_W.lock().ok().and_then(|w| *w).unwrap_or(plain_w * 1.05) } else { plain_w };
             moved.push((bk, 0.0, 0.0, w / (b.x1 - b.x0), 1.0));
         }
         if let Some(btn) = child(advance, "mcButton") {

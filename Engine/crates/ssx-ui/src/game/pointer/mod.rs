@@ -64,6 +64,8 @@ struct SlotFocus {
     click: bool,
     /// Reads still to wait with the option selected before the first step (the option's own slot settles first).
     settle: u32,
+    /// Hovered from another option (the highlight is on its way from the option's own first slot).
+    switching: bool,
 }
 
 /// Reads waited, the option selected, before stepping to a slot.
@@ -354,12 +356,17 @@ impl GameUi {
             match hovered {
                 Some((e, slot)) => {
                     if self.pointer.slot.is_none_or(|f| f.entry != e || f.slot != slot) {
+                        let selected = reach.lists.iter().find(|l| l.clip == e.menu).map(|l| l.selected);
+                        // (still switching from another option: carried on)
+                        let switching =
+                            selected != Some(e.item) || self.pointer.slot.is_some_and(|f| f.entry == e && f.switching);
                         self.pointer.slot = Some(SlotFocus {
                             entry: e,
                             slot,
                             step: Step::default(),
                             click: false,
                             settle: SLOT_SETTLE,
+                            switching,
                         });
                     }
                 }
@@ -396,6 +403,10 @@ impl GameUi {
         }
         self.focus_step(cx, &reach);
         self.slot_step(&reach);
+        // (the highlight not drawn while it's on its way to a slot other than the first: the option's own first, then
+        // the slot, would show)
+        let stepping = self.pointer.slot.is_some_and(|f| f.switching && f.slot > 0);
+        crate::draw::render::set_slot_stepping(stepping);
         #[cfg(feature = "net")]
         self.tab_step();
         if let Some((level, nodes)) = globe {
