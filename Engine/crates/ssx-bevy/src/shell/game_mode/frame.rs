@@ -128,9 +128,14 @@ pub(super) fn shell_input(
     for (b, device) in pad_presses(&keys, &pads, &slots, &mut s.stick_dpad, search) {
         use ssx_ui::game::input::Button;
         // (and on the rider step (the Custom Event Menus mod): left, right, Space (A), Backspace (B) and X (a level);
-        // on the gear steps every key. Space selects there; Enter (START) does nothing.)
+        // on the gear steps every key)
         let globe_keys = (peak_keys || drop_keys || rider_list || gear_keys || popup_keys) && device == keyboard;
-        if globe_keys && b == Button::Start {
+        // (a port addition: in the menus Space selects and the keyboard's Enter (START) does nothing, but on the
+        // "press start" screen)
+        if device == keyboard
+            && b == Button::Start
+            && ui.fe.as_ref().is_none_or(|fe| fe.screen != ssx_ui::game::fe::screens::id::BOOT)
+        {
             continue;
         }
         let peak_key = globe_keys
