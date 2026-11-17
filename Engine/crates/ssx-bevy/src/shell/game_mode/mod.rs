@@ -50,6 +50,7 @@ pub use check::{UiPipelinesReady, WorldCheck, report_pipelines, ride_shot_path, 
 pub use display::{DisplayCli, DisplayState, WindowSpec, alt_held, print_displays};
 use frame::{shell_input, shell_step};
 pub use live::shown_text;
+pub(crate) use frame::popup_up;
 pub use pads::{PadSlots, PadState, ScriptPad, StickDpad, pad_presses, pads_frame};
 pub use save::SaveSlot;
 pub use window::{WindowHidden, hidden_frame};

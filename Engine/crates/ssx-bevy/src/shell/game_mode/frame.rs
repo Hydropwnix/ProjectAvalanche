@@ -118,26 +118,29 @@ pub(super) fn shell_input(
     let pad_only = ui.fe.as_ref().is_some_and(|fe| ssx_ui::game::fe::screens::pad_only(fe.screen));
     let rider_list = ssx_core::rider_showcase::enabled()
         && ui.fe.as_ref().is_some_and(|fe| ssx_ui::game::fe::equipment::showcase::active(fe) && !popup_up(fe));
-    // (a port addition: on a range's peaks and a peak's drops the keyboard's left and right arrows, Space (A) and
-    // Backspace (B) work; on the drops X too (Freeride), and for the test peak up, down and Y)
+    // (a port addition: on a range's peaks and a peak's drops the keyboard's left and right arrows, Space / Enter
+    // (A) and Backspace (B) work; on the drops X too (Freeride), and for the test peak up, down and Y)
     let peak_keys = ui.fe.as_ref().is_some_and(ssx_ui::game::fe::globe::peak_screen);
     let drop_keys = ui.fe.as_ref().is_some_and(ssx_ui::game::fe::globe::drop_screen);
     let gear_keys = ui.fe.as_ref().is_some_and(gear_screen);
-    // (a port addition: a pop-up up (on any screen): the keyboard's arrows, Space (A) and Backspace (B) work in it)
+    // (a port addition: a pop-up up (on any screen): the keyboard's arrows, Space / Enter (A) and Backspace (B)
+    // work in it)
     let popup_keys = ui.fe.as_ref().is_some_and(popup_up);
     for (b, device) in pad_presses(&keys, &pads, &slots, &mut s.stick_dpad, search) {
         use ssx_ui::game::input::Button;
-        // (and on the rider step (the Custom Event Menus mod): left, right, Space (A), Backspace (B) and X (a level);
-        // on the gear steps every key)
+        // (and on the rider step (the Custom Event Menus mod): left, right, Space / Enter (A), Backspace (B) and X
+        // (a level); on the gear steps every key)
         let globe_keys = (peak_keys || drop_keys || rider_list || gear_keys || popup_keys) && device == keyboard;
-        // (a port addition: in the menus Space selects and the keyboard's Enter (START) does nothing, but on the
-        // "press start" screen)
-        if device == keyboard
+        // (a port addition: in the menus the keyboard's Enter selects (A), as Space does, but on the "press start"
+        // screen, where it's START)
+        let b = if device == keyboard
             && b == Button::Start
             && ui.fe.as_ref().is_none_or(|fe| fe.screen != ssx_ui::game::fe::screens::id::BOOT)
         {
-            continue;
-        }
+            Button::DigitalOne
+        } else {
+            b
+        };
         let peak_key = globe_keys
             && (gear_keys
                 || matches!(b, Button::DpadLeft | Button::DpadRight | Button::DigitalOne | Button::DigitalTwo)
