@@ -203,9 +203,39 @@ pub fn peak_screen(fe: &FrontEnd) -> bool {
     fe.globe_scene.is_some() && matches!(fe.screen, 0xD | 0x43 | 0x10)
 }
 
-/// The globe screens the mouse works on (ranges and peaks; the drops' stay the pad's).
+/// A port addition: the screens of a peak's drops, where the mouse picks a drop and the keyboard works too.
+pub fn drop_screen(fe: &FrontEnd) -> bool {
+    fe.globe_scene.is_some() && matches!(fe.screen, 0xE | 0x44 | 0x11)
+}
+
+/// The globe screens the mouse and the keyboard work on (ranges (the mouse only), peaks and drops).
 pub fn mouse_screen(fe: &FrontEnd) -> bool {
-    range_screen(fe) || peak_screen(fe)
+    range_screen(fe) || peak_screen(fe) || drop_screen(fe)
+}
+
+/// The mouse on a peak's drops: the drop under it highlighted (as the stick's pick makes it). Whether it is now.
+pub fn pointer_drop(fe: &mut FrontEnd, env: &mut FeEnv, key: u32) -> bool {
+    if !drop_screen(fe) {
+        return false;
+    }
+    let Some(mut scene) = fe.globe_scene.take() else { return false };
+    let picked = scene.pointer_drop(key, &Flow(fe));
+    let now = scene.drop_focus == key;
+    let sounds = std::mem::take(&mut scene.sounds);
+    fe.globe_scene = Some(scene);
+    if let Some(recommended) = picked {
+        for id in sounds {
+            fe.play_sound(id);
+        }
+        env.values.set_bool(0xC6, recommended);
+        fe.note(format!("globe: the pointer selects drop {key:#x}"));
+        fe.globe.drop = key;
+        remember(fe, 2, key);
+        drop_chosen(fe, env, key);
+    } else if let Some(s) = fe.globe_scene.as_mut() {
+        s.sounds = sounds;
+    }
+    now
 }
 
 /// The mouse on the ranges' globe: the range under it highlighted (the selection, as the stick's pick makes it),

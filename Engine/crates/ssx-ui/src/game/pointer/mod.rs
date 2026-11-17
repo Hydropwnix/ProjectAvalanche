@@ -143,6 +143,9 @@ const STICK_PUSH: f32 = 0.26;
 
 const MAX_GLOBE_STEPS: u32 = 32;
 
+/// A peak's drops: the nearest within this many stage pixels of the pointer is the one under it.
+const DROP_REACH: f32 = 90.0;
+
 /// The ranges' globe: the pointer moved this far (stage pixels) with the left button down is a drag, not a click.
 const DRAG_START: f32 = 4.0;
 
@@ -261,8 +264,13 @@ impl GameUi {
         let reach = lists::reach(cx, &subscribers, &order);
         let globe = self.globe_level().map(|level| (level, self.globe_nodes()));
         let mut under = under(cx, &order, &reach, stage);
-        if let Some((_, nodes)) = &globe {
+        if let Some((level, nodes)) = &globe {
             under.globe = globe_under(cx, &order, nodes, stage);
+            // (a port addition: a peak's drops sit close together: the drop nearest the pointer, near enough, is
+            // under it)
+            if *level == 3 && under.globe.is_none() && under.entry.is_none() {
+                under.globe = globe_near(cx, &order, nodes, pos, DROP_REACH);
+            }
         }
         if moved
             && let Some((e, _)) = under.entry
@@ -374,15 +382,19 @@ impl GameUi {
         let target = nodes.iter().find(|n| n.key == g.key);
         // (a port addition: on the ranges' globe the range under the pointer is selected at once, the globe left as
         // it is; a click on it, once selected, is the pad's A)
-        if level == 1 && target.is_some() {
+        if matches!(level, 1 | 3) && target.is_some() {
             let key = g.key;
             let mut ok = false;
-            self.fe_call(|fe, _| ok = super::fe::globe::pointer_focus(fe, key));
+            if level == 1 {
+                self.fe_call(|fe, _| ok = super::fe::globe::pointer_focus(fe, key));
+            } else {
+                self.fe_call(|fe, env| ok = super::fe::globe::pointer_drop(fe, env, key));
+            }
             let clicked = self.pointer.globe_click == Some(key);
             self.pointer.globe = None;
             self.pointer.globe_click = None;
             if ok && clicked {
-                self.pointer_press(Button::DigitalOne, "a click on a range: A");
+                self.pointer_press(Button::DigitalOne, "a click on a globe node: A");
             }
             return;
         }
@@ -682,6 +694,34 @@ fn globe_under(
     }
     cx.vm.pointer.meshes = meshes;
     best
+}
+
+/// The globe's node whose billboard's middle is nearest `at` (stage pixels), within `reach`.
+fn globe_near(
+    cx: &mut Ctx,
+    order: &[InstanceId],
+    nodes: &[super::fe::globe_scene::GlobeEntry],
+    at: (f32, f32),
+    reach: f32,
+) -> Option<(u32, usize)> {
+    let rank: std::collections::HashMap<InstanceId, usize> = order.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+    let mut best: Option<(u32, usize, f32)> = None;
+    for (k, id) in lists::billboards(cx, order) {
+        if !nodes.iter().any(|n| n.key == k) || !lists::drawn(cx, id) {
+            continue;
+        }
+        let Some(&r) = rank.get(&id) else { continue };
+        let b = crate::display::hit::drawn_bounds(cx.player, cx.lib, id).transform(&cx.player.world_matrix(id));
+        if b.is_empty() {
+            continue;
+        }
+        let (x, y) = ((b.x0 + b.x1) / 40.0, (b.y0 + b.y1) / 40.0);
+        let d = ((x - at.0).powi(2) + (y - at.1).powi(2)).sqrt();
+        if d <= reach && best.is_none_or(|(_, _, bd)| d < bd) {
+            best = Some((k, r, d));
+        }
+    }
+    best.map(|(k, r, _)| (k, r))
 }
 
 #[cfg(test)]

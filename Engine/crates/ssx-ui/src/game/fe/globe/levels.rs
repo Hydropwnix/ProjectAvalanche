@@ -210,6 +210,20 @@ impl GlobeScene {
         }
     }
 
+    /// A port addition (the mouse on a peak's drops): `key` highlighted, as the stick's pick does; whether it was
+    /// (a drop of the list shown, not already highlighted), and whether it's the recommended one.
+    pub fn pointer_drop(&mut self, key: u32, flow: &dyn GlobeFlow) -> Option<bool> {
+        if key == self.drop_focus || !self.list.iter().any(|e| e.key == key) || !flow.focusable(key) {
+            return None;
+        }
+        self.nodes.drops.get(&key)?;
+        self.drop_focus = key;
+        self.drop_repeat = 0.4;
+        self.drop_focus_scene();
+        self.audio.highlight(3, &mut self.sounds);
+        Some(key == flow.recommended())
+    }
+
     fn drop_focus_scene(&mut self) {
         let Some(d) = self.nodes.drops.get(&self.drop_focus) else { return };
         let x = d.screen_x;

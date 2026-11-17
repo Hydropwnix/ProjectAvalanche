@@ -105,14 +105,18 @@ pub(super) fn shell_input(
     let pad_only = ui.fe.as_ref().is_some_and(|fe| ssx_ui::game::fe::screens::pad_only(fe.screen));
     let rider_list = ssx_core::rider_showcase::enabled()
         && ui.fe.as_ref().is_some_and(ssx_ui::game::fe::equipment::showcase::active);
-    // (a port addition: on a range's peaks the keyboard's left and right arrows, Enter (A) and Backspace (B) work)
+    // (a port addition: on a range's peaks and a peak's drops the keyboard's left and right arrows, Enter (A) and
+    // Backspace (B) work; on the drops X too (Freeride), and for the test peak up, down and Y)
     let peak_keys = ui.fe.as_ref().is_some_and(ssx_ui::game::fe::globe::peak_screen);
+    let drop_keys = ui.fe.as_ref().is_some_and(ssx_ui::game::fe::globe::drop_screen);
     for (b, device) in pad_presses(&keys, &pads, &slots, &mut s.stick_dpad, search) {
         use ssx_ui::game::input::Button;
-        let b = if peak_keys && device == keyboard && b == Button::Start { Button::DigitalOne } else { b };
-        let peak_key = peak_keys
-            && device == keyboard
-            && matches!(b, Button::DpadLeft | Button::DpadRight | Button::DigitalOne | Button::DigitalTwo);
+        let globe_keys = (peak_keys || drop_keys) && device == keyboard;
+        let b = if globe_keys && b == Button::Start { Button::DigitalOne } else { b };
+        let peak_key = globe_keys
+            && (matches!(b, Button::DpadLeft | Button::DpadRight | Button::DigitalOne | Button::DigitalTwo)
+                || (drop_keys
+                    && matches!(b, Button::DigitalFour | Button::DigitalThree | Button::DpadUp | Button::DpadDown)));
         if (focused || pad_only) && device == keyboard && !(peak_key && !focused) {
             continue;
         }
