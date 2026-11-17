@@ -33,6 +33,11 @@ const LIST_REPEAT_EVERY: f32 = 0.13;
 /// The left stick held this far over counts as held that way.
 const REPEAT_STICK: f32 = 0.4;
 
+/// A pop-up is up (a question, a message): the mouse and the keyboard work in it on any screen.
+pub(crate) fn popup_up(fe: &ssx_ui::game::fe::FrontEnd) -> bool {
+    !fe.popups.stack.is_empty()
+}
+
 /// The equipment screen past its rider step, and its full list (View More) (the Custom Event Menus mod): the mouse
 /// and the keyboard work there.
 pub(super) fn gear_screen(fe: &ssx_ui::game::fe::FrontEnd) -> bool {
@@ -112,21 +117,24 @@ pub(super) fn shell_input(
     let search = ui.browser_active();
     let pad_only = ui.fe.as_ref().is_some_and(|fe| ssx_ui::game::fe::screens::pad_only(fe.screen));
     let rider_list = ssx_core::rider_showcase::enabled()
-        && ui.fe.as_ref().is_some_and(ssx_ui::game::fe::equipment::showcase::active);
+        && ui.fe.as_ref().is_some_and(|fe| ssx_ui::game::fe::equipment::showcase::active(fe) && !popup_up(fe));
     // (a port addition: on a range's peaks and a peak's drops the keyboard's left and right arrows, Enter (A) and
     // Backspace (B) work; on the drops X too (Freeride), and for the test peak up, down and Y)
     let peak_keys = ui.fe.as_ref().is_some_and(ssx_ui::game::fe::globe::peak_screen);
     let drop_keys = ui.fe.as_ref().is_some_and(ssx_ui::game::fe::globe::drop_screen);
     let gear_keys = ui.fe.as_ref().is_some_and(gear_screen);
+    // (a port addition: a pop-up up (on any screen): the keyboard's arrows, Enter (A) and Backspace (B) work in it)
+    let popup_keys = ui.fe.as_ref().is_some_and(popup_up);
     for (b, device) in pad_presses(&keys, &pads, &slots, &mut s.stick_dpad, search) {
         use ssx_ui::game::input::Button;
         // (and on the rider step (the Custom Event Menus mod): left, right, Enter (A), Backspace (B) and X (a level);
         // on the gear steps every key)
-        let globe_keys = (peak_keys || drop_keys || rider_list || gear_keys) && device == keyboard;
+        let globe_keys = (peak_keys || drop_keys || rider_list || gear_keys || popup_keys) && device == keyboard;
         let b = if globe_keys && b == Button::Start { Button::DigitalOne } else { b };
         let peak_key = globe_keys
             && (gear_keys
                 || matches!(b, Button::DpadLeft | Button::DpadRight | Button::DigitalOne | Button::DigitalTwo)
+                || (popup_keys && matches!(b, Button::DpadUp | Button::DpadDown))
                 || ((drop_keys || rider_list) && b == Button::DigitalFour)
                 || (drop_keys && matches!(b, Button::DigitalThree | Button::DpadUp | Button::DpadDown)));
         if (focused || pad_only) && device == keyboard && !(peak_key && !focused) {

@@ -360,8 +360,14 @@ fn pause_input(
             _ => {}
         }
     }
+    // (a port addition: with the run paused or a pop-up up, the keyboard's Enter is A (its choice))
+    let menu_up = ui.fe.as_ref().is_some_and(|f| f.game_pause.paused || game_mode::popup_up(f));
     let mut presses: Vec<(Button, u8)> = game_mode::pad_presses(keys, pads, slots, &mut l.stick_dpad, false)
         .into_iter()
+        .map(|(b, device)| {
+            let enter = b == Button::Start && device == ssx_ui::game::input::KEYBOARD_DEVICE && menu_up;
+            (if enter { Button::DigitalOne } else { b }, device)
+        })
         .filter(|&(b, device)| b != Button::Start && !(typing && device == ssx_ui::game::input::KEYBOARD_DEVICE))
         .collect();
     presses.extend(l.stick_dpad.take());

@@ -142,6 +142,7 @@ pub(super) fn pointer_system(
         ssx_ui::game::fe::screens::pad_only(fe.screen)
             && !ssx_ui::game::fe::globe::mouse_screen(fe)
             && !super::frame::gear_screen(fe)
+            && !super::frame::popup_up(fe)
     });
     let active = shell.started && !riding && !pad_only;
     // (the Custom Event Menus mod: the rider step's own mouse: cards clicked, the wheel, the level's X)
@@ -149,7 +150,7 @@ pub(super) fn pointer_system(
         && !riding
         && !captured
         && ssx_core::rider_showcase::enabled()
-        && ui.fe.as_ref().is_some_and(ssx_ui::game::fe::equipment::showcase::active);
+        && ui.fe.as_ref().is_some_and(|fe| ssx_ui::game::fe::equipment::showcase::active(fe) && !super::frame::popup_up(fe));
     for (x, y) in std::mem::take(&mut shell.host.window_moves) {
         match p.script_point(Vec2::new(x, y)) {
             Some((sx, sy)) => {
@@ -160,7 +161,9 @@ pub(super) fn pointer_system(
         }
     }
     let device = ssx_ui::game::input::KEYBOARD_DEVICE;
-    for m in pointer_frame(&mut p, &mut ui, scale, active, other_input, captured, rider_step) {
+    // (a pop-up up, or the run paused: the cursor shows for its choices)
+    let menu_up = active && ui.fe.as_ref().is_some_and(|f| f.game_pause.paused || super::frame::popup_up(f));
+    for m in pointer_frame(&mut p, &mut ui, scale, active, other_input, captured, rider_step, menu_up) {
         match m {
             RiderMouse::Press(b) => shell.host.press_from(&mut ui, b, device),
             RiderMouse::Steps(n) => {
@@ -262,6 +265,7 @@ fn pointer_frame(
     other_input: bool,
     captured: bool,
     rider_step: bool,
+    menu_up: bool,
 ) -> Vec<RiderMouse> {
     let mut rider = Vec::new();
     if other_input {
@@ -396,7 +400,7 @@ fn pointer_frame(
         Some((vm, lib, player)) => vm.pointer_cursor(lib, player),
         None => Cursor::Arrow,
     };
-    let visible = p.state.shown && (captured || rider_step || (active && kind != Cursor::Hidden));
+    let visible = p.state.shown && (captured || rider_step || menu_up || (active && kind != Cursor::Hidden));
     let hand = !captured && kind == Cursor::Hand;
     if p.state.applied != Some((visible, hand)) {
         p.state.applied = Some((visible, hand));
