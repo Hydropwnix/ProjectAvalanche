@@ -114,11 +114,6 @@ impl Inventory {
                     };
                     u.asset = format!("{PORTRAIT_JACKET}{}_top{}.dds", r.portrait, id(descs.first()));
                     u.secondary = format!("{PORTRAIT_PANTS}{}_bottom{}.dds", r.portrait, id(descs.get(1)));
-                } else if ssx_core::rider_showcase::enabled() {
-                    // (the Custom Event Menus mod: a rider with no suit at all (a retro rider the profile has none for)
-                    // pictured in its own outfit, the first jacket and pants, as it's dressed)
-                    u.asset = format!("{PORTRAIT_JACKET}{}_top0.dds", r.portrait);
-                    u.secondary = format!("{PORTRAIT_PANTS}{}_bottom0.dds", r.portrait);
                 }
             }
             if empty {
