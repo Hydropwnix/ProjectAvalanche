@@ -31,12 +31,19 @@ pub(super) struct PointerShell {
     rider_next: Option<std::time::Instant>,
     /// The moves under way are quick ones (more than one card to go when they started).
     rider_quick: bool,
+    /// The rider a click asked for, and how many moves have gone toward it (the list moves till it's highlighted).
+    rider_target: Option<(String, u32)>,
 }
+
+/// The most moves toward a clicked card before giving up (it's never more than half the list).
+const MAX_TARGET_MOVES: u32 = 40;
 
 /// The rider step (the Custom Event Menus mod), by the mouse: a button for the menus, or cards to move the list.
 enum RiderMouse {
     Press(ssx_ui::game::input::Button),
     Steps(i32),
+    /// A card clicked: its rider (its portrait's name) brought to the highlighted place, the shorter way round.
+    Target(String),
 }
 
 /// The rider list's moves for the mouse: one at most this often (seconds), and each only once the last card's slide
@@ -149,13 +156,36 @@ pub(super) fn pointer_system(
         match m {
             RiderMouse::Press(b) => shell.host.press_from(&mut ui, b, device),
             RiderMouse::Steps(n) => {
+                p.state.rider_target = None;
                 p.state.rider_steps = (p.state.rider_steps + n).clamp(-32, 32);
+                p.state.rider_next.get_or_insert_with(std::time::Instant::now);
+            }
+            RiderMouse::Target(r) => {
+                p.state.rider_steps = 0;
+                p.state.rider_target = Some((r, 0));
                 p.state.rider_next.get_or_insert_with(std::time::Instant::now);
             }
         }
     }
     if !rider_step {
-        (p.state.rider_steps, p.state.rider_next) = (0, None);
+        (p.state.rider_steps, p.state.rider_next, p.state.rider_target) = (0, None, None);
+    }
+    // (a clicked card: the list moves the shorter way till its rider's highlighted, a move at a time, looking again
+    // after each)
+    if let Some((rider, moves)) = p.state.rider_target.clone()
+        && p.state.rider_steps == 0
+        && !ssx_core::rider_showcase::menu_animating()
+        && p.state.rider_next.is_none_or(|t| std::time::Instant::now() >= t)
+    {
+        match ssx_core::rider_showcase::steps_to(&rider) {
+            Some(n) if n != 0 && moves < MAX_TARGET_MOVES => {
+                p.state.rider_quick = n.abs() > 1 || moves > 0;
+                p.state.rider_steps = n.signum();
+                p.state.rider_target = Some((rider, moves + 1));
+                p.state.rider_next = Some(std::time::Instant::now());
+            }
+            _ => p.state.rider_target = None,
+        }
     }
     // (where the pointer is on the rider step: the card under it shows it)
     let size = p.window.single().map(|w| Vec2::new(w.width(), w.height())).ok();
@@ -168,7 +198,8 @@ pub(super) fn pointer_system(
     ssx_core::rider_showcase::set_pointer(at);
     let now = std::time::Instant::now();
     // (several cards to go: the slides quick, each move as soon as the last slide's done)
-    ssx_core::rider_showcase::set_quick_scroll(p.state.rider_steps.abs() > 1 || p.state.rider_quick);
+    let far = p.state.rider_target.as_ref().and_then(|(r, _)| ssx_core::rider_showcase::steps_to(r)).is_some_and(|n| n.abs() > 1);
+    ssx_core::rider_showcase::set_quick_scroll(p.state.rider_steps.abs() > 1 || p.state.rider_quick || far);
     if p.state.rider_steps != 0
         && p.state.rider_next.is_some_and(|t| now >= t)
         && !ssx_core::rider_showcase::menu_animating()
@@ -180,7 +211,7 @@ pub(super) fn pointer_system(
         p.state.rider_quick = p.state.rider_steps.abs() > 1 || (p.state.rider_quick && p.state.rider_steps != 0);
         p.state.rider_steps -= if right { 1 } else { -1 };
         p.state.rider_next = Some(now + std::time::Duration::from_secs_f32(RIDER_STEP_EVERY));
-    } else if p.state.rider_steps == 0 {
+    } else if p.state.rider_steps == 0 && p.state.rider_target.is_none() {
         p.state.rider_next = None;
         if !ssx_core::rider_showcase::menu_animating() {
             p.state.rider_quick = false;
@@ -273,6 +304,10 @@ fn pointer_frame(
             if let Some((x, y)) = at {
                 if ssx_core::rider_showcase::on_prompt(x, y) {
                     rider.push(RiderMouse::Press(Pad::DigitalFour));
+                } else if ssx_core::rider_showcase::on_highlighted(x, y) {
+                    rider.push(RiderMouse::Press(Pad::DigitalOne));
+                } else if let Some(r) = ssx_core::rider_showcase::rider_at(x, y) {
+                    rider.push(RiderMouse::Target(r));
                 } else {
                     match ssx_core::rider_showcase::card_at(x, y) {
                         Some(0) => rider.push(RiderMouse::Press(Pad::DigitalOne)),

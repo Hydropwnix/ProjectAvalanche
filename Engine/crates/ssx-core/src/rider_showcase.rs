@@ -60,10 +60,12 @@ pub fn begin_frame(width: u32, height: u32) {
 struct Cards {
     highlighted: Option<[f32; 4]>,
     others: Vec<[f32; 4]>,
+    /// Each other card's rider (its portrait's name; empty when not known), as `others`.
+    names: Vec<String>,
     prompt: Option<[f32; 4]>,
 }
-static CARDS_FOUND: Mutex<Cards> = Mutex::new(Cards { highlighted: None, others: Vec::new(), prompt: None });
-static CARDS_SHOWN: Mutex<Cards> = Mutex::new(Cards { highlighted: None, others: Vec::new(), prompt: None });
+static CARDS_FOUND: Mutex<Cards> = Mutex::new(Cards { highlighted: None, others: Vec::new(), names: Vec::new(), prompt: None });
+static CARDS_SHOWN: Mutex<Cards> = Mutex::new(Cards { highlighted: None, others: Vec::new(), names: Vec::new(), prompt: None });
 
 fn fraction(rect: [f32; 4]) -> [f32; 4] {
     let (w, h) = FOUND.lock().map(|f| f.1).unwrap_or((1.0, 1.0));
@@ -78,6 +80,7 @@ pub fn found_card(rect: [f32; 4], highlighted: bool) {
             c.highlighted = Some(r);
         } else if c.others.len() < 64 {
             c.others.push(r);
+            c.names.push(String::new());
         }
     }
 }
@@ -90,6 +93,46 @@ pub fn cards_found() -> usize {
 /// The last of the list's other cards found in the drawing under way (fractions of the screen).
 pub fn last_card_found() -> Option<[f32; 4]> {
     CARDS_FOUND.lock().ok().and_then(|c| c.others.last().copied())
+}
+
+/// The rider of the last of the list's other cards found (its portrait's name).
+pub fn name_last_card(name: &str) {
+    if let Ok(mut c) = CARDS_FOUND.lock()
+        && let Some(n) = c.names.last_mut()
+    {
+        *n = name.to_string();
+    }
+}
+
+/// Whether a point of the screen (fractions) is on the highlighted card.
+pub fn on_highlighted(x: f32, y: f32) -> bool {
+    CARDS_SHOWN.lock().ok().and_then(|c| c.highlighted).is_some_and(|h| inside(&h, x, y))
+}
+
+/// The rider of the list's other card at a point of the screen (fractions), when it's known.
+pub fn rider_at(x: f32, y: f32) -> Option<String> {
+    let c = CARDS_SHOWN.lock().ok()?.clone();
+    if c.highlighted.is_some_and(|h| inside(&h, x, y)) {
+        return None;
+    }
+    let mid = |r: &[f32; 4]| (r[0] + r[2]) * 0.5;
+    c.others
+        .iter()
+        .zip(&c.names)
+        .filter(|(r, n)| inside(r, x, y) && !n.is_empty())
+        .min_by(|a, b| (mid(a.0) - x).abs().total_cmp(&(mid(b.0) - x).abs()))
+        .map(|(_, n)| n.clone())
+}
+
+/// How many cards the list must move to bring `rider` to the highlighted place, the shorter way round: right of 0
+/// (the cards coming in from the right), left below it. `None` when it's not in the list.
+pub fn steps_to(rider: &str) -> Option<i32> {
+    let order = list_order();
+    let n = order.len() as i32;
+    let at = order.iter().position(|r| r == rider)? as i32;
+    let from = order.iter().position(|r| *r == highlight_portrait())? as i32;
+    let forward = (at - from).rem_euclid(n.max(1));
+    Some(if forward <= n / 2 { forward } else { forward - n })
 }
 
 /// The level for sale's X prompt and price drawn (in the drawing's pixels).

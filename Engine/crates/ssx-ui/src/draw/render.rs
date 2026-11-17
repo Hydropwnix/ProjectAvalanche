@@ -413,6 +413,37 @@ impl Renderer {
                 return;
             }
         }
+        // (the level's X button under the mouse: its glow, its own shape drawn larger and fainter behind it)
+        if !inh.mask
+            && inst.name == "mcPrompt"
+            && ssx_core::rider_showcase::enabled()
+            && ssx_core::rider_showcase::level_offer()
+            && !BUTTON_GLOWING.load(std::sync::atomic::Ordering::Relaxed)
+            && inst.parent.and_then(|p| player.get(p)).is_some_and(|p| p.name == "mcBioPrompt")
+        {
+            let e = button_hover();
+            let b = LEVEL_BUTTON.lock().ok().and_then(|b| *b);
+            if let Some(b) = b.filter(|b| e > 0.0 && b.x1 - b.x0 > 2.0 && b.y1 - b.y0 > 2.0) {
+                let pulse = INNER_PULSE.lock().map_or(1.0, |p| p.0);
+                let (cx, cy) = ((b.x0 + b.x1) * 0.5, (b.y0 + b.y1) * 0.5);
+                let (w, h) = (b.x1 - b.x0, b.y1 - b.y0);
+                let layers = 12;
+                let reach = 3.0 + 9.0 * e;
+                BUTTON_GLOWING.store(true, std::sync::atomic::Ordering::Relaxed);
+                for i in (1..=layers).rev() {
+                    let d = reach * i as f32 / layers as f32;
+                    let f = 1.0 - (i as f32 - 0.5) / layers as f32;
+                    let grow = Mat2d::translate(cx, cy)
+                        .mul(&Mat2d::scale(1.0 + 2.0 * d / w, 1.0 + 2.0 * d / h))
+                        .mul(&Mat2d::translate(-cx, -cy));
+                    let a = 0.35 * f * f * e * pulse * inh.cx.mult[3].clamp(0.0, 1.0);
+                    let tint = Cxform { mult: [0.0, 0.0, 0.0, a], add: [CARD_GLOW[0], CARD_GLOW[1], CARD_GLOW[2], 0.0] };
+                    let glow = Inherited { xf: grow.mul(&inh.xf), cx: tint, ..inh };
+                    self.instance(lib, player, id, glow, out);
+                }
+                BUTTON_GLOWING.store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
         match &inst.kind {
             InstanceKind::Sprite(s) => {
                 // TODO(guess): the nine regions' mapping is Flash's model; settle: the consumer of the key data 0x82687D48 fills (kept at the mesh's +0x34, 0x82688BE8 → 0x82687250).
@@ -454,6 +485,7 @@ impl Renderer {
                             self.instance(lib, player, child, here, out);
                         } else {
                             let start = out.len();
+                            let found = ssx_core::rider_showcase::cards_found();
                             // (the card under the mouse: a little larger, edged in a blue glow)
                             let hover = hovered_card_px().filter(|h| {
                                 let b = player.local_bounds(lib, child).transform(&here.xf.mul(&c.matrix));
@@ -480,6 +512,13 @@ impl Renderer {
                                     hover_glow(out, frame.unwrap_or([cx - hw, cy - hh, cx + hw, cy + hh]), alpha);
                                 }
                                 None => self.instance(lib, player, child, here, out),
+                            }
+                            // (whose card it is, for the mouse)
+                            if ssx_core::rider_showcase::cards_found() > found
+                                && let Some((rider, _)) =
+                                    CARD_RIDERS.lock().ok().and_then(|m| m.as_ref().and_then(|h| h.get(&child).cloned()))
+                            {
+                                ssx_core::rider_showcase::name_last_card(&rider);
                             }
                             // (only as it's fully shown: not fading in at the list's end)
                             if c.visible && c.cxform.mult[3] >= 0.99 {
@@ -1769,12 +1808,19 @@ fn grown_card(inh: &Inherited, out: &mut Vec<Command>) {
     let pulse = INNER_PULSE.lock().map_or(1.0, |p| p.0);
     // the glow outside the edge: fading out smoothly
     let scale = ((r.y1 - r.y0).abs() / 760.0).max(0.5);
-    // (wider and a little brighter under the mouse)
+    // (spreading wider and a little brighter under the mouse: the same rings, each a little wider, so it grows
+    // smoothly)
     let hover = card_hover();
-    let outer = (16.0 * scale * (1.0 + 0.75 * hover)).round().max(4.0) as i32;
+    let outer = (16.0 * scale).round().max(4.0) as i32;
+    let spread = 1.0 + 0.8 * hover;
     for i in (0..outer).rev() {
         let t = 1.0 - (i as f32 + 0.5) / outer as f32;
-        ring(out, i as f32, CARD_GLOW, (0.55 + 0.2 * hover) * t * t * alpha * pulse);
+        let a = (0.55 + 0.15 * hover) * t * t * alpha * pulse;
+        if hover > 0.0 {
+            glow_ring(out, [r.x0, r.y0, r.x1, r.y1], i as f32 * spread, spread, [CARD_GLOW[0], CARD_GLOW[1], CARD_GLOW[2], a]);
+        } else {
+            ring(out, i as f32, CARD_GLOW, a);
+        }
     }
     // the card: solid
     {
@@ -3149,9 +3195,22 @@ fn hover_glows(out: &mut Vec<Command>) {
     let inside = |r: Option<RectF>| {
         r.zip(at).is_some_and(|(r, (x, y))| (r.x0..=r.x1).contains(&x) && (r.y0..=r.y1).contains(&y))
     };
-    let card = CARD_NOW.lock().ok().and_then(|c| *c);
-    let button = LEVEL_BUTTON.lock().ok().and_then(|b| *b);
-    let want = [inside(card) as u8 as f32, inside(button) as u8 as f32];
+    let card = CARD_NOW.lock().ok().and_then(|c| *c).or_else(|| CARD_PREV.lock().ok().and_then(|c| *c));
+    let button = LEVEL_BUTTON.lock().ok().and_then(|b| *b).filter(|_| ssx_core::rider_showcase::level_offer());
+    let mut want = [inside(card) as u8 as f32, inside(button) as u8 as f32];
+    // (a frame or two without the pointer seen there (the window not focused, say) doesn't let the glow go: only a
+    // few in a row)
+    static MISSED: std::sync::Mutex<[u8; 2]> = std::sync::Mutex::new([4; 2]);
+    if let Ok(mut m) = MISSED.lock() {
+        for i in 0..2 {
+            if want[i] > 0.0 {
+                m[i] = 0;
+            } else if m[i] < 4 {
+                m[i] += 1;
+                want[i] = 1.0;
+            }
+        }
+    }
     let Ok(mut g) = HOVER_GLOWS.lock() else { return };
     let now = std::time::Instant::now();
     let dt = g.1.map_or(0.0, |t| now.duration_since(t).as_secs_f32()).min(0.1);
@@ -3160,19 +3219,18 @@ fn hover_glows(out: &mut Vec<Command>) {
         let step = dt / HOVER_EASE_SECS;
         g.0[i] = if want[i] > g.0[i] { (g.0[i] + step).min(1.0) } else { (g.0[i] - step).max(0.0) };
     }
-    let k = g.0[1];
-    if let Some(b) = button.filter(|_| k > 0.0) {
-        let e = k * k * (3.0 - 2.0 * k);
-        // (pulsing with the highlighted card's glow)
-        let pulse = INNER_PULSE.lock().map_or(1.0, |p| p.0);
-        let layers = (4.0 + 10.0 * e).round() as i32;
-        for i in (0..layers).rev() {
-            let f = 1.0 - (i as f32 + 0.5) / layers as f32;
-            let c = [CARD_GLOW[0], CARD_GLOW[1], CARD_GLOW[2], 0.6 * f * f * e * pulse];
-            glow_ring(out, [b.x0, b.y0, b.x1, b.y1], 1.0 + i as f32, 1.0, c);
-        }
-    }
+    let _ = out;
 }
+
+/// How far the level's X button's glow has grown under the mouse (0 to 1, eased).
+fn button_hover() -> f32 {
+    let k = HOVER_GLOWS.lock().map_or(0.0, |g| g.0[1]);
+    k * k * (3.0 - 2.0 * k)
+}
+
+/// The level's X button's glow under the mouse: the button's own shape drawn again behind it, a little larger each
+/// time and fainter, in the card's glow green (so the glow follows its edge).
+static BUTTON_GLOWING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// How far the highlighted card's glow has grown under the mouse (0 to 1, eased).
 fn card_hover() -> f32 {
@@ -3284,11 +3342,7 @@ fn grown_card_part(lib: &Library, player: &Player, id: InstanceId, inst: &Instan
         if let Ok(mut p) = LEVEL_PROMPT_SHIFT.lock() {
             *p = shift;
         }
-        if shift.is_none()
-            && let Ok(mut lb) = LEVEL_BUTTON.lock()
-        {
-            *lb = None;
-        }
+
         return Mat2d::translate(dx / parent.a, dy / parent.d).mul(&matrix);
     }
     let Some(g) = GROW.lock().ok().and_then(|g| *g) else { return matrix };
