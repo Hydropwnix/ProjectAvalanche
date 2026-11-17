@@ -192,16 +192,26 @@ pub(super) fn focus_range(fe: &mut FrontEnd, range: u32) {
     focus_peak(fe, peak);
 }
 
-/// A port addition (the mouse on the ranges' globe): the screens of ranges, where the mouse works (the pad's other
-/// globe screens and the keyboard's stay as the console had them).
-pub fn mouse_screen(fe: &FrontEnd) -> bool {
+/// A port addition (the mouse on the globe): the screens of ranges, whose globe the mouse turns and picks on.
+pub fn range_screen(fe: &FrontEnd) -> bool {
     fe.globe_scene.is_some() && matches!(fe.screen, 0xC | 0x42 | 0xF)
+}
+
+/// A port addition: the screens of a range's peaks, where the mouse picks a peak and the keyboard's arrows, Enter and
+/// Backspace work too.
+pub fn peak_screen(fe: &FrontEnd) -> bool {
+    fe.globe_scene.is_some() && matches!(fe.screen, 0xD | 0x43 | 0x10)
+}
+
+/// The globe screens the mouse works on (ranges and peaks; the drops' stay the pad's).
+pub fn mouse_screen(fe: &FrontEnd) -> bool {
+    range_screen(fe) || peak_screen(fe)
 }
 
 /// The mouse on the ranges' globe: the range under it highlighted (the selection, as the stick's pick makes it),
 /// without turning the globe to it. Whether it can be (a range of this mode).
 pub fn pointer_focus(fe: &mut FrontEnd, key: u32) -> bool {
-    if !mouse_screen(fe) || !range_valid(fe, key) {
+    if !range_screen(fe) || !range_valid(fe, key) {
         return false;
     }
     if scene_range(fe) == key {
@@ -221,10 +231,10 @@ pub fn pointer_focus(fe: &mut FrontEnd, key: u32) -> bool {
     true
 }
 
-/// The globe pulled by the mouse (right button held): turned as if its surface follows the pointer, by `dx`, `dy`
+/// The globe pulled by the mouse (left button held): turned as if its surface follows the pointer, by `dx`, `dy`
 /// stage pixels.
 pub fn pointer_drag(fe: &mut FrontEnd, dx: f32, dy: f32) {
-    if !mouse_screen(fe) {
+    if !range_screen(fe) {
         return;
     }
     let Some(s) = fe.globe_scene.as_mut() else { return };

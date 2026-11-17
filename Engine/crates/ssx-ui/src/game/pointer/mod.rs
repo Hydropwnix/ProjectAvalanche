@@ -110,8 +110,8 @@ pub struct PointerRouter {
     click: Option<Entry>,
     globe: Option<GlobeFocus>,
     globe_click: Option<u32>,
-    /// The ranges' globe pulled with the right button (a port addition): where the pointer last was, and how far it
-    /// has gone since the button went down (a right click that never moved is the pad's B).
+    /// The ranges' globe pulled with the left button (a port addition): where the pointer last was, and how far it
+    /// has gone since the button went down (a left click that never moved is a click).
     globe_drag: Option<((f32, f32), f32)>,
     #[cfg(feature = "net")]
     tab: Option<(super::fe::ava::browser::Tab, Step<super::fe::ava::browser::Tab>)>,
@@ -142,6 +142,9 @@ struct GlobeFocus {
 const STICK_PUSH: f32 = 0.26;
 
 const MAX_GLOBE_STEPS: u32 = 32;
+
+/// The ranges' globe: the pointer moved this far (stage pixels) with the left button down is a drag, not a click.
+const DRAG_START: f32 = 4.0;
 
 #[derive(Default)]
 struct Under {
@@ -206,32 +209,29 @@ impl GameUi {
         self.pointer.latch.wheel = 0;
         let pressed = |i: usize| latch.went_down[i] || (latch.down[i] && !self.pointer.read_down[i]);
         let released = |i: usize| !latch.down[i] && (self.pointer.read_down[i] || latch.went_down[i]);
-        let (left_down, left_up, mut right_down) = (pressed(0), released(0), pressed(1));
-        let right_up = released(1);
+        let (mut left_down, left_up, right_down) = (pressed(0), released(0), pressed(1));
         self.pointer.read_down = latch.down;
         let Some(pos) = latch.position else { return };
         let moved = self.pointer.read_position != Some(pos);
         self.pointer.read_position = Some(pos);
-        // (a port addition: on the ranges' globe the right button held pulls the globe round; a right click that
-        // didn't move it is the pad's B, given as the button comes up)
-        let mouse_globe = self.fe.as_ref().is_some_and(super::fe::globe::mouse_screen);
-        if mouse_globe {
-            if right_down {
+        // (a port addition: on the ranges' globe the left button held pulls the globe round; a left click that didn't
+        // move it is a click, given as the button comes up)
+        let range_globe = self.fe.as_ref().is_some_and(super::fe::globe::range_screen);
+        if range_globe {
+            if left_down {
                 self.pointer.globe_drag = Some((pos, 0.0));
             }
-            right_down = false;
+            left_down = false;
             if let Some((from, gone)) = self.pointer.globe_drag {
                 let (dx, dy) = (pos.0 - from.0, pos.1 - from.1);
-                if dx != 0.0 || dy != 0.0 {
+                if gone + dx.abs() + dy.abs() >= DRAG_START && (dx != 0.0 || dy != 0.0) {
                     self.fe_call(|fe, _| super::fe::globe::pointer_drag(fe, dx, dy));
                 }
                 let gone = gone + (dx * dx + dy * dy).sqrt();
                 self.pointer.globe_drag = Some((pos, gone));
-                if right_up || !latch.down[1] {
+                if left_up || !latch.down[0] {
                     self.pointer.globe_drag = None;
-                    if gone < 4.0 {
-                        self.pointer_press(Button::DigitalTwo, "a right click on the globe: B");
-                    }
+                    left_down = gone < DRAG_START;
                 }
             }
         } else {
