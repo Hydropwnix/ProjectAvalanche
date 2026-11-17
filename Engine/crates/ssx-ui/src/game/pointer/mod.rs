@@ -56,6 +56,17 @@ struct Focus {
     step: Step<i32>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct SlotFocus {
+    entry: Entry,
+    slot: i32,
+    step: Step<i32>,
+    click: bool,
+}
+
+/// At most this many left / right steps to a slot.
+const MAX_SLOT_STEPS: u32 = 8;
+
 #[derive(Clone, Copy, Debug, Default)]
 struct Step<T> {
     at: Option<T>,
@@ -115,6 +126,9 @@ pub struct PointerRouter {
     release: Vec<Button>,
     focus: Option<Focus>,
     click: Option<Entry>,
+    /// The equipment screen's Gear and Mods options (a port addition): the slot of the option under the pointer the
+    /// selection is moving to (left / right within the option), and whether a click waits for it (A once there).
+    slot: Option<SlotFocus>,
     globe: Option<GlobeFocus>,
     globe_click: Option<u32>,
     /// The ranges' globe pulled with the left button (a port addition): where the pointer last was, and how far it
@@ -276,6 +290,7 @@ impl GameUi {
             || right_down
             || latch.wheel != 0
             || self.pointer.focus.is_some()
+            || self.pointer.slot.is_some()
             || self.pointer.globe.is_some()
             || self.pointer_tab_pending();
         if !need {
@@ -309,6 +324,22 @@ impl GameUi {
                 self.pointer.click = None;
             }
         }
+        // (a port addition: on the equipment screen's Gear and Mods options, the slot under the pointer is the one
+        // highlighted)
+        if moved {
+            let hovered = under.entry.filter(|_| !under.preview).and_then(|(e, _)| {
+                let slot = equipment_slot_under(cx, &reach, e, raw)?;
+                Some((e, slot))
+            });
+            match hovered {
+                Some((e, slot)) => {
+                    if self.pointer.slot.is_none_or(|f| f.entry != e || f.slot != slot) {
+                        self.pointer.slot = Some(SlotFocus { entry: e, slot, step: Step::default(), click: false });
+                    }
+                }
+                None => self.pointer.slot = None,
+            }
+        }
         if moved && !dragging {
             match under.globe {
                 Some((k, _)) if self.pointer.globe.is_none_or(|g| g.key != k) => {
@@ -338,6 +369,7 @@ impl GameUi {
             self.pointer_press(b, "the wheel");
         }
         self.focus_step(cx, &reach);
+        self.slot_step(&reach);
         #[cfg(feature = "net")]
         self.tab_step();
         if let Some((level, nodes)) = globe {
@@ -533,7 +565,16 @@ impl GameUi {
             return;
         };
         match reach.lists.iter().find(|l| l.clip == e.menu).map(|l| l.selected) {
-            Some(s) if s == e.item => self.pointer_press(Button::DigitalOne, "a click on the selected entry: A"),
+            Some(s) if s == e.item => {
+                if let Some(f) = self.pointer.slot.as_mut().filter(|f| f.entry == e)
+                    && Some(f.slot) != self.fe.as_ref().map(|fe| fe.equipment.slot)
+                {
+                    // (a slot of the option not highlighted yet: A once it is)
+                    f.click = true;
+                } else {
+                    self.pointer_press(Button::DigitalOne, "a click on the selected entry: A");
+                }
+            }
             Some(_) => {
                 self.pointer.focus = Some(Focus { entry: e, step: Step::default() });
                 self.pointer.click = (!under.preview).then_some(e);
@@ -555,7 +596,12 @@ impl GameUi {
         if menu.selected == f.entry.item {
             self.pointer.focus = None;
             if self.pointer.click.take() == Some(f.entry) {
-                self.pointer_press(Button::DigitalOne, "a click on an entry, now selected: A");
+                if let Some(s) = self.pointer.slot.as_mut().filter(|s| s.entry == f.entry) {
+                    // (a slot of the option to get to first: A once there)
+                    s.click = true;
+                } else {
+                    self.pointer_press(Button::DigitalOne, "a click on an entry, now selected: A");
+                }
             }
             return;
         }
@@ -585,6 +631,94 @@ impl GameUi {
         self.pointer.focus = Some(f);
         self.pointer_press(dir, &format!("focus {} → {}", menu.selected, f.entry.item));
     }
+}
+
+impl GameUi {
+    /// The equipment screen's Gear and Mods options (a port addition): once the option under the pointer is the one
+    /// selected, left / right (a step a read) till its slot under the pointer is the one highlighted; then A if a
+    /// click waits for it.
+    fn slot_step(&mut self, reach: &Reach) {
+        let Some(mut f) = self.pointer.slot else { return };
+        // (the option itself first)
+        if self.pointer.focus.is_some_and(|x| x.entry == f.entry) {
+            return;
+        }
+        let Some(menu) = reach.lists.iter().find(|m| m.clip == f.entry.menu) else {
+            self.pointer.slot = None;
+            return;
+        };
+        if menu.selected != f.entry.item {
+            // (the option never came to be selected: nothing to do)
+            self.pointer.slot = None;
+            return;
+        }
+        let Some(current) = self.fe.as_ref().map(|fe| fe.equipment.slot) else { return };
+        if current == f.slot {
+            // (there: let go, so the keys and the pad move the highlight on from here as they like)
+            self.pointer.slot = None;
+            if f.click {
+                self.pointer_press(Button::DigitalOne, "a click on a slot, now highlighted: A");
+            }
+            return;
+        }
+        match f.step.next(current, MAX_SLOT_STEPS, 1) {
+            Next::Wait => {}
+            Next::Stalled => {
+                self.pointer.note(format!("pointer: the slot stays at {current}: no focus on slot {}", f.slot));
+                self.pointer.slot = None;
+                return;
+            }
+            Next::Step => {
+                f.step.made(current);
+                let dir = if f.slot > current { Button::DpadRight } else { Button::DpadLeft };
+                self.pointer.slot = Some(f);
+                self.pointer_press(dir, &format!("slot {current} → {}", f.slot));
+                return;
+            }
+        }
+        self.pointer.slot = Some(f);
+    }
+}
+
+/// The equipment screen's Gear and Mods options (a port addition): which of the option's slots (its icons, left to
+/// right) the pointer is over, for an option of more than one.
+fn equipment_slot_under(cx: &mut Ctx, reach: &Reach, e: Entry, raw: (f32, f32)) -> Option<i32> {
+    let list = reach.lists.iter().find(|l| l.clip == e.menu)?;
+    let cell = list.cells.iter().find(|c| c.item == e.item)?;
+    let inner = cx.player.child_by_name(cell.clip, "mcCell", true)?;
+    let inner = cx.player.child_by_name(inner, "mcCell", true)?;
+    let icons = cx.player.child_by_name(inner, "mcSlots", true)?;
+    let crate::display::InstanceKind::Sprite(s) = &cx.player.get(icons)?.kind else { return None };
+    let kids: Vec<InstanceId> = s.children.values().copied().collect();
+    let mut slots: Vec<(f32, f32)> = kids
+        .into_iter()
+        .filter(|&k| cx.player.get(k).is_some_and(|i| i.visible))
+        .filter_map(|k| {
+            let m = cx.player.get(k)?.matrix;
+            let r = crate::display::hit::drawn_bounds(cx.player, cx.lib, k).transform(&m);
+            (!r.is_empty() && r.x1 - r.x0 > 1.0).then_some((r.x0, r.x1))
+        })
+        .collect();
+    if slots.len() < 2 {
+        return None;
+    }
+    slots.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let stage = crate::draw::render::pointer_place_for(cx.player, icons, raw);
+    let (x, _) = cx.player.to_local(icons, stage)?;
+    // (the slot whose icon the pointer is over, or the nearest one along the row, within the icons' span)
+    let (lo, hi) = (slots[0].0, slots[slots.len() - 1].1);
+    if x < lo || x > hi {
+        return None;
+    }
+    let i = slots
+        .iter()
+        .enumerate()
+        .min_by(|a, b| {
+            let d = |r: &(f32, f32)| (r.0 - x).max(x - r.1).max(0.0);
+            d(a.1).total_cmp(&d(b.1))
+        })
+        .map(|(i, _)| i)?;
+    i32::try_from(i).ok()
 }
 
 impl Ctx<'_> {

@@ -561,10 +561,13 @@ fn frame(
     f.multiplayer = view.in_session() || multiplayer_screens(ui.fe.as_ref());
     f.main_menu = !f.multiplayer
         && view.ride().is_none()
-        && ui
-            .fe
-            .as_ref()
-            .is_some_and(|fe| !fe.in_drop && (fe.ava.hub.active || fe.menu.shown) && fe.menu.covered_by.is_empty());
+        && ui.fe.as_ref().is_some_and(|fe| {
+            !fe.in_drop
+                && (fe.ava.hub.active || fe.menu.shown)
+                && fe.menu.covered_by.is_empty()
+                // (a port mod: not with a pop-up over the menu (quitting, say): the mods' hints stay behind it)
+                && !crate::shell::game_mode::popup_up(fe)
+        });
     f.paused = view.ride().is_some_and(|r| r.paused);
     f.main_menu_box = if f.main_menu && ui.fe.as_ref().is_some_and(|fe| fe.ava.hub.active) {
         ssx_ui::game::port::hub_panel()
