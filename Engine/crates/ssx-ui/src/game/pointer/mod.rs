@@ -601,6 +601,7 @@ fn under(cx: &mut Ctx, order: &[InstanceId], reach: &Reach, stage: (f32, f32)) -
     let mut shown_prompts = Vec::new();
     {
         let mut hit = Hit { player: cx.player, lib: cx.lib, meshes: &mut meshes };
+        let mut best_depth: Option<(f32, usize)> = None;
         for l in &reach.lists {
             for c in &l.cells {
                 let Some(&r) = rank.get(&c.clip) else { continue };
@@ -609,7 +610,27 @@ fn under(cx: &mut Ctx, order: &[InstanceId], reach: &Reach, stage: (f32, f32)) -
                 }
                 // (each part where it's drawn: moved back as far as it's drawn moved)
                 let stage = crate::draw::render::pointer_place_for(cx.player, c.clip, stage);
-                if lists::cell_hit(cx, &mut hit, c, stage) && out.entry.is_none_or(|(_, o)| r > o) {
+                if !lists::cell_hit(cx, &mut hit, c, stage) {
+                    continue;
+                }
+                // (of entries one over another (a box reaching over its neighbour), the one the pointer's most inside
+                // wins: 0 at its middle, 1 at its edge; then the one drawn on top)
+                let depth = cx
+                    .player
+                    .get(c.clip)
+                    .and_then(|i| i.parent)
+                    .and_then(|p| cx.player.to_local(p, stage))
+                    .map_or(1.0, |(x, y)| {
+                        let s = c.slot;
+                        let (hw, hh) = (((s.x1 - s.x0) * 0.5).max(1e-3), ((s.y1 - s.y0) * 0.5).max(1e-3));
+                        ((x - (s.x0 + s.x1) * 0.5).abs() / hw).max((y - (s.y0 + s.y1) * 0.5).abs() / hh)
+                    });
+                let better = match best_depth {
+                    None => true,
+                    Some((d, o)) => depth < d - 0.05 || ((depth - d).abs() <= 0.05 && r > o),
+                };
+                if better {
+                    best_depth = Some((depth, r));
                     out.entry = Some((Entry { menu: l.clip, item: c.item }, r));
                     out.preview = c.preview;
                 }
