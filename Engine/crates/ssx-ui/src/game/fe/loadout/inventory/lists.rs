@@ -407,8 +407,8 @@ impl Inventory {
                 self.inventory_list
                     .sort_by(|a, b| group(a).cmp(&group(b)).then_with(|| super::order::by_value(a, b)));
             }
-            // (the Custom Event Menus mod: favourite suits and boards first)
-            if matches!(kind, 0 | 1) && ssx_core::rider_showcase::enabled() {
+            // (the Custom Event Menus mod: favourite suits, boards and gear first)
+            if matches!(kind, 0..=2) && ssx_core::rider_showcase::enabled() {
                 let later = |u: &UiItem| !super::favorites::is_favourite(u);
                 self.owned_list.sort_by_key(later);
                 self.inventory_list.sort_by_key(later);

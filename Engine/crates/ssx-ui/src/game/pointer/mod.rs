@@ -217,6 +217,13 @@ impl GameUi {
         self.pointer.read_down = latch.down;
         // (a port mod (the test peak): the wheel's click on its drops turns its events between Trick It and Race It,
         // as Y does)
+        // (the 3D Rider Select mod: the wheel's click on a suit, board or piece of gear marks it favourite, as Y does)
+        if middle_down
+            && let Some(fe) = self.fe.as_mut()
+            && crate::game::fe::equipment::take_suit_press(fe, Button::DigitalThree)
+        {
+            self.pointer.note("pointer: the wheel's click on the gear: Y (favourite)".into());
+        }
         if middle_down && self.fe.as_ref().is_some_and(crate::game::fe::globe::test_peak_drop_screen) {
             self.pointer.note("pointer: the wheel's click on the test peak: Y (switch event)".into());
             self.fe_call(|fe, _| {
@@ -251,10 +258,11 @@ impl GameUi {
         }
         let dragging = self.pointer.globe_drag.is_some();
         // TODO(guess): a move only when the position changed (the game's handler 0x825757F0 posts one every read; whether GFx's mouse state 0x82667938 reports an unchanged point to the movies was not read); settle: 0x82667938 and the AS2 root's mouse processing.
+        // (a port mod (the 3D Rider Select mod): on the gear steps, a part drawn moved is found where it's drawn)
+        let stage = crate::draw::render::pointer_place((pos.0 * 20.0, pos.1 * 20.0));
         if moved {
-            cx.vm.pointer_event(PointerEvent::Move { x: pos.0, y: pos.1 });
+            cx.vm.pointer_event(PointerEvent::Move { x: stage.0 / 20.0, y: stage.1 / 20.0 });
         }
-        let stage = (pos.0 * 20.0, pos.1 * 20.0);
         let need = moved
             || left_down
             || right_down
@@ -593,6 +601,9 @@ fn under(cx: &mut Ctx, order: &[InstanceId], reach: &Reach, stage: (f32, f32)) -
         for l in &reach.lists {
             for c in &l.cells {
                 let Some(&r) = rank.get(&c.clip) else { continue };
+                if crate::draw::render::pointer_hidden(cx.player, c.clip) {
+                    continue;
+                }
                 if lists::cell_hit(cx, &mut hit, c, stage) && out.entry.is_none_or(|(_, o)| r > o) {
                     out.entry = Some((Entry { menu: l.clip, item: c.item }, r));
                     out.preview = c.preview;
@@ -600,6 +611,9 @@ fn under(cx: &mut Ctx, order: &[InstanceId], reach: &Reach, stage: (f32, f32)) -
             }
         }
         for id in prompts {
+            if crate::draw::render::pointer_hidden(cx.player, id) {
+                continue;
+            }
             let area = cx.player.child_by_name(id, "mcHitArea", true);
             let inside = match area {
                 Some(a) => hit.bounds(a, stage),

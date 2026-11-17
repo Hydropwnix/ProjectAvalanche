@@ -385,9 +385,9 @@ fn save_state(fe: &FrontEnd, env: &mut FeEnv) {
     env.values.set_int(0x60, eq.rider_count);
 }
 
-/// The 3D Rider Select mod: the suits' and boards' lists (their categories).
+/// The 3D Rider Select mod: the suits', boards' and gear's lists (their categories), whose items can be favourites.
 pub(crate) fn favourite_kinds(category: i32) -> bool {
-    matches!(category, 1 | 2)
+    matches!(category, 1..=3)
 }
 
 /// The 3D Rider Select mod: the lists whose hovered item the rider wears meanwhile on the 3D model (suits, boards and

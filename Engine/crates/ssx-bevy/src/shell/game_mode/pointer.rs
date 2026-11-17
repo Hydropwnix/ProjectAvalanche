@@ -137,8 +137,11 @@ pub(super) fn pointer_system(
     }
     let scale = p.window.single().map_or(1.0, |w| w.scale_factor());
     // (a port addition: the ranges' globe takes the mouse too (not the keyboard))
+    // (and the gear steps and their full list (the Custom Event Menus mod): the mouse, laid out as they're drawn)
     let pad_only = ui.fe.as_ref().is_some_and(|fe| {
-        ssx_ui::game::fe::screens::pad_only(fe.screen) && !ssx_ui::game::fe::globe::mouse_screen(fe)
+        ssx_ui::game::fe::screens::pad_only(fe.screen)
+            && !ssx_ui::game::fe::globe::mouse_screen(fe)
+            && !super::frame::gear_screen(fe)
     });
     let active = shell.started && !riding && !pad_only;
     // (the Custom Event Menus mod: the rider step's own mouse: cards clicked, the wheel, the level's X)

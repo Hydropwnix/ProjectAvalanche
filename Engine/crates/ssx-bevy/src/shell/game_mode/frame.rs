@@ -33,6 +33,14 @@ const LIST_REPEAT_EVERY: f32 = 0.13;
 /// The left stick held this far over counts as held that way.
 const REPEAT_STICK: f32 = 0.4;
 
+/// The equipment screen past its rider step, and its full list (View More) (the Custom Event Menus mod): the mouse
+/// and the keyboard work there.
+pub(super) fn gear_screen(fe: &ssx_ui::game::fe::FrontEnd) -> bool {
+    ssx_core::rider_showcase::enabled()
+        && (fe.screen == ssx_ui::game::fe::screens::id::EQUIPMENT || fe.screen == 0x31)
+        && !ssx_ui::game::fe::equipment::showcase::active(fe)
+}
+
 /// Where a held direction scrolls on its own (the Custom Event Menus mod): the rider list (left and right), and the
 /// equipment screen's other lists and its full list (every way); the first delay and then how often.
 fn hold_repeat(ui: &GameUiRes, b: ssx_ui::game::input::Button) -> Option<(f32, f32)> {
@@ -109,13 +117,16 @@ pub(super) fn shell_input(
     // Backspace (B) work; on the drops X too (Freeride), and for the test peak up, down and Y)
     let peak_keys = ui.fe.as_ref().is_some_and(ssx_ui::game::fe::globe::peak_screen);
     let drop_keys = ui.fe.as_ref().is_some_and(ssx_ui::game::fe::globe::drop_screen);
+    let gear_keys = ui.fe.as_ref().is_some_and(gear_screen);
     for (b, device) in pad_presses(&keys, &pads, &slots, &mut s.stick_dpad, search) {
         use ssx_ui::game::input::Button;
-        // (and on the rider step (the Custom Event Menus mod): left, right, Enter (A), Backspace (B) and X (a level))
-        let globe_keys = (peak_keys || drop_keys || rider_list) && device == keyboard;
+        // (and on the rider step (the Custom Event Menus mod): left, right, Enter (A), Backspace (B) and X (a level);
+        // on the gear steps every key)
+        let globe_keys = (peak_keys || drop_keys || rider_list || gear_keys) && device == keyboard;
         let b = if globe_keys && b == Button::Start { Button::DigitalOne } else { b };
         let peak_key = globe_keys
-            && (matches!(b, Button::DpadLeft | Button::DpadRight | Button::DigitalOne | Button::DigitalTwo)
+            && (gear_keys
+                || matches!(b, Button::DpadLeft | Button::DpadRight | Button::DigitalOne | Button::DigitalTwo)
                 || ((drop_keys || rider_list) && b == Button::DigitalFour)
                 || (drop_keys && matches!(b, Button::DigitalThree | Button::DpadUp | Button::DpadDown)));
         if (focused || pad_only) && device == keyboard && !(peak_key && !focused) {
@@ -163,7 +174,7 @@ pub(super) fn shell_input(
                 Button::DpadUp => (KeyCode::ArrowUp, GamepadButton::DPadUp, GamepadAxis::LeftStickY, 1.0),
                 _ => (KeyCode::ArrowDown, GamepadButton::DPadDown, GamepadAxis::LeftStickY, -1.0),
             };
-            (keys.pressed(key) && !focused && (!pad_only || rider_list))
+            (keys.pressed(key) && !focused && (!pad_only || rider_list || gear_keys))
                 || pads.iter().any(|(_, p)| p.pressed(button) || p.get(axis).unwrap_or(0.0) * sign > REPEAT_STICK)
         };
         match *r {

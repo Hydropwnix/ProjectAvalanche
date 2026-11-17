@@ -2623,9 +2623,79 @@ fn gear_layout(lib: &Library, player: &Player, stage: &Mat2d) {
         set_gear_frame(view, shown_alpha(player, root));
         Some(GearLayout { moved, hidden })
     })();
+    // (where the mouse finds the parts moved: each moved part's drawn rectangle and how far it was moved, in the
+    // drawing's pixels; the parts hidden)
+    let map = layout.as_ref().map(|l| {
+        let moved = l
+            .moved
+            .iter()
+            .filter_map(|&(id, dx, dy, kx, _)| {
+                let b = player.local_bounds(lib, id);
+                if b.is_empty() {
+                    return None;
+                }
+                let b = b.transform(&stage.mul(&player.world_matrix(id)));
+                let x1 = b.x0 + (b.x1 - b.x0) * kx;
+                Some((RectF { x0: b.x0 + dx, y0: b.y0 + dy, x1: x1 + dx, y1: b.y1 + dy }, dx, dy, kx, b.x0))
+            })
+            .collect();
+        PointerMap { stage: *stage, moved, hidden: l.hidden.clone() }
+    });
+    if let Ok(mut m) = POINTER_MAP.lock() {
+        *m = map;
+    }
     if let Ok(mut g) = GEAR.lock() {
         *g = layout;
     }
+}
+
+/// The gear steps' parts as the mouse finds them (the 3D Rider Select mod moves and hides some as they're drawn).
+struct PointerMap {
+    stage: Mat2d,
+    /// Each moved part: where it's drawn (the drawing's pixels), how far it was moved, how much wider, and its left
+    /// edge before.
+    moved: Vec<(RectF, f32, f32, f32, f32)>,
+    hidden: Vec<InstanceId>,
+}
+static POINTER_MAP: std::sync::Mutex<Option<PointerMap>> = std::sync::Mutex::new(None);
+
+/// A point of the stage (twips) where the mouse is, as the menus have it: on a part the gear steps draw moved, the
+/// point the part has there before it's moved.
+pub fn pointer_place(at: (f32, f32)) -> (f32, f32) {
+    let Ok(m) = POINTER_MAP.lock() else { return at };
+    let Some(m) = m.as_ref() else { return at };
+    let (x, y) = m.stage.apply(at.0, at.1);
+    let hit = m
+        .moved
+        .iter()
+        .filter(|(r, ..)| (r.x0..=r.x1).contains(&x) && (r.y0..=r.y1).contains(&y))
+        .min_by(|a, b| ((a.0.x1 - a.0.x0) * (a.0.y1 - a.0.y0)).total_cmp(&((b.0.x1 - b.0.x0) * (b.0.y1 - b.0.y0))));
+    let Some(&(_, dx, dy, kx, left)) = hit else { return at };
+    let ux = left + (x - dx - left) / kx.max(1e-3);
+    let uy = y - dy;
+    match m.stage.inverse() {
+        Some(inv) => inv.apply(ux, uy),
+        None => at,
+    }
+}
+
+/// Whether a part (or one it's in) is hidden on the gear steps (not for the mouse).
+pub fn pointer_hidden(player: &Player, id: InstanceId) -> bool {
+    let Ok(m) = POINTER_MAP.lock() else { return false };
+    let Some(m) = m.as_ref() else { return false };
+    let mut at = Some(id);
+    let mut n = 0;
+    while let Some(i) = at {
+        if m.hidden.contains(&i) {
+            return true;
+        }
+        at = player.get(i).and_then(|x| x.parent);
+        n += 1;
+        if n > 64 {
+            break;
+        }
+    }
+    false
 }
 
 /// A favourite suit's item (the 3D Rider Select mod): a yellow-orange star at its picture's top-left corner. The item
