@@ -38,7 +38,12 @@ pub(super) struct PointerShell {
     /// them round).
     rider_last_offset: Option<i32>,
     rider_flip: bool,
+    /// The rider whose card the pointer was last on (for its sound).
+    hovered_rider: Option<String>,
 }
+
+/// The sound as the pointer comes onto a card: the menus' own highlight (`menu_highlight`, the FE sounds' first).
+const HOVER_SOUND: i32 = 0;
 
 /// The most moves toward a clicked card before giving up (it's never more than half the list).
 const MAX_TARGET_MOVES: u32 = 40;
@@ -223,6 +228,19 @@ pub(super) fn pointer_system(
         .filter(|(_, s)| rider_step && p.state.shown && s.x > 0.0 && s.y > 0.0)
         .map(|(a, s)| (a.x / s.x, a.y / s.y));
     ssx_core::rider_showcase::set_pointer(at);
+    // (a soft sound (the menus' highlight) as the pointer comes onto another card; not while the list's moving under
+    // it on its own)
+    let hovered = ssx_core::rider_showcase::hovered_rider();
+    let moving = p.state.rider_target.is_some() || p.state.rider_steps != 0 || ssx_core::rider_showcase::menu_animating();
+    if hovered != p.state.hovered_rider {
+        if hovered.is_some()
+            && !moving
+            && let Some(fe) = ui.fe.as_mut()
+        {
+            fe.play_sound(HOVER_SOUND);
+        }
+        p.state.hovered_rider = hovered;
+    }
     let now = std::time::Instant::now();
     // (several cards to go: the slides quick, each move as soon as the last slide's done)
     let far = p

@@ -104,6 +104,12 @@ pub fn name_last_card(name: &str) {
     }
 }
 
+/// The rider of the list's card (not the highlighted one) under the mouse pointer, when it's known.
+pub fn hovered_rider() -> Option<String> {
+    let (x, y) = POINTER.lock().ok().and_then(|p| *p)?;
+    rider_at(x, y)
+}
+
 /// Whether a point of the screen (fractions) is on the highlighted card.
 pub fn on_highlighted(x: f32, y: f32) -> bool {
     CARDS_SHOWN.lock().ok().and_then(|c| c.highlighted).is_some_and(|h| inside(&h, x, y))
