@@ -25,7 +25,20 @@ pub(super) struct PointerShell {
     /// The left or right button went down on the 3-D rider (the rider showcase): held back from the menus until it's
     /// up, then given to them as a click unless it turned or moved the rider (a drag).
     held_on_model: [bool; 2],
+    /// The rider step's list being moved by the mouse (a click on a card, the wheel): cards still to go (right of 0,
+    /// as the list shows them), and when the next goes.
+    rider_steps: i32,
+    rider_next: Option<std::time::Instant>,
 }
+
+/// The rider step (the Custom Event Menus mod), by the mouse: a button for the menus, or cards to move the list.
+enum RiderMouse {
+    Press(ssx_ui::game::input::Button),
+    Steps(i32),
+}
+
+/// The rider list moves a card at most this often for the mouse (seconds; a card's slide).
+const RIDER_STEP_EVERY: f32 = 0.22;
 
 #[derive(SystemParam)]
 pub(super) struct PointerInput<'w, 's> {
@@ -113,6 +126,12 @@ pub(super) fn pointer_system(
         ssx_ui::game::fe::screens::pad_only(fe.screen) && !ssx_ui::game::fe::globe::mouse_screen(fe)
     });
     let active = shell.started && !riding && !pad_only;
+    // (the Custom Event Menus mod: the rider step's own mouse: cards clicked, the wheel, the level's X)
+    let rider_step = shell.started
+        && !riding
+        && !captured
+        && ssx_core::rider_showcase::enabled()
+        && ui.fe.as_ref().is_some_and(ssx_ui::game::fe::equipment::showcase::active);
     for (x, y) in std::mem::take(&mut shell.host.window_moves) {
         match p.script_point(Vec2::new(x, y)) {
             Some((sx, sy)) => {
@@ -122,7 +141,32 @@ pub(super) fn pointer_system(
             None => warn!("shell: pointer at window ({x}, {y}): no UI viewport to map it to (script)"),
         }
     }
-    pointer_frame(&mut p, &mut ui, scale, active, other_input, captured);
+    let device = ssx_ui::game::input::KEYBOARD_DEVICE;
+    for m in pointer_frame(&mut p, &mut ui, scale, active, other_input, captured, rider_step) {
+        match m {
+            RiderMouse::Press(b) => shell.host.press_from(&mut ui, b, device),
+            RiderMouse::Steps(n) => {
+                p.state.rider_steps = (p.state.rider_steps + n).clamp(-32, 32);
+                p.state.rider_next.get_or_insert_with(std::time::Instant::now);
+            }
+        }
+    }
+    if !rider_step {
+        (p.state.rider_steps, p.state.rider_next) = (0, None);
+    }
+    let now = std::time::Instant::now();
+    if p.state.rider_steps != 0
+        && p.state.rider_next.is_some_and(|t| now >= t)
+    {
+        use ssx_ui::game::input::Button;
+        let right = p.state.rider_steps > 0;
+        let shown = if right { Button::DpadRight } else { Button::DpadLeft };
+        shell.host.press_from(&mut ui, super::frame::rider_list_turned(shown), device);
+        p.state.rider_steps -= if right { 1 } else { -1 };
+        p.state.rider_next = Some(now + std::time::Duration::from_secs_f32(RIDER_STEP_EVERY));
+    } else if p.state.rider_steps == 0 {
+        p.state.rider_next = None;
+    }
     for line in std::mem::take(&mut ui.pointer.log) {
         info!("{line}");
     }
@@ -138,7 +182,9 @@ fn pointer_frame(
     active: bool,
     other_input: bool,
     captured: bool,
-) {
+    rider_step: bool,
+) -> Vec<RiderMouse> {
+    let mut rider = Vec::new();
     if other_input {
         p.state.shown = false;
     }
@@ -179,6 +225,44 @@ fn pointer_frame(
     for (b, down) in buttons {
         if down {
             p.state.shown = true;
+        }
+        // (the rider step: the 3-D rider turned as before (a click on it, the highlighted card, picks the rider), a
+        // click on another card brings it to the highlighted place, on the level's X prompt buys it; the right button
+        // is back)
+        if rider_step {
+            use ssx_ui::game::input::Button as Pad;
+            let k = match b {
+                UiButton::Left => 0,
+                UiButton::Right => 1,
+                _ => continue,
+            };
+            if down && on_model(p.state.last, size) {
+                p.state.held_on_model[k] = true;
+                continue;
+            }
+            if !down {
+                if std::mem::take(&mut p.state.held_on_model[k]) && !ssx_core::rider_showcase::dragged() {
+                    rider.push(RiderMouse::Press(if k == 0 { Pad::DigitalOne } else { Pad::DigitalTwo }));
+                }
+                continue;
+            }
+            if k == 1 {
+                rider.push(RiderMouse::Press(Pad::DigitalTwo));
+                continue;
+            }
+            let at = p.state.last.zip(size).filter(|(_, s)| s.x > 0.0 && s.y > 0.0).map(|(a, s)| (a.x / s.x, a.y / s.y));
+            if let Some((x, y)) = at {
+                if ssx_core::rider_showcase::on_prompt(x, y) {
+                    rider.push(RiderMouse::Press(Pad::DigitalFour));
+                } else {
+                    match ssx_core::rider_showcase::card_at(x, y) {
+                        Some(0) => rider.push(RiderMouse::Press(Pad::DigitalOne)),
+                        Some(n) => rider.push(RiderMouse::Steps(n)),
+                        None => {}
+                    }
+                }
+            }
+            continue;
         }
         let which = match b {
             UiButton::Left => Some(0),
@@ -221,11 +305,15 @@ fn pointer_frame(
     if active && !captured && notches != 0 && !on_model(p.state.last, size) {
         ui.pointer_wheel(notches);
     }
+    // (the rider step: the wheel moves the list, down to the right, up to the left)
+    if rider_step && notches != 0 && !on_model(p.state.last, size) {
+        rider.push(RiderMouse::Steps(-notches));
+    }
     let kind = match p.scene.as_deref_mut().and_then(|s| s.vm.as_mut().map(|vm| (vm, &mut s.lib, &mut s.player))) {
         Some((vm, lib, player)) => vm.pointer_cursor(lib, player),
         None => Cursor::Arrow,
     };
-    let visible = p.state.shown && (captured || (active && kind != Cursor::Hidden));
+    let visible = p.state.shown && (captured || rider_step || (active && kind != Cursor::Hidden));
     let hand = !captured && kind == Cursor::Hand;
     if p.state.applied != Some((visible, hand)) {
         p.state.applied = Some((visible, hand));
@@ -245,6 +333,7 @@ fn pointer_frame(
             }
         }
     }
+    rider
 }
 
 #[cfg(test)]

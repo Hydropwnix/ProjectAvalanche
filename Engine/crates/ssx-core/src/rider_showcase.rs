@@ -49,6 +49,81 @@ pub fn begin_frame(width: u32, height: u32) {
     if let Ok(mut f) = FOUND.lock() {
         *f = (None, (width.max(1) as f32, height.max(1) as f32));
     }
+    if let Ok(mut c) = CARDS_FOUND.lock() {
+        *c = Cards::default();
+    }
+}
+
+/// The rider step's cards as drawn (fractions of the screen): the highlighted one, the others, and the level for
+/// sale's X prompt and price (for the mouse).
+#[derive(Clone, Debug, Default)]
+struct Cards {
+    highlighted: Option<[f32; 4]>,
+    others: Vec<[f32; 4]>,
+    prompt: Option<[f32; 4]>,
+}
+static CARDS_FOUND: Mutex<Cards> = Mutex::new(Cards { highlighted: None, others: Vec::new(), prompt: None });
+static CARDS_SHOWN: Mutex<Cards> = Mutex::new(Cards { highlighted: None, others: Vec::new(), prompt: None });
+
+fn fraction(rect: [f32; 4]) -> [f32; 4] {
+    let (w, h) = FOUND.lock().map(|f| f.1).unwrap_or((1.0, 1.0));
+    [rect[0] / w, rect[1] / h, rect[2] / w, rect[3] / h]
+}
+
+/// A card of the rider list drawn (in the drawing's pixels): the highlighted one or another.
+pub fn found_card(rect: [f32; 4], highlighted: bool) {
+    let r = fraction(rect);
+    if let Ok(mut c) = CARDS_FOUND.lock() {
+        if highlighted {
+            c.highlighted = Some(r);
+        } else if c.others.len() < 64 {
+            c.others.push(r);
+        }
+    }
+}
+
+/// The level for sale's X prompt and price drawn (in the drawing's pixels).
+pub fn found_prompt(rect: [f32; 4]) {
+    let r = fraction(rect);
+    if let Ok(mut c) = CARDS_FOUND.lock() {
+        c.prompt = Some(r);
+    }
+}
+
+fn inside(r: &[f32; 4], x: f32, y: f32) -> bool {
+    (r[0]..=r[2]).contains(&x) && (r[1]..=r[3]).contains(&y)
+}
+
+/// The rider list's card at a point of the screen (fractions): 0 the highlighted one, then how many cards to its right
+/// (or, below 0, to its left) as the list shows them.
+pub fn card_at(x: f32, y: f32) -> Option<i32> {
+    let c = CARDS_SHOWN.lock().ok()?.clone();
+    let h = c.highlighted?;
+    if inside(&h, x, y) {
+        return Some(0);
+    }
+    let mid = |r: &[f32; 4]| (r[0] + r[2]) * 0.5;
+    let hx = mid(&h);
+    let hit = c
+        .others
+        .iter()
+        .filter(|r| inside(r, x, y))
+        .min_by(|a, b| (mid(a) - x).abs().total_cmp(&(mid(b) - x).abs()))?;
+    let at = mid(hit);
+    let mut xs: Vec<f32> = c.others.iter().map(mid).collect();
+    xs.sort_by(f32::total_cmp);
+    xs.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
+    let n = if at > hx {
+        xs.iter().filter(|&&m| m > hx && m <= at + 1e-4).count() as i32
+    } else {
+        -(xs.iter().filter(|&&m| m < hx && m >= at - 1e-4).count() as i32)
+    };
+    (n != 0).then_some(n)
+}
+
+/// Whether a point of the screen (fractions) is on the level for sale's X prompt and price.
+pub fn on_prompt(x: f32, y: f32) -> bool {
+    level_offer() && CARDS_SHOWN.lock().ok().and_then(|c| c.prompt).is_some_and(|r| inside(&r, x, y))
 }
 
 /// Whether the highlighted card was found yet in the drawing under way.
@@ -71,6 +146,10 @@ pub fn end_frame() {
     let found = FOUND.lock().ok().and_then(|f| f.0);
     if let Ok(mut s) = SLOT.lock() {
         *s = found;
+    }
+    let cards = CARDS_FOUND.lock().map(|c| c.clone()).unwrap_or_default();
+    if let Ok(mut c) = CARDS_SHOWN.lock() {
+        *c = cards;
     }
 }
 

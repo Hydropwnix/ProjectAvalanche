@@ -52,7 +52,7 @@ fn hold_repeat(ui: &GameUiRes, b: ssx_ui::game::input::Button) -> Option<(f32, f
 
 /// The rider list's left and right swapped (the 3D Rider Select mod: its list runs from the highlighted card rightwards,
 /// so right moves the next rider in).
-fn rider_list_turned(b: ssx_ui::game::input::Button) -> ssx_ui::game::input::Button {
+pub(super) fn rider_list_turned(b: ssx_ui::game::input::Button) -> ssx_ui::game::input::Button {
     use ssx_ui::game::input::Button;
     match b {
         Button::DpadLeft => Button::DpadRight,
@@ -111,12 +111,13 @@ pub(super) fn shell_input(
     let drop_keys = ui.fe.as_ref().is_some_and(ssx_ui::game::fe::globe::drop_screen);
     for (b, device) in pad_presses(&keys, &pads, &slots, &mut s.stick_dpad, search) {
         use ssx_ui::game::input::Button;
-        let globe_keys = (peak_keys || drop_keys) && device == keyboard;
+        // (and on the rider step (the Custom Event Menus mod): left, right, Enter (A), Backspace (B) and X (a level))
+        let globe_keys = (peak_keys || drop_keys || rider_list) && device == keyboard;
         let b = if globe_keys && b == Button::Start { Button::DigitalOne } else { b };
         let peak_key = globe_keys
             && (matches!(b, Button::DpadLeft | Button::DpadRight | Button::DigitalOne | Button::DigitalTwo)
-                || (drop_keys
-                    && matches!(b, Button::DigitalFour | Button::DigitalThree | Button::DpadUp | Button::DpadDown)));
+                || ((drop_keys || rider_list) && b == Button::DigitalFour)
+                || (drop_keys && matches!(b, Button::DigitalThree | Button::DpadUp | Button::DpadDown)));
         if (focused || pad_only) && device == keyboard && !(peak_key && !focused) {
             continue;
         }
@@ -162,7 +163,7 @@ pub(super) fn shell_input(
                 Button::DpadUp => (KeyCode::ArrowUp, GamepadButton::DPadUp, GamepadAxis::LeftStickY, 1.0),
                 _ => (KeyCode::ArrowDown, GamepadButton::DPadDown, GamepadAxis::LeftStickY, -1.0),
             };
-            (keys.pressed(key) && !focused && !pad_only)
+            (keys.pressed(key) && !focused && (!pad_only || rider_list))
                 || pads.iter().any(|(_, p)| p.pressed(button) || p.get(axis).unwrap_or(0.0) * sign > REPEAT_STICK)
         };
         match *r {

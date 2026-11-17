@@ -309,6 +309,12 @@ impl Renderer {
             PLAIN_CUT.store(false, std::sync::atomic::Ordering::Relaxed);
             out.extend([Command::MaskPopBegin, Command::Draw(clip), Command::MaskPopEnd]);
             if inst.name == "mcBacker" && inst.visible {
+                // (where it is for the mouse: the card's frame, down to the cut)
+                let m = (b.x1 - b.x0) * CARD_MARGIN;
+                let w = RectF { x0: b.x0 + m, y0: b.y0, x1: b.x1 - m, y1: cut }.transform(&inh.xf);
+                if inh.cx.mult[3] * inst.cxform.mult[3] > 0.5 {
+                    ssx_core::rider_showcase::found_card([w.x0, w.y0, w.x1, w.y1], false);
+                }
                 let t = 2.0 / inh.xf.x_scale().max(1e-6);
                 let a = (inh.cx.mult[3] * inst.cxform.mult[3]).clamp(0.0, 1.0);
                 // (along the card's frame only, not its backing's clear margins: the cards overlap there, and the
@@ -3104,6 +3110,8 @@ fn grown_card_part(lib: &Library, player: &Player, id: InstanceId, inst: &Instan
                 let mid = (card.y1 + plain_bottom) * 0.5;
                 let (x, y) = (card.x1 + LEVEL_PROMPT_GAP_PX - u.x0, mid - (u.y0 + u.y1) * 0.5);
                 shift = Some((x / world.a, y / world.d));
+                // (where it is for the mouse: a click on it is X)
+                ssx_core::rider_showcase::found_prompt([u.x0 + x - 6.0, u.y0 + y - 6.0, u.x1 + x + 6.0, u.y1 + y + 6.0]);
             }
         }
         if let Ok(mut p) = LEVEL_PROMPT_SHIFT.lock() {
@@ -3126,7 +3134,10 @@ fn grown_card_part(lib: &Library, player: &Player, id: InstanceId, inst: &Instan
         if !b.is_empty()
             && let Ok(mut now) = CARD_NOW.lock()
         {
-            *now = Some(b.transform(&parent.mul(&out)));
+            let r = b.transform(&parent.mul(&out));
+            *now = Some(r);
+            // (where it is for the mouse)
+            ssx_core::rider_showcase::found_card([r.x0, r.y0, r.x1, r.y1], true);
         }
     }
     out
