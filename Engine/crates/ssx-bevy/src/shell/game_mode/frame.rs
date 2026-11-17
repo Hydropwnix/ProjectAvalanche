@@ -121,6 +121,8 @@ pub(super) fn shell_input(
     // (a port addition: on a range's peaks and a peak's drops the keyboard's left and right arrows, Space / Enter
     // (A) and Backspace (B) work; on the drops X too (Freeride), and for the test peak up, down and Y)
     let peak_keys = ui.fe.as_ref().is_some_and(ssx_ui::game::fe::globe::peak_screen);
+    // (and on the globe of ranges: Space / Enter (A) choose the range highlighted, Backspace (B) goes back)
+    let range_keys = ui.fe.as_ref().is_some_and(ssx_ui::game::fe::globe::range_screen);
     let drop_keys = ui.fe.as_ref().is_some_and(ssx_ui::game::fe::globe::drop_screen);
     let gear_keys = ui.fe.as_ref().is_some_and(gear_screen);
     // (a port addition: a pop-up up (on any screen): the keyboard's arrows, Space / Enter (A) and Backspace (B)
@@ -141,12 +143,14 @@ pub(super) fn shell_input(
         } else {
             b
         };
-        let peak_key = globe_keys
-            && (gear_keys
-                || matches!(b, Button::DpadLeft | Button::DpadRight | Button::DigitalOne | Button::DigitalTwo)
-                || (popup_keys && matches!(b, Button::DpadUp | Button::DpadDown))
-                || ((drop_keys || rider_list) && b == Button::DigitalFour)
-                || (drop_keys && matches!(b, Button::DigitalThree | Button::DpadUp | Button::DpadDown)));
+        let range_key = range_keys && device == keyboard && matches!(b, Button::DigitalOne | Button::DigitalTwo);
+        let peak_key = range_key
+            || (globe_keys
+                && (gear_keys
+                    || matches!(b, Button::DpadLeft | Button::DpadRight | Button::DigitalOne | Button::DigitalTwo)
+                    || (popup_keys && matches!(b, Button::DpadUp | Button::DpadDown))
+                    || ((drop_keys || rider_list) && b == Button::DigitalFour)
+                    || (drop_keys && matches!(b, Button::DigitalThree | Button::DpadUp | Button::DpadDown))));
         if (focused || pad_only) && device == keyboard && !(peak_key && !focused) {
             continue;
         }

@@ -192,7 +192,8 @@ pub(super) fn focus_range(fe: &mut FrontEnd, range: u32) {
     focus_peak(fe, peak);
 }
 
-/// A port addition (the mouse on the globe): the screens of ranges, whose globe the mouse turns and picks on.
+/// A port addition (the mouse on the globe): the screens of ranges, whose globe the mouse turns and picks on (and
+/// the keyboard's Space / Enter and Backspace choose and go back).
 pub fn range_screen(fe: &FrontEnd) -> bool {
     fe.globe_scene.is_some() && matches!(fe.screen, 0xC | 0x42 | 0xF)
 }
