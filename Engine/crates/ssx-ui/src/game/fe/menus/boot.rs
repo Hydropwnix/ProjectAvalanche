@@ -16,7 +16,7 @@ const BOOT_SKIP_INTRO: u16 = 0x31;
 const BACKGROUND_TRANSITION: u16 = 0x2E;
 /// With `skip-intros`: seconds the screen stays black and the music silent while the menu, its music and its
 /// background come up, then the seconds of the fade in.
-const STARTUP_HOLD_S: f64 = 2.5;
+const STARTUP_HOLD_S: f64 = 1.0;
 const STARTUP_FADE_S: f64 = 1.5;
 const STARTUP_STEP_S: f64 = 1.0 / 30.0;
 
