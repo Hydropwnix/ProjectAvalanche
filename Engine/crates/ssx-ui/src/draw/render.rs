@@ -184,8 +184,14 @@ impl Renderer {
             self.instance(lib, player, r, inh, &mut out.commands);
         }
         dimmer_fade(&mut out.commands, frame_start);
-        gear_frame(&mut out.commands);
-        hover_glows(&mut out.commands);
+        if LOADING_SCREEN.load(std::sync::atomic::Ordering::Relaxed) {
+            // (the loading screen up (a run starting): none of the menus' overlays (the rider's view's frame on its
+            // way back to the highlighted card, the cards' glows) drawn over it, and the frame starts afresh after)
+            loading_overlays_off();
+        } else {
+            gear_frame(&mut out.commands);
+            hover_glows(&mut out.commands);
+        }
         // (the highlighted card as drawn this frame, for the mouse)
         if let Some(r) = CARD_NOW.lock().ok().and_then(|c| *c) {
             ssx_core::rider_showcase::found_card([r.x0, r.y0, r.x1, r.y1], true);
@@ -2156,6 +2162,22 @@ static FRAME_NOW: std::sync::Mutex<Option<([f32; 4], std::time::Instant)>> = std
 /// The rider's view's frame on the gear steps (the 3D Rider Select mod): the highlighted card's inner frame, pulsing and
 /// glowing as it does there, grown with the rider from the card to the view (and back to the card on the way back to
 /// the rider step), as the showcase moves the rider's view.
+/// The loading screen up: the rider's view's frame let go (not carried on from where it was afterwards).
+fn loading_overlays_off() {
+    if let Ok(mut f) = FRAME_NOW.lock() {
+        *f = None;
+    }
+    if let Ok(mut m) = FRAME_MOVE.lock() {
+        *m = None;
+    }
+    if let Ok(mut a) = FRAME_ALPHA.lock() {
+        *a = 0.0;
+    }
+    if let Ok(mut k) = KEPT_SINCE.lock() {
+        *k = None;
+    }
+}
+
 fn gear_frame(out: &mut Vec<Command>) {
     let target = GEAR_FRAME.lock().ok().and_then(|f| *f);
     let inner = INNER_LAST.lock().ok().and_then(|f| *f);
