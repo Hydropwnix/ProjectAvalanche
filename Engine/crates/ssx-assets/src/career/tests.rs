@@ -431,6 +431,20 @@ fn a_mod_sets_a_rider_to_a_level_past_its_price_gates() {
     assert_eq!(update_rider_level(&mut s.clone(), &thresholds, &prices).0, 3, "it stays");
     assert_eq!(set_rider_level(&mut s, 99, &thresholds, &prices), 4, "at most the last level");
     assert_eq!(set_rider_level(&mut s, 1, &thresholds, &prices), 1, "and back down");
+    assert_eq!(s.max_purchased_level, 1, "the levels past it not bought");
+}
+
+#[test]
+fn a_rider_set_to_level_ten_can_buy_the_next() {
+    let thr: Vec<i64> = (1..=15).map(|i| i * 1000).collect();
+    let mut prices = vec![0i64; 15];
+    prices[10..].copy_from_slice(&[1_000_000, 2_500_000, 5_000_000, 7_500_000, 10_000_000]);
+    let rules = Rules { level_thresholds: thr.clone(), level_prices: prices.clone(), ..Default::default() };
+    let mut s = RiderStats::default();
+    assert_eq!(set_rider_level(&mut s, 14, &thr, &prices), 14);
+    assert_eq!(level_purchase(&rules, &s), None, "level 15: none left");
+    assert_eq!(set_rider_level(&mut s, 9, &thr, &prices), 9, "level 10, after 15");
+    assert_eq!(level_purchase(&rules, &s), Some((10, 1_000_000)), "level 11 for sale");
 }
 
 #[test]

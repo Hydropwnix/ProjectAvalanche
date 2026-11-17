@@ -406,9 +406,9 @@ impl Inventory {
             }
             self.owned_list = owned;
             self.inventory_list.sort_by(super::order::by_value);
-            // (the Custom Event Menus mod: the suits' full list grouped by their perks, each group best first, those
-            // with no perk last)
-            if kind == 0 && ssx_core::rider_showcase::enabled() {
+            // (the Custom Event Menus mod: the suits' and boards' full lists grouped by their perks, each group best
+            // first, those with no perk last)
+            if matches!(kind, 0 | 1) && ssx_core::rider_showcase::enabled() {
                 let group = |u: &UiItem| if u.perk < 0 { i64::MAX } else { u.perk };
                 self.inventory_list
                     .sort_by(|a, b| group(a).cmp(&group(b)).then_with(|| super::order::by_value(a, b)));

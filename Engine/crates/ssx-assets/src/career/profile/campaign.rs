@@ -234,7 +234,8 @@ pub fn set_rider_level_capped(stats: &mut RiderStats, level: i64, thresholds: &[
     let Some(last) = thresholds.len().checked_sub(1) else { return 0 };
     let target = usize::try_from(level.max(0)).unwrap_or(0).min(last);
     stats.money_earned = thresholds[target];
-    stats.max_purchased_level = stats.max_purchased_level.max(target as i64);
+    // (the levels past it not bought: one set lower again can buy its next level, as the game sells them)
+    stats.max_purchased_level = target as i64;
     stats.max_achieved_level = 0;
     stats.next_level_offset = 0;
     level_of(stats, thresholds, prices).0
