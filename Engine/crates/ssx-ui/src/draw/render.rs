@@ -180,6 +180,10 @@ impl Renderer {
         }
         dimmer_fade(&mut out.commands, frame_start);
         gear_frame(&mut out.commands);
+        // (the highlighted card as drawn this frame, for the mouse)
+        if let Some(r) = CARD_NOW.lock().ok().and_then(|c| *c) {
+            ssx_core::rider_showcase::found_card([r.x0, r.y0, r.x1, r.y1], true);
+        }
         ssx_core::rider_showcase::end_frame();
         out
     }
