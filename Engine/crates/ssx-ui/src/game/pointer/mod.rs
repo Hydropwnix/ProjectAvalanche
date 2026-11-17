@@ -282,6 +282,8 @@ impl GameUi {
         let subscribers = self.input.subscribers.clone();
         let order = lists::paint_order(cx);
         let reach = lists::reach(cx, &subscribers, &order);
+        // (the entries whose drawn places the drawing notes, for the next read)
+        crate::draw::render::pointer_watch(reach.lists.iter().flat_map(|l| l.cells.iter().map(|c| c.clip)));
         let globe = self.globe_level().map(|level| (level, self.globe_nodes()));
         let mut under = under(cx, &order, &reach, raw);
         if let Some((level, nodes)) = &globe {
@@ -608,11 +610,18 @@ fn under(cx: &mut Ctx, order: &[InstanceId], reach: &Reach, stage: (f32, f32)) -
                 if crate::draw::render::pointer_hidden(cx.player, c.clip) {
                     continue;
                 }
-                // (each part where it's drawn: moved back as far as it's drawn moved)
-                let stage = crate::draw::render::pointer_place_for(cx.player, c.clip, stage);
-                if !lists::cell_hit(cx, &mut hit, c, stage) {
+                // (each entry where it was drawn (on the gear steps, moved): else where the menus have it)
+                let on = match crate::draw::render::pointer_on_drawn(c.clip, stage) {
+                    Some(on) if crate::draw::render::pointer_map_on() => on && lists::drawn(cx, c.clip),
+                    _ => {
+                        let stage = crate::draw::render::pointer_place_for(cx.player, c.clip, stage);
+                        lists::cell_hit(cx, &mut hit, c, stage)
+                    }
+                };
+                if !on {
                     continue;
                 }
+                let stage = crate::draw::render::pointer_place_for(cx.player, c.clip, stage);
                 // (of entries one over another (a box reaching over its neighbour), the one the pointer's most inside
                 // wins: 0 at its middle, 1 at its edge; then the one drawn on top)
                 let depth = cx

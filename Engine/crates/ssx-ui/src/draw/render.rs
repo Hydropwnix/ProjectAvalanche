@@ -163,6 +163,11 @@ impl Renderer {
         let movie = lib.movie(root.movie);
         out.background = movie.background.map(crate::geom::rgba);
         let stage = stage_transform(movie.stage, viewport, mode);
+        if let Ok(mut d) = POINTER_DRAWN.lock() {
+            let now = std::mem::take(&mut d.0);
+            d.1 = now;
+            d.2 = Some(stage);
+        }
         let ((x0, y0), (x1, y1)) =
             (stage.apply(movie.stage.x0, movie.stage.y0), stage.apply(movie.stage.x1, movie.stage.y1));
         out.stage = Some([x0, y0, x1, y1]);
@@ -391,6 +396,26 @@ impl Renderer {
             mask: inh.mask,
             slice: None,
         };
+        // (an entry the mouse asks about: where it's drawn, for it)
+        if !inh.mask
+            && let Ok(watch) = POINTER_WATCH.lock()
+            && watch.contains(&id)
+        {
+            drop(watch);
+            // (a box with its backing (Start Run): the backing only, as drawn (made as wide as an option))
+            let backer = player.child_by_name(id, "mcBackerContainer", true).and_then(|b| {
+                let bi = player.get(b)?;
+                let m = gear_moved(lib, player, b, &here.xf, bi.matrix);
+                let r = player.local_bounds(lib, b);
+                (!r.is_empty()).then(|| r.transform(&here.xf.mul(&m)))
+            });
+            let r = backer.unwrap_or_else(|| player.local_bounds(lib, id).transform(&here.xf));
+            if !r.is_empty()
+                && let Ok(mut d) = POINTER_DRAWN.lock()
+            {
+                d.0.insert(id, r);
+            }
+        }
         if !inh.mask && inst.name == "mcInnerframe" && in_grown_cell(inst) {
             self.square_frame(lib, player, id, inst, &inh, &matrix, &here, out);
             return;
@@ -2713,6 +2738,38 @@ pub fn pointer_place_for(player: &Player, id: InstanceId, at: (f32, f32)) -> (f3
         }
     }
     at
+}
+
+/// The entries the mouse asks about (the menus' cells), and where each was drawn: this frame's, last frame's (the
+/// drawing's pixels), and the stage's place in the drawing.
+static POINTER_WATCH: std::sync::Mutex<std::collections::BTreeSet<InstanceId>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+#[allow(clippy::type_complexity)]
+static POINTER_DRAWN: std::sync::Mutex<(
+    std::collections::BTreeMap<InstanceId, RectF>,
+    std::collections::BTreeMap<InstanceId, RectF>,
+    Option<Mat2d>,
+)> = std::sync::Mutex::new((std::collections::BTreeMap::new(), std::collections::BTreeMap::new(), None));
+
+/// The entries the mouse asks about from now on.
+pub fn pointer_watch(ids: impl IntoIterator<Item = InstanceId>) {
+    if let Ok(mut w) = POINTER_WATCH.lock() {
+        *w = ids.into_iter().collect();
+    }
+}
+
+/// Whether the gear steps' layout is up (parts drawn moved: the mouse goes by where they're drawn).
+pub fn pointer_map_on() -> bool {
+    POINTER_MAP.lock().is_ok_and(|m| m.is_some())
+}
+
+/// Whether the mouse (a point of the stage, twips) is on an entry where it was last drawn; `None` when it wasn't
+/// seen drawn.
+pub fn pointer_on_drawn(id: InstanceId, at: (f32, f32)) -> Option<bool> {
+    let d = POINTER_DRAWN.lock().ok()?;
+    let r = d.1.get(&id)?;
+    let (x, y) = d.2?.apply(at.0, at.1);
+    Some((r.x0..=r.x1).contains(&x) && (r.y0..=r.y1).contains(&y))
 }
 
 /// How much wider a part is drawn on the gear steps (1 when it isn't).
