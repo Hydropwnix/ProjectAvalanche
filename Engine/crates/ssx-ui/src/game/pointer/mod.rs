@@ -294,6 +294,18 @@ impl GameUi {
                 under.globe = globe_near(cx, &order, nodes, pos, DROP_REACH);
             }
         }
+        // (what's under the pointer, as it changes: in the log)
+        {
+            static LAST: std::sync::Mutex<Option<(Option<i32>, bool)>> = std::sync::Mutex::new(None);
+            let now = (under.entry.map(|(e, _)| e.item), under.preview);
+            if let Ok(mut l) = LAST.lock()
+                && *l != Some(now)
+            {
+                *l = Some(now);
+                let sel: Vec<String> = reach.lists.iter().map(|l| format!("{}", l.selected)).collect();
+                self.pointer.note(format!("pointer: under {:?} (preview {}), selected {}", now.0, now.1, sel.join("/")));
+            }
+        }
         if moved
             && let Some((e, _)) = under.entry
             && !under.preview
@@ -634,8 +646,14 @@ fn under(cx: &mut Ctx, order: &[InstanceId], reach: &Reach, stage: (f32, f32)) -
                         let (hw, hh) = (((s.x1 - s.x0) * 0.5).max(1e-3), ((s.y1 - s.y0) * 0.5).max(1e-3));
                         ((x - (s.x0 + s.x1) * 0.5).abs() / hw).max((y - (s.y0 + s.y1) * 0.5).abs() / hh)
                     });
+                // (a box standing apart from its list, as Start Run from the options (item -1), only when no entry of
+                // the list is under the pointer: its area reaches over the first option)
+                let apart = |item: i32| item < 0;
+                let best_item = out.entry.map(|(e, _)| e.item);
                 let better = match best_depth {
                     None => true,
+                    _ if best_item.is_some_and(apart) && !apart(c.item) => true,
+                    _ if apart(c.item) && best_item.is_some_and(|i| !apart(i)) => false,
                     Some((d, o)) => depth < d - 0.05 || ((depth - d).abs() <= 0.05 && r > o),
                 };
                 if better {
