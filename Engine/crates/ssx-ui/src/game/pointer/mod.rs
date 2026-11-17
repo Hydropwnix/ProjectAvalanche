@@ -261,7 +261,8 @@ impl GameUi {
         let dragging = self.pointer.globe_drag.is_some();
         // TODO(guess): a move only when the position changed (the game's handler 0x825757F0 posts one every read; whether GFx's mouse state 0x82667938 reports an unchanged point to the movies was not read); settle: 0x82667938 and the AS2 root's mouse processing.
         // (a port mod (the 3D Rider Select mod): on the gear steps, a part drawn moved is found where it's drawn)
-        let stage = crate::draw::render::pointer_place((pos.0 * 20.0, pos.1 * 20.0));
+        let raw = (pos.0 * 20.0, pos.1 * 20.0);
+        let stage = crate::draw::render::pointer_place(raw);
         if moved {
             cx.vm.pointer_event(PointerEvent::Move { x: stage.0 / 20.0, y: stage.1 / 20.0 });
         }
@@ -282,7 +283,7 @@ impl GameUi {
         let order = lists::paint_order(cx);
         let reach = lists::reach(cx, &subscribers, &order);
         let globe = self.globe_level().map(|level| (level, self.globe_nodes()));
-        let mut under = under(cx, &order, &reach, stage);
+        let mut under = under(cx, &order, &reach, raw);
         if let Some((level, nodes)) = &globe {
             under.globe = globe_under(cx, &order, nodes, stage);
             // (a port addition: a peak's drops sit close together: the drop nearest the pointer, near enough, is
@@ -606,6 +607,8 @@ fn under(cx: &mut Ctx, order: &[InstanceId], reach: &Reach, stage: (f32, f32)) -
                 if crate::draw::render::pointer_hidden(cx.player, c.clip) {
                     continue;
                 }
+                // (each part where it's drawn: moved back as far as it's drawn moved)
+                let stage = crate::draw::render::pointer_place_for(cx.player, c.clip, stage);
                 if lists::cell_hit(cx, &mut hit, c, stage) && out.entry.is_none_or(|(_, o)| r > o) {
                     out.entry = Some((Entry { menu: l.clip, item: c.item }, r));
                     out.preview = c.preview;
@@ -616,6 +619,7 @@ fn under(cx: &mut Ctx, order: &[InstanceId], reach: &Reach, stage: (f32, f32)) -
             if crate::draw::render::pointer_hidden(cx.player, id) {
                 continue;
             }
+            let stage = crate::draw::render::pointer_place_for(cx.player, id, stage);
             let area = cx.player.child_by_name(id, "mcHitArea", true);
             let inside = match area {
                 Some(a) => hit.bounds(a, stage),

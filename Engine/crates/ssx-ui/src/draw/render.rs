@@ -2647,7 +2647,7 @@ fn gear_layout(lib: &Library, player: &Player, stage: &Mat2d) {
                 }
                 let b = b.transform(&stage.mul(&player.world_matrix(id)));
                 let x1 = b.x0 + (b.x1 - b.x0) * kx;
-                Some((RectF { x0: b.x0 + dx, y0: b.y0 + dy, x1: x1 + dx, y1: b.y1 + dy }, dx, dy, kx, b.x0))
+                Some((id, RectF { x0: b.x0 + dx, y0: b.y0 + dy, x1: x1 + dx, y1: b.y1 + dy }, dx, dy, kx, b.x0))
             })
             .collect();
         PointerMap { stage: *stage, moved, hidden: l.hidden.clone() }
@@ -2665,7 +2665,7 @@ struct PointerMap {
     stage: Mat2d,
     /// Each moved part: where it's drawn (the drawing's pixels), how far it was moved, how much wider, and its left
     /// edge before.
-    moved: Vec<(RectF, f32, f32, f32, f32)>,
+    moved: Vec<(InstanceId, RectF, f32, f32, f32, f32)>,
     hidden: Vec<InstanceId>,
 }
 static POINTER_MAP: std::sync::Mutex<Option<PointerMap>> = std::sync::Mutex::new(None);
@@ -2679,15 +2679,40 @@ pub fn pointer_place(at: (f32, f32)) -> (f32, f32) {
     let hit = m
         .moved
         .iter()
-        .filter(|(r, ..)| (r.x0..=r.x1).contains(&x) && (r.y0..=r.y1).contains(&y))
-        .min_by(|a, b| ((a.0.x1 - a.0.x0) * (a.0.y1 - a.0.y0)).total_cmp(&((b.0.x1 - b.0.x0) * (b.0.y1 - b.0.y0))));
-    let Some(&(_, dx, dy, kx, left)) = hit else { return at };
+        .filter(|(_, r, ..)| (r.x0..=r.x1).contains(&x) && (r.y0..=r.y1).contains(&y))
+        .min_by(|a, b| ((a.1.x1 - a.1.x0) * (a.1.y1 - a.1.y0)).total_cmp(&((b.1.x1 - b.1.x0) * (b.1.y1 - b.1.y0))));
+    let Some(&(_, _, dx, dy, kx, left)) = hit else { return at };
     let ux = left + (x - dx - left) / kx.max(1e-3);
     let uy = y - dy;
     match m.stage.inverse() {
         Some(inv) => inv.apply(ux, uy),
         None => at,
     }
+}
+
+/// A point of the stage (twips) where the mouse is, as the menus have it for one part (`id`): moved back by however
+/// far the part (or the part it's in) is drawn moved on the gear steps.
+pub fn pointer_place_for(player: &Player, id: InstanceId, at: (f32, f32)) -> (f32, f32) {
+    let Ok(m) = POINTER_MAP.lock() else { return at };
+    let Some(m) = m.as_ref() else { return at };
+    let mut cur = Some(id);
+    let mut n = 0;
+    while let Some(i) = cur {
+        if let Some(&(_, _, dx, dy, kx, left)) = m.moved.iter().find(|e| e.0 == i) {
+            let (x, y) = m.stage.apply(at.0, at.1);
+            let ux = left + (x - dx - left) / kx.max(1e-3);
+            return match m.stage.inverse() {
+                Some(inv) => inv.apply(ux, y - dy),
+                None => at,
+            };
+        }
+        cur = player.get(i).and_then(|x| x.parent);
+        n += 1;
+        if n > 64 {
+            break;
+        }
+    }
+    at
 }
 
 /// Whether a part (or one it's in) is hidden on the gear steps (not for the mouse).
