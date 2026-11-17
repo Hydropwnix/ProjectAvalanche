@@ -19,15 +19,36 @@ pub(super) struct TextKeys<'w, 's> {
     clipboard: Option<ResMut<'w, bevy::clipboard::Clipboard>>,
 }
 
-/// The rider list's held left or right: which, from which device, and when it next moves the list again.
-static RIDER_REPEAT: std::sync::Mutex<Option<(ssx_ui::game::input::Button, u8, Instant)>> =
+/// A held direction (the D-pad, the arrows or the left stick) on a list that scrolls on its own while it's held: which,
+/// from which device, whether it came from the stick, and when it next moves the list again.
+static HOLD_REPEAT: std::sync::Mutex<Option<(ssx_ui::game::input::Button, u8, bool, Instant)>> =
     std::sync::Mutex::new(None);
-/// Held this long, left or right starts moving the rider list on its own; then a card every this often (seconds; a
-/// card's slide is about this long, so the list never outruns its cards).
+/// On the rider list: held this long, left or right starts moving the list on its own; then a card every this often
+/// (seconds; a card's slide is about this long, so the list never outruns its cards).
 const RIDER_REPEAT_DELAY: f32 = 0.4;
 const RIDER_REPEAT_EVERY: f32 = 0.22;
-/// The left stick held this far over counts as held left or right.
-const RIDER_REPEAT_STICK: f32 = 0.4;
+/// On the equipment screen's lists (its options, its gear, the full list): held this long, then an item this often.
+const LIST_REPEAT_DELAY: f32 = 0.4;
+const LIST_REPEAT_EVERY: f32 = 0.13;
+/// The left stick held this far over counts as held that way.
+const REPEAT_STICK: f32 = 0.4;
+
+/// Where a held direction scrolls on its own (the Custom Event Menus mod): the rider list (left and right), and the
+/// equipment screen's other lists and its full list (every way); the first delay and then how often.
+fn hold_repeat(ui: &GameUiRes, b: ssx_ui::game::input::Button) -> Option<(f32, f32)> {
+    use ssx_ui::game::input::Button;
+    if !ssx_core::rider_showcase::enabled() {
+        return None;
+    }
+    let fe = ui.fe.as_ref()?;
+    let horizontal = matches!(b, Button::DpadLeft | Button::DpadRight);
+    let vertical = matches!(b, Button::DpadUp | Button::DpadDown);
+    if ssx_ui::game::fe::equipment::showcase::active(fe) {
+        return horizontal.then_some((RIDER_REPEAT_DELAY, RIDER_REPEAT_EVERY));
+    }
+    let lists = fe.screen == ssx_ui::game::fe::screens::id::EQUIPMENT || fe.screen == 0x31;
+    (lists && (horizontal || vertical)).then_some((LIST_REPEAT_DELAY, LIST_REPEAT_EVERY))
+}
 
 /// The rider list's left and right swapped (the 3D Rider Select mod: its list runs from the highlighted card rightwards,
 /// so right moves the next rider in).
@@ -101,45 +122,55 @@ pub(super) fn shell_input(
         {
             continue;
         }
-        if rider_list && matches!(b, ssx_ui::game::input::Button::DpadLeft | ssx_ui::game::input::Button::DpadRight) {
-            if let Ok(mut r) = RIDER_REPEAT.lock() {
-                *r = Some((b, device, Instant::now() + std::time::Duration::from_secs_f32(RIDER_REPEAT_DELAY)));
-            }
+        if let Some((delay, _)) = hold_repeat(&ui, b)
+            && let Ok(mut r) = HOLD_REPEAT.lock()
+        {
+            *r = Some((b, device, false, Instant::now() + std::time::Duration::from_secs_f32(delay)));
         }
         let b = if rider_list { rider_list_turned(b) } else { b };
         s.host.press_from(&mut ui, b, device);
     }
-    // (the 3D Rider Select mod: on the rider list, left or right held keeps the list going, a card at a time, no
-    // faster than the cards slide)
-    if let Ok(mut r) = RIDER_REPEAT.lock() {
-        let held = |left: bool| {
-            let (key, button) = if left {
-                (KeyCode::ArrowLeft, GamepadButton::DPadLeft)
-            } else {
-                (KeyCode::ArrowRight, GamepadButton::DPadRight)
+    // (the left stick's D-pad presses, as the D-pad's on the rider list)
+    for (b, device) in s.stick_dpad.take() {
+        if let Some((delay, _)) = hold_repeat(&ui, b)
+            && let Ok(mut r) = HOLD_REPEAT.lock()
+        {
+            *r = Some((b, device, true, Instant::now() + std::time::Duration::from_secs_f32(delay)));
+        }
+        let b = if rider_list { rider_list_turned(b) } else { b };
+        s.host.press_from_stick(&mut ui, b, device);
+    }
+    // (the Custom Event Menus mod: a direction held keeps the list going, an item at a time (on the rider list no
+    // faster than the cards slide))
+    if let Ok(mut r) = HOLD_REPEAT.lock() {
+        use ssx_ui::game::input::Button;
+        let held = |b: Button| {
+            let (key, button, axis, sign) = match b {
+                Button::DpadLeft => (KeyCode::ArrowLeft, GamepadButton::DPadLeft, GamepadAxis::LeftStickX, -1.0),
+                Button::DpadRight => (KeyCode::ArrowRight, GamepadButton::DPadRight, GamepadAxis::LeftStickX, 1.0),
+                Button::DpadUp => (KeyCode::ArrowUp, GamepadButton::DPadUp, GamepadAxis::LeftStickY, 1.0),
+                _ => (KeyCode::ArrowDown, GamepadButton::DPadDown, GamepadAxis::LeftStickY, -1.0),
             };
-            let sign = if left { -1.0 } else { 1.0 };
             (keys.pressed(key) && !focused && !pad_only)
-                || pads.iter().any(|(_, p)| {
-                    p.pressed(button) || p.get(GamepadAxis::LeftStickX).unwrap_or(0.0) * sign > RIDER_REPEAT_STICK
-                })
+                || pads.iter().any(|(_, p)| p.pressed(button) || p.get(axis).unwrap_or(0.0) * sign > REPEAT_STICK)
         };
         match *r {
-            Some((b, device, next)) if rider_list && held(matches!(b, ssx_ui::game::input::Button::DpadLeft)) => {
+            Some((b, device, from_stick, next)) if held(b) && hold_repeat(&ui, b).is_some() => {
                 let now = Instant::now();
                 if now >= next {
-                    s.host.press_from(&mut ui, rider_list_turned(b), device);
-                    *r = Some((b, device, now + std::time::Duration::from_secs_f32(RIDER_REPEAT_EVERY)));
+                    let every = hold_repeat(&ui, b).map_or(LIST_REPEAT_EVERY, |(_, e)| e);
+                    let turned = if rider_list { rider_list_turned(b) } else { b };
+                    if from_stick {
+                        s.host.press_from_stick(&mut ui, turned, device);
+                    } else {
+                        s.host.press_from(&mut ui, turned, device);
+                    }
+                    *r = Some((b, device, from_stick, now + std::time::Duration::from_secs_f32(every)));
                 }
             }
             Some(_) => *r = None,
             None => {}
         }
-    }
-    // (the left stick's D-pad presses, as the D-pad's on the rider list)
-    for (b, device) in s.stick_dpad.take() {
-        let b = if rider_list { rider_list_turned(b) } else { b };
-        s.host.press_from_stick(&mut ui, b, device);
     }
     let mut stick = Vec2::ZERO;
     for (_, pad) in &pads {
