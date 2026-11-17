@@ -312,7 +312,7 @@ impl Renderer {
                 // (where it is for the mouse: the card's frame, down to the cut)
                 let m = (b.x1 - b.x0) * CARD_MARGIN;
                 let w = RectF { x0: b.x0 + m, y0: b.y0, x1: b.x1 - m, y1: cut }.transform(&inh.xf);
-                if inh.cx.mult[3] * inst.cxform.mult[3] > 0.5 {
+                if inh.cx.mult[3] * inst.cxform.mult[3] > 0.02 {
                     ssx_core::rider_showcase::found_card([w.x0, w.y0, w.x1, w.y1], false);
                 }
                 let t = 2.0 / inh.xf.x_scale().max(1e-6);

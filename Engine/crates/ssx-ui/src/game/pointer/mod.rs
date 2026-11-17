@@ -213,7 +213,16 @@ impl GameUi {
         let pressed = |i: usize| latch.went_down[i] || (latch.down[i] && !self.pointer.read_down[i]);
         let released = |i: usize| !latch.down[i] && (self.pointer.read_down[i] || latch.went_down[i]);
         let (mut left_down, left_up, right_down) = (pressed(0), released(0), pressed(1));
+        let middle_down = pressed(2);
         self.pointer.read_down = latch.down;
+        // (a port mod (the test peak): the wheel's click on its drops turns its events between Trick It and Race It,
+        // as Y does)
+        if middle_down && self.fe.as_ref().is_some_and(crate::game::fe::globe::test_peak_drop_screen) {
+            self.pointer.note("pointer: the wheel's click on the test peak: Y (switch event)".into());
+            self.fe_call(|fe, _| {
+                crate::game::fe::globe::take_test_peak_press(fe, Button::DigitalThree);
+            });
+        }
         let Some(pos) = latch.position else { return };
         let moved = self.pointer.read_position != Some(pos);
         self.pointer.read_position = Some(pos);

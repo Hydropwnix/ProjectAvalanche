@@ -104,19 +104,41 @@ pub fn card_at(x: f32, y: f32) -> Option<i32> {
     }
     let mid = |r: &[f32; 4]| (r[0] + r[2]) * 0.5;
     let hx = mid(&h);
+    let mut xs: Vec<f32> = c.others.iter().map(mid).collect();
+    xs.sort_by(f32::total_cmp);
+    xs.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
     let hit = c
         .others
         .iter()
         .filter(|r| inside(r, x, y))
-        .min_by(|a, b| (mid(a) - x).abs().total_cmp(&(mid(b) - x).abs()))?;
-    let at = mid(hit);
-    let mut xs: Vec<f32> = c.others.iter().map(mid).collect();
-    xs.sort_by(f32::total_cmp);
-    xs.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
-    let n = if at > hx {
-        xs.iter().filter(|&&m| m > hx && m <= at + 1e-4).count() as i32
-    } else {
-        -(xs.iter().filter(|&&m| m < hx && m >= at - 1e-4).count() as i32)
+        .min_by(|a, b| (mid(a) - x).abs().total_cmp(&(mid(b) - x).abs()));
+    let n = match hit {
+        // (a card drawn there: how many cards it is from the highlighted one)
+        Some(r) => {
+            let at = mid(r);
+            if at > hx {
+                xs.iter().filter(|&&m| m > hx && m <= at + 1e-4).count() as i32
+            } else {
+                -(xs.iter().filter(|&&m| m < hx && m >= at - 1e-4).count() as i32)
+            }
+        }
+        // (none found there, but level with the cards: as many card spacings as it is from the highlighted one)
+        None => {
+            let band = h[1]..=(h[1] + (h[3] - h[1]) * 0.8);
+            if !band.contains(&y) {
+                return None;
+            }
+            let spacing = xs
+                .windows(2)
+                .map(|w| w[1] - w[0])
+                .filter(|d| *d > 1e-3)
+                .min_by(f32::total_cmp)
+                .unwrap_or((h[2] - h[0]) * 0.8)
+                .max(1e-3);
+            let from = if x > h[2] { x - h[2] } else { x - h[0] };
+            let k = (from.abs() / spacing).floor() as i32 + 1;
+            if x > h[2] { k } else { -k }
+        }
     };
     (n != 0).then_some(n)
 }
