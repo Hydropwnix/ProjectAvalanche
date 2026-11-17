@@ -3163,10 +3163,13 @@ fn hover_glows(out: &mut Vec<Command>) {
     let k = g.0[1];
     if let Some(b) = button.filter(|_| k > 0.0) {
         let e = k * k * (3.0 - 2.0 * k);
+        // (pulsing with the highlighted card's glow)
+        let pulse = INNER_PULSE.lock().map_or(1.0, |p| p.0);
         let layers = (4.0 + 10.0 * e).round() as i32;
         for i in (0..layers).rev() {
             let f = 1.0 - (i as f32 + 0.5) / layers as f32;
-            glow_ring(out, [b.x0, b.y0, b.x1, b.y1], 1.0 + i as f32, 1.0, [CARD_GLOW[0], CARD_GLOW[1], CARD_GLOW[2], 0.6 * f * f * e]);
+            let c = [CARD_GLOW[0], CARD_GLOW[1], CARD_GLOW[2], 0.6 * f * f * e * pulse];
+            glow_ring(out, [b.x0, b.y0, b.x1, b.y1], 1.0 + i as f32, 1.0, c);
         }
     }
 }
