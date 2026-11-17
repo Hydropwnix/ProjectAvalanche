@@ -338,16 +338,18 @@ impl GameUi {
                 // (what was found, in the log, as it changes)
                 static LAST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
                 let line = match &found {
-                    Ok((slot, n)) => format!("pointer: option {} slot {slot} of {n}", e.item),
+                    Ok((slot, n, why)) => format!("pointer: option {} slot {slot} of {n} {why}", e.item),
                     Err(why) => format!("pointer: no slots of option {}: {why}", e.item),
                 };
+                // (once each time the slot (or the reason) changes)
+                let key = line.split(" (x ").next().unwrap_or(&line).to_string();
                 if let Ok(mut l) = LAST.lock()
-                    && *l != line
+                    && *l != key
                 {
-                    l.clone_from(&line);
+                    *l = key;
                     self.pointer.note(line);
                 }
-                found.ok().map(|(slot, _)| (e, slot))
+                found.ok().map(|(slot, ..)| (e, slot))
             });
             match hovered {
                 Some((e, slot)) => {
@@ -670,11 +672,16 @@ impl GameUi {
             return;
         }
         let Some(menu) = reach.lists.iter().find(|m| m.clip == f.entry.menu) else {
+            self.pointer.note(format!("pointer: slot {} let go: the options' list is gone", f.slot));
             self.pointer.slot = None;
             return;
         };
         if menu.selected != f.entry.item {
             // (the option never came to be selected: nothing to do)
+            self.pointer.note(format!(
+                "pointer: slot {} let go: option {} selected, not {}",
+                f.slot, menu.selected, f.entry.item
+            ));
             self.pointer.slot = None;
             return;
         }
@@ -713,7 +720,12 @@ impl GameUi {
 
 /// The equipment screen's Gear and Mods options (a port addition): which of the option's slots (its icons, left to
 /// right) the pointer is over, for an option of more than one. (`Err`: why not, for the log.)
-fn equipment_slot_under(cx: &mut Ctx, reach: &Reach, e: Entry, raw: (f32, f32)) -> Result<(i32, usize), String> {
+fn equipment_slot_under(
+    cx: &mut Ctx,
+    reach: &Reach,
+    e: Entry,
+    raw: (f32, f32),
+) -> Result<(i32, usize, String), String> {
     let list = reach.lists.iter().find(|l| l.clip == e.menu).ok_or("no list")?;
     let cell = list.cells.iter().find(|c| c.item == e.item).ok_or("no cell")?;
     // (the option's icons: its `mcSlots`, wherever it is in the option)
@@ -754,17 +766,19 @@ fn equipment_slot_under(cx: &mut Ctx, reach: &Reach, e: Entry, raw: (f32, f32)) 
         .and_then(|s| s.2.first())
         .and_then(|&k| crate::draw::render::pointer_drawn(k, raw))
         .map(|(_, p)| p.0);
-    let (x, slots) = match (drawn, at_drawn) {
-        (Some(d), Some(x)) => (x, d),
+    let (x, slots, how) = match (drawn, at_drawn) {
+        (Some(d), Some(x)) => (x, d, "drawn"),
         _ => {
             let stage = crate::draw::render::pointer_place_for(cx.player, icons, raw);
-            (cx.player.to_local(icons, stage).ok_or("no local place")?.0, slots)
+            (cx.player.to_local(icons, stage).ok_or("no local place")?.0, slots, "laid out")
         }
     };
+    let spans: Vec<String> = slots.iter().map(|s| format!("{:.0}..{:.0}", s.0, s.1)).collect();
+    let why = format!("(x {x:.0}, {how} slots {})", spans.join(" "));
     // (the slot whose icon the pointer is over, or the nearest one along the row, within the icons' span)
     let (lo, hi) = (slots[0].0, slots[slots.len() - 1].1);
     if x < lo || x > hi {
-        return Err(format!("the pointer outside the icons ({} of them)", slots.len()));
+        return Err(format!("the pointer outside the icons {why}"));
     }
     let i = slots
         .iter()
@@ -775,7 +789,7 @@ fn equipment_slot_under(cx: &mut Ctx, reach: &Reach, e: Entry, raw: (f32, f32)) 
         })
         .map(|(i, _)| i)
         .ok_or("no slot")?;
-    Ok((i32::try_from(i).map_err(|e| e.to_string())?, slots.len()))
+    Ok((i32::try_from(i).map_err(|e| e.to_string())?, slots.len(), why))
 }
 
 fn visible_kids(player: &crate::display::Player, id: InstanceId) -> Vec<InstanceId> {
