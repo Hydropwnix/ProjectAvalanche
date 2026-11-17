@@ -33,6 +33,7 @@ mod exit;
 pub(crate) use exit::ExitWait;
 mod frame;
 mod ghosts;
+mod hitch;
 mod live;
 mod maps;
 mod menu_background;
@@ -752,7 +753,10 @@ pub fn run(a: GameArgs) -> Result<AppExit> {
                 .after(crate::ride::RideStepSet),
         )
         .init_resource::<showcase::ShowcaseState>()
-        .add_systems(Update, showcase::showcase_system.after(shell_step));
+        .add_systems(Update, showcase::showcase_system.after(shell_step))
+        .init_resource::<hitch::PipelinesWaiting>()
+        .init_resource::<hitch::HitchLog>()
+        .add_systems(Update, hitch::hitch_log.after(showcase::showcase_system));
     presence::register(&mut app, a.discord_presence);
     app.sub_app_mut(RenderApp).add_systems(ExtractSchedule, report_pipelines);
     #[cfg(feature = "net")]

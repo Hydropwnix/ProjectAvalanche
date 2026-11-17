@@ -299,18 +299,6 @@ impl GameUi {
                 under.globe = globe_near(cx, &order, nodes, pos, DROP_REACH);
             }
         }
-        // (what's under the pointer, as it changes: in the log)
-        {
-            static LAST: std::sync::Mutex<Option<(Option<i32>, bool)>> = std::sync::Mutex::new(None);
-            let now = (under.entry.map(|(e, _)| e.item), under.preview);
-            if let Ok(mut l) = LAST.lock()
-                && *l != Some(now)
-            {
-                *l = Some(now);
-                let sel: Vec<String> = reach.lists.iter().map(|l| format!("{}", l.selected)).collect();
-                self.pointer.note(format!("pointer: under {:?} (preview {}), selected {}", now.0, now.1, sel.join("/")));
-            }
-        }
         if moved
             && let Some((e, _)) = under.entry
             && !under.preview

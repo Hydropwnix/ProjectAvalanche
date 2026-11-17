@@ -38,11 +38,17 @@ use crate::rider::skin::{self as rider_skin, LoadedRider, RiderRig};
 /// At most this many riders let go are kept (to take back at once).
 const KEPT_RIDERS: usize = 12;
 /// At most this many riders load at once.
-const LOADING_AT_ONCE: usize = 3;
+const LOADING_AT_ONCE: usize = 2;
 /// How fast the rider's view moves to a new place (per second: the fraction of the way left goes as 1 - e^-rate·t).
 const VIEW_MOVE_RATE: f32 = 9.0;
 /// Elsewhere in the menus, the riders to load ahead are worked out again this often (seconds).
 const PREFETCH_EVERY_SECS: f64 = 2.0;
+/// The menus' first seconds (the game starting, the main menu fading in): no riders loaded ahead yet, so the start
+/// stays smooth.
+const MENUS_SETTLE_SECS: f64 = 6.0;
+
+/// Riders put in the world in the latest frame (for the hitch log: a rider's meshes and pictures go to the GPU then).
+pub(super) static SPAWNED_LAST_FRAME: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 /// A rider's origin is its riding height (about its waist): raised so its feet stand on the card's floor.
 const LIFT: f32 = 0.95;
 /// The animations count time in the game's ticks (60 a second).
@@ -111,6 +117,8 @@ pub(super) struct ShowcaseState {
     was_active: bool,
     /// Elsewhere in the menus: when the riders the rider step will show were last worked out (to load them ahead).
     prefetched_at: Option<f64>,
+    /// When the menus were first up (the riders aren't loaded ahead in their first seconds).
+    menus_since: Option<f64>,
     /// In a run: the riders kept loaded but hidden (so they're there at once back in the menus).
     parked: bool,
     /// The rider's view on the screen as drawn (fractions of the window): moving to where the menus have it.
@@ -164,6 +172,11 @@ pub(super) struct ShowcaseAssets<'w> {
 }
 
 impl ShowcaseState {
+    /// Riders loading now (on threads of their own).
+    pub(super) fn loading(&self) -> usize {
+        self.slots.iter().filter(|s| matches!(s, Slot::Loading(_))).count()
+    }
+
     fn clear(&mut self, commands: &mut Commands) {
         for slot in self.slots.drain(..) {
             if let Slot::Ready(s) = slot {
@@ -327,6 +340,9 @@ pub(super) fn showcase_system(
             state.park(&mut commands, &mut cameras);
         } else if state.was_active {
             state.hide(&mut cameras);
+            // (just out of the rider and gear steps (a launch, often): the riders worked out again a moment later,
+            // not while the level starts loading)
+            state.prefetched_at = Some(time.elapsed_secs_f64());
         }
         if menus {
             state.unpark(&mut commands);
@@ -334,8 +350,13 @@ pub(super) fn showcase_system(
         // Elsewhere in the menus: the rider step's riders loaded ahead, out of sight (worked out again now and
         // then: the profile, a rider's gear may change meanwhile; those already loaded and the same are kept).
         let g = &mut ui.0;
-        if menus && let Some(fe) = g.fe.as_ref() {
-            let now = time.elapsed_secs_f64();
+        let now = time.elapsed_secs_f64();
+        let settled = menus && now - *state.menus_since.get_or_insert(now) >= MENUS_SETTLE_SECS;
+        // (not on the loading screen either: the level loads then, and the riders wait till the run's over)
+        if settled
+            && let Some(fe) = g.fe.as_ref()
+            && fe.screen != ssx_ui::game::fe::screens::id::LOADING
+        {
             if state.prefetched_at.is_none_or(|t| now - t >= PREFETCH_EVERY_SECS) {
                 state.prefetched_at = Some(now);
                 let riders = sc::prefetch(fe, &mut g.loc);
@@ -743,7 +764,12 @@ fn load_and_spawn(
     }
     let light = state.light.get_or_insert_with(|| GameLightAssets::viewer(&mut assets.images)).clone();
     let rider_light = CharacterLightUniform::viewer_default();
+    // (one rider put in the world a frame: each sends its meshes and pictures to the GPU, so they're spread out)
+    let mut spawned = 0;
     for i in 0..n {
+        if spawned > 0 {
+            break;
+        }
         let got = match &state.slots[i] {
             Slot::Loading(m) => match m.lock() {
                 Ok(rx) => rx.try_recv(),
@@ -814,6 +840,7 @@ fn load_and_spawn(
                 }
                 info!("showcase: {name}: {}", if glowing_suit { "a glowing suit" } else { "no glowing suit (its gear's glow off)" });
                 state.slots[i] = Slot::Ready(Box::new(Shown { root, rig }));
+                spawned += 1;
             }
             Ok(Err(e)) => {
                 warn!("showcase: {} not loaded: {e}", state.riders[i].name);
@@ -823,6 +850,7 @@ fn load_and_spawn(
             Err(TryRecvError::Empty) => {}
         }
     }
+    SPAWNED_LAST_FRAME.fetch_add(spawned, std::sync::atomic::Ordering::Relaxed);
 
 }
 

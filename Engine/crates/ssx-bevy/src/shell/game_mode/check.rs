@@ -71,6 +71,9 @@ pub fn report_pipelines(mut main_world: ResMut<MainWorld>, pipelines: Res<Pipeli
     if let Some(mut ready) = main_world.get_resource_mut::<UiPipelinesReady>() {
         ready.0 = pipelines.waiting_pipelines().next().is_none();
     }
+    if let Some(mut waiting) = main_world.get_resource_mut::<super::hitch::PipelinesWaiting>() {
+        waiting.0 = pipelines.waiting_pipelines().count();
+    }
 }
 
 pub fn ride_shot_path(dir: &Path, ride: u32, t: f32) -> PathBuf {
